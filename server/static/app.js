@@ -1039,6 +1039,20 @@ function whenSeen(sec) {
   return 'ultimo accesso ' + d.toLocaleDateString('it-IT') + ' alle ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
+// Come si arriva a questo server da fuori casa: la porta aperta sul router, oppure no
+function reachState(sh) {
+  var pm = sh.portmap || {};
+  if (!sh.on) return 'La condivisione è spenta: da fuori non entra nessuno.';
+  if (sh.manual) return dot(true) + ' Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b> (indirizzo scritto da te).';
+  if (!sh.auto_port) return 'Apertura automatica spenta: scrivi tu il tuo indirizzo (per esempio quello di Tailscale) quando mandi una richiesta.';
+  if (pm.ok && pm.public) {
+    return dot(true) + ' Porta aperta sul router (' + esc(pm.method) + '). Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
+      (sh.tls ? ', con collegamento cifrato.' : '. Attenzione: collegamento non cifrato.');
+  }
+  if (pm.error) return dot(false) + ' Non riesco ad aprire la porta da solo: ' + esc(pm.error) + '.';
+  return 'Sto chiedendo al router di aprire la porta…';
+}
+
 function friendsPanel(sh) {
   if (!sh) return '';
   var pending = sh.accounts.filter(function (a) { return !a.approved; });
@@ -1079,16 +1093,18 @@ function friendsPanel(sh) {
     (seen ? '<div class="lib"><div class="head"><div class="name"><b>Chi vede le tue</b></div></div>' + seen + '</div>' : '') +
     '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Condivisione con gli amici<small>' +
       (sh.on ? 'Attiva' : 'Spenta: nessuno può entrare né mandare richieste') + '</small></button>' +
+    '<button class="setting f" data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport">Apri da solo la porta sul router<small>' +
+      (sh.auto_port ? 'Sì' : 'No') + '</small></button>' +
+    '<p>' + reachState(sh) + '</p>' +
     '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità dei video degli amici<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
     // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
     '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
-    '<p>Serve che i due PC si raggiungano: il modo consigliato è <b>Tailscale</b> su entrambi (vedi README). ' +
-    'Gli indirizzi sono quelli di Tailscale, con la porta degli amici <b>' + sh.port + '</b>: per esempio <b>100.101.102.103:' + sh.port + '</b>.' +
-    '</p>' +
+    '<p>Fatti dare dall\'amico il suo indirizzo: lo legge qui in Impostazioni → Amici, sul suo BunkerPlex. ' +
+    'Il tuo viene trovato da solo quando la porta sul router è aperta; se non ci riesce, usate <b>Tailscale</b> su entrambi i PC e scrivete quegli indirizzi (vedi README).</p>' +
     '<input class="field f" style="margin-bottom:.6rem" id="fname" data-key="fname" autocomplete="off" maxlength="30" placeholder="Nome dell\'amico (come lo vedrai nel menu)">' +
-    '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 100.101.102.103:' + sh.port + ')">' +
-    '<input class="field f" style="margin-bottom:.6rem" id="fmy" data-key="fmy" autocomplete="off" value="' + esc(sh.address) + '" placeholder="Il tuo indirizzo (quello con cui l\'amico raggiunge te)">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 93.45.12.7:' + sh.port + ')">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="fmy" data-key="fmy" autocomplete="off" value="' + esc(sh.address) + '" placeholder="Il tuo indirizzo (si riempie da solo se la porta è aperta)">' +
     '<input class="field f" style="margin-bottom:.6rem" id="fuser" data-key="fuser" autocomplete="off" maxlength="30" placeholder="Il nome con cui ti presenti da lui">' +
     '<input class="field f" id="fpass" data-key="fpass" type="password" autocomplete="new-password" placeholder="Una password per il tuo account da lui (almeno 8 caratteri)">' +
     '<div class="actions"><button class="btn primary f" data-act="friendadd" data-arg="1" data-key="friendadd">Manda la richiesta</button>' +
@@ -2054,8 +2070,15 @@ var actions = {
   },
   sharetoggle: function (arg) {
     post('/sharing', { on: arg === '1' }).then(function () {
-      toast(arg === '1' ? 'Condivisione attiva' : 'Condivisione spenta');
+      toast(arg === '1' ? 'Condivisione attiva: chiedo al router di aprire la porta…' : 'Condivisione spenta');
       render();
+      if (arg === '1') setTimeout(render, 4000);     // il tempo di parlare con il router
+    }, function (e) { toast(e.message); });
+  },
+  shareport: function (arg) {
+    post('/sharing', { auto_port: arg === '1' }).then(function () {
+      toast(arg === '1' ? 'Chiedo al router di aprire la porta…' : 'Porta richiusa sul router');
+      setTimeout(render, arg === '1' ? 4000 : 1500);
     }, function (e) { toast(e.message); });
   },
   accapprove: function (arg) {
