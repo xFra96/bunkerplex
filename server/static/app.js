@@ -57,6 +57,226 @@ function devicePrefs() {
 }
 function saveDevicePrefs(p) {
   try { localStorage.setItem('fpDevice', JSON.stringify(p)); } catch (e) { /* niente */ }
+  pushPrefs();
+}
+
+// ---------------------------------------------------------------- Account
+// Con gli account accesi si entra con nome e password (sulla TV basta scegliere
+// il proprio nome). Le preferenze di visione seguono l'account su ogni dispositivo,
+// tranne cio' che dipende dal dispositivo stesso (lento o no, aspetto da TV).
+var auth = null;                     // {on, user, profiles, setup}
+var LOCAL_ONLY = ['slow', 'tv'];             // dipendono dal dispositivo
+var PLAYER_LOCAL = ['volume', 'muted'];      // il volume di una TV non va sul PC
+var prefsTimer = 0;
+var conflicts = null;                // primo accesso: impostazioni di qui diverse da quelle dell'account
+
+function loadAuth() {
+  return api('/auth/state').then(function (a) { auth = a; return a; }, function () { auth = { on: false }; return auth; });
+}
+
+function without(obj, keys) {
+  var out = {};
+  Object.keys(obj || {}).forEach(function (k) { if (keys.indexOf(k) < 0 && obj[k] !== undefined && obj[k] !== '') out[k] = obj[k]; });
+  return out;
+}
+
+function sharedPrefs() {
+  return { device: without(device, LOCAL_ONLY), player: without(playerPrefs(), PLAYER_LOCAL) };
+}
+
+function sendPrefs() {
+  return post('/me/prefs', sharedPrefs()).catch(function () {});
+}
+
+function pushPrefs() {
+  if (!auth || !auth.user || conflicts) return;
+  clearTimeout(prefsTimer);
+  prefsTimer = setTimeout(sendPrefs, 1200);
+}
+
+// Le preferenze dell'account prendono il posto di quelle di questo dispositivo
+function applyPrefs(p) {
+  if (p.device && Object.keys(p.device).length) {
+    var dev = without(p.device, LOCAL_ONLY);
+    LOCAL_ONLY.forEach(function (k) { if (device[k] !== undefined) dev[k] = device[k]; });
+    device = dev;
+    try { localStorage.setItem('fpDevice', JSON.stringify(device)); } catch (e) { /* niente */ }
+    applyDevice();
+  }
+  if (p.player && Object.keys(p.player).length) {
+    var pl = without(p.player, PLAYER_LOCAL), mine = playerPrefs();
+    PLAYER_LOCAL.forEach(function (k) { if (mine[k] !== undefined) pl[k] = mine[k]; });
+    try { localStorage.setItem('fpPlayer', JSON.stringify(pl)); } catch (e) { /* niente */ }
+  }
+}
+
+function pullPrefs() {
+  return api('/me/prefs').then(applyPrefs).catch(function () {});
+}
+
+function sorted(o) {
+  return JSON.stringify(Object.keys(o || {}).sort().map(function (k) { return [k, o[k]]; }));
+}
+
+var PREF_LABELS = { anim: 'animazioni', posters: 'locandine', subsize: 'sottotitoli', fit: 'formato', step: 'salti', autoplay: 'episodio successivo', oslang: 'lingua dei sottotitoli' };
+function prefsSummary(p) {
+  var parts = [];
+  [p.device || {}, p.player || {}].forEach(function (o) {
+    Object.keys(o).sort().forEach(function (k) {
+      var v = o[k];
+      if (k === 'anim') v = labelOf(ANIMS, v);
+      else if (k === 'posters') v = labelOf(POSTERS, v);
+      else if (k === 'subsize') v = labelOf(SUB_SIZES, v);
+      else if (k === 'fit') v = labelOf(FITS, v).split(' (')[0];
+      else if (typeof v === 'boolean') v = v ? 'sì' : 'no';
+      parts.push((PREF_LABELS[k] || k) + ' ' + String(v).toLowerCase());
+    });
+  });
+  return parts.join(', ') || 'nessuna';
+}
+
+function seenAccount() {
+  try { return localStorage.getItem('fpAccount') || ''; } catch (e) { return ''; }
+}
+function markAccount() {
+  try { localStorage.setItem('fpAccount', String(auth.user.id)); } catch (e) { /* niente */ }
+}
+
+// Al primo accesso da questo dispositivo: se le sue preferenze sono diverse da quelle
+// dell'account si chiede quali tenere; altrimenti valgono quelle dell'account.
+function checkPrefs() {
+  return api('/me/prefs').then(function (remote) {
+    remote = { device: without(remote.device, LOCAL_ONLY), player: without(remote.player, PLAYER_LOCAL) };
+    var local = sharedPrefs();
+    var localEmpty = !Object.keys(local.device).length && !Object.keys(local.player).length;
+    var remoteEmpty = !Object.keys(remote.device).length && !Object.keys(remote.player).length;
+    var first = seenAccount() !== String(auth.user.id);
+    if (!first || localEmpty) { applyPrefs(remote); markAccount(); return null; }
+    if (remoteEmpty) { markAccount(); sendPrefs(); return null; }
+    if (sorted(local.device) === sorted(remote.device) && sorted(local.player) === sorted(remote.player)) { markAccount(); return null; }
+    cache.remotePrefs = remote;
+    return { key: 'prefs', label: 'Preferenze di visione (animazioni, locandine, player)',
+      local: prefsSummary(local), cloud: prefsSummary(remote) };
+  }).catch(function () { return null; });
+}
+
+// Dopo l'accesso: impostazioni del server da confrontare (r.conflicts) e preferenze di questo dispositivo
+function afterLogin(serverConflicts) {
+  return checkPrefs().then(function (pref) {
+    var list = (serverConflicts || []).slice();
+    if (pref) list.push(pref);
+    conflicts = list.length ? list : null;
+  });
+}
+
+function conflictsPage() {
+  return '<div class="page"><div class="panel login wide"><h1>Impostazioni diverse</h1>' +
+    '<p>Qui ci sono impostazioni diverse da quelle salvate nel tuo account. Quali vuoi tenere?</p>' +
+    '<div class="lib">' + conflicts.map(function (c) {
+      return '<div class="folder"><div class="where"><b>' + esc(c.label) + '</b><small>Questo ' + (TV ? 'dispositivo' : 'PC') + ': ' + esc(c.local) +
+        '<br>Account: ' + esc(c.cloud) + '</small></div></div>';
+    }).join('') + '</div>' +
+    '<div class="actions"><button class="btn primary f" data-autofocus data-act="resolve" data-arg="cloud" data-key="keepcloud">Usa quelle dell\'account</button>' +
+    '<button class="btn f" data-act="resolve" data-arg="local" data-key="keeplocal">Tieni quelle di qui (sovrascrivi l\'account)</button></div>' +
+    '<p style="margin-top:1rem">Le impostazioni che non scegli vengono sostituite.</p></div></div>';
+}
+
+function lockScreen(on) {
+  document.body.classList.toggle('locked', on);
+}
+
+function loginPage() {
+  var a = auth;
+  if (a.setup) {
+    return '<div class="page"><div class="panel login"><h1>Benvenuto in BunkerPlex</h1>' +
+      '<p>Crea l\'account <b>amministratore</b>: è il tuo. Con questo account poi crei quelli degli altri, ' +
+      'con una password provvisoria che cambieranno al primo accesso.</p>' +
+      '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" data-autofocus autocomplete="username" maxlength="32" placeholder="Nome utente (lettere, numeri, . - _)">' +
+      '<input class="field f" style="margin-bottom:.6rem" id="lpass" data-key="lpass" type="password" autocomplete="new-password" placeholder="Password (almeno 8 caratteri)">' +
+      '<input class="field f" id="lpass2" data-key="lpass2" type="password" autocomplete="new-password" data-enter="setup" placeholder="Ripeti la password">' +
+      '<div class="actions"><button class="btn primary f" data-act="setup" data-key="setup">Crea e entra</button></div></div></div>';
+  }
+  var pick = TV && a.profiles && a.profiles.length ? '<h2>Chi guarda?</h2><div class="profiles">' + a.profiles.map(function (p, n) {
+    return '<button class="profile f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="profile" data-arg="' + p.id + '" data-key="prof-' + p.id + '">' +
+      avatar(p.name) + '<span>' + esc(p.name) + '</span></button>';
+  }).join('') + '</div><h2 style="margin-top:1.6rem">Oppure entra con nome e password</h2>' : '';
+  return '<div class="page"><div class="panel login"><h1>Accedi a BunkerPlex</h1>' + pick +
+    (pick ? '' : '<p>Entra con il tuo account: ritrovi impostazioni, visti e la tua lista su ogni PC e TV.</p>') +
+    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname"' + (pick ? '' : ' data-autofocus') + ' autocomplete="username" maxlength="32" placeholder="Nome utente">' +
+    '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login" placeholder="Password">' +
+    '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button></div>' +
+    '<p style="margin-top:1.2rem">Gli account li crea l\'amministratore, con una password provvisoria da cambiare al primo accesso.' +
+    (TV ? ' Puoi anche entrare dal PC o dal telefono su <b>http://' + esc(location.host) + '</b>: poi qui compare il tuo nome.' : '') + '</p>' +
+    (TV ? '<div class="actions" style="margin-top:0"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
+    '</div></div>';
+}
+
+function passwordPage(forced) {
+  return '<div class="page"><div class="panel login"><h1>' + (forced ? 'Scegli la tua password' : 'Cambia password') + '</h1>' +
+    (forced ? '<p>Stai usando una password provvisoria. Scegline una tua: varrà su tutti i PC e le TV.</p>'
+      : '<p>Gli altri PC dove sei entrato ti chiederanno la password nuova.</p>') +
+    '<input class="field f" style="margin-bottom:.6rem" id="pold" data-key="pold" data-autofocus type="password" autocomplete="current-password" placeholder="' + (forced ? 'Password provvisoria' : 'Password attuale') + '">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+    '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="changepw" placeholder="Ripeti la password nuova">' +
+    '<div class="actions"><button class="btn primary f" data-act="changepw" data-arg="' + (forced ? '1' : '') + '" data-key="changepw">Salva</button>' +
+    (forced ? '<button class="btn f" data-act="logout" data-key="logout">Esci</button>' : '<button class="btn f" data-act="goback" data-key="cancel">Annulla</button>') +
+    '</div></div></div>';
+}
+
+function accountPanel() {
+  if (!auth || !auth.on || !auth.user) return '';
+  var u = auth.user;
+  return '<div class="panel"><h2>Account</h2>' +
+    '<p>Sei entrato come <b>' + esc(u.name) + '</b>' + (u.admin ? ' (amministratore)' : '') + '. ' +
+    'Chiavi API, preferenze, visti, punti di ripresa e la tua lista sono salvati nell\'account: li ritrovi su ogni PC dove entri. ' +
+    'Le raccolte invece sono di questo PC.' + (u.online ? '' : ' ' + dot(false) + ' Servizio account non raggiungibile: le modifiche partono appena torna Internet.') + '</p>' +
+    '<button class="setting f" data-act="tvquick" data-arg="' + (u.tv_quick ? 0 : 1) + '" data-key="tvquick">Dalle TV di casa si entra scegliendo il tuo nome, senza password<small>' +
+      (u.tv_quick ? 'Sì' : 'No') + '</small></button>' +
+    '<div class="actions">' +
+      (TV ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
+      (u.admin && !TV ? '<a class="btn f" href="#/accounts" data-key="accmanage">Gestisci gli account</a>' : '') +
+      '<button class="btn f" data-act="logout" data-key="logout">Esci</button>' +
+    '</div></div>';
+}
+
+// Password provvisoria facile da dettare: tre gruppi di lettere e numeri
+function tempPassword() {
+  var chars = 'abcdefghjkmnpqrstuvwxyz23456789', out = [];
+  var rnd = new Uint32Array(12);
+  (window.crypto || window.msCrypto).getRandomValues(rnd);
+  for (var i = 0; i < 12; i++) out.push(chars[rnd[i] % chars.length]);
+  return out.slice(0, 4).join('') + '-' + out.slice(4, 8).join('') + '-' + out.slice(8).join('');
+}
+
+function showSecret(title, text) {
+  openPicker(title + ': ' + text + ' (comunicala tu: al primo accesso andrà cambiata)', [{ value: 'ok', label: 'Fatto' }], 'ok', function () {});
+}
+
+async function accountsPage() {
+  if (!auth || !auth.user || !auth.user.admin) throw new Error('Solo l\'amministratore può gestire gli account.');
+  var list = await api('/accounts');
+  cache.accounts = list;
+  var rows = list.map(function (a) {
+    var when = a.last_seen ? 'ultimo accesso ' + new Date(a.last_seen * 1000).toLocaleDateString('it-IT') : 'mai entrato';
+    return '<div class="folder"><div class="where"><b>' + esc(a.username) + (a.admin ? ' · amministratore' : '') + '</b><small>' +
+      (a.must_change ? 'password provvisoria ancora da cambiare · ' : '') + when + ' · ' +
+      a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
+      '<button class="btn f" style="margin-right:.5rem" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
+      (a.username.toLowerCase() === auth.user.name.toLowerCase() ? '' :
+        '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">Elimina</button>') +
+      '</div>';
+  }).join('');
+  cache.newAdmin = false;
+  return '<div class="page"><div class="toolbar"><h1>Account</h1></div>' +
+    '<div class="panel"><h2>Chi può entrare</h2>' +
+    '<p>Ogni account ha le sue raccolte, impostazioni, visti e lista. «Nuova password provvisoria» fa uscire l\'account da tutti i PC: al prossimo accesso sceglierà una password sua.</p>' +
+    '<div class="lib">' + rows + '</div></div>' +
+    '<div class="panel"><h2>Nuovo account</h2>' +
+    '<input class="field f" style="margin-bottom:.6rem" id="aname" data-key="aname" autocomplete="off" maxlength="32" placeholder="Nome utente (lettere, numeri, . - _)">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '" placeholder="Password provvisoria">' +
+    '<button class="setting f" data-act="accadmin" data-key="accadmin">Amministratore (può gestire gli account)<small id="accadminv">No</small></button>' +
+    '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button>' +
+    '<button class="btn f" data-act="goback" data-key="cancel">Indietro</button></div></div></div>';
 }
 var device = devicePrefs();
 // Aspetto da TV: dentro l'app, oppure scelto a mano per il browser di una smart TV (o con ?tv=1)
@@ -88,7 +308,12 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 function api(path, opt) {
   return fetch('/api' + path, opt).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
-      if (r.status === 503 && j.detail && !api.reloading) { api.reloading = true; location.reload(); }
+      if (r.status === 503 && j.detail && !j.login && !/^\/auth\//.test(path) && !api.reloading) { api.reloading = true; location.reload(); }
+      // Accesso scaduto (o password provvisoria da cambiare): si torna alla pagina di accesso
+      if ((r.status === 401 || r.status === 403) && j.login && auth && auth.user && !/^\/auth\//.test(path)) {
+        auth = null;
+        setTimeout(render, 0);
+      }
       if (!r.ok) throw new Error(j.detail || ('Errore ' + r.status));
       return j;
     });
@@ -227,7 +452,7 @@ function markRail(h) {
   else if (h.indexOf('#/lib/') === 0) active = '#/lib/' + h.slice(6).split('?')[0];
   else if ((h.indexOf('#/item/') === 0 || h.indexOf('#/show/') === 0) && cache.navLib) active = '#/lib/' + cache.navLib;
   else if (h.indexOf('#/newlib') === 0) active = '#/newlib';
-  else if (/^#\/(settings|browse|rename|match)/.test(h)) active = '#/settings';
+  else if (/^#\/(settings|browse|rename|match|accounts|password)/.test(h)) active = '#/settings';
   var links = rail.querySelectorAll('.railitem');
   for (var i = 0; i < links.length; i++) links[i].classList.toggle('on', links[i].getAttribute('href') === active);
 }
@@ -962,8 +1187,14 @@ async function settings() {
   var libsHtml = libs.map(function (l) {
     var what = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ') || 'ancora vuota';
     var k = 'lib-' + l.id;
+    if (l.mine === false) {       // raccolta di un altro account di questo PC, condivisa con te
+      return '<div class="lib"><div class="head">' + avatar(l.name) +
+        '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + ' · condivisa da un altro account di questo PC</small></div></div></div>';
+    }
+    var accounts = auth && auth.on && auth.user;
     return '<div class="lib"><div class="head">' + avatar(l.name) +
-      '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + '</small></div>' +
+      '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + (accounts && l.shared ? ' · la vedono anche gli altri account di questo PC' : '') + '</small></div>' +
+      (accounts ? '<button class="btn f" data-act="libshare" data-arg="' + l.id + ':' + (l.shared ? 0 : 1) + '" data-key="' + k + '-share">' + (l.shared ? 'Non condividere' : 'Condividi') + '</button>' : '') +
       '<a class="btn f" href="#/browse/' + l.id + '" data-key="' + k + '-add">+ Cartella</a>' +
       '<button class="btn f" data-act="refreshmenu" data-arg="' + l.id + '" data-key="' + k + '-upd">Aggiorna</button>' +
       '<a class="btn f" href="#/rename/' + l.id + '" data-key="' + k + '-ren">Rinomina</a>' +
@@ -980,7 +1211,9 @@ async function settings() {
       '</div>';
   }).join('');
 
+  var inAccount = auth && auth.on && auth.user;
   return '<div class="page"><div class="toolbar"><h1>Impostazioni</h1></div>' +
+    accountPanel() +
     '<div class="panel"><h2>Le tue raccolte</h2>' +
     '<p>Ogni raccolta è una sezione del tuo cinema, con il nome che scegli tu e una o più cartelle del PC. ' +
     'Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.</p>' +
@@ -1005,6 +1238,7 @@ async function settings() {
       ? ' Attive (chiave ' + esc(i.tmdb_hint) + '): locandine, trame, anno, regista, cast, generi e voti vengono scaricati da soli.'
       : ' Non attive. Senza chiave i film compaiono con un fotogramma al posto della locandina e senza regista, generi e trama.') + '</p>' +
     '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
+      (inAccount ? ' La chiave resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +
       (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
     '<div class="inline"><input class="field f" id="tmdbkey" data-key="tmdbkey" data-enter="savekey" autocomplete="off" placeholder="' +
       (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
@@ -1016,7 +1250,8 @@ async function settings() {
         ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
       : ' Non attivi. Con una chiave gratuita di OpenSubtitles, dalle Opzioni del film scarichi i sottotitoli in italiano o in altre lingue.') + '</p>' +
     '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
-      'Nome utente e password dell\'account sono facoltativi ma alzano il limite di download giornaliero. Restano solo su questo PC.' +
+      'Nome utente e password dell\'account sono facoltativi ma alzano il limite di download giornaliero. ' +
+      (inAccount ? 'Restano nel tuo account: le ritrovi su ogni PC dove entri.' : 'Restano solo su questo PC.') +
       (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
     '<input class="field f" style="margin-bottom:.6rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
       (i.subs_online ? 'Nuova chiave API (lascia vuoto per tenere quella di adesso)' : 'Chiave API OpenSubtitles') + '">' +
@@ -1147,7 +1382,9 @@ function labelOf(list, key) {
 function devicePanel() {
   var auto = !device.anim && device.slow ? ' (ridotte: questo dispositivo è lento)' : '';
   return '<div class="panel"><h2>Questo dispositivo</h2>' +
-    '<p>Valgono solo ' + (TV ? 'per questa TV' : 'per questo browser') + ': ogni TV, telefono o PC tiene le sue.</p>' +
+    (auth && auth.on && auth.user
+      ? '<p>Restano nel tuo account e valgono su ogni dispositivo dove entri (il riconoscimento dei dispositivi lenti resta di ognuno).</p>'
+      : '<p>Valgono solo ' + (TV ? 'per questa TV' : 'per questo browser') + ': ogni TV, telefono o PC tiene le sue.</p>') +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
     (TV ? '' : '<button class="setting f" data-act="devtv" data-key="devtv">Aspetto da TV (per il browser di una smart TV)<small>' + (device.tv ? 'Attivo' : 'Spento') + '</small></button>') +
@@ -1236,6 +1473,7 @@ function playerPrefs() {
 }
 function savePlayerPrefs(prefs) {
   try { localStorage.setItem('fpPlayer', JSON.stringify(prefs)); } catch (e) { /* niente */ }
+  pushPrefs();
 }
 
 var SEEK_STEPS = { short: [5, 10], normal: [10, 30], long: [30, 60] };
@@ -2149,7 +2387,116 @@ function addFolder(path) {
   });
 }
 
+function fieldValue(id) { var el = document.getElementById(id); return el ? el.value : ''; }
+
+function enterApp(r) {
+  try { sessionStorage.removeItem('fpNoAuto'); } catch (e) { /* niente */ }
+  auth = null;
+  libsLoadedAt = 0;
+  return loadAuth().then(function () {
+    if (auth.user && !auth.user.must_change) return afterLogin(r && r.conflicts);
+  }).then(function () {
+    if (r && r.offline) toast('Entrato senza Internet: le modifiche partono appena torna');
+    location.replace('#/home');
+    render();
+  });
+}
+
 var actions = {
+  // --- account
+  login: function () {
+    var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
+    if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
+    toast('Entro…');
+    post('/auth/login', { username: name, password: pass, device: TV ? 'tv' : 'browser' }).then(enterApp, function (e) { toast(e.message); });
+  },
+  setup: function () {
+    var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
+    if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
+    if (pass !== fieldValue('lpass2')) { toast('Le due password non sono uguali'); return; }
+    toast('Creo l\'account…');
+    post('/auth/setup', { username: name, password: pass, device: TV ? 'tv' : 'browser' }).then(enterApp, function (e) { toast(e.message); });
+  },
+  profile: function (id) {
+    post('/auth/profile', { id: +id }).then(enterApp, function (e) { toast(e.message); });
+  },
+  changepw: function (forced) {
+    var old = fieldValue('pold'), pw = fieldValue('pnew');
+    if (!old || !pw) { toast('Scrivi la password attuale e quella nuova'); return; }
+    if (pw !== fieldValue('pnew2')) { toast('Le due password nuove non sono uguali'); return; }
+    toast('Salvo…');
+    post('/auth/password', { old: old, new: pw }).then(function (r) {
+      toast('Password cambiata');
+      if (forced) return enterApp(r);
+      history.back();
+    }, function (e) { toast(e.message); });
+  },
+  logout: function () {
+    post('/auth/logout').catch(function () {}).then(function () {
+      try { sessionStorage.setItem('fpNoAuto', '1'); } catch (e) { /* niente */ }
+      auth = null;
+      conflicts = null;
+      location.replace('#/home');
+      render();
+    });
+  },
+  resolve: function (keep) {
+    var list = conflicts || [];
+    var hasServer = list.some(function (c) { return c.key !== 'prefs'; });
+    var hasPrefs = list.some(function (c) { return c.key === 'prefs'; });
+    (hasServer ? post('/auth/resolve', { keep: keep }) : Promise.resolve()).then(function () {
+      if (hasPrefs) {
+        if (keep === 'local') return sendPrefs();
+        applyPrefs(cache.remotePrefs || {});
+      }
+    }).then(function () {
+      conflicts = null;
+      markAccount();
+      toast(keep === 'local' ? 'Fatto: l\'account ora ha le impostazioni di qui' : 'Fatto: usi le impostazioni dell\'account');
+      location.replace('#/home');
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  tvquick: function (arg) {
+    post('/auth/options', { tv_quick: arg === '1' }).then(function () { return loadAuth(); }).then(render, function (e) { toast(e.message); });
+  },
+  accadmin: function () {
+    cache.newAdmin = !cache.newAdmin;
+    var v = document.getElementById('accadminv');
+    if (v) v.textContent = cache.newAdmin ? 'Sì' : 'No';
+  },
+  acccreate: function () {
+    var name = fieldValue('aname').trim(), pass = fieldValue('apass').trim();
+    if (!name || !pass) { toast('Scrivi nome utente e password provvisoria'); return; }
+    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin }).then(function () {
+      render().then(function () { showSecret('Account «' + name + '» creato. Password provvisoria', pass); });
+    }, function (e) { toast(e.message); });
+  },
+  accreset: function (id) {
+    var a = (cache.accounts || []).filter(function (x) { return String(x.id) === String(id); })[0];
+    if (!a) return;
+    confirmBox('Dare a «' + a.username + '» una nuova password provvisoria? Uscirà da tutti i PC.', 'Sì, nuova password', function () {
+      var pass = tempPassword();
+      post('/accounts/' + a.id + '/password', { username: a.username, password: pass }).then(function () {
+        render().then(function () { showSecret('Nuova password provvisoria di «' + a.username + '»', pass); });
+      }, function (e) { toast(e.message); });
+    });
+  },
+  accremove: function (id) {
+    var a = (cache.accounts || []).filter(function (x) { return String(x.id) === String(id); })[0];
+    if (!a) return;
+    confirmBox('Eliminare l\'account «' + a.username + '»? Perde impostazioni, visti e lista su tutti i PC.', 'Sì, elimina', function () {
+      api('/accounts/' + a.id, { method: 'DELETE' }).then(function () { toast('Account eliminato'); render(); }, function (e) { toast(e.message); });
+    });
+  },
+  libshare: function (arg) {
+    var parts = arg.split(':');
+    send('PATCH', '/libraries/' + parts[0], { shared: parts[1] === '1' }).then(function () {
+      toast(parts[1] === '1' ? 'Ora la vedono anche gli altri account di questo PC' : 'Ora la vedi solo tu');
+      return loadLibs(true).then(render);
+    }).catch(function (e) { toast(e.message); });
+  },
+
   play: function (arg) { play(arg, false); },
   playstart: function (arg) { play(arg, true); },
   watched: function (arg) {
@@ -2681,8 +3028,37 @@ var routes = [
   [/^#\/newlib$/, newLibPage],
   [/^#\/rename\/(\d+)$/, renamePage],
   [/^#\/browse\/(\d+)(?:\?.*)?$/, browsePage],
-  [/^#\/match\/(movie|show)\/(\d+)$/, matchPage]
+  [/^#\/match\/(movie|show)\/(\d+)$/, matchPage],
+  [/^#\/accounts$/, accountsPage],
+  [/^#\/password$/, function () { return passwordPage(false); }]
 ];
+
+// Prima di ogni pagina: serve l'accesso? (pagina di accesso o password provvisoria da cambiare)
+async function gate() {
+  if (!auth) await loadAuth();
+  if (!auth.on) { lockScreen(false); return null; }
+  if (!auth.user) {
+    // Sulla TV, con un solo account su questo PC, si entra da soli (non dopo aver premuto «Esci»)
+    var noAuto = false;
+    try { noAuto = sessionStorage.getItem('fpNoAuto') === '1'; } catch (e) { /* niente */ }
+    if (TV && !noAuto && !auth.setup && auth.profiles && auth.profiles.length === 1 && !gate.tried) {
+      gate.tried = true;
+      try {
+        await post('/auth/profile', { id: auth.profiles[0].id });
+        await loadAuth();
+        if (auth.user) await afterLogin([]);
+        if (auth.user && !conflicts) { lockScreen(false); return null; }
+        if (conflicts) { lockScreen(true); return conflictsPage(); }
+      } catch (e) { /* si mostra la pagina di accesso */ }
+    }
+    lockScreen(true);
+    return loginPage();
+  }
+  if (auth.user.must_change) { lockScreen(true); return passwordPage(true); }
+  if (conflicts) { lockScreen(true); return conflictsPage(); }
+  lockScreen(false);
+  return null;
+}
 
 async function render() {
   var token = ++renderToken;
@@ -2700,12 +3076,17 @@ async function render() {
 
   var out;
   try {
-    await loadLibs();
-    cache.navLib = null;
-    // Stessa pagina che si ridisegna: restano a schermo tante locandine quante ce n'erano
-    cache.keepShown = chunk && currentHash === h ? chunk.shown : 0;
-    chunk = null;
-    out = await handler.apply(null, match.slice(1));
+    out = await gate();
+    if (out) {
+      h = '#/login';
+    } else {
+      await loadLibs();
+      cache.navLib = null;
+      // Stessa pagina che si ridisegna: restano a schermo tante locandine quante ce n'erano
+      cache.keepShown = chunk && currentHash === h ? chunk.shown : 0;
+      chunk = null;
+      out = await handler.apply(null, match.slice(1));
+    }
   } catch (e) {
     out = '<div class="page"><div class="empty center"><h2>Qualcosa non va</h2><p>' + esc(e.message) +
       '</p><div class="actions"><a class="btn f" href="#/home">Torna alla Home</a></div></div></div>';
@@ -2807,5 +3188,8 @@ if (TV) {
 setTimeout(checkServerUpdate, 1500);
 setInterval(checkServerUpdate, 30 * 60 * 1000);
 
-render();
+loadAuth().then(function () {
+  if (auth.on && auth.user && !auth.user.must_change) return afterLogin([]).then(render);
+  render();
+});
 })();
