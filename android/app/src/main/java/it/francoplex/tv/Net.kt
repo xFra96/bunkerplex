@@ -18,8 +18,18 @@ object Net {
     const val PORT = 32500
     private val background = Executors.newSingleThreadExecutor()
 
-    fun get(url: String, timeoutMs: Int = 8000): String {
+    /** Gettone dell'account con cui la TV e' entrata (arriva dal server insieme al video). */
+    @Volatile
+    var session: String = ""
+
+    private fun open(url: String): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
+        if (session.isNotEmpty()) c.setRequestProperty("X-BP-Session", session)
+        return c
+    }
+
+    fun get(url: String, timeoutMs: Int = 8000): String {
+        val c = open(url)
         c.connectTimeout = timeoutMs
         c.readTimeout = timeoutMs
         try {
@@ -31,7 +41,7 @@ object Net {
 
     /** Scarica un file; 'progress' riceve la percentuale (0-100) man mano. */
     fun download(url: String, target: File, progress: (Int) -> Unit) {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = open(url)
         c.connectTimeout = 8000
         c.readTimeout = 20000
         try {
@@ -63,7 +73,7 @@ object Net {
 
     /** POST che aspetta la risposta (da chiamare fuori dal thread principale). */
     fun post(url: String, json: String, timeoutMs: Int = 30000): String {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = open(url)
         c.connectTimeout = 5000
         c.readTimeout = timeoutMs
         c.requestMethod = "POST"
@@ -80,7 +90,7 @@ object Net {
     fun postAsync(url: String, json: String) {
         background.execute {
             try {
-                val c = URL(url).openConnection() as HttpURLConnection
+                val c = open(url)
                 c.connectTimeout = 5000
                 c.readTimeout = 5000
                 c.requestMethod = "POST"

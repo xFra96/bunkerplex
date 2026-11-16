@@ -51,6 +51,21 @@ Nomi dei file che funzionano meglio:
 | Sottotitoli | stesso nome del video: `Il Padrino (1972).it.srt` |
 | Locandina tua | `poster.jpg` nella cartella del film |
 
+## Account
+
+Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La mia lista», chiavi API (TMDB, OpenSubtitles) e preferenze di visione suoi. Tutto tranne le raccolte lo ritrovi su ogni PC dove entri, anche su installazioni nuove: le chiavi non vanno rimesse. Le raccolte (le cartelle dei video) restano di ogni PC.
+
+- **Primo avvio**: sul PC dove è stato preparato il servizio compare «Crea l'account amministratore». Quello è il tuo.
+- **Altri account**: *Impostazioni → Account → Gestisci gli account*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata. «Nuova password provvisoria» fa uscire l'account da tutti i PC.
+- **Cambio password**: *Impostazioni → Account → Cambia password*. Gli altri PC chiedono di rientrare con quella nuova.
+- **TV**: se su quel PC è entrato un solo account, la TV entra da sola; se sono di più, si sceglie il nome. Si può spegnere per il proprio account (*Impostazioni → Account*), e allora sulla TV servono nome e password.
+- **Raccolte condivise**: sullo stesso PC una raccolta si può condividere con gli altri account (*Impostazioni → Le tue raccolte → Condividi*). Ognuno conserva i suoi visti.
+- **Senza Internet** si entra lo stesso con l'ultima password usata su quel PC; le modifiche partono appena torna la rete.
+- Il primo account che entra su un PC già in uso prende raccolte, visti, lista e chiavi che c'erano prima.
+- **Al primo accesso** su un PC (o da un browser o una TV), se le chiavi API o le preferenze di visione di lì sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di lì senza chiedere. Volume e audio muto restano di ogni dispositivo.
+
+Gli account stanno in un piccolo servizio gratuito su Cloudflare (cartella `cloud/`: `worker.js` + database D1 `bunkerplex`). L'indirizzo è in `server/cloud.json` e arriva a tutte le installazioni con gli aggiornamenti; senza quel file BunkerPlex funziona come prima, senza login. Le password non escono mai dal PC: al servizio arriva solo un'impronta (PBKDF2). Per ripubblicare il servizio dopo una modifica: Cloudflare → *Workers & Pages → bunkerplex-account → Edit code*, incolla `cloud/worker.js` e salva.
+
 ## Cosa puoi fare
 
 - **Home**: continua a guardare, prossimi episodi, ultimi arrivi per raccolta.
@@ -100,7 +115,7 @@ Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli ser
 
 **Sicurezza**
 
-- La porta **32500** è senza password: non farla mai raggiungere da fuori casa. Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
+- La porta **32500** è pensata per la rete di casa (le TV entrano scegliendo il nome): non farla mai raggiungere da fuori casa. Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
 - Con Tailscale l'amico raggiunge il tuo computer su tutte le porte: condividi solo con chi ti fidi, oppure limita l'accesso alla `32501` nelle *Access controls* di Tailscale.
 - La porta 32501 è **cifrata** (HTTPS) con un certificato creato dal tuo server: l'amico ne ricorda l'impronta alla prima richiesta e da lì in poi accetta solo quello. Il punto debole è quel primo collegamento: per sicurezza piena, la prima richiesta fatela sapendo che l'indirizzo è davvero quello dell'amico.
 - Con la porta aperta sul router, la 32501 è visibile da Internet: risponde solo alla registrazione (che resta ferma finché non la approvi) e agli amici approvati. Dopo 5 password sbagliate l'accesso si blocca per un po'.
@@ -130,7 +145,7 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
-- **Chi è sulla tua rete di casa** apre BunkerPlex senza password: non esporlo su Internet.
+- **Chi è sulla tua rete di casa** può entrare dalla TV scegliendo un nome (se l'account lo permette): non esporre BunkerPlex su Internet.
 
 ## Per chi lo modifica
 

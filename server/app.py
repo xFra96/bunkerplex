@@ -33,13 +33,15 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import accounts
 import updater
+from accounts import CURRENT
 
-VERSION = "1.1"
+VERSION = "1.2"
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TMDB_LANG = os.environ.get("TMDB_LANG", "it-IT")
 SCAN_INTERVAL_MIN = int(os.environ.get("SCAN_INTERVAL_MIN", "30") or 30)
@@ -94,7 +96,12 @@ config = load_config()
 
 
 def tmdb_key():
-    return (config.get("tmdb_key") or os.environ.get("TMDB_API_KEY", "")).strip()
+    """La chiave TMDB: quella dell'account che fa la richiesta; per le letture in
+    sottofondo (o se l'account non ne ha) quella del PC o di un altro account."""
+    u = CURRENT.get()
+    own = user_setting(u["id"], "tmdb_key") if u else ""
+    return (own or config.get("tmdb_key") or os.environ.get("TMDB_API_KEY", "")
+            or any_user_setting("tmdb_key") or "").strip()
 
 
 # --------------------------------------------------------------------------
@@ -139,7 +146,21 @@ def get_libraries():
                     libs.append({"id": len(libs) + 1, "name": name, "folders": paths})
             config["libraries"] = libs
             save_config()
-        return json.loads(json.dumps(config["libraries"]))
+        out = json.loads(json.dumps(config["libraries"]))
+    # Con gli account ognuno vede le sue raccolte (e quelle che gli altri account
+    # di questo PC hanno condiviso). Le letture in sottofondo vedono tutto.
+    u = CURRENT.get()
+    if u is not None:
+        out = [lib for lib in out if lib.get("owner") == u["id"] or lib.get("shared")]
+        for lib in out:
+            lib["mine"] = lib.get("owner") == u["id"]
+    return out
+
+
+def visible_libs(uid):
+    with config_lock:
+        return [lib["id"] for lib in config.get("libraries") or []
+                if lib.get("owner") == uid or lib.get("shared")]
 
 
 def display_path(path):
@@ -219,7 +240,10 @@ def folder_from_input(raw):
 # Database
 # --------------------------------------------------------------------------
 
-def db():
+def db(raw=False):
+    """Connessione al catalogo. Durante una richiesta di un account, 'items' e
+    'shows' diventano viste che mostrano solo le sue raccolte e i suoi visti,
+    punti di ripresa e lista (raw=True: le tabelle vere, per scrivere le schede)."""
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
     try:
@@ -227,7 +251,34 @@ def db():
     except sqlite3.OperationalError:
         # Alcuni dischi esterni non reggono la modalita' WAL: si usa quella classica
         con.execute("PRAGMA journal_mode=DELETE")
+    u = None if raw else CURRENT.get()
+    if u is not None:
+        user_views(con, u)
     return con
+
+
+STATE_COLS = {"items": ("position", "watched", "last_played", "fav"), "shows": ("fav",)}
+_table_cols = {}
+
+
+def user_views(con, u):
+    """Viste temporanee con lo stesso nome delle tabelle: in SQLite quelle
+    temporanee vincono, quindi tutte le letture del catalogo valgono per l'account."""
+    uid = int(u["id"])
+    libs = ",".join(str(int(x)) for x in u["libs"]) or "-1"
+    cols = {}
+    for table in ("items", "shows"):
+        if table not in _table_cols:
+            _table_cols[table] = [r[1] for r in con.execute(f"PRAGMA main.table_info({table})")]
+        cols[table] = ", ".join(f"m.{c} AS {c}" for c in _table_cols[table] if c not in STATE_COLS[table])
+    con.executescript(
+        f"CREATE TEMP VIEW items AS SELECT {cols['items']}, COALESCE(u.position, 0) AS position, "
+        f"COALESCE(u.watched, 0) AS watched, COALESCE(u.last_played, 0) AS last_played, "
+        f"COALESCE(u.fav, 0) AS fav FROM main.items m LEFT JOIN main.user_items u "
+        f"ON u.item_id = m.id AND u.user_id = {uid} WHERE m.library_id IN ({libs});"
+        f"CREATE TEMP VIEW shows AS SELECT {cols['shows']}, COALESCE(u.fav, 0) AS fav "
+        f"FROM main.shows m LEFT JOIN main.user_shows u ON u.show_id = m.id AND u.user_id = {uid} "
+        f"WHERE m.library_id IN ({libs});")
 
 
 def init_db():
@@ -261,6 +312,29 @@ def init_db():
         approved INT DEFAULT 0, created REAL, last_seen REAL DEFAULT 0,
         back_url TEXT, back_token TEXT);
     CREATE TABLE IF NOT EXISTS share_sessions(token TEXT PRIMARY KEY, account INT, created REAL);
+    -- Account di chi usa questo PC (copia locale di quelli del servizio account)
+    CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY, cloud_id INT UNIQUE, name TEXT COLLATE NOCASE, admin INT DEFAULT 0,
+        must_change INT DEFAULT 0, token TEXT, vsalt TEXT, vcheck TEXT, state_rev INT DEFAULT 0,
+        tv_quick INT DEFAULT 1, created REAL, last_login REAL);
+    CREATE TABLE IF NOT EXISTS user_sessions(
+        token TEXT PRIMARY KEY, user_id INT, device TEXT, created REAL, last_seen REAL);
+    -- Visti, punti di ripresa e lista di ogni account. dirty: da mandare al servizio
+    CREATE TABLE IF NOT EXISTS user_items(
+        user_id INT, item_id INT, position REAL DEFAULT 0, watched INT DEFAULT 0,
+        last_played REAL DEFAULT 0, fav REAL DEFAULT 0, t REAL DEFAULT 0, dirty INT DEFAULT 0,
+        PRIMARY KEY(user_id, item_id));
+    CREATE TABLE IF NOT EXISTS user_shows(
+        user_id INT, show_id INT, fav REAL DEFAULT 0, t REAL DEFAULT 0, dirty INT DEFAULT 0,
+        PRIMARY KEY(user_id, show_id));
+    CREATE TABLE IF NOT EXISTS user_settings(
+        user_id INT, k TEXT, v TEXT, t REAL, dirty INT DEFAULT 0, PRIMARY KEY(user_id, k));
+    -- Ultima copia dei visti dal servizio (per titolo TMDB): vale anche per i titoli
+    -- che su questo PC arrivano dopo
+    CREATE TABLE IF NOT EXISTS cloud_state(
+        user_id INT, k TEXT, kind TEXT, a INT, b INT, c INT, pos REAL, w INT, fav REAL, lp REAL, t REAL,
+        PRIMARY KEY(user_id, k));
+    CREATE INDEX IF NOT EXISTS cloud_state_a ON cloud_state(user_id, kind, a);
     """)
     # library_id: la raccolta a cui appartiene il titolo (aggiunta in un secondo momento)
     # collection_id: la saga TMDB di cui il film fa parte (id della tabella collections);
@@ -276,6 +350,8 @@ def init_db():
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS items_tmdb ON items(tmdb_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS shows_tmdb ON shows(tmdb_id)")
     con.commit()
     con.close()
 
@@ -1446,7 +1522,9 @@ def play_info(con, r):
             "next_label": (f"S{nxt['season']} · E{nxt['episode']}  {nxt['title'] or ''}".strip()
                            if nxt else ""),
             # Il film che viene dopo nella stessa saga: il player lo propone, non parte da solo
-            "saga": saga}
+            "saga": saga,
+            # Il player della TV non ha i cookie della pagina: entra con questo gettone
+            "session": (CURRENT.get() or {}).get("session") or ""}
 
 
 def saga_next(con, r):
@@ -1568,9 +1646,821 @@ def startup():
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
     threading.Thread(target=friends_loop, daemon=True).start()
+    threading.Thread(target=sync_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
         threading.Thread(target=portmap_loop, daemon=True).start()
+
+
+# ---- Account ----------------------------------------------------------------
+# Chi usa BunkerPlex entra con il suo account (creato dall'amministratore con
+# una password provvisoria, da cambiare al primo accesso). Gli account stanno
+# nel servizio account su Cloudflare (vedi cloud/ e accounts.py): impostazioni,
+# chiavi API, visti, punti di ripresa e lista seguono la persona su ogni PC.
+# Le raccolte (cartelle) restano di questo PC. Senza Internet si entra lo
+# stesso con l'ultima password usata qui, e le modifiche partono dopo.
+
+SESSION_COOKIE = "bp_session"
+SETUP_FILE = DATA / "cloud-setup.json"       # chiave per creare il primo amministratore
+OPEN_PATHS = ("/api/auth/", "/api/share/", "/api/info")
+user_cache = {}                  # impronta del gettone -> (dati dell'account, quando letti)
+settings_cache = {}              # (account, chiave) -> valore
+settings_lock = threading.Lock()
+sync_wake = threading.Event()
+cloud_status = {"at": 0.0, "ready": None}
+
+
+def auth_on():
+    return bool(accounts.cloud_url()) and not DATA_PROBLEM
+
+
+def sync_soon():
+    sync_wake.set()
+
+
+def user_setting(uid, k):
+    key = (uid, k)
+    with settings_lock:
+        if key in settings_cache:
+            return settings_cache[key]
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT v FROM user_settings WHERE user_id=? AND k=?", (uid, k)).fetchone()
+    finally:
+        con.close()
+    value = json.loads(r[0]) if r and r[0] else None
+    with settings_lock:
+        settings_cache[key] = value
+    return value
+
+
+def any_user_setting(k):
+    """La chiave di un account qualsiasi di questo PC (per le letture in sottofondo)."""
+    key = (0, k)
+    with settings_lock:
+        if key in settings_cache:
+            return settings_cache[key]
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT v FROM user_settings WHERE k=? AND v NOT IN ('null', '\"\"') "
+                        "ORDER BY t DESC LIMIT 1", (k,)).fetchone()
+    except sqlite3.OperationalError:     # tabella non ancora creata
+        r = None
+    finally:
+        con.close()
+    value = json.loads(r[0]) if r and r[0] else None
+    with settings_lock:
+        settings_cache[key] = value
+    return value
+
+
+def put_user_setting(uid, k, value):
+    con = db(raw=True)
+    try:
+        con.execute("INSERT INTO user_settings(user_id, k, v, t, dirty) VALUES(?,?,?,?,1) "
+                    "ON CONFLICT(user_id, k) DO UPDATE SET v=excluded.v, t=excluded.t, dirty=1",
+                    (uid, k, json.dumps(value), time.time()))
+        con.commit()
+    finally:
+        con.close()
+    with settings_lock:
+        settings_cache.clear()
+    sync_soon()
+
+
+def cookie_value(scope, name):
+    for k, v in scope.get("headers") or ():
+        if k == b"cookie":
+            for part in v.decode("latin-1").split(";"):
+                key, _, val = part.strip().partition("=")
+                if key == name:
+                    return val
+    return ""
+
+
+def session_token(scope):
+    for k, v in scope.get("headers") or ():
+        if k == b"x-bp-session":
+            return v.decode("latin-1").strip()
+    return cookie_value(scope, SESSION_COOKIE)
+
+
+def session_user(token):
+    """L'account di un gettone (None se non vale piu')."""
+    if not token or len(token) > 100:
+        return None
+    key = token_hash(token)
+    known = user_cache.get(key)
+    if not known or time.time() - known[1] > 30:
+        con = db(raw=True)
+        try:
+            r = con.execute("SELECT u.id, u.name, u.admin, u.must_change, s.last_seen FROM user_sessions s "
+                            "JOIN users u ON u.id=s.user_id WHERE s.token=?", (key,)).fetchone()
+            if r and time.time() - (r["last_seen"] or 0) > 3600:
+                con.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (time.time(), key))
+                con.commit()
+        finally:
+            con.close()
+        if len(user_cache) > 500:
+            user_cache.clear()
+        known = user_cache[key] = (dict(r) if r else None, time.time())
+    if not known[0]:
+        return None
+    r = known[0]
+    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]),
+            "must_change": bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token}
+
+
+class AuthGate:
+    """Con gli account accesi, le API rispondono solo a chi ha fatto l'accesso.
+    Restano aperte: l'accesso stesso, la porta degli amici e /api/info (ridotta),
+    che serve all'app della TV per riconoscere il server e aggiornarsi."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or not auth_on()
+                or (scope.get("server") or ("", 0))[1] == SHARE_PORT):
+            await self.inner(scope, receive, send)
+            return
+        path = scope["path"]
+        user = session_user(session_token(scope))
+        ctx = CURRENT.set(user)
+        try:
+            if path.startswith("/api/") and not path.startswith(OPEN_PATHS):
+                if user is None:
+                    await self._reply(send, 401, "Accedi con il tuo account per continuare")
+                    return
+                if user["must_change"]:
+                    await self._reply(send, 403, "Prima cambia la password provvisoria")
+                    return
+            await self.inner(scope, receive, send)
+        finally:
+            CURRENT.reset(ctx)
+
+    @staticmethod
+    async def _reply(send, status, detail):
+        body = json.dumps({"detail": detail, "login": True}).encode()
+        await send({"type": "http.response.start", "status": status,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode()),
+                                (b"cache-control", b"no-store")]})
+        await send({"type": "http.response.body", "body": body})
+
+
+app.add_middleware(AuthGate)
+
+
+def cloud_ready():
+    """Il servizio account ha gia' un amministratore? (None se non si raggiunge)"""
+    if time.time() - cloud_status["at"] > 60 or cloud_status["ready"] is None:
+        try:
+            cloud_status["ready"] = bool(accounts.call("GET", "/", timeout=6).get("ready"))
+        except Exception:
+            cloud_status["ready"] = None
+        cloud_status["at"] = time.time()
+    return cloud_status["ready"]
+
+
+async def cloud(method, path, body=None, token=None):
+    """Chiamata al servizio account, con gli errori tradotti per la pagina."""
+    try:
+        return await asyncio.to_thread(accounts.call, method, path, body, token)
+    except accounts.CloudOffline as ex:
+        raise HTTPException(503, str(ex))
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (400, 401, 403, 404, 409, 429) else 502, ex.detail)
+
+
+def user_json(u):
+    return {"id": u["id"], "name": u["name"], "admin": bool(u["admin"]), "must_change": bool(u["must_change"])}
+
+
+def login_fields(body, key="password"):
+    name = str(body.get("username") or "").strip()
+    password = str(body.get(key) or "")
+    if not name or not password:
+        raise HTTPException(400, "Scrivi nome utente e password")
+    return name, password
+
+
+def check_new_password(password):
+    if len(password) < 8:
+        raise HTTPException(400, "La password deve avere almeno 8 caratteri")
+    if len(password) > 200:
+        raise HTTPException(400, "Password troppo lunga")
+
+
+def with_session(data, token):
+    resp = JSONResponse(data)
+    resp.set_cookie(SESSION_COOKIE, token, max_age=365 * 86400, httponly=True, samesite="lax", path="/")
+    return resp
+
+
+def open_session(con, uid, device):
+    token = secrets.token_urlsafe(32)
+    con.execute("INSERT INTO user_sessions(token, user_id, device, created, last_seen) VALUES(?,?,?,?,?)",
+                (token_hash(token), uid, str(device or "")[:60], time.time(), time.time()))
+    return token
+
+
+def store_user(con, cloud_user, token, ver):
+    """Copia locale dell'account appena entrato (con l'impronta per entrare anche offline)."""
+    vsalt = secrets.token_hex(16)
+    vcheck = hashlib.sha256((vsalt + ver).encode()).hexdigest()
+    row = con.execute("SELECT id FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
+    fields = (cloud_user["username"], int(cloud_user["admin"]), int(cloud_user["must_change"]),
+              token, vsalt, vcheck, time.time())
+    if row:
+        con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=? "
+                    "WHERE id=?", (*fields, row["id"]))
+        uid = row["id"]
+    else:
+        uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
+                          "cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (*fields, cloud_user["id"], time.time())).lastrowid
+    con.commit()
+    user_cache.clear()
+    adopt_legacy(uid)
+    return uid
+
+
+def adopt_legacy(uid):
+    """Il primo account che entra su questo PC prende cio' che c'era prima degli
+    account: raccolte, visti, punti di ripresa, lista e chiavi API."""
+    with config_lock:
+        if config.get("accounts_adopted"):
+            return
+        for lib in config.get("libraries") or []:
+            lib.setdefault("owner", uid)
+        config["accounts_adopted"] = uid
+        save_config()
+    con = db(raw=True)
+    try:
+        con.execute("INSERT OR IGNORE INTO user_items(user_id, item_id, position, watched, last_played, fav, t, dirty) "
+                    "SELECT ?, id, position, watched, last_played, fav, MAX(last_played, fav, 1), 1 FROM items "
+                    "WHERE position>0 OR watched=1 OR fav>0", (uid,))
+        con.execute("INSERT OR IGNORE INTO user_shows(user_id, show_id, fav, t, dirty) "
+                    "SELECT ?, id, fav, fav, 1 FROM shows WHERE fav>0", (uid,))
+        con.commit()
+    finally:
+        con.close()
+    # Le chiavi di questo PC non vanno subito nell'account: se l'account ne ha gia'
+    # di diverse, al primo accesso si chiede quali tenere (vedi settings_conflicts)
+    local = {}
+    if config.get("tmdb_key"):
+        local["tmdb_key"] = config["tmdb_key"]
+    if (config.get("opensubtitles") or {}).get("key"):
+        local["opensubtitles"] = config["opensubtitles"]
+    if local:
+        con = db(raw=True)
+        try:
+            con.executemany("INSERT OR REPLACE INTO user_settings(user_id, k, v, t, dirty) VALUES(?,?,?,?,0)",
+                            [(uid, "pending." + k, json.dumps(v), time.time()) for k, v in local.items()])
+            con.commit()
+        finally:
+            con.close()
+
+
+SETTING_LABELS = {"tmdb_key": "Chiave TMDB (locandine e schede)",
+                  "opensubtitles": "OpenSubtitles (sottotitoli da internet)"}
+
+
+def setting_preview(k, v):
+    """Come mostrare un'impostazione senza scrivere la chiave per intero."""
+    if k == "tmdb_key":
+        return "chiave …" + str(v)[-4:] if v else "nessuna"
+    if k == "opensubtitles":
+        v = v or {}
+        if not v.get("key"):
+            return "nessuna"
+        return "chiave …" + str(v["key"])[-4:] + (" · account " + v["user"] if v.get("user") else "")
+    return json.dumps(v, ensure_ascii=False)[:60]
+
+
+def pending_settings(con, uid):
+    return {r["k"][8:]: json.loads(r["v"]) for r in con.execute(
+        "SELECT k, v FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (uid,))}
+
+
+def settings_conflicts(uid, token):
+    """Primo accesso su questo PC: le impostazioni che c'erano qui e quelle
+    dell'account. Se l'account non le ha, entrano nell'account; se sono uguali,
+    niente; se sono diverse, si chiede (/api/auth/resolve)."""
+    con = db(raw=True)
+    try:
+        pending = pending_settings(con, uid)
+    finally:
+        con.close()
+    if not pending:
+        return []
+    pull_settings(uid, token)          # quelle dell'account, per confrontarle
+    out, settled = [], []
+    for k, local in pending.items():
+        cloud = user_setting(uid, k)
+        empty = not cloud or (isinstance(cloud, dict) and not cloud.get("key"))
+        if empty:
+            put_user_setting(uid, k, local)
+            settled.append(k)
+        elif cloud == local:
+            settled.append(k)
+        else:
+            out.append({"key": k, "label": SETTING_LABELS.get(k, k),
+                        "local": setting_preview(k, local), "cloud": setting_preview(k, cloud)})
+    if settled:
+        con = db(raw=True)
+        try:
+            con.executemany("DELETE FROM user_settings WHERE user_id=? AND k=?",
+                            [(uid, "pending." + k) for k in settled])
+            con.commit()
+        finally:
+            con.close()
+    return out
+
+
+async def first_login_conflicts(uid, token):
+    try:
+        return await asyncio.to_thread(settings_conflicts, uid, token)
+    except Exception as ex:            # senza Internet si chiede al prossimo accesso
+        print("Confronto impostazioni:", repr(ex), flush=True)
+        return []
+
+
+@app.post("/api/auth/resolve")
+async def auth_resolve(request: Request):
+    """Risposta alla domanda del primo accesso: tenere le impostazioni di questo PC
+    (e scriverle nell'account) oppure quelle dell'account."""
+    u = CURRENT.get()
+    if u is None:
+        raise HTTPException(401, "Accedi con il tuo account per continuare")
+    body = await read_json(request)
+    keep_local = body.get("keep") == "local"
+    con = db(raw=True)
+    try:
+        pending = pending_settings(con, u["id"])
+        con.execute("DELETE FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (u["id"],))
+        con.commit()
+    finally:
+        con.close()
+    if keep_local:
+        for k, v in pending.items():
+            put_user_setting(u["id"], k, v)
+    return {"ok": True}
+
+
+def drop_cloud_token(uid):
+    """Il servizio non riconosce piu' questo PC per l'account (password cambiata
+    altrove, password provvisoria nuova, account eliminato): si deve rientrare."""
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET token=NULL WHERE id=?", (uid,))
+        con.execute("DELETE FROM user_sessions WHERE user_id=?", (uid,))
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+
+
+async def finish_login(res, ver, device):
+    con = db(raw=True)
+    try:
+        uid = store_user(con, res["user"], res["token"], ver)
+        token = open_session(con, uid, device)
+        con.commit()
+        u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    finally:
+        con.close()
+    conflicts = []
+    if not u["must_change"]:
+        try:                       # impostazioni subito (chiavi, preferenze); visti in sottofondo
+            await asyncio.to_thread(pull_settings, uid, res["token"])
+        except Exception:
+            pass
+        conflicts = await first_login_conflicts(uid, res["token"])
+    sync_soon()
+    return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts}, token)
+
+
+@app.get("/api/auth/state")
+def auth_state():
+    """Cosa deve mostrare la pagina: niente account, accesso, profili per la TV."""
+    if not auth_on():
+        return {"on": False}
+    u = CURRENT.get()
+    con = db(raw=True)
+    try:
+        profiles = [{"id": r["id"], "name": r["name"]} for r in con.execute(
+            "SELECT id, name FROM users WHERE token IS NOT NULL AND must_change=0 AND tv_quick=1 "
+            "ORDER BY name COLLATE NOCASE")]
+        me = con.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone() if u else None
+    finally:
+        con.close()
+    return {"on": True, "user": dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=bool(me["token"]))
+            if me else None,
+            "profiles": profiles, "setup": SETUP_FILE.is_file() and cloud_ready() is False,
+            "server": SERVER_NAME}
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request):
+    """Il primo account (amministratore), solo sul PC che ha la chiave di installazione."""
+    body = await read_json(request)
+    name, password = login_fields(body)
+    check_new_password(password)
+    try:
+        key = json.loads(SETUP_FILE.read_text("utf-8")).get("setup_key") or ""
+    except (OSError, ValueError):
+        raise HTTPException(400, "Su questo PC non c'è la chiave per creare l'amministratore")
+    ver = await asyncio.to_thread(accounts.verifier, name, password)
+    res = await cloud("POST", "/setup", {"setup_key": key, "username": name, "verifier": ver,
+                                         "device": SERVER_NAME})
+    SETUP_FILE.unlink(missing_ok=True)
+    cloud_status["at"] = 0.0
+    return await finish_login(res, ver, body.get("device") or "browser")
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    body = await read_json(request)
+    name, password = login_fields(body)
+    ver = await asyncio.to_thread(accounts.verifier, name, password)
+    try:
+        res = await asyncio.to_thread(accounts.call, "POST", "/login",
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME})
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
+    except accounts.CloudOffline:
+        # Senza Internet: vale l'ultima password usata su questo PC
+        con = db(raw=True)
+        try:
+            u = con.execute("SELECT * FROM users WHERE name=? AND token IS NOT NULL", (name,)).fetchone()
+            ok = u and u["vcheck"] and hmac.compare_digest(
+                hashlib.sha256((u["vsalt"] + ver).encode()).hexdigest(), u["vcheck"])
+            if not ok:
+                raise HTTPException(503, "Il servizio account non risponde e su questo PC non risulta "
+                                         "questo accesso: controlla la connessione del PC")
+            token = open_session(con, u["id"], body.get("device"))
+            con.commit()
+        finally:
+            con.close()
+        return with_session({"ok": True, "user": user_json(u), "offline": True}, token)
+    return await finish_login(res, ver, body.get("device") or "browser")
+
+
+@app.post("/api/auth/profile")
+async def auth_profile(request: Request):
+    """Dalla TV di casa: si sceglie un account gia' entrato su questo PC, senza password
+    (se quell'account lo permette: Impostazioni → Account)."""
+    body = await read_json(request)
+    con = db(raw=True)
+    try:
+        u = con.execute("SELECT * FROM users WHERE id=? AND token IS NOT NULL AND must_change=0 AND tv_quick=1",
+                        (int(body.get("id") or 0),)).fetchone()
+        if not u:
+            raise HTTPException(403, "Questo account va aperto con la password")
+        token = open_session(con, u["id"], "tv")
+        con.commit()
+    finally:
+        con.close()
+    return with_session({"ok": True, "user": user_json(u)}, token)
+
+
+@app.post("/api/auth/password")
+async def auth_password(request: Request):
+    u = CURRENT.get()
+    if u is None:
+        raise HTTPException(401, "Accedi con il tuo account per continuare")
+    body = await read_json(request)
+    old, new = str(body.get("old") or ""), str(body.get("new") or "")
+    check_new_password(new)
+    if old == new:
+        raise HTTPException(400, "La password nuova deve essere diversa da quella di prima")
+    con = db(raw=True)
+    try:
+        row = con.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        con.close()
+    if not row["token"]:
+        raise HTTPException(401, "Rientra con il tuo account per cambiare la password")
+    v_old = await asyncio.to_thread(accounts.verifier, row["name"], old)
+    v_new = await asyncio.to_thread(accounts.verifier, row["name"], new)
+    try:
+        await cloud("POST", "/password", {"verifier": v_old, "new_verifier": v_new}, row["token"])
+    except HTTPException as ex:
+        if ex.status_code == 401 and "password" in str(ex.detail).lower():
+            raise HTTPException(400, "La password attuale non è giusta")
+        raise
+    vsalt = secrets.token_hex(16)
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET must_change=0, vsalt=?, vcheck=? WHERE id=?",
+                    (vsalt, hashlib.sha256((vsalt + v_new).encode()).hexdigest(), u["id"]))
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+    # Primo accesso con la password provvisoria: ora si possono confrontare le impostazioni
+    conflicts = await first_login_conflicts(u["id"], row["token"]) if row["must_change"] else []
+    sync_soon()
+    return {"ok": True, "conflicts": conflicts}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request):
+    token = request.headers.get("x-bp-session") or request.cookies.get(SESSION_COOKIE) or ""
+    if token:
+        con = db(raw=True)
+        try:
+            con.execute("DELETE FROM user_sessions WHERE token=?", (token_hash(token),))
+            con.commit()
+        finally:
+            con.close()
+        user_cache.pop(token_hash(token), None)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/auth/options")
+async def auth_options(request: Request):
+    u = CURRENT.get()
+    if u is None:
+        raise HTTPException(401, "Accedi con il tuo account per continuare")
+    body = await read_json(request)
+    con = db(raw=True)
+    try:
+        if "tv_quick" in body:
+            con.execute("UPDATE users SET tv_quick=? WHERE id=?", (1 if body["tv_quick"] else 0, u["id"]))
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": True}
+
+
+# Preferenze di visione (animazioni, locandine, sottotitoli, velocita'...): nell'account
+PREF_KEYS = ("device", "player")
+
+
+@app.get("/api/me/prefs")
+def me_prefs():
+    u = CURRENT.get()
+    if u is None:
+        return {}
+    return {k: user_setting(u["id"], k) or {} for k in PREF_KEYS}
+
+
+@app.post("/api/me/prefs")
+async def me_prefs_save(request: Request):
+    u = CURRENT.get()
+    body = await read_json(request)
+    if u is None:
+        return {"ok": False}
+    for k in PREF_KEYS:
+        if isinstance(body.get(k), dict) and len(json.dumps(body[k])) < 8000:
+            put_user_setting(u["id"], k, body[k])
+    return {"ok": True}
+
+
+# ---- Gestione degli account (solo amministratori) ----------------------------
+
+def admin_token():
+    u = CURRENT.get()
+    if u is None or not u["admin"]:
+        raise HTTPException(403, "Solo l'amministratore può gestire gli account")
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        con.close()
+    if not r or not r["token"]:
+        raise HTTPException(401, "Rientra con il tuo account (serve Internet) per gestire gli account")
+    return r["token"]
+
+
+@app.get("/api/accounts")
+async def accounts_list():
+    return (await cloud("GET", "/admin/users", token=admin_token()))["users"]
+
+
+@app.post("/api/accounts")
+async def accounts_create(request: Request):
+    token = admin_token()
+    body = await read_json(request)
+    name, password = login_fields(body)
+    check_new_password(password)
+    ver = await asyncio.to_thread(accounts.verifier, name, password)
+    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver,
+                                                "admin": bool(body.get("admin"))}, token)
+
+
+@app.post("/api/accounts/{cloud_id}/password")
+async def accounts_reset(cloud_id: int, request: Request):
+    token = admin_token()
+    body = await read_json(request)
+    name, password = login_fields(body)
+    check_new_password(password)
+    ver = await asyncio.to_thread(accounts.verifier, name, password)
+    return await cloud("POST", f"/admin/users/{cloud_id}/password", {"verifier": ver}, token)
+
+
+@app.delete("/api/accounts/{cloud_id}")
+async def accounts_delete(cloud_id: int):
+    return await cloud("DELETE", f"/admin/users/{cloud_id}", token=admin_token())
+
+
+# ---- Sincronizzazione con il servizio account --------------------------------
+
+SYNC_ROWS = 40                   # righe per chiamata (limite del piano gratuito di Cloudflare)
+
+
+def chunks(rows, n=SYNC_ROWS):
+    for i in range(0, len(rows), n):
+        yield rows[i:i + n]
+
+
+def sync_loop():
+    """Ogni pochi minuti, e subito dopo una modifica, manda e riceve impostazioni e visti."""
+    while True:
+        sync_wake.wait(180)
+        time.sleep(3)             # raccoglie le modifiche fatte una dopo l'altra
+        sync_wake.clear()
+        if not auth_on():
+            continue
+        try:
+            con = db(raw=True)
+            try:
+                users = con.execute("SELECT id, token FROM users WHERE token IS NOT NULL AND must_change=0").fetchall()
+            finally:
+                con.close()
+        except sqlite3.Error:
+            continue
+        for u in users:
+            try:
+                sync_user(u["id"], u["token"])
+            except accounts.CloudOffline:
+                break             # niente Internet: si riprova al prossimo giro
+            except accounts.CloudError as ex:
+                if ex.status == 401:
+                    drop_cloud_token(u["id"])
+                elif ex.status != 403:
+                    print("Sincronizzazione account:", ex.detail, flush=True)
+            except Exception as ex:
+                print("Sincronizzazione account:", repr(ex), flush=True)
+
+
+def sync_user(uid, token):
+    push_settings(uid, token)
+    pull_settings(uid, token)
+    push_state(uid, token)
+    pull_state(uid, token)
+    apply_cloud_state(uid)
+
+
+def push_settings(uid, token):
+    con = db(raw=True)
+    try:
+        rows = con.execute("SELECT k, v, t FROM user_settings WHERE user_id=? AND dirty=1", (uid,)).fetchall()
+        for part in chunks(rows):
+            accounts.call("PUT", "/settings", {"data": {r["k"]: {"v": json.loads(r["v"]) if r["v"] else None,
+                                                                 "t": r["t"]} for r in part}}, token)
+            con.executemany("UPDATE user_settings SET dirty=0 WHERE user_id=? AND k=? AND t=?",
+                            [(uid, r["k"], r["t"]) for r in part])
+            con.commit()
+    finally:
+        con.close()
+
+
+def pull_settings(uid, token):
+    data = accounts.call("GET", "/settings", token=token).get("data") or {}
+    con = db(raw=True)
+    try:
+        con.executemany("INSERT INTO user_settings(user_id, k, v, t, dirty) VALUES(?,?,?,?,0) "
+                        "ON CONFLICT(user_id, k) DO UPDATE SET v=excluded.v, t=excluded.t, dirty=0 "
+                        "WHERE excluded.t > user_settings.t",
+                        [(uid, k, json.dumps(e.get("v")), float(e.get("t") or 0)) for k, e in data.items()])
+        con.commit()
+    finally:
+        con.close()
+    with settings_lock:
+        settings_cache.clear()
+
+
+STATE_KEY = re.compile(r"^(m|s)(\d+)$|^e(\d+):(\d+):(\d+)$")
+
+
+def parse_state_key(k):
+    m = STATE_KEY.match(k or "")
+    if not m:
+        return None
+    if m.group(1):
+        return m.group(1), int(m.group(2)), None, None
+    return "e", int(m.group(3)), int(m.group(4)), int(m.group(5))
+
+
+def remember_cloud(con, uid, rows):
+    """Quello che si e' mandato (o ricevuto) resta come copia del servizio."""
+    out = []
+    for r in rows:
+        parsed = parse_state_key(r["k"])
+        if parsed:
+            out.append((uid, r["k"], *parsed, r.get("pos", 0), 1 if r.get("w") else 0,
+                        r.get("fav", 0), r.get("lp", 0), r["t"]))
+    con.executemany("INSERT INTO cloud_state(user_id, k, kind, a, b, c, pos, w, fav, lp, t) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id, k) DO UPDATE SET pos=excluded.pos, "
+                    "w=excluded.w, fav=excluded.fav, lp=excluded.lp, t=excluded.t WHERE excluded.t > cloud_state.t",
+                    out)
+
+
+def push_state(uid, token):
+    """Visti e lista cambiati su questo PC, per titolo TMDB (i titoli senza scheda restano qui)."""
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE user_items SET dirty=0 WHERE user_id=? AND dirty=1 "
+                    "AND item_id NOT IN (SELECT id FROM items)", (uid,))
+        rows, done_items, done_shows = [], [], []
+        for r in con.execute(
+                "SELECT u.item_id, u.position, u.watched, u.last_played, u.fav, u.t, i.kind, i.tmdb_id, "
+                "i.season, i.episode, s.tmdb_id AS show_tmdb FROM user_items u JOIN items i ON i.id=u.item_id "
+                "LEFT JOIN shows s ON s.id=i.show_id WHERE u.user_id=? AND u.dirty=1", (uid,)).fetchall():
+            key = None
+            if r["kind"] == "movie" and r["tmdb_id"]:
+                key = f"m{r['tmdb_id']}"
+            elif r["kind"] == "episode" and r["show_tmdb"] and r["season"] is not None and r["episode"] is not None:
+                key = f"e{r['show_tmdb']}:{r['season']}:{r['episode']}"
+            done_items.append((uid, r["item_id"], r["t"]))
+            if key:
+                rows.append({"k": key, "pos": r["position"] or 0, "w": 1 if r["watched"] else 0,
+                             "fav": r["fav"] or 0 if r["kind"] == "movie" else 0,
+                             "lp": r["last_played"] or 0, "t": r["t"] or time.time()})
+        for r in con.execute("SELECT u.show_id, u.fav, u.t, s.tmdb_id FROM user_shows u JOIN shows s "
+                             "ON s.id=u.show_id WHERE u.user_id=? AND u.dirty=1", (uid,)).fetchall():
+            done_shows.append((uid, r["show_id"], r["t"]))
+            if r["tmdb_id"]:
+                rows.append({"k": f"s{r['tmdb_id']}", "pos": 0, "w": 0, "fav": r["fav"] or 0, "lp": 0,
+                             "t": r["t"] or time.time()})
+        for part in chunks(rows):
+            accounts.call("POST", "/state", {"rows": part}, token)
+            remember_cloud(con, uid, part)
+            con.commit()
+        con.executemany("UPDATE user_items SET dirty=0 WHERE user_id=? AND item_id=? AND t=?", done_items)
+        con.executemany("UPDATE user_shows SET dirty=0 WHERE user_id=? AND show_id=? AND t=?", done_shows)
+        con.commit()
+    finally:
+        con.close()
+
+
+def pull_state(uid, token):
+    con = db(raw=True)
+    try:
+        last = con.execute("SELECT state_rev FROM users WHERE id=?", (uid,)).fetchone()["state_rev"] or 0
+        # Un po' di margine: due PC possono scrivere nello stesso istante
+        since, top = max(0, last - 5000), last
+        while True:
+            res = accounts.call("GET", f"/state?since={since}", token=token)
+            rows = res.get("rows") or []
+            remember_cloud(con, uid, rows)
+            con.commit()
+            if rows:
+                top = max(top, max(int(r["rev"]) for r in rows))
+            if not res.get("more") or not rows:
+                break
+            since = max(int(r["rev"]) for r in rows)
+        con.execute("UPDATE users SET state_rev=? WHERE id=?", (top, uid))
+        con.commit()
+    finally:
+        con.close()
+
+
+def apply_cloud_state(uid):
+    """I visti arrivati dagli altri PC valgono per i titoli che ci sono anche qui
+    (stesso film o stesso episodio secondo TMDB). Vince la modifica piu' recente."""
+    con = db(raw=True)
+    try:
+        con.execute(
+            "INSERT INTO user_items(user_id, item_id, position, watched, last_played, fav, t, dirty) "
+            "SELECT ?, i.id, c.pos, c.w, c.lp, c.fav, c.t, 0 FROM cloud_state c JOIN items i "
+            "ON i.tmdb_id=c.a AND i.kind='movie' WHERE c.user_id=? AND c.kind='m' "
+            "ON CONFLICT(user_id, item_id) DO UPDATE SET position=excluded.position, watched=excluded.watched, "
+            "last_played=excluded.last_played, fav=excluded.fav, t=excluded.t, dirty=0 "
+            "WHERE excluded.t > user_items.t", (uid, uid))
+        con.execute(
+            "INSERT INTO user_items(user_id, item_id, position, watched, last_played, fav, t, dirty) "
+            "SELECT ?, i.id, c.pos, c.w, c.lp, 0, c.t, 0 FROM cloud_state c JOIN shows s ON s.tmdb_id=c.a "
+            "JOIN items i ON i.show_id=s.id AND i.season=c.b AND i.episode=c.c "
+            "WHERE c.user_id=? AND c.kind='e' "
+            "ON CONFLICT(user_id, item_id) DO UPDATE SET position=excluded.position, watched=excluded.watched, "
+            "last_played=excluded.last_played, t=excluded.t, dirty=0 WHERE excluded.t > user_items.t",
+            (uid, uid))
+        con.execute(
+            "INSERT INTO user_shows(user_id, show_id, fav, t, dirty) "
+            "SELECT ?, s.id, c.fav, c.t, 0 FROM cloud_state c JOIN shows s ON s.tmdb_id=c.a "
+            "WHERE c.user_id=? AND c.kind='s' "
+            "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=0 "
+            "WHERE excluded.t > user_shows.t", (uid, uid))
+        con.commit()
+    finally:
+        con.close()
 
 
 # ---- Aggiornamenti da GitHub ----------------------------------------------
@@ -1700,10 +2590,14 @@ def apk_version():
 
 @app.get("/api/info")
 def info():
+    apk_code, apk_name = apk_version()
+    if auth_on() and CURRENT.get() is None:
+        # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
+        return {"app": "francoplex", "name": SERVER_NAME, "version": VERSION, "login": True,
+                "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name}
     con = db()
     try:
         key = tmdb_key()
-        apk_code, apk_name = apk_version()
         return {
             "app": "francoplex", "name": SERVER_NAME, "version": VERSION,
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
@@ -1730,8 +2624,11 @@ def info():
 
 def _library(lib_id):
     """La raccolta dentro config (da usare tenendo config_lock)."""
+    u = CURRENT.get()
     for lib in config["libraries"]:
         if lib["id"] == lib_id:
+            if u is not None and lib.get("owner") != u["id"]:
+                raise HTTPException(403, "Questa raccolta è di un altro account: può cambiarla solo lui")
             return lib
     raise HTTPException(404, "Raccolta non trovata")
 
@@ -1754,6 +2651,10 @@ def _add_folders(lib, raw_paths):
             if path in other["folders"]:
                 if other is lib:
                     break
+                u = CURRENT.get()
+                if u is not None and other.get("owner") != u["id"]:
+                    raise HTTPException(409, f"{display_path(path)} è già in una raccolta di un altro account "
+                                             "di questo PC: chiedigli di condividerla")
                 raise HTTPException(409, f"{display_path(path)} è già nella raccolta «{other['name']}»")
         else:
             lib["folders"].append(path)
@@ -1778,6 +2679,7 @@ def libraries_list():
         paths = files.get(lib["id"], [])
         out.append({
             "id": lib["id"], "name": lib["name"],
+            "mine": lib.get("mine", True), "shared": bool(lib.get("shared")),
             "movies": movies.get(lib["id"], 0), "shows": shows.get(lib["id"], 0),
             "folders": [dict(folder_state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
                         for p in lib["folders"]],
@@ -1806,9 +2708,13 @@ async def libraries_create(request: Request):
     body = await read_json(request)
     name = _clean_name(body.get("name"))
     get_libraries()
+    u = CURRENT.get()
     with config_lock:
         lib = {"id": max([x["id"] for x in config["libraries"]] + [0]) + 1,
                "name": name, "folders": []}
+        if u is not None:
+            lib["owner"] = u["id"]
+            u["libs"].append(lib["id"])
         config["libraries"].append(lib)
         try:
             _add_folders(lib, body.get("folders") or [])
@@ -1823,10 +2729,13 @@ async def libraries_create(request: Request):
 @app.patch("/api/libraries/{lib_id}")
 async def libraries_rename(lib_id: int, request: Request):
     body = await read_json(request)
-    name = _clean_name(body.get("name"))
     get_libraries()
     with config_lock:
-        _library(lib_id)["name"] = name
+        lib = _library(lib_id)
+        if "name" in body:
+            lib["name"] = _clean_name(body.get("name"))
+        if "shared" in body:      # visibile anche agli altri account di questo PC
+            lib["shared"] = bool(body.get("shared"))
         save_config()
     return {"ok": True}
 
@@ -1886,7 +2795,7 @@ async def libraries_relocate_folder(lib_id: int, request: Request):
         for other in config["libraries"]:
             if new in other["folders"]:
                 raise HTTPException(409, f"{display_path(new)} è già nella raccolta «{other['name']}»")
-        con = db()
+        con = db(raw=True)
         try:
             # OR REPLACE: se nel frattempo una scansione ha gia' letto il file nel
             # nuovo posto, vince la riga vecchia (ha scheda e visti).
@@ -1948,10 +2857,14 @@ async def save_settings(request: Request):
                                 else f"TMDB ha risposto con errore {ex.code}")
         except Exception:
             raise HTTPException(502, "Non riesco a contattare TMDB: controlla la connessione del PC")
-    with config_lock:
-        config["tmdb_key"] = key
-        save_config()
-    con = db()
+    u = CURRENT.get()
+    if u is not None:             # nell'account: arriva su tutti i PC dove entri
+        put_user_setting(u["id"], "tmdb_key", key)
+    else:
+        with config_lock:
+            config["tmdb_key"] = key
+            save_config()
+    con = db(raw=True)
     try:
         con.execute("UPDATE items SET meta_done=0 WHERE tmdb_id IS NULL")
         con.execute("UPDATE shows SET meta_done=0 WHERE tmdb_id IS NULL")
@@ -1984,14 +2897,19 @@ def tmdb_search(kind: str, q: str, year: int = 0):
 @app.post("/api/match")
 async def match(request: Request):
     body = await read_json(request)
-    con = db()
+    check = db()                  # il titolo deve essere in una raccolta che vedi
     try:
         if body.get("kind") == "movie":
-            get_item(con, int(body["id"]))
+            get_item(check, int(body["id"]))
+        elif not get_show(check, int(body["id"])):
+            raise HTTPException(404, "Serie non trovata")
+    finally:
+        check.close()
+    con = db(raw=True)
+    try:
+        if body.get("kind") == "movie":
             apply_movie(con, int(body["id"]), int(body["tmdb_id"]))
         else:
-            if not get_show(con, int(body["id"])):
-                raise HTTPException(404, "Serie non trovata")
             apply_show(con, int(body["id"]), int(body["tmdb_id"]))
             kept = merge_duplicate_show(con, int(body["id"]))
             con.commit()
@@ -2011,7 +2929,15 @@ async def refresh(request: Request):
     body = await read_json(request)
     if not tmdb_key():
         raise HTTPException(400, "Per le schede serve la chiave TMDB: inseriscila in Impostazioni")
-    con = db()
+    check = db()                  # il titolo deve essere in una raccolta che vedi
+    try:
+        if body.get("item"):
+            get_item(check, int(body["item"]))
+        elif body.get("show") and not get_show(check, int(body["show"])):
+            raise HTTPException(404, "Serie non trovata")
+    finally:
+        check.close()
+    con = db(raw=True)
     try:
         if body.get("item") or body.get("show"):
             try:
@@ -2043,6 +2969,10 @@ async def refresh(request: Request):
             con.commit()
             return {"ok": True}
         where, args = ("WHERE library_id=?", (int(body["library"]),)) if body.get("library") else ("", ())
+        u = CURRENT.get()
+        if u is not None:         # solo le raccolte che l'account vede
+            libs = [x for x in u["libs"] if not body.get("library") or x == int(body["library"])] or [-1]
+            where, args = f"WHERE library_id IN ({','.join('?' * len(libs))})", tuple(libs)
         con.execute(f"UPDATE items SET meta_done=0 {where}", args)
         con.execute(f"UPDATE shows SET meta_done=0 {where}", args)
         con.commit()
@@ -2061,12 +2991,44 @@ async def show_watched(show_id: int, request: Request):
     body = await read_json(request)
     con = db()
     try:
-        con.execute("UPDATE items SET watched=?, position=0 WHERE show_id=?",
-                    (1 if body.get("watched") else 0, show_id))
+        ids = [r[0] for r in con.execute("SELECT id FROM items WHERE show_id=?", (show_id,))]
+        set_state(con, ids, watched=1 if body.get("watched") else 0, position=0)
         con.commit()
         return {"ok": True}
     finally:
         con.close()
+
+
+def set_state(con, item_ids, **fields):
+    """Visto, punto di ripresa, lista: dell'account che fa la richiesta (e poi
+    mandati al servizio account), oppure del catalogo se gli account sono spenti."""
+    if not item_ids:
+        return
+    names = list(fields)
+    sets = ", ".join(f"{k}=?" for k in names)
+    values = [fields[k] for k in names]
+    u = CURRENT.get()
+    if u is None:
+        con.executemany(f"UPDATE items SET {sets} WHERE id=?", [(*values, i) for i in item_ids])
+        return
+    con.executemany("INSERT OR IGNORE INTO user_items(user_id, item_id) VALUES(?,?)",
+                    [(u["id"], i) for i in item_ids])
+    con.executemany(f"UPDATE user_items SET {sets}, t=?, dirty=1 WHERE user_id=? AND item_id=?",
+                    [(*values, time.time(), u["id"], i) for i in item_ids])
+    sync_soon()
+
+
+def set_show_fav(con, show_id, fav):
+    u = CURRENT.get()
+    if u is None:
+        return con.execute("UPDATE shows SET fav=? WHERE id=?", (fav, show_id)).rowcount
+    if not get_show(con, show_id):
+        return 0
+    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) VALUES(?,?,?,?,1) "
+                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=1",
+                (u["id"], show_id, fav, time.time()))
+    sync_soon()
+    return 1
 
 
 @app.get("/api/home")
@@ -2158,10 +3120,15 @@ async def set_fav(request: Request):
         raise HTTPException(400, "«La mia lista» vale solo per i titoli di questo server")
     con = db()
     try:
-        done = con.execute(f"UPDATE {table} SET fav=? WHERE id=?",
-                           (time.time() if body.get("fav") else 0, target))
+        fav = time.time() if body.get("fav") else 0
+        if table == "items":
+            found = con.execute("SELECT id FROM items WHERE id=? AND kind='movie'", (target,)).fetchone()
+            if found:
+                set_state(con, [target], fav=fav)
+        else:
+            found = set_show_fav(con, target, fav)
         con.commit()
-        if not done.rowcount:
+        if not found:
             raise HTTPException(404, "Elemento non trovato")
         return {"ok": True}
     finally:
@@ -2305,11 +3272,9 @@ async def progress(item_id: int, request: Request):
         dur = dur or (r["duration"] or 0)
         finished = bool(body.get("ended")) or (dur > 0 and pos / dur > 0.93)
         if finished:
-            con.execute("UPDATE items SET watched=1, position=0, last_played=? WHERE id=?",
-                        (time.time(), item_id))
+            set_state(con, [item_id], watched=1, position=0, last_played=time.time())
         else:
-            con.execute("UPDATE items SET position=?, last_played=? WHERE id=?",
-                        (pos, time.time(), item_id))
+            set_state(con, [item_id], position=pos, last_played=time.time())
         con.commit()
         return {"ok": True, "watched": finished}
     finally:
@@ -2324,8 +3289,7 @@ async def set_watched(item_id: int, request: Request):
     con = db()
     try:
         get_item(con, item_id)
-        con.execute("UPDATE items SET watched=?, position=0 WHERE id=?",
-                    (1 if body.get("watched") else 0, item_id))
+        set_state(con, [item_id], watched=1 if body.get("watched") else 0, position=0)
         con.commit()
         return {"ok": True}
     finally:
@@ -2440,7 +3404,7 @@ def subs(item_id: int, index: int, offset: float = 0):
 OS_API = "https://api.opensubtitles.com/api/v1"
 OS_UA = "BunkerPlex v1.0"
 OS_LANGS = ["it", "en", "es", "fr", "de"]
-os_session = {"token": "", "base": "", "at": 0.0}
+os_sessions = {}                   # nome utente OpenSubtitles -> {token, base, at}
 os_lock = threading.Lock()
 
 
@@ -2449,7 +3413,9 @@ class SubsError(Exception):
 
 
 def os_conf():
-    c = config.get("opensubtitles") or {}
+    """Chiave e account OpenSubtitles: dell'account che fa la richiesta, se ne ha una."""
+    u = CURRENT.get()
+    c = (user_setting(u["id"], "opensubtitles") if u else None) or config.get("opensubtitles") or {}
     return {"key": (c.get("key") or os.environ.get("OPENSUBTITLES_API_KEY", "")).strip(),
             "user": (c.get("user") or "").strip(), "password": c.get("password") or ""}
 
@@ -2493,13 +3459,15 @@ def os_login(conf=None, force=False):
     if not conf["user"] or not conf["password"]:
         return "", ""
     with os_lock:
-        if not force and os_session["token"] and time.time() - os_session["at"] < 12 * 3600:
-            return os_session["token"], os_session["base"]
+        # Un accesso per ogni account OpenSubtitles (sullo stesso PC ce ne possono essere piu')
+        sess = os_sessions.setdefault(conf["user"].lower(), {"token": "", "base": "", "at": 0.0})
+        if not force and sess["token"] and time.time() - sess["at"] < 12 * 3600:
+            return sess["token"], sess["base"]
         res = os_call("POST", "/login", body={"username": conf["user"], "password": conf["password"]}, conf=conf)
         base = (res.get("base_url") or "").strip().strip("/")
         base = re.sub(r"^https?://", "", base).split("/")[0]
-        os_session.update(token=res.get("token") or "", base=base, at=time.time())
-        return os_session["token"], os_session["base"]
+        sess.update(token=res.get("token") or "", base=base, at=time.time())
+        return sess["token"], sess["base"]
 
 
 def os_hash(path):
@@ -2671,11 +3639,16 @@ async def save_opensubtitles(request: Request):
                 await asyncio.to_thread(os_call, "GET", "/infos/formats", None, None, conf)
         except SubsError as ex:
             raise HTTPException(400, str(ex))
-    with config_lock:
-        config["opensubtitles"] = conf
-        save_config()
+    u = CURRENT.get()
+    if u is not None:             # nell'account: arriva su tutti i PC dove entri
+        put_user_setting(u["id"], "opensubtitles", conf)
+    else:
+        with config_lock:
+            config["opensubtitles"] = conf
+            save_config()
     with os_lock:
-        os_session.update(token="", base="", at=0.0)
+        if conf["user"]:
+            os_sessions.pop(conf["user"].lower(), None)
     return {"ok": True}
 
 
@@ -2945,7 +3918,7 @@ QUALITIES = ("720", "1080", "orig")
 
 
 async def in_thread(fn, *args):
-    return await asyncio.get_running_loop().run_in_executor(None, lambda: fn(*args))
+    return await asyncio.to_thread(fn, *args)     # to_thread porta con se' l'account della richiesta
 
 
 # ---- Lato di chi offre: account degli amici --------------------------------

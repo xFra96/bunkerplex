@@ -216,6 +216,7 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         server = base
+        JSONObject(intent.getStringExtra("data") ?: "{}").optString("session").let { if (it.isNotEmpty()) Net.session = it }
         audioCompat = prefs.getBoolean("p_audio_compat", false)
         buildLayout()
         buildPlayer()
@@ -258,6 +259,8 @@ class PlayerActivity : AppCompatActivity() {
         val http = DefaultHttpDataSource.Factory()
             .setConnectTimeoutMs(10_000)
             .setReadTimeoutMs(30_000)
+        // Il video arriva solo a chi e' entrato con un account: si usa il suo gettone
+        if (Net.session.isNotEmpty()) http.setDefaultRequestProperties(mapOf("X-BP-Session" to Net.session))
         val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http))
             .setLoadErrorHandlingPolicy(loadPolicy)
         val p = ExoPlayer.Builder(this, renderers)
@@ -369,6 +372,7 @@ class PlayerActivity : AppCompatActivity() {
             softRetried = false
         }
         data = d
+        d.optString("session").let { if (it.isNotEmpty() && it != Net.session) Net.session = it }
         finished = false
         transcoding = useTranscode
         handler.removeCallbacks(applySeek)

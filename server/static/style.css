@@ -520,3 +520,16 @@ body.kb .person:focus .face { box-shadow: 0 0 0 .22rem var(--ink); }
 @media (max-width: 720px) { .railitem span, #rail:hover .railitem span { transform: none; } }
 html.lite *, html.lite *::before, html.lite *::after { transition: none !important; animation: none !important; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Accesso con l'account: niente menu finche' non si e' entrati */
+body.locked #rail { display: none; }
+body.locked #view { margin-left: 0; }
+.panel.login { max-width: 34rem; margin: 9vh auto 0; }
+.panel.login h1 { font-size: 1.9rem; margin-bottom: 1rem; letter-spacing: -.01em; }
+.profiles { display: flex; flex-wrap: wrap; gap: .8rem; }
+.profile { display: flex; flex-direction: column; align-items: center; width: 8.5rem; padding: 1rem .6rem; border-radius: var(--r); background: var(--surface2); font-weight: 600; }
+.profile .avatar { width: 4.2rem; height: 4.2rem; margin-bottom: .6rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 1.5rem; font-weight: 700; background: var(--bg); }
+.profile span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile:focus { background: var(--ink); color: var(--bg); }
+@media (max-width: 720px) { .panel.login { margin: 2rem 1rem 0; } }
+.panel.login.wide { max-width: 44rem; }
