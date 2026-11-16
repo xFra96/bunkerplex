@@ -64,8 +64,8 @@ Say "Programma pubblicato su $repo." Green
 # ------------------------------------------------------------ 2. app per la TV
 
 if ($ci) {
-    Say 'L''app per la TV la compila GitHub da sola, se hai cambiato qualcosa in android\'
-    Say "(avanzamento: https://github.com/$repo/actions)."
+    Say 'La release (BunkerPlex.zip e, se e'' cambiato android\, l''app per la TV) la aggiorna GitHub da sola'
+    Say "in qualche minuto (avanzamento: https://github.com/$repo/actions)."
 } elseif (Test-Path -LiteralPath $apkFile) {
     $mine = (Get-FileHash -LiteralPath $apkFile -Algorithm SHA256).Hash
     $size = (Get-Item -LiteralPath $apkFile).Length

@@ -15,18 +15,17 @@ Serve [Docker Desktop](https://www.docker.com/products/docker-desktop/) (gratuit
 ### Windows
 
 1. Installa Docker Desktop e aprilo una volta.
-2. Scarica BunkerPlex: in questa pagina **Code → Download ZIP**, poi scompatta la cartella dove vuoi (anche su un disco esterno, accanto ai video).
-3. Doppio clic su **`Aggiorna BunkerPlex.bat`**: scarica anche l'app per la TV.
-4. Doppio clic su **`Avvia BunkerPlex.bat`**. Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
+2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)** (sempre l'ultima versione, con dentro anche l'app per la TV), poi scompatta la cartella dove vuoi (anche su un disco esterno, accanto ai video).
+3. Doppio clic su **`Avvia BunkerPlex.bat`**. Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
 
 ### Mac
 
 1. Installa Docker Desktop e aprilo una volta.
-2. Scarica BunkerPlex: **Code → Download ZIP**, poi scompatta la cartella dove vuoi.
+2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)**, poi scompatta la cartella dove vuoi.
 3. Doppio clic su **`Avvia BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**.
 4. Si apre il browser; la finestra mostra l'indirizzo da usare su TV e telefono.
 
-L'app per la TV su Mac arriva con il primo aggiornamento automatico, qualche minuto dopo l'avvio.
+Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: al primo avvio BunkerPlex si porta da solo all'ultima versione e scarica l'app per la TV.
 
 Se un disco esterno non compare nella scelta delle cartelle: Docker Desktop → Settings → Resources → File sharing, aggiungi `/Volumes` e rilancia il file.
 
@@ -137,7 +136,7 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 - `Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
 - `Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git).
-- **App per la TV compilata da GitHub**: a ogni push su `main` che tocca `android/`, l'Action *App per la TV* (`.github/workflows/apk.yml`) ricompila l'APK e lo allega alla release `app-tv`. Da lì i server lo scaricano e le TV lo propongono da sole. Si può lanciare anche a mano: *Actions → App per la TV → Run workflow*. Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64; se manca, l'Action si ferma invece di firmare con una chiave diversa, che le TV rifiuterebbero). Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
+- **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `FrenkPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
 - `Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.
