@@ -1230,17 +1230,21 @@ async function playRoute(id) {
   var p = cache.pendingPlay && String(cache.pendingPlay.id) === String(id) ? cache.pendingPlay : await api('/play/' + id);
   cache.pendingPlay = null;
   return {
+    // Sulla TV i salti si fanno con ← → del telecomando e il volume con i suoi tasti:
+    // quei bottoni ('pc') restano solo su PC e telefono.
     html: '<div class="player" id="player"><video playsinline></video><div class="note"></div>' +
+      '<div class="skipfx" aria-hidden="true"></div>' +
       '<div class="top"><button class="pbtn" data-p="exit" title="Indietro (Esc)" aria-label="Indietro">' + IC.back + '</button><b>' + esc(p.title) + '</b><span>' + esc(p.subtitle) + '</span></div>' +
       '<div class="bottom"><input class="seek" type="range" min="0" max="' + Math.max(1, Math.floor(p.duration)) + '" step="1" value="0" aria-label="Posizione nel video">' +
       '<div class="ctl"><button class="pbtn" data-p="toggle" title="Play / Pausa (Spazio)" aria-label="Play o pausa">' + IC.pause + '</button>' +
-      '<button class="pbtn wide" data-p="back" title="Indietro (←)"></button><button class="pbtn wide" data-p="fwd" title="Avanti (→)"></button>' +
+      '<button class="pbtn wide pc" data-p="back" title="Indietro (←)"></button><button class="pbtn wide pc" data-p="fwd" title="Avanti (→)"></button>' +
       (p.next ? '<button class="pbtn wide" data-p="next" title="Episodio successivo (N)">Successivo</button>' : '') +
-      '<button class="pbtn" data-p="mute" title="Audio sì / no (M)" aria-label="Audio sì o no">' + IC.vol + '</button>' +
-      '<input class="vol" type="range" min="0" max="100" step="5" value="100" title="Volume (↑ ↓)" aria-label="Volume">' +
+      '<button class="pbtn pc" data-p="mute" title="Audio sì / no (M)" aria-label="Audio sì o no">' + IC.vol + '</button>' +
+      '<input class="vol pc" type="range" min="0" max="100" step="5" value="100" title="Volume" aria-label="Volume">' +
       (p.subs.length ? '<button class="pbtn wide" data-p="subs" title="Sottotitoli (S)">Sottotitoli</button>' : '') +
       '<button class="pbtn wide" data-p="menu" title="Opzioni (O)">Opzioni</button>' +
-      '<button class="pbtn wide" data-p="fs" title="Schermo intero (F)">Schermo intero</button><span class="time"></span></div></div></div>',
+      '<button class="pbtn wide pc" data-p="fs" title="Schermo intero (F)">Schermo intero</button>' +
+      '<span class="phint">← → salta · ↓ comandi</span><span class="time"></span></div></div></div>',
     mount: function () { startPlayer(p); }
   };
 }
@@ -1375,7 +1379,68 @@ function startPlayer(p) {
   function wake() {
     root.classList.remove('idle');
     clearTimeout(st.idle);
-    st.idle = setTimeout(function () { if (!v.paused && modal.hidden) root.classList.add('idle'); }, 3200);
+    // Mentre si sceglie un bottone col telecomando i comandi restano visibili
+    st.idle = setTimeout(function () { if (!v.paused && modal.hidden && !st.nav) root.classList.add('idle'); }, 3200);
+  }
+
+  // ---- Fila dei bottoni col telecomando: ↓ ci entra, ← → si sposta, OK sceglie,
+  // ↑ o Indietro esce. Fuori dalla fila ← → fanno i salti.
+  function rowButtons() {
+    return Array.prototype.filter.call(root.querySelectorAll('.ctl .pbtn'), function (b) {
+      return b.offsetParent !== null;     // solo quelli visibili (sulla TV alcuni sono nascosti)
+    });
+  }
+  var hintEl = root.querySelector('.phint');
+  function enterRow() {
+    var list = rowButtons();
+    if (!list.length) return;
+    st.nav = true;
+    root.classList.add('nav');
+    hintEl.textContent = '← → scegli · OK conferma · ↑ indietro';
+    var b = list[Math.min(st.navAt || 0, list.length - 1)];
+    b.focus();
+    wake();
+  }
+  function moveRow(step) {
+    var list = rowButtons();
+    var i = list.indexOf(document.activeElement);
+    if (i < 0) i = Math.min(st.navAt || 0, list.length - 1);
+    else i = Math.max(0, Math.min(list.length - 1, i + step));
+    st.navAt = i;
+    list[i].focus();
+    wake();
+  }
+  function leaveRow() {
+    if (!st.nav) return false;
+    var list = rowButtons();
+    var i = list.indexOf(document.activeElement);
+    if (i >= 0) st.navAt = i;
+    st.nav = false;
+    root.classList.remove('nav');
+    hintEl.textContent = '← → salta · ↓ comandi';
+    if (root.contains(document.activeElement)) document.activeElement.blur();
+    wake();
+    return true;
+  }
+  st.leaveRow = leaveRow;
+
+  // Salto con indicatore a schermo: pressioni ravvicinate si sommano ("+90 s")
+  var skipEl = root.querySelector('.skipfx');
+  function skip(dir) {
+    var size = dir < 0 ? steps()[0] : steps()[1];
+    if (st.skipDir !== dir) st.skipSum = 0;
+    st.skipDir = dir;
+    st.skipSum = (st.skipSum || 0) + size;
+    seekTo(shown() + dir * size);
+    skipEl.textContent = (dir < 0 ? '« −' : '+') + fmtSkip(st.skipSum) + (dir < 0 ? '' : ' »');
+    skipEl.className = 'skipfx show ' + (dir < 0 ? 'left' : 'right');
+    clearTimeout(st.skipTimer);
+    st.skipTimer = setTimeout(function () { skipEl.className = 'skipfx'; st.skipSum = 0; st.skipDir = 0; }, 900);
+  }
+  function fmtSkip(s) {
+    if (s < 60) return s + ' s';
+    var m = Math.floor(s / 60), r = s % 60;
+    return m + ' min' + (r ? ' ' + r + ' s' : '');
   }
 
   function goTo(id) {
@@ -1503,8 +1568,8 @@ function startPlayer(p) {
       if (st.fatal) { st.fatal = false; st.recov = 0; st.loaded = false; load(st.at); }
       else if (v.paused) { st.lastMove = Date.now(); v.play(); } else v.pause();
     }
-    else if (name === 'back') seekTo(shown() - steps()[0]);
-    else if (name === 'fwd') seekTo(shown() + steps()[1]);
+    else if (name === 'back') skip(-1);
+    else if (name === 'fwd') skip(1);
     else if (name === 'next') goNext();
     else if (name === 'menu') menu();
     else if (name === 'mute') { prefs.muted = !v.muted; savePlayerPrefs(prefs); applyLook(); }
@@ -1609,7 +1674,10 @@ function startPlayer(p) {
   root.addEventListener('mousemove', wake);
   root.addEventListener('click', function (e) {
     var b = e.target.closest('[data-p]');
-    if (b) { action(b.getAttribute('data-p')); b.blur(); }
+    if (!b) return;
+    action(b.getAttribute('data-p'));
+    // Col mouse il bottone non resta acceso; col telecomando si resta nella fila
+    if (!st.nav) b.blur();
   });
 
   // Controllo ogni secondo: se il video dovrebbe andare ma e' fermo da troppo
@@ -1638,11 +1706,25 @@ function startPlayer(p) {
   st.report = report;
   st.key = function (key) {
     var k = key.length === 1 ? key.toLowerCase() : key;
-    if (k === ' ' || k === 'k' || k === 'Enter') action('toggle');
-    else if (k === 'ArrowLeft' || k === 'j') action('back');
-    else if (k === 'ArrowRight' || k === 'l') action('fwd');
-    else if (k === 'ArrowUp') { setVolume(v.volume + 0.05); wake(); }
-    else if (k === 'ArrowDown') { setVolume(v.volume - 0.05); wake(); }
+    if (st.nav) {
+      // Nella fila dei bottoni: OK lo lascia al bottone (vedi il keydown generale)
+      if (k === 'ArrowLeft') moveRow(-1);
+      else if (k === 'ArrowRight') moveRow(1);
+      else if (k === 'ArrowUp' || k === 'Escape' || k === 'Backspace') leaveRow();
+      else if (k === 'ArrowDown') wake();
+      else if (k === 'MediaPlayPause') action('toggle');
+      else if (k === 'Enter' && !root.querySelector('.ctl').contains(document.activeElement)) enterRow();
+      else return false;     // OK e Spazio: li riceve il bottone acceso
+      return true;
+    }
+    if (k === ' ' || k === 'k' || k === 'Enter' || k === 'MediaPlayPause') action('toggle');
+    else if (k === 'MediaPlay') { if (v.paused) action('toggle'); else wake(); }
+    else if (k === 'MediaPause') { if (!v.paused) action('toggle'); else wake(); }
+    else if (k === 'ArrowLeft' || k === 'j' || k === 'MediaRewind') action('back');
+    else if (k === 'ArrowRight' || k === 'l' || k === 'MediaFastForward') action('fwd');
+    else if (k === 'ArrowDown') enterRow();
+    else if (k === 'ArrowUp') wake();        // mostra solo i comandi
+    else if (k === 'MediaTrackNext') action('next');
     else if (k === 'm') action('mute');
     else if (k === 'f') action('fs');
     else if (k === 's') action('subs');
@@ -2606,6 +2688,7 @@ window.addEventListener('hashchange', render);
 // L'app Android chiama queste due funzioni
 window.fpBack = function () {
   if (closeModal()) return true;
+  if (player && player.leaveRow && player.leaveRow()) return true;   // Indietro esce dai comandi del video
   if (rail.contains(document.activeElement)) { focusView(); return true; }
   return false;
 };
