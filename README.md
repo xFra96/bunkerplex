@@ -71,10 +71,15 @@ Nomi dei file che funzionano meglio:
 | OK | apre · tenuto premuto: menu delle azioni |
 | Nel film: OK | pausa / riprendi |
 | Nel film: ◀ ▶ | indietro 10 s / avanti 30 s |
-| Nel film: ▲ | opzioni: audio, sottotitoli, velocità, formato, spegnimento automatico |
+| Nel film: ▲ ▼ | mostrano i comandi; con le frecce si sceglie un bottone, l'ingranaggio apre le opzioni (audio, sottotitoli, velocità, formato, spegnimento automatico) |
+| Nel film: Menu / Info | opzioni, se il telecomando ha il tasto |
 | Indietro | torna indietro; nel film esce salvando il punto |
 
-Dal browser: `Spazio` pausa, `← →` salti, `↑ ↓` volume, `M` muto, `S` sottotitoli, `N` episodio successivo, `F` schermo intero, `O` opzioni.
+Dal browser: `Spazio` pausa, `← →` salti, `↓` comandi (poi `← →` per scegliere un bottone), `M` muto, `S` sottotitoli, `N` episodio successivo, `F` schermo intero, `O` opzioni.
+
+### Sottotitoli da internet
+
+Nel film: Opzioni → **Cerca sottotitoli su internet** → scegli la lingua e poi il sottotitolo (quelli con «✓ fatti per questo file» vanno a tempo di sicuro). Li prende il PC da **OpenSubtitles.com** e li salva in `data/subs`, quindi poi ci sono su tutti i dispositivi. Per attivarli serve una chiave gratuita: crea un account su opensubtitles.com, Profilo → «API consumers» → nuova chiave, e incollala in Impostazioni → *Sottotitoli da internet*. Nome utente e password dell'account sono facoltativi ma alzano il limite di download giornaliero. Restano solo su questo PC.
 
 ### TV e chiavette adatte
 

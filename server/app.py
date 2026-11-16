@@ -71,6 +71,7 @@ def data_problem():
 DATA_PROBLEM = data_problem()
 DB_PATH = DATA / "francoplex.db"
 CONFIG_PATH = DATA / "config.json"
+SUBS_DIR = DATA / "subs"            # sottotitoli scaricati da internet, uno per lingua e video
 APK_PATH = Path(os.environ.get("APK_PATH", "/apk/FrenkPlex.apk"))
 
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv",
@@ -1381,7 +1382,10 @@ def next_episode(con, r):
         (r["show_id"], r["season"], r["season"], r["episode"])).fetchone()
 
 
-def subtitle_files(path):
+def subtitle_files(path, item_id=None):
+    """I sottotitoli accanto al video e, dopo, quelli scaricati da internet
+    (in data/subs/<id>/, perche' i dischi dei video sono in sola lettura).
+    L'ordine conta: /api/subs/<id>/<n> li indica per posizione."""
     p = Path(path)
     out = []
     try:
@@ -1390,6 +1394,13 @@ def subtitle_files(path):
                 out.append((f, f.stem[len(p.stem):].strip(" .-_")))
     except OSError:
         pass
+    if item_id is not None:
+        try:
+            for f in sorted((SUBS_DIR / str(int(item_id))).iterdir()):
+                if f.suffix.lower() in SUB_EXT:
+                    out.append((f, f.stem + ".online"))
+        except OSError:
+            pass
     return out
 
 
@@ -1409,11 +1420,13 @@ def play_info(con, r):
         subtitle = f"S{r['season']} · E{r['episode']}  {r['title'] or ''}".strip()
         title = show["title"] if show else title
     subs = []
-    for i, (_, tag) in enumerate(subtitle_files(r["path"])):
+    for i, (_, tag) in enumerate(subtitle_files(r["path"], r["id"])):
         code = (tag.split(".")[0] or "").lower()
+        online = tag.endswith(".online")
+        label = LANGS.get(code, code.upper() if online else (tag or "Sottotitoli"))
         subs.append({"url": f"/api/subs/{r['id']}/{i}",
-                     "label": LANGS.get(code, tag or "Sottotitoli"),
-                     "lang": code[:2] if code in LANGS else ""})
+                     "label": label + (" · da internet" if online else ""),
+                     "lang": code[:2] if code in LANGS else "", "online": online})
     nxt = next_episode(con, r)
     saga = saga_next(con, r)
     vcodec, pix = r["vcodec"] or "", r["pix"] or ""
@@ -1426,6 +1439,8 @@ def play_info(con, r):
             "browser_direct": direct, "vcodec": vcodec, "bits": 10 if "10" in pix else 8,
             "start": 0 if r["watched"] else (r["position"] or 0),
             "duration": r["duration"] or 0, "subs": subs,
+            # Si possono cercare sottotitoli su internet (chiave OpenSubtitles impostata)
+            "subs_online": bool(os_conf()["key"]),
             "next": nxt["id"] if nxt else 0,
             # Cosa mostrare nel conto alla rovescia di fine episodio
             "next_label": (f"S{nxt['season']} · E{nxt['episode']}  {nxt['title'] or ''}".strip()
@@ -1699,6 +1714,7 @@ def info():
             "scanning": state["scanning"], "message": state["message"],
             "last_scan": state["last_scan"],
             "tmdb": bool(key), "tmdb_hint": ("…" + key[-4:]) if key else "",
+            "subs_online": bool(os_conf()["key"]), "subs_user": os_conf()["user"],
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
             "apk_version": apk_code, "apk_version_name": apk_name,
             "update": updater.available(),
@@ -2395,7 +2411,7 @@ def subs(item_id: int, index: int, offset: float = 0):
         r = get_item(con, item_id)
     finally:
         con.close()
-    files = subtitle_files(r["path"])
+    files = subtitle_files(r["path"], item_id)
     if index < 0 or index >= len(files):
         raise HTTPException(404)
     f = files[index][0]
@@ -2411,6 +2427,256 @@ def subs(item_id: int, index: int, offset: float = 0):
     if offset > 0:
         text = shift_vtt(text, offset)
     return Response(text, media_type="text/vtt; charset=utf-8")
+
+
+# --------------------------------------------------------------------------
+# Sottotitoli da internet (OpenSubtitles.com)
+# --------------------------------------------------------------------------
+# Serve una chiave API gratuita (opensubtitles.com -> Profilo -> API consumers).
+# Nome utente e password dell'account sono facoltativi ma alzano il limite di
+# download giornaliero. Il sottotitolo scelto finisce in data/subs/<id>/<lingua>.srt
+# e da li' lo vedono tutti i dispositivi (e gli amici).
+
+OS_API = "https://api.opensubtitles.com/api/v1"
+OS_UA = "BunkerPlex v1.0"
+OS_LANGS = ["it", "en", "es", "fr", "de"]
+os_session = {"token": "", "base": "", "at": 0.0}
+os_lock = threading.Lock()
+
+
+class SubsError(Exception):
+    pass
+
+
+def os_conf():
+    c = config.get("opensubtitles") or {}
+    return {"key": (c.get("key") or os.environ.get("OPENSUBTITLES_API_KEY", "")).strip(),
+            "user": (c.get("user") or "").strip(), "password": c.get("password") or ""}
+
+
+def os_call(method, path, params=None, body=None, conf=None, token="", base=""):
+    conf = conf or os_conf()
+    if not conf["key"]:
+        raise SubsError("Manca la chiave di OpenSubtitles: inseriscila in Impostazioni")
+    url = (f"https://{base}/api/v1" if base else OS_API) + path
+    if params:   # OpenSubtitles vuole i parametri in ordine alfabetico (se no reindirizza)
+        url += "?" + urllib.parse.urlencode(sorted((k, str(v)) for k, v in params.items()))
+    headers = {"Api-Key": conf["key"], "User-Agent": OS_UA, "Accept": "application/json"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as ex:
+        try:
+            detail = json.loads(ex.read().decode("utf-8", "replace"))
+            msg = detail.get("message") or detail.get("error") or ""
+        except Exception:
+            msg = ""
+        if ex.code in (401, 403):
+            msg = "chiave API o account non validi (controllali in Impostazioni)"
+        if ex.code in (406, 429) and not msg:
+            msg = "limite di download di oggi raggiunto"
+        raise SubsError(f"OpenSubtitles: {msg or 'errore ' + str(ex.code)}")
+    except Exception:
+        raise SubsError("Non riesco a contattare OpenSubtitles: controlla la connessione del PC")
+
+
+def os_login(conf=None, force=False):
+    """Token dell'account (se ci sono nome e password), ricordato per 12 ore."""
+    conf = conf or os_conf()
+    if not conf["user"] or not conf["password"]:
+        return "", ""
+    with os_lock:
+        if not force and os_session["token"] and time.time() - os_session["at"] < 12 * 3600:
+            return os_session["token"], os_session["base"]
+        res = os_call("POST", "/login", body={"username": conf["user"], "password": conf["password"]}, conf=conf)
+        base = (res.get("base_url") or "").strip().strip("/")
+        base = re.sub(r"^https?://", "", base).split("/")[0]
+        os_session.update(token=res.get("token") or "", base=base, at=time.time())
+        return os_session["token"], os_session["base"]
+
+
+def os_hash(path):
+    """Impronta di OpenSubtitles: dimensione + somma dei primi e ultimi 64 KB."""
+    try:
+        size = os.path.getsize(path)
+        if size < 65536 * 2:
+            return ""
+        h = size
+        with open(path, "rb") as f:
+            for at in (0, size - 65536):
+                f.seek(at)
+                for (v,) in struct.iter_unpack("<Q", f.read(65536)):
+                    h = (h + v) & 0xFFFFFFFFFFFFFFFF
+        return f"{h:016x}"
+    except OSError:
+        return ""
+
+
+def os_lang(code):
+    code = (code or "").lower()
+    return {"pt-pt": "pt", "pt-br": "pt", "ze": "zh", "zh-cn": "zh", "zh-tw": "zh"}.get(code, code)[:3]
+
+
+@app.get("/api/subs-online/{item_id}")
+def subs_online_search(item_id: int, langs: str = ""):
+    """Sottotitoli disponibili su OpenSubtitles per questo video, i piu' adatti prima."""
+    if item_id >= FRIEND_BASE:
+        return {"ok": False, "error": "Si scaricano solo per i video di questo PC: chiedilo all'amico"}
+    con = db()
+    try:
+        r = get_item(con, item_id)
+        show = get_show(con, r["show_id"]) if r["show_id"] else None
+    finally:
+        con.close()
+    want = [x for x in (langs or ",".join(OS_LANGS[:2])).lower().split(",") if x in OS_LANGS] or OS_LANGS[:2]
+    params = {"languages": ",".join(sorted(want))}
+    if r["kind"] == "episode":
+        if show and show["tmdb_id"]:
+            params["parent_tmdb_id"] = show["tmdb_id"]
+        else:
+            params["query"] = (show["title"] if show else r["title"]) or Path(r["path"]).stem
+        params["season_number"] = r["season"] or 0
+        params["episode_number"] = r["episode"] or 0
+    elif r["tmdb_id"]:
+        params["tmdb_id"] = r["tmdb_id"]
+    else:
+        params["query"] = r["title"] or Path(r["path"]).stem
+        if r["year"]:
+            params["year"] = r["year"]
+    mh = os_hash(r["path"])
+    try:
+        found = os_call("GET", "/subtitles", dict(params, moviehash=mh) if mh else params).get("data") or []
+        if not found and mh:
+            found = os_call("GET", "/subtitles", params).get("data") or []
+    except SubsError as ex:
+        return {"ok": False, "error": str(ex)}
+    out = []
+    for s in found:
+        a = s.get("attributes") or {}
+        files = a.get("files") or []
+        if not files or not files[0].get("file_id"):
+            continue
+        lang = os_lang(a.get("language"))
+        out.append({
+            "file_id": files[0]["file_id"], "lang": lang,
+            "language": LANGS.get(lang, lang.upper()),
+            "release": (a.get("release") or files[0].get("file_name") or "").strip()[:120],
+            "downloads": a.get("download_count") or 0,
+            "match": bool(a.get("moviehash_match")),
+            "hi": bool(a.get("hearing_impaired")),
+            "machine": bool(a.get("machine_translated") or a.get("ai_translated")),
+            "trusted": bool(a.get("from_trusted"))})
+    order = {l: i for i, l in enumerate(want)}
+    out.sort(key=lambda x: (order.get(x["lang"], 99), not x["match"], x["machine"], -x["downloads"]))
+    return {"ok": True, "results": out[:40], "langs": want}
+
+
+@app.post("/api/subs-online/{item_id}")
+async def subs_online_get(item_id: int, request: Request):
+    """Scarica il sottotitolo scelto e lo mette tra quelli del video
+    (sostituisce quello gia' scaricato nella stessa lingua)."""
+    body = await read_json(request)
+    try:
+        file_id = int(body.get("file_id") or 0)
+    except (TypeError, ValueError):
+        file_id = 0
+    lang = re.sub(r"[^a-z]", "", str(body.get("lang") or "").lower())[:3] or "xx"
+    if item_id >= FRIEND_BASE or file_id <= 0:
+        return {"ok": False, "error": "Richiesta non valida"}
+
+    def work():
+        conf = os_conf()
+        token, base = os_login(conf)
+        try:
+            res = os_call("POST", "/download", body={"file_id": file_id}, conf=conf, token=token, base=base)
+        except SubsError:
+            if not token:
+                raise
+            token, base = os_login(conf, force=True)    # token scaduto: si rientra una volta
+            res = os_call("POST", "/download", body={"file_id": file_id}, conf=conf, token=token, base=base)
+        link = res.get("link")
+        if not link or not link.startswith("https://"):
+            raise SubsError("OpenSubtitles: " + (res.get("message") or "download non riuscito"))
+        try:
+            req = urllib.request.Request(link, headers={"User-Agent": OS_UA})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read(5_000_000)
+        except Exception:
+            raise SubsError("Il file del sottotitolo non e' arrivato: riprova")
+        if raw[:2] == b"\x1f\x8b":
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                raise SubsError("Il file scaricato e' rovinato: riprova")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1252", errors="replace")
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if "-->" not in text:
+            raise SubsError("Il file scaricato non sembra un sottotitolo")
+        ext = ".vtt" if text.lstrip().startswith("WEBVTT") else ".srt"
+        folder = SUBS_DIR / str(item_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        for old in folder.glob(lang + ".*"):
+            old.unlink()
+        tmp = folder / (lang + ext + ".tmp")
+        tmp.write_text(text, "utf-8")
+        os.replace(tmp, folder / (lang + ext))
+        return res.get("remaining")
+
+    try:
+        remaining = await asyncio.to_thread(work)
+    except SubsError as ex:
+        return {"ok": False, "error": str(ex)}
+    except OSError:
+        return {"ok": False, "error": "Non riesco a salvare il sottotitolo nella cartella del catalogo"}
+    con = db()
+    try:
+        info = play_info(con, get_item(con, item_id))
+    finally:
+        con.close()
+    index = next((i for i, s in enumerate(info["subs"]) if s["online"] and s["lang"] == lang[:2]),
+                 len(info["subs"]) - 1)
+    return {"ok": True, "subs": info["subs"], "index": index,
+            "remaining": remaining if isinstance(remaining, int) else None}
+
+
+@app.post("/api/settings/opensubtitles")
+async def save_opensubtitles(request: Request):
+    """Salva chiave (e, se ci sono, nome e password) dopo averle provate."""
+    body = await read_json(request)
+    old = os_conf()
+    conf = {"key": (body.get("key") or "").strip() or old["key"],
+            "user": (body.get("user") or "").strip(),
+            "password": body.get("password") or ""}
+    if body.get("remove"):
+        conf = {"key": "", "user": "", "password": ""}
+    elif not conf["key"]:
+        raise HTTPException(400, "Incolla la chiave API di OpenSubtitles")
+    elif conf["user"] and not conf["password"] and conf["user"] == old["user"]:
+        conf["password"] = old["password"]      # nome invariato e password lasciata vuota: si tiene
+    if conf["key"]:
+        try:
+            if conf["user"] and conf["password"]:
+                await asyncio.to_thread(os_login, conf, True)
+            else:
+                await asyncio.to_thread(os_call, "GET", "/infos/formats", None, None, conf)
+        except SubsError as ex:
+            raise HTTPException(400, str(ex))
+    with config_lock:
+        config["opensubtitles"] = conf
+        save_config()
+    with os_lock:
+        os_session.update(token="", base="", at=0.0)
+    return {"ok": True}
 
 
 @app.api_route("/api/stream/{item_id}", methods=["GET", "HEAD"])
@@ -3930,6 +4196,7 @@ def friend_play(vid):
     friend_item_meta(f, rid)         # la scheda serve poi a «Continua a guardare»
     out = f_adapt(f, p)
     out["friend"] = f["name"]
+    out["subs_online"] = False      # i video dell'amico non si toccano: li scarica lui
     out["subs"] = [s for s in out.get("subs") or [] if isinstance(s, dict) and s.get("url")]
     s = friend_states(f["n"])[0].get(rid)
     out["start"] = s["position"] if s and not s["watched"] else 0
