@@ -20,7 +20,9 @@ function Fail($lines) {
     foreach ($line in $lines) { Write-Host " $line" -ForegroundColor Yellow }
     exit 1
 }
-function Git { & git -c 'safe.directory=*' @args }
+# "git.exe" e non "git": PowerShell non distingue maiuscole e minuscole, quindi
+# una funzione di nome Git che chiama "git" richiamerebbe se stessa all'infinito.
+function Git { & git.exe -c 'safe.directory=*' @args }
 
 foreach ($tool in 'git', 'gh') {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
