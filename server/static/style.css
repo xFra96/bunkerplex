@@ -337,6 +337,20 @@ html.tv .art .more { display: none; }
 .player .ctl { display: flex; align-items: center; flex-wrap: wrap; margin-top: .8rem; }
 .player .ctl > * { margin-bottom: .5rem; }
 .player .time { margin-left: auto; font-variant-numeric: tabular-nums; color: #e3e6ed; }
+/* TV: salti e volume col telecomando, quindi niente bottoni per quelli */
+html.tv .player .pc { display: none; }
+.player .phint { display: none; margin-left: 1rem; color: #b9bfcc; font-size: .9rem; }
+html.tv .player .phint { display: inline; }
+/* Bottone scelto col telecomando: ben visibile anche da lontano */
+.player.nav .pbtn:focus { background: var(--ink); color: #000; box-shadow: 0 0 0 .25rem var(--accent); transform: scale(1.08); }
+.pbtn { transition: transform .12s, box-shadow .12s; }
+/* Indicatore dei salti, a sinistra (indietro) o a destra (avanti) */
+.skipfx { position: absolute; top: 50%; transform: translateY(-50%); padding: .7rem 1.4rem; border-radius: 99rem;
+  background: #000a; color: #fff; font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums;
+  opacity: 0; transition: opacity .15s; pointer-events: none; }
+.skipfx.left { left: 8%; }
+.skipfx.right { right: 8%; }
+.skipfx.show { opacity: 1; }
 .seek { -webkit-appearance: none; appearance: none; width: 100%; height: .4rem; border-radius: 99rem; background: #ffffff40; cursor: pointer; outline: none; }
 .seek::-webkit-slider-thumb { -webkit-appearance: none; width: 1.1rem; height: 1.1rem; border-radius: 50%; background: var(--accent); }
 .seek::-moz-range-thumb { width: 1.1rem; height: 1.1rem; border: 0; border-radius: 50%; background: var(--accent); }
