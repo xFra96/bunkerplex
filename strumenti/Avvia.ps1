@@ -2,7 +2,7 @@
 #
 # Fa tutto da solo, su qualsiasi PC con Docker Desktop:
 #   1. trova Docker e, se e' spento, lo accende e aspetta che sia pronto;
-#   2. trova il catalogo (cartella "data"), anche se il disco ha cambiato lettera;
+#   2. prepara il catalogo (la cartella "data" qui accanto);
 #   3. collega al server tutti i dischi del PC, interni ed esterni;
 #   4. accende il server e controlla che i dischi si vedano davvero;
 #      se un disco esterno risulta vuoto lo ricollega e, se serve, riavvia Docker.
@@ -113,11 +113,6 @@ function Catalog-Seen {
     return $LASTEXITCODE -eq 0
 }
 
-function Is-Catalog($folder) {
-    return (Test-Path -LiteralPath (Join-Path $folder 'francoplex.db')) -or
-           (Test-Path -LiteralPath (Join-Path $folder '.francoplex'))
-}
-
 function Start-Server($build) {
     # Un contenitore rimasto da un'altra copia della cartella terrebbe occupati nome e porta
     docker rm -f francoplex 2>$null | Out-Null
@@ -192,56 +187,16 @@ $kernel = (docker info --format '{{.KernelVersion}}' 2>$null | Out-String).Trim(
 $wsl = $kernel -match 'microsoft|WSL'
 
 # ---------------------------------------------------------------- 2. Catalogo
-# Il catalogo (elenco dei film, schede, locandine, visti) sta in una cartella sola.
-# Nell'ordine:
-#   a) la cartella "data" qui accanto, se contiene gia' un catalogo: e' il caso
-#      normale quando tutta la cartella FrenkPlex sta sul disco esterno;
-#   b) DATA_PATH del file .env; se il disco ha un'altra lettera su questo PC,
-#      lo stesso percorso viene cercato su tutti i dischi;
-#   c) niente di tutto questo: un catalogo nuovo in "data" qui accanto.
+# Il catalogo (elenco dei film, schede, locandine, visti) sta sempre nella
+# cartella "data" qui accanto: viaggia insieme a FrenkPlex, qualunque lettera
+# abbia il disco su questo PC. Se non c'e' ancora, nasce vuoto.
 
 if (-not (Test-Path -LiteralPath 'apk')) { New-Item -ItemType Directory -Path 'apk' | Out-Null }
 
-$wanted = ''
-if (Test-Path -LiteralPath '.env') {
-    foreach ($line in Get-Content -LiteralPath '.env') {
-        if ($line -match '^\s*DATA_PATH\s*=\s*(.*?)\s*$') { $wanted = $Matches[1].Trim('"').Trim("'").Trim() }
-    }
-}
-$local = Join-Path $root 'data'
-$data = $null
-if (Is-Catalog $local) {
-    $data = $local
-} elseif ($wanted) {
-    if (-not [System.IO.Path]::IsPathRooted($wanted)) { $wanted = Join-Path $root $wanted }
-    $wanted = [System.IO.Path]::GetFullPath($wanted).TrimEnd('\')
-    if (Test-Path -LiteralPath $wanted -PathType Container) {
-        $data = $wanted
-    } elseif ($wanted -match '^[A-Za-z]:\\') {
-        foreach ($d in Get-Drives) {
-            $candidate = $d + $wanted.Substring(1)
-            if (Is-Catalog $candidate) {
-                Say "Il catalogo su questo PC e' in $candidate (il disco ha un'altra lettera)." Cyan
-                $data = $candidate
-                break
-            }
-        }
-    }
-    if (-not $data) {
-        Say ''
-        Say 'Non trovo il catalogo indicato nel file .env:' Yellow
-        Say "    $wanted" Yellow
-        Say 'Se sta su un disco esterno, collegalo e rilancia questo file.'
-        Say 'Altrimenti posso crearne uno nuovo (vuoto) in questa cartella:'
-        Say "    $local"
-        if (-not (Ask 'Creo un catalogo nuovo qui?')) { exit 1 }
-    }
-}
-if (-not $data) {
-    $data = $local
+$data = Join-Path $root 'data'
+if (-not (Test-Path -LiteralPath $data -PathType Container)) {
     New-Item -ItemType Directory -Path $data -Force | Out-Null
 }
-$data = $data.TrimEnd('\')
 
 # Segnaposto: dice al server che questa e' davvero la cartella del catalogo e non
 # una cartella vuota creata da Docker perche' il disco mancava.
@@ -273,7 +228,6 @@ function Write-Override($list) {
     [System.IO.File]::WriteAllLines((Join-Path $root 'docker-compose.override.yml'), $lines)
 }
 Write-Override $drives
-$env:DATA_PATH = $data -replace '\\', '/'
 
 # ---------------------------------------------------------------- 4. Server
 

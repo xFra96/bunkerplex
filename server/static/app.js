@@ -731,7 +731,7 @@ function scanStatus(i) {
 function dot(ok) { return ok ? '<span class="okdot">●</span>' : '<span class="nodot">●</span>'; }
 
 async function settings() {
-  var res = await Promise.all([api('/info'), loadLibs(true)]);
+  var res = await Promise.all([api('/info'), loadLibs(true), api('/update').catch(function () { return null; })]);
   var i = res[0];
 
   var libsHtml = libs.map(function (l) {
@@ -784,6 +784,8 @@ async function settings() {
     '<div class="inline"><input class="field f" id="tmdbkey" data-key="tmdbkey" data-enter="savekey" autocomplete="off" placeholder="' +
       (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
     '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>' +
+
+    updatePanel(res[2]) +
 
     '<div class="panel"><h2>Collegamento</h2>' +
     '<p>Indirizzo del server: <b>http://' + esc(location.host) + '</b> · ' + esc(i.name) + ' ' + esc(i.version) + '</p>' +
@@ -1488,6 +1490,111 @@ window.fpUpdate = function (state, value) {
   }
 };
 
+// ---------------------------------------------------------------- Aggiornamento di FrenkPlex (da GitHub)
+// Il server sul PC controlla da solo ogni 12 ore. Da qui (PC o TV) si vede
+// l'avviso, si controlla a mano e si lancia l'installazione: il server scarica
+// i file nuovi e la nuova app per la TV, poi si riavvia.
+
+var serverUpdateLater = '';          // aggiornamento per cui si e' risposto "Più tardi"
+var serverUpdating = false;
+
+function updateWhat(u) {
+  return u.code && u.apk ? ' (programma e app per la TV)' : (u.apk ? ' (app per la TV)' : '');
+}
+
+function updateTime(seconds) {
+  if (!seconds) return '';
+  try {
+    return new Date(seconds * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+
+function updatePanel(u) {
+  if (!u || !u.enabled) return '';
+  var state;
+  if (u.access === false) state = dot(false) + ' Questo PC non ha ancora l\'accesso al repository privato degli aggiornamenti (<b>' + esc(u.repo) + '</b>).';
+  else if (u.error) state = dot(false) + ' ' + esc(u.error);
+  else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Avvia FrenkPlex.bat</b> sul PC.';
+  else if (u.available) state = dot(false) + ' È disponibile un aggiornamento' + updateWhat(u) + '.';
+  else if (u.checked_at) state = dot(true) + ' FrenkPlex è aggiornato.';
+  else state = 'Il primo controllo parte un paio di minuti dopo l\'avvio.';
+  var when = updateTime(u.checked_at);
+  var hours = u.check_hours === 24 ? 'una volta al giorno' : 'ogni ' + u.check_hours + ' ore';
+  return '<div class="panel"><h2>Aggiornamenti</h2>' +
+    '<p>' + state + (when ? ' Ultimo controllo: ' + esc(when) + '.' : '') + '</p>' +
+    '<p>Il server controlla da solo ' + hours + (u.auto
+      ? ' e installa le novità quando nessuno sta guardando un video.'
+      : ': ti avvisa, e decidi tu quando installare.') +
+      (u.dev_copy ? ' Questa è la copia di sviluppo: i file del programma li aggiorna git, da qui arriva solo l\'app per la TV.' : '') + '</p>' +
+    (u.access === false
+      ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
+            : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: LEGGIMI, capitolo «Aggiornamenti»). Resta salvato sul disco di FrenkPlex.</p>' +
+              '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
+              '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
+      : '') +
+    '<div class="actions" style="margin-top:0">' +
+      (u.available && u.phase !== 'host' ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
+      '<button class="btn f" data-act="updcheck" data-key="updcheck">Controlla adesso</button>' +
+      '<button class="btn f" data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto">Aggiornamento automatico: ' + (u.auto ? 'attivo' : 'spento') + '</button>' +
+    '</div></div>';
+}
+
+// Segue l'installazione finche' il server non e' tornato su con la versione nuova
+function watchServerUpdate() {
+  serverUpdating = true;
+  var down = false, tries = 0;
+  openPicker('Aggiorno FrenkPlex… ci vuole circa un minuto.', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
+  modalState.serverUpdate = true;
+  var timer = setInterval(function () {
+    tries++;
+    fetch('/api/update', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('spento');
+      return r.json();
+    }).then(function (u) {
+      if (down) { clearInterval(timer); location.reload(); return; }   // e' ripartito: si ricarica l'interfaccia nuova
+      if (u.phase === 'restarting') { down = true; return; }
+      if (u.phase === 'installing' || u.phase === 'checking') return;
+      clearInterval(timer);
+      serverUpdating = false;
+      if (modalState && modalState.serverUpdate) closeModal(true);
+      if (u.phase === 'host') {
+        openPicker('Aggiornamento scaricato. Per completarlo rilancia «Avvia FrenkPlex.bat» sul PC.',
+          [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
+      } else if (u.error) {
+        openPicker('Aggiornamento non riuscito: ' + u.error, [{ value: 'ok', label: 'Chiudi' }], 'ok', function () {});
+      } else {
+        toast('FrenkPlex è aggiornato');
+        if (/^#\/settings/.test(location.hash)) render();
+        if (TV) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
+      }
+    }).catch(function () {
+      down = true;
+      if (tries > 150) { clearInterval(timer); serverUpdating = false; }
+    });
+  }, 2000);
+}
+
+function startServerUpdate() {
+  post('/update/install').then(watchServerUpdate, function (e) { toast(e.message); });
+}
+
+function checkServerUpdate() {
+  if (serverUpdating) return;
+  api('/update').then(function (u) {
+    if (!u.enabled || !u.available || u.phase) return;
+    var sig = u.remote + (u.apk ? '+tv' : '');
+    if (serverUpdateLater === sig) return;
+    // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
+    if (player || !modal.hidden || /^#\/play/.test(location.hash)) { setTimeout(checkServerUpdate, 60000); return; }
+    openPicker('È disponibile un aggiornamento di FrenkPlex' + updateWhat(u) + '. Vuoi installarlo adesso?' +
+      (TV ? ' Si aggiorna il server sul PC; se c\'è una nuova app, subito dopo la TV propone di installarla.' : ''),
+      [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
+        if (answer === 'yes') startServerUpdate();
+        else { serverUpdateLater = sig; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
+      });
+  }).catch(function () {});
+}
+
 function closeModal(silent) {
   if (modal.hidden) return false;
   var back = modalState && modalState.returnFocus;
@@ -1589,6 +1696,26 @@ var actions = {
   },
   resetserver: function () { if (TV) window.FrancoPlexTV.resetServer(); },
   checkupdate: function () { checkUpdate(true); },
+  updcheck: function () {
+    toast('Controllo su GitHub…');
+    post('/update/check').then(function (u) {
+      toast(u.access === false ? 'Questo PC non ha l\'accesso al repository' : (u.error || (u.available ? 'C\'è un aggiornamento' + updateWhat(u) : 'FrenkPlex è già aggiornato')));
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  updinstall: function () { startServerUpdate(); },
+  updauto: function (arg) {
+    post('/update/auto', { auto: arg === '1' }).then(render, function (e) { toast(e.message); });
+  },
+  updtoken: function () {
+    var input = document.getElementById('ghtoken');
+    if (!input || !input.value.trim()) { toast('Incolla prima il token'); return; }
+    toast('Verifico il token…');
+    post('/update/token', { token: input.value.trim() }).then(function () {
+      toast('Token salvato');
+      render();
+    }, function (e) { toast(e.message); });
+  },
   goback: function () { history.back(); },
   refreshmenu: refreshMenu,
   refreshall: function () {
@@ -1984,6 +2111,10 @@ if (TV) {
   setTimeout(checkUpdate, 2500);
   setInterval(checkUpdate, 30 * 60 * 1000);
 }
+
+// Su PC e TV: c'e' un aggiornamento di FrenkPlex trovato dal server su GitHub?
+setTimeout(checkServerUpdate, 1500);
+setInterval(checkServerUpdate, 30 * 60 * 1000);
 
 render();
 })();

@@ -15,12 +15,14 @@ services:
       TMDB_LANG: ${TMDB_LANG:-it-IT}
       SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
     volumes:
-      # Il catalogo: lo trova "Avvia FrenkPlex.bat" a ogni avvio (la cartella
-      # "data" qui accanto, oppure DATA_PATH del file .env) e lo passa qui.
+      # Il catalogo: la cartella "data" qui accanto.
       - type: bind
-        source: ${DATA_PATH:-./data}
+        source: ./data
         target: /data
       - ./apk:/apk:ro
+      # Tutta la cartella di FrenkPlex: il server parte dai file di ./server e
+      # ci scrive gli aggiornamenti scaricati da GitHub (vedi server/updater.py).
+      - .:/programma
     # I dischi del PC (C:, G:, ..., anche quelli esterni) vengono collegati in sola lettura sotto /host
     # dal file docker-compose.override.yml, che "Avvia FrenkPlex.bat" riscrive
     # a ogni avvio. Le cartelle dei video si scelgono poi dall'app.
