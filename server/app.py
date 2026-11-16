@@ -29,6 +29,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import updater
+
 VERSION = "1.1"
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TMDB_LANG = os.environ.get("TMDB_LANG", "it-IT")
@@ -1407,12 +1409,15 @@ class SmallAndFast:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
     RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/FrenkPlex.apk", "/FrancoPlex.apk")
+    PLAYING = ("/api/stream", "/api/transcode", "/api/progress")
 
     def __init__(self, inner):
         self.inner = inner
         self.gzip = GZipMiddleware(inner, minimum_size=2048, compresslevel=5)
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith(self.PLAYING):
+            updater.playing()     # qualcuno sta guardando: l'aggiornamento automatico aspetta
         if scope["type"] == "http" and not scope["path"].startswith(self.RAW):
             await self.gzip(scope, receive, send)
         else:
@@ -1482,6 +1487,58 @@ def startup():
     init_db()
     migrate_catalog()
     threading.Thread(target=scan_loop, daemon=True).start()
+    threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
+
+
+# ---- Aggiornamenti da GitHub ----------------------------------------------
+# Il lavoro lo fa updater.py: controllo ogni 12 ore, installazione automatica
+# quando nessuno sta guardando (si puo' spegnere) oppure a richiesta, da PC o TV.
+
+def auto_update():
+    return config.get("auto_update", True) is not False
+
+
+def update_json():
+    out = updater.snapshot()
+    out["auto"] = auto_update()
+    return out
+
+
+@app.get("/api/update")
+def update_status():
+    return update_json()
+
+
+@app.post("/api/update/check")
+def update_check():
+    updater.check()
+    return update_json()
+
+
+@app.post("/api/update/install")
+def update_install():
+    if not updater.start_install():
+        raise HTTPException(409, "C'è già un aggiornamento in corso")
+    return update_json()
+
+
+@app.post("/api/update/auto")
+async def update_auto(request: Request):
+    body = await read_json(request)
+    with config_lock:
+        config["auto_update"] = bool(body.get("auto"))
+        save_config()
+    return update_json()
+
+
+@app.post("/api/update/token")
+async def update_token(request: Request):
+    """Salva il token di sola lettura per il repository privato (dopo averlo provato)."""
+    body = await read_json(request)
+    if not await asyncio.to_thread(updater.set_token, str(body.get("token") or "")):
+        raise HTTPException(400, "Con questo token GitHub non dà accesso al repository degli aggiornamenti")
+    await asyncio.to_thread(updater.check)
+    return update_json()
 
 
 _apk_seen = {"stamp": None, "version": None}
@@ -1576,6 +1633,7 @@ def info():
             "tmdb": bool(key), "tmdb_hint": ("…" + key[-4:]) if key else "",
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
             "apk_version": apk_code, "apk_version_name": apk_name,
+            "update": updater.available(),
         }
     finally:
         con.close()
