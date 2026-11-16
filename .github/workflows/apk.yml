@@ -1,75 +1,155 @@
-# Ricompila l'app per la TV a ogni push su main che tocca android/ e la allega
-# alla release "app-tv" (FrenkPlex.apk). I server BunkerPlex la trovano li' e la
-# propongono alle TV da soli (vedi server/updater.py).
+# A ogni push su main tiene aggiornata la release "app-tv", da cui i server
+# BunkerPlex prendono gli aggiornamenti e da cui si scarica la prima volta:
+#   - BunkerPlex.zip: il programma di quel commit, gia' con l'APK e con
+#     strumenti/versione.json (cosi' la copia scaricata sa di essere aggiornata);
+#   - FrenkPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/;
+#   - il tag app-tv spostato sull'ultimo commit (anche lo zip «Source code» e' quello nuovo).
 #
 # Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/francoplex.jks
 # in base64 (vedi README, «App per la TV compilata da GitHub»). Deve essere la stessa
 # con cui e' firmata l'app gia' installata, se no la TV rifiuta l'aggiornamento:
 # per questo, se il segreto manca, la compilazione si ferma invece di crearne una nuova.
 
-name: App per la TV
+name: Pubblica la release
 
 on:
   push:
     branches: [main]
-    paths:
-      - "android/**"
-      - ".github/workflows/apk.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: apk
+  group: release
   cancel-in-progress: true
 
+env:
+  TAG: app-tv
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
-  apk:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # Il tag apk-build segna il commit da cui e' stato compilato l'APK pubblicato:
+      # si ricompila se da allora e' cambiato qualcosa in android/
+      - name: Serve ricompilare l'app per la TV?
+        id: what
+        run: |
+          build=1
+          if git rev-parse -q --verify "refs/tags/apk-build^{commit}" > /dev/null; then
+            git diff --quiet apk-build HEAD -- android && build=0
+          fi
+          [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && build=1
+          # Nella release non c'e' ancora l'APK: si compila comunque
+          gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qx FrenkPlex.apk || build=1
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Ricompilo l'APK: $build"
+
+      # Senza segreto non si firma con una chiave diversa: lo zip si pubblica lo
+      # stesso con l'APK gia' in release, e alla fine il giro risulta fallito.
       - name: Chiave di firma
+        id: key
+        if: steps.what.outputs.build == '1'
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "::error::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma): leggi il README."
-            exit 1
+            echo "::warning::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma): l'app per la TV non viene ricompilata. Leggi il README."
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           mkdir -p android/keystore
           echo "$KEYSTORE_B64" | base64 -d > android/keystore/francoplex.jks
           keytool -list -keystore android/keystore/francoplex.jks -storepass francoplex -alias francoplex > /dev/null
+          echo "ok=1" >> "$GITHUB_OUTPUT"
 
       # Stessi strumenti del Dockerfile di "Compila APK.bat" (Java 17, Gradle 8.11.1);
       # l'SDK Android e' gia' sul server di GitHub. In cache vanno solo le librerie
       # di Gradle, mai la chiave di firma.
       - uses: actions/setup-java@v4
+        if: steps.key.outputs.ok == '1'
         with:
           distribution: temurin
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
+        if: steps.key.outputs.ok == '1'
         with:
           gradle-version: "8.11.1"
 
       - name: Compila l'APK
+        if: steps.key.outputs.ok == '1'
         working-directory: android
         run: |
           gradle --no-daemon assembleRelease
           mkdir -p ../out
           cp app/build/outputs/apk/release/app-release.apk ../out/FrenkPlex.apk
+          rm -f keystore/francoplex.jks
           ls -l ../out/FrenkPlex.apk
 
-      - name: Allega alla release app-tv
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: APK gia' pubblicato
+        if: steps.key.outputs.ok != '1'
+        run: gh release download "$TAG" -p FrenkPlex.apk -D out
+
+      - name: Prepara BunkerPlex.zip
         run: |
-          if gh release view app-tv > /dev/null 2>&1; then
-            gh release upload app-tv out/FrenkPlex.apk --clobber
-          else
-            gh release create app-tv out/FrenkPlex.apk --title "App per la TV" \
-              --notes "APK di BunkerPlex per Android TV, Google TV e Fire TV. Viene sostituito a ogni pubblicazione."
+          mkdir -p pkg
+          git archive --format=tar --prefix=BunkerPlex/ HEAD | tar -x -C pkg
+          mkdir -p pkg/BunkerPlex/apk
+          cp out/FrenkPlex.apk pkg/BunkerPlex/apk/FrenkPlex.apk
+          # Stesso formato che scrivono gli aggiornamenti (strumenti/Aggiorna.ps1, server/updater.py)
+          python3 - <<'EOF'
+          import json, os, datetime
+          root = "pkg/BunkerPlex"
+          files = []
+          for d, _, names in os.walk(root):
+              for n in names:
+                  rel = os.path.relpath(os.path.join(d, n), root).replace("/", "\\")
+                  if rel.startswith("apk\\"):
+                      continue
+                  files.append(rel)
+          state = {"commit": os.environ["GITHUB_SHA"],
+                   "date": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                   "files": sorted(files)}
+          with open(os.path.join(root, "strumenti", "versione.json"), "w", encoding="utf-8") as f:
+              json.dump(state, f, indent=1)
+          print(len(files), "file, commit", state["commit"][:7])
+          EOF
+          (cd pkg && zip -q -r -X ../out/BunkerPlex.zip BunkerPlex)
+          ls -l out
+
+      - name: Aggiorna la release
+        run: |
+          git tag -f "$TAG" HEAD
+          git push -f origin "refs/tags/$TAG"
+          short=$(git rev-parse --short HEAD)
+          notes="Ultima versione di BunkerPlex (commit $short).
+
+          Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e lancia «Avvia BunkerPlex.bat». Dentro c'è già l'app per la TV.
+          Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV.
+
+          FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --title "BunkerPlex" --notes "$notes" --target "$GITHUB_SHA"
           fi
+          if [ "${{ steps.key.outputs.ok }}" = 1 ]; then
+            gh release upload "$TAG" out/FrenkPlex.apk out/BunkerPlex.zip --clobber
+            git tag -f apk-build HEAD
+            git push -f origin refs/tags/apk-build
+          else
+            gh release upload "$TAG" out/BunkerPlex.zip --clobber
+          fi
+          gh release edit "$TAG" --title "BunkerPlex" --notes "$notes"
+
+      - name: L'app per la TV era da ricompilare?
+        if: steps.what.outputs.build == '1' && steps.key.outputs.ok != '1'
+        run: |
+          echo "::error::Programma e zip pubblicati, ma l'app per la TV non e' stata ricompilata: manca il segreto ANDROID_KEYSTORE_B64."
+          exit 1
