@@ -14,11 +14,22 @@
 #
 #   -Check      controlla soltanto: esce con 10 se c'e' un aggiornamento,
 #               0 se e' tutto aggiornato, 2 se manca l'accesso, 1 se non riesce.
-#   -NoRestart  non propone di riavviare il server alla fine.
+#   -NoRestart  non riallinea il server alla fine (lo fa chi l'ha chiamato).
+#   -Auto       senza domande: lo usa l'aiutante (Agente.ps1) quando
+#               l'aggiornamento parte dalla TV, dal browser o da solo.
+#               Esce con 0 se e' andato bene, 1 se no, 2 se manca l'accesso,
+#               3 se c'e' gia' un aggiornamento in corso.
+#
+# Alla fine il server viene sempre riallineato: se i file che decidono come
+# gira il contenitore (server\, Dockerfile, pacchetti, docker-compose.yml) non
+# sono quelli con cui e' acceso, Docker ricostruisce l'immagine (scaricando
+# anche la versione nuova di Python di base) e lo riaccende.
 #
 # Solo caratteri ASCII in questo file (PowerShell 5 lo legge senza indicazioni).
 
-param([switch]$Check, [switch]$NoRestart)
+param([switch]$Check, [switch]$NoRestart, [switch]$Auto)
+
+if ($env:FRANCOPLEX_AUTO) { $Auto = $true }
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -37,8 +48,20 @@ $apkFile = Join-Path $root 'apk\FrenkPlex.apk'
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 
 function Ask($question) {
+    if ($Auto) { return $false }
     $answer = Read-Host "$question [S/N]"
     return $answer -match '^\s*[sSyY]'
+}
+
+# Un aggiornamento alla volta su questo PC (a mano, dall'aiutante, da "Avvia")
+if (-not $Check) {
+    $script:lock = New-Object System.Threading.Mutex($false, 'Local\BunkerPlexAggiorna')
+    try { $free = $script:lock.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $free = $true }
+    if (-not $free) {
+        Write-Host ''
+        Write-Host ' C''e'' gia'' un aggiornamento di BunkerPlex in corso su questo PC.' -ForegroundColor Yellow
+        exit 3
+    }
 }
 
 function Fail($lines, $code = 1) {
@@ -116,6 +139,7 @@ for ($try = 0; $try -lt 2 -and -not $remoteSha; $try++) {
             Fail @('Non riesco a raggiungere GitHub: manca Internet?', "($($_.Exception.Message))")
         }
         if ($Check) { Write-Output 'ACCESSO'; exit 2 }
+        if ($Auto) { Fail @("GitHub non da' accesso a $repo da questo PC.") 2 }
         if ($try -gt 0) { Fail @('GitHub rifiuta ancora l''accesso: controlla il token e riprova.') 2 }
         Say ''
         if ($script:token) {
@@ -194,13 +218,13 @@ if ($Check) {
     exit 0
 }
 
-if (-not $codeUpdate -and -not $apkAsset) {
+$nothingNew = -not $codeUpdate -and -not $apkAsset
+if ($nothingNew) {
     Say ''
-    Say 'BunkerPlex e'' gia'' aggiornato.' Green
+    Say 'Da GitHub non c''e'' niente di nuovo da scaricare.' Green
     if ($gitCopy -and -not $haveGit) {
         Say '(Questa e'' la copia di sviluppo e su questo PC non c''e'' git: ho controllato solo l''app per la TV.)'
     }
-    exit 0
 }
 
 # ------------------------------------------------------------ file del programma
@@ -210,7 +234,9 @@ function Is-Protected($rel) {
     $r = $rel -replace '/', '\'
     if ($r -match '(^|\\)\.\.(\\|$)' -or [System.IO.Path]::IsPathRooted($r)) { return $true }
     if ($r -match '^(data|apk|\.git|android\\out|android\\keystore)(\\|$)') { return $true }
-    return $r -in '.env', 'docker-compose.override.yml', 'strumenti\github-token.txt', 'strumenti\versione.json'
+    return $r -in '.env', 'docker-compose.override.yml', 'strumenti\github-token.txt', 'strumenti\versione.json',
+        'strumenti\agente.json', 'strumenti\richiesta-aggiornamento.json', 'strumenti\esito-aggiornamento.json',
+        'strumenti\aggiornamento.log'
 }
 
 function Same-File($a, $b) {
@@ -249,7 +275,7 @@ function Update-Files {
         # arrivati da un aggiornamento precedente, mai file tuoi.
         $removed = 0
         if ($state -and $state.files) {
-            foreach ($old in $state.files) {
+            foreach ($old in @($state.files)) {
                 if (($files -contains $old) -or (Is-Protected $old)) { continue }
                 $gone = Join-Path $root $old
                 if (Test-Path -LiteralPath $gone -PathType Leaf) {
@@ -311,28 +337,38 @@ function Update-Apk($asset) {
 
 Say ''
 $codeDone = $false
+$apkOk = $true
 if ($codeUpdate) {
     if ($gitCopy) { $codeDone = Update-Git } else { $codeDone = Update-Files }
 }
-if ($apkAsset) { Update-Apk $apkAsset | Out-Null }
+if ($apkAsset) { $apkOk = Update-Apk $apkAsset }
 
-# Il server gira dentro Docker con i file vecchi finche' non viene riavviato.
-if ($codeDone -and -not $NoRestart) {
-    $running = ''
-    if (Get-Command docker -ErrorAction SilentlyContinue) {
-        $running = (docker ps --filter 'name=^francoplex$' --format '{{.Names}}' 2>$null | Out-String).Trim()
-    }
-    Say ''
-    if ($running) {
-        if (Ask 'BunkerPlex e'' acceso con la versione vecchia. Lo riavvio adesso?') {
-            $env:FRANCOPLEX_NO_UPDATE = '1'
-            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Avvia.ps1')
-            exit $LASTEXITCODE
-        }
-        Say 'La versione nuova parte al prossimo "Avvia BunkerPlex.bat".'
+# ------------------------------------------------------------ server Docker
+# Il server gira dentro Docker con i file con cui e' stato acceso. Se non sono
+# quelli di adesso (aggiornamento appena scaricato, git pull fatto a mano,
+# aggiornamento fatto dal server da solo ma con Dockerfile o pacchetti nuovi)
+# si ricostruisce l'immagine e si riaccende il contenitore: "Avvia" fa tutto,
+# compresi dischi e controlli.
+$failed = ($codeUpdate -and -not $codeDone) -or -not $apkOk
+if (-not $NoRestart) {
+    . (Join-Path $PSScriptRoot 'Impronta.ps1')
+    $running = Get-ImprontaServer
+    if ($null -eq $running) {
+        if ($codeDone) { Say 'Il server e'' spento: la versione nuova parte al prossimo "Avvia BunkerPlex.bat".' }
+    } elseif ($running -eq (Get-Impronta $root)) {
+        Say 'Il server Docker e'' gia'' allineato a questa versione.' Green
     } else {
-        Say 'La versione nuova parte al prossimo "Avvia BunkerPlex.bat".'
+        Say ''
+        Say 'Allineo il server Docker alla versione nuova (immagine e pacchetti)...' Cyan
+        $env:FRANCOPLEX_NO_UPDATE = '1'
+        $env:FRANCOPLEX_NO_PAUSE = '1'
+        $env:FRANCOPLEX_NO_BROWSER = '1'
+        $env:FRANCOPLEX_PULL = '1'
+        # Avvia potrebbe a sua volta voler aggiornare: il lucchetto va lasciato prima
+        try { $script:lock.ReleaseMutex() } catch { }
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Avvia.ps1')
+        if ($LASTEXITCODE -ne 0) { exit 1 }
     }
 }
-if ($codeUpdate -and -not $codeDone) { exit 1 }
+if ($failed) { exit 1 }
 exit 0

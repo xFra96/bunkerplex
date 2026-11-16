@@ -1550,6 +1550,7 @@ def startup():
     init_db()
     migrate_catalog()
     threading.Thread(target=scan_loop, daemon=True).start()
+    updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
     threading.Thread(target=friends_loop, daemon=True).start()
     if SHARE_PORT:

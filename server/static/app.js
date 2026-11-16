@@ -1840,7 +1840,10 @@ var serverUpdateLater = '';          // aggiornamento per cui si e' risposto "Pi
 var serverUpdating = false;
 
 function updateWhat(u) {
-  return u.code && u.apk ? ' (programma e app per la TV)' : (u.apk ? ' (app per la TV)' : '');
+  if (u.code && u.apk) return ' (programma e app per la TV)';
+  if (u.apk) return ' (app per la TV)';
+  if (u.docker && !u.code) return ' (il server sul PC va riallineato)';
+  return '';
 }
 
 function updateTime(seconds) {
@@ -1855,6 +1858,7 @@ function updatePanel(u) {
   var state;
   if (u.access === false) state = dot(false) + ' Questo PC non ha ancora l\'accesso al repository privato degli aggiornamenti (<b>' + esc(u.repo) + '</b>).';
   else if (u.error) state = dot(false) + ' ' + esc(u.error);
+  else if (u.phase === 'pc') state = dot(false) + ' Aggiornamento in corso sul PC: scarico le novità e riallineo Docker…';
   else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Avvia BunkerPlex.bat</b> sul PC.';
   else if (u.available) state = dot(false) + ' È disponibile un aggiornamento' + updateWhat(u) + '.';
   else if (u.checked_at) state = dot(true) + ' BunkerPlex è aggiornato.';
@@ -1866,7 +1870,11 @@ function updatePanel(u) {
     '<p>Il server controlla da solo ' + hours + (u.auto
       ? ' e installa le novità quando nessuno sta guardando un video.'
       : ': ti avvisa, e decidi tu quando installare.') +
-      (u.dev_copy ? ' Questa è la copia di sviluppo: i file del programma li aggiorna git, da qui arriva solo l\'app per la TV.' : '') + '</p>' +
+      (u.agent
+        ? ' Sul PC è acceso l\'aiutante degli aggiornamenti: da qui, dalla TV o dal telefono si aggiorna tutto, Docker e pacchetti compresi' +
+          (u.dev_copy ? ' (questa è la copia di sviluppo: il programma lo aggiorna git).' : '.')
+        : (u.dev_copy ? ' Questa è la copia di sviluppo e l\'aiutante sul PC è spento: da qui arriva solo l\'app per la TV. Rilancia «Avvia BunkerPlex.bat» sul PC per riaccenderlo.'
+                      : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Avvia BunkerPlex.bat».')) + '</p>' +
     (u.access === false
       ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
             : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: README, «Per chi lo modifica»). Resta salvato sul disco di BunkerPlex.</p>' +
@@ -1874,7 +1882,7 @@ function updatePanel(u) {
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
       : '') +
     '<div class="actions" style="margin-top:0">' +
-      (u.available && u.phase !== 'host' ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
+      (u.available && !u.phase ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
       '<button class="btn f" data-act="updcheck" data-key="updcheck">Controlla adesso</button>' +
       '<button class="btn f" data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto">Aggiornamento automatico: ' + (u.auto ? 'attivo' : 'spento') + '</button>' +
     '</div></div>';
@@ -1884,7 +1892,8 @@ function updatePanel(u) {
 function watchServerUpdate() {
   serverUpdating = true;
   var down = false, tries = 0;
-  openPicker('Aggiorno BunkerPlex… ci vuole circa un minuto.', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
+  openPicker('Aggiorno BunkerPlex… di solito basta un minuto, se c\'è da ricostruire Docker qualcuno in più. Il server si riaccende da solo.',
+    [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
   modalState.serverUpdate = true;
   var timer = setInterval(function () {
     tries++;
@@ -1894,7 +1903,7 @@ function watchServerUpdate() {
     }).then(function (u) {
       if (down) { clearInterval(timer); location.reload(); return; }   // e' ripartito: si ricarica l'interfaccia nuova
       if (u.phase === 'restarting') { down = true; return; }
-      if (u.phase === 'installing' || u.phase === 'checking') return;
+      if (u.phase === 'installing' || u.phase === 'checking' || u.phase === 'pc') return;
       clearInterval(timer);
       serverUpdating = false;
       if (modalState && modalState.serverUpdate) closeModal(true);
@@ -1910,7 +1919,8 @@ function watchServerUpdate() {
       }
     }).catch(function () {
       down = true;
-      if (tries > 150) { clearInterval(timer); serverUpdating = false; }
+      // Una ricostruzione di Docker da zero puo' tenere spento il server per diversi minuti
+      if (tries > 600) { clearInterval(timer); serverUpdating = false; }
     });
   }, 2000);
 }
@@ -1922,6 +1932,9 @@ function startServerUpdate() {
 function checkServerUpdate() {
   if (serverUpdating) return;
   api('/update').then(function (u) {
+    // Aggiornamento gia' in corso (partito da un altro dispositivo, o il server si
+    // e' appena riacceso a meta' lavoro): si segue fino alla fine
+    if (u.phase === 'pc' && !player && modal.hidden && !/^#\/play/.test(location.hash)) { watchServerUpdate(); return; }
     if (!u.enabled || !u.available || u.phase) return;
     var sig = u.remote + (u.apk ? '+tv' : '');
     if (serverUpdateLater === sig) return;
