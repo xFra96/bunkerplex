@@ -61,6 +61,22 @@ object Net {
         }
     }
 
+    /** POST che aspetta la risposta (da chiamare fuori dal thread principale). */
+    fun post(url: String, json: String, timeoutMs: Int = 30000): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 5000
+        c.readTimeout = timeoutMs
+        c.requestMethod = "POST"
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        try {
+            c.outputStream.use { it.write(json.toByteArray()) }
+            return c.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            c.disconnect()
+        }
+    }
+
     fun postAsync(url: String, json: String) {
         background.execute {
             try {

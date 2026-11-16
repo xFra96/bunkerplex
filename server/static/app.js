@@ -1010,6 +1010,23 @@ async function settings() {
       (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
     '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>' +
 
+    '<div class="panel"><h2>Sottotitoli da internet</h2>' +
+    '<p>' + dot(i.subs_online) + (i.subs_online
+      ? ' Attivi' + (i.subs_user ? ' (account ' + esc(i.subs_user) + ')' : ' (senza account: pochi download al giorno)') +
+        ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
+      : ' Non attivi. Con una chiave gratuita di OpenSubtitles, dalle Opzioni del film scarichi i sottotitoli in italiano o in altre lingue.') + '</p>' +
+    '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
+      'Nome utente e password dell\'account sono facoltativi ma alzano il limite di download giornaliero. Restano solo su questo PC.' +
+      (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+    '<input class="field f" style="margin-bottom:.6rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
+      (i.subs_online ? 'Nuova chiave API (lascia vuoto per tenere quella di adesso)' : 'Chiave API OpenSubtitles') + '">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="osuser" data-key="osuser" autocomplete="off" value="' + esc(i.subs_user || '') + '" placeholder="Nome utente OpenSubtitles (facoltativo)">' +
+    '<input class="field f" id="ospass" data-key="ospass" type="password" autocomplete="new-password" data-enter="saveos" placeholder="' +
+      (i.subs_user ? 'Password (lascia vuoto per tenere quella di adesso)' : 'Password OpenSubtitles (facoltativa)') + '">' +
+    '<div class="actions"><button class="btn primary f" data-act="saveos" data-key="saveos">Salva</button>' +
+      (i.subs_online ? '<button class="btn danger f" data-act="saveos" data-arg="remove" data-key="osremove">Disattiva</button>' : '') +
+    '</div></div>' +
+
     friendsPanel(res[3]) +
 
     updatePanel(res[2]) +
@@ -1494,6 +1511,45 @@ function startPlayer(p) {
     openPicker(p.title + (p.subtitle ? ' — ' + p.subtitle : '') + ' · ' + lines.join(' · '), [{ value: 'ok', label: 'Chiudi' }], 'ok', wake);
   }
 
+  // Sottotitoli da internet: lingua → elenco di OpenSubtitles → si scarica e si accende
+  var ONLINE_LANGS = [['it', 'Italiano'], ['en', 'English'], ['es', 'Español'], ['fr', 'Français'], ['de', 'Deutsch']];
+  function findSubs() {
+    choose('Cerca sottotitoli in…', ONLINE_LANGS.map(function (l) { return { value: l[0], label: l[1] }; }),
+      prefs.oslang || 'it', function (lang) {
+        prefs.oslang = lang;
+        savePlayerPrefs(prefs);
+        toast('Cerco i sottotitoli…');
+        api('/subs-online/' + p.id + '?langs=' + lang).then(function (r) {
+          if (player !== st) return;
+          if (!r.ok) { toast(r.error); return; }
+          if (!r.results.length) { toast('Nessun sottotitolo trovato in questa lingua'); return; }
+          choose('Scegli i sottotitoli', r.results.map(function (s, i) {
+            var notes = [s.match ? '✓ fatti per questo file' : '', s.hi ? 'per non udenti' : '',
+              s.machine ? 'tradotti in automatico' : '', s.downloads ? s.downloads.toLocaleString('it-IT') + ' download' : ''];
+            return { value: i, label: s.release || s.language, count: esc(notes.filter(Boolean).join(' · ')) };
+          }), null, function (i) { getSubs(r.results[i]); });
+        }, function (e) { toast(e.message); });
+      });
+  }
+
+  function getSubs(s) {
+    toast('Scarico i sottotitoli…');
+    post('/subs-online/' + p.id, { file_id: s.file_id, lang: s.lang }).then(function (r) {
+      if (player !== st) return;
+      if (!r.ok) { toast(r.error); return; }
+      p.subs = r.subs;
+      st.sub = r.index;
+      if (!subsBtn) {   // prima non c'erano sottotitoli: compare il bottone
+        root.querySelector('[data-p=menu]').insertAdjacentHTML('beforebegin',
+          '<button class="pbtn wide" data-p="subs" title="Sottotitoli (S)">Sottotitoli</button>');
+        subsBtn = root.querySelector('[data-p=subs]');
+      }
+      tracks();
+      toast('Sottotitoli: ' + p.subs[st.sub].label +
+        (typeof r.remaining === 'number' ? ' · ne puoi scaricare ancora ' + r.remaining + ' oggi' : ''));
+    }, function (e) { toast(e.message); });
+  }
+
   function menu() {
     var o = [];
     function add(label, value, fn) { o.push({ value: String(o.length), label: label, count: value, fn: fn }); }
@@ -1522,6 +1578,7 @@ function startPlayer(p) {
           prefs.subsize || '', function (s) { prefs.subsize = s; savePlayerPrefs(prefs); applyLook(); });
       });
     }
+    if (p.subs_online && !p.friend) add('Cerca sottotitoli su internet', undefined, findSubs);
     add('Formato immagine', named(FITS, prefs.fit || 'contain').split(' (')[0], function () {
       choose('Formato immagine', FITS.map(function (f) { return { value: f[0], label: f[1] }; }),
         prefs.fit || 'contain', function (f) { prefs.fit = f; savePlayerPrefs(prefs); applyLook(); });
@@ -2127,6 +2184,16 @@ var actions = {
     post('/settings', { tmdb_key: input.value.trim() }).then(function () {
       toast('Chiave salvata: scarico le schede');
       scanWatch = true;
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  saveos: function (arg) {
+    function val(id) { var el = document.getElementById(id); return el ? el.value : ''; }
+    var body = arg === 'remove' ? { remove: true }
+      : { key: val('oskey').trim(), user: val('osuser').trim(), password: val('ospass') };
+    toast(arg === 'remove' ? 'Disattivo…' : 'Provo la chiave su OpenSubtitles…');
+    post('/settings/opensubtitles', body).then(function () {
+      toast(arg === 'remove' ? 'Sottotitoli da internet disattivati' : 'Fatto: ora puoi cercare i sottotitoli dai film');
       render();
     }, function (e) { toast(e.message); });
   },

@@ -314,6 +314,12 @@ class PlayerActivity : AppCompatActivity() {
         playerView.controllerShowTimeoutMs = 4000
         playerView.keepScreenOn = true
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
+        // L'ingranaggio della barra apre le nostre Opzioni (audio, sottotitoli, velocita',
+        // formato, spegnimento...) invece del menu ridotto di Media3.
+        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.let { gear ->
+            gear.setOnClickListener { showOptions() }
+            gear.contentDescription = "Opzioni"
+        }
 
         titleView = TextView(this)
         titleView.setTextColor(Color.WHITE)
@@ -478,6 +484,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            applyPendingSub()
             if (transcoding && !videoCopy) return
             var hasVideo = false
             var videoOk = false
@@ -764,6 +771,103 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun speedLabel(s: Float) = if (s == 1f) "Normale" else s.toString().removeSuffix(".0") + "×"
 
+    // ---- Sottotitoli da internet (li cerca e li scarica il server, da OpenSubtitles)
+
+    private val onlineLangs = listOf("it" to "Italiano", "en" to "English", "es" to "Español", "fr" to "Français", "de" to "Deutsch")
+    private var pendingSubLabel: String? = null    // da accendere appena il video ricaricato e' pronto
+
+    private fun findSubs() {
+        val at = onlineLangs.indexOfFirst { it.first == prefs.getString("p_oslang", "it") }.coerceAtLeast(0)
+        pick("Cerca sottotitoli in…", onlineLangs.map { it.second }, at) { i ->
+            val lang = onlineLangs[i].first
+            prefs.edit().putString("p_oslang", lang).apply()
+            val id = data.optInt("id")
+            showOsd("Cerco i sottotitoli…", 20000)
+            thread {
+                val res = try {
+                    JSONObject(Net.get("$server/api/subs-online/$id?langs=$lang", 30000))
+                } catch (_: Exception) {
+                    null
+                }
+                runOnUiThread {
+                    if (isFinishing || data.optInt("id") != id) return@runOnUiThread
+                    osd.visibility = View.GONE
+                    val list = res?.optJSONArray("results")
+                    when {
+                        res == null -> showOsd("Il server non risponde", 3000)
+                        !res.optBoolean("ok") -> showOsd(res.optString("error", "Ricerca non riuscita"), 5000)
+                        list == null || list.length() == 0 -> showOsd("Nessun sottotitolo trovato in questa lingua", 3000)
+                        else -> {
+                            val rows = (0 until list.length()).map { list.getJSONObject(it) }
+                            val labels = rows.map { s ->
+                                val notes = listOfNotNull(
+                                    if (s.optBoolean("match")) "✓ fatti per questo file" else null,
+                                    if (s.optBoolean("hi")) "per non udenti" else null,
+                                    if (s.optBoolean("machine")) "tradotti in automatico" else null,
+                                    s.optInt("downloads").takeIf { it > 0 }?.let { String.format(Locale.ITALIAN, "%,d download", it) }
+                                )
+                                s.optString("release").ifBlank { s.optString("language") } +
+                                    (if (notes.isEmpty()) "" else "\n" + notes.joinToString(" · "))
+                            }
+                            AlertDialog.Builder(this).setTitle("Scegli i sottotitoli")
+                                .setItems(labels.toTypedArray()) { _, k -> getSubs(rows[k]) }
+                                .show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun getSubs(s: JSONObject) {
+        val id = data.optInt("id")
+        val body = JSONObject().put("file_id", s.optLong("file_id")).put("lang", s.optString("lang"))
+        showOsd("Scarico i sottotitoli…", 20000)
+        thread {
+            val res = try {
+                JSONObject(Net.post("$server/api/subs-online/$id", body.toString(), 45000))
+            } catch (_: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (isFinishing || player == null || data.optInt("id") != id) return@runOnUiThread
+                osd.visibility = View.GONE
+                val subs = res?.optJSONArray("subs")
+                when {
+                    res == null -> showOsd("Il server non risponde", 3000)
+                    !res.optBoolean("ok") || subs == null -> showOsd(res.optString("error", "Download non riuscito"), 5000)
+                    else -> {
+                        data.put("subs", subs)
+                        pendingSubLabel = subs.optJSONObject(res.optInt("index"))?.optString("label")
+                        // Si ricarica il video dallo stesso punto, con il sottotitolo nuovo tra quelli esterni
+                        open(data, realPosition(), transcoding)
+                        val left = if (res.isNull("remaining")) "" else " · ne puoi scaricare ancora ${res.optInt("remaining")} oggi"
+                        Toast.makeText(this, "Sottotitoli scaricati$left", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyPendingSub() {
+        val want = pendingSubLabel ?: return
+        val p = player ?: return
+        for (group in p.currentTracks.groups) {
+            if (group.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until group.length) {
+                if (group.getTrackFormat(i).label == want && group.isTrackSupported(i)) {
+                    pendingSubLabel = null
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
+                        .build()
+                    return
+                }
+            }
+        }
+    }
+
     private fun showOptions() {
         val p = player ?: return
         playerView.hideController()
@@ -806,6 +910,9 @@ class PlayerActivity : AppCompatActivity() {
                     applyLook()
                 }
             })
+        }
+        if (data.optBoolean("subs_online") && data.optString("friend").isBlank()) {
+            items.add("Cerca sottotitoli su internet" to { findSubs() })
         }
 
         val speed = p.playbackParameters.speed
@@ -951,10 +1058,8 @@ class PlayerActivity : AppCompatActivity() {
                     seekBy(stepForward())
                     return true
                 }
-                KeyEvent.KEYCODE_DPAD_UP -> if (hidden) {
-                    if (event.repeatCount == 0) showOptions()
-                    return true
-                }
+                // Su e giu' non hanno scorciatoie: mostrano i comandi (lo fa PlayerView),
+                // e le Opzioni si aprono dall'ingranaggio nella barra.
                 KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS, KeyEvent.KEYCODE_INFO,
                 KeyEvent.KEYCODE_CAPTIONS, KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> {
                     if (event.repeatCount == 0) showOptions()
