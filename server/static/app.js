@@ -1,4 +1,4 @@
-/* FrenkPlex - interfaccia. Pensata per il telecomando (frecce + OK + Indietro)
+/* BunkerPlex - interfaccia. Pensata per il telecomando (frecce + OK + Indietro)
    ma funziona anche con mouse e tastiera dal PC. */
 (function () {
 'use strict';
@@ -19,6 +19,9 @@ var cache = { pendingPlay: null, searchQuery: '', homeScroll: 0, navLib: null };
 var scanWatch = true;
 var libs = [];                       // le raccolte: [{id, name, movies, shows, folders}]
 var libsLoadedAt = 0;
+var friends = [];                    // gli amici collegati: [{n, name, online, error, libraries}]
+var friendQuality = '720';           // come arrivano i video degli amici: 720, 1080, orig
+var shareRequests = 0;               // richieste di condivisione ancora da guardare
 var railSignature = '';
 var stageMap = null;                 // Home: scheda -> dati per l'anteprima grande
 var stageKey = '';
@@ -27,9 +30,57 @@ var stageFlip = false;
 var lastAutoRefresh = Date.now();
 var cardData = {};                   // scheda -> dati del titolo (per il menu delle azioni)
 var press = null;                    // OK tenuto premuto su una scheda
-var MORE = '<span class="more" data-menu title="Azioni">⋯</span>';
+var chunk = null;                    // griglia lunga: le locandine si aggiungono un po' alla volta
+var lastHtml = '';                   // l'ultima pagina disegnata
+var enterTimer = 0;
 
-if (TV) document.body.classList.add('tv');
+// Icone disegnate (non caratteri speciali: su certe TV diventano emoji colorate)
+var IC = {
+  play: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.2v15.6L20.5 12z"/></svg>',
+  pause: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4.5h4.2v15H6zM13.8 4.5H18v15h-4.2z"/></svg>',
+  check: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  plus: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+  dots: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+  back: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>',
+  next: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l10.5-7.5zM17 4.5h2.5v15H17z"/></svg>',
+  vol: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/></svg>',
+  mute: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  disk: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M7 14.5h4"/></svg>',
+  folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>'
+};
+var MORE = '<span class="more" data-menu title="Azioni">' + IC.dots + '</span>';
+var HINT = 'OK apre · tieni premuto OK per le altre azioni · freccia sinistra per il menu';
+
+// Preferenze di questo dispositivo (TV, telefono, PC): ognuno ha le sue
+function devicePrefs() {
+  try { return JSON.parse(localStorage.getItem('fpDevice')) || {}; } catch (e) { return {}; }
+}
+function saveDevicePrefs(p) {
+  try { localStorage.setItem('fpDevice', JSON.stringify(p)); } catch (e) { /* niente */ }
+}
+var device = devicePrefs();
+// Aspetto da TV: dentro l'app, oppure scelto a mano per il browser di una smart TV (o con ?tv=1)
+var TVLOOK = TV || device.tv === true || /[?&]tv=1/.test(location.search);
+var smooth = 'smooth';               // 'auto' quando le animazioni sono ridotte
+
+function applyDevice() {
+  var root = document.documentElement;
+  var lite = device.anim === 'lite' || (device.anim !== 'full' && !!device.slow);
+  smooth = lite ? 'auto' : 'smooth';
+  root.classList.toggle('lite', lite);
+  root.classList.toggle('tv', TVLOOK);
+  root.classList.toggle('bigposters', device.posters === 'big');
+  document.body.classList.toggle('tv', TVLOOK);
+}
+
+function setKb(on) {
+  if (kb === on && document.body.classList.contains('kb') === on) return;
+  kb = on;
+  document.body.classList.toggle('kb', on);
+}
+
+applyDevice();
+setKb(TVLOOK);
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
 // ---------------------------------------------------------------- utilita'
@@ -120,6 +171,16 @@ function buildQuery(o) {
 
 function libById(id) {
   for (var i = 0; i < libs.length; i++) if (String(libs[i].id) === String(id)) return libs[i];
+  // Le raccolte degli amici: si sfogliano come le proprie, ma non si modificano
+  for (var a = 0; a < friends.length; a++) {
+    var fl = friends[a].libraries;
+    for (var b = 0; b < fl.length; b++) {
+      if (String(fl[b].id) === String(id)) {
+        return { id: fl[b].id, name: fl[b].name, movies: fl[b].movies, shows: fl[b].shows, folders: [],
+          friend: friends[a].name, offline: friends[a].online === false };
+      }
+    }
+  }
   return null;
 }
 
@@ -129,17 +190,29 @@ function initials(name) {
 }
 
 function avatar(name) {
-  return '<i class="avatar" style="--h:' + hue(name) + '">' + esc(initials(name)) + '</i>';
+  return '<i class="avatar">' + esc(initials(name)) + '</i>';
 }
 
 // Ricarica le raccolte e ridisegna la barra laterale (una voce per raccolta)
 async function loadLibs(force) {
   if (!force && libsLoadedAt && Date.now() - libsLoadedAt < 15000) return;
-  libs = await api('/libraries');
+  // Gli amici non devono mai fermare il menu: se la richiesta fallisce si va avanti senza
+  var res = await Promise.all([api('/libraries'), api('/friends').catch(function () { return {}; })]);
+  libs = res[0];
+  friends = res[1].friends || [];
+  friendQuality = res[1].quality || '720';
   libsLoadedAt = Date.now();
   var html = libs.map(function (l) {
     return '<a class="f railitem" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
       avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
+  }).join('') + friends.map(function (fr) {
+    if (!fr.libraries.length) return '';
+    var off = fr.online === false;
+    return '<div class="raillabel"><span>' + esc(fr.name) + (off ? ' · non raggiungibile' : '') + '</span></div>' +
+      fr.libraries.map(function (l) {
+        return '<a class="f railitem friend' + (off ? ' off' : '') + '" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
+          avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
+      }).join('');
   }).join('');
   if (html !== railSignature) {
     railSignature = html;
@@ -149,7 +222,7 @@ async function loadLibs(force) {
 
 function markRail(h) {
   var active = '';
-  if (h === '#/home' || h === '#/search') active = h;
+  if (h === '#/home' || h === '#/search' || h === '#/mylist') active = h;
   else if (h.indexOf('#/saga') === 0) active = '#/sagas';
   else if (h.indexOf('#/lib/') === 0) active = '#/lib/' + h.slice(6).split('?')[0];
   else if ((h.indexOf('#/item/') === 0 || h.indexOf('#/show/') === 0) && cache.navLib) active = '#/lib/' + cache.navLib;
@@ -167,9 +240,13 @@ function progressBar(x) {
   return '<div class="bar"><i style="width:' + pct.toFixed(1) + '%"></i></div>';
 }
 
-function stars(x) {
-  return x.rating ? '<span class="star">★ ' + x.rating.toFixed(1) + '</span>' : '';
+function stars(x, short) {
+  if (!x.rating) return '';
+  var n = x.rating.toFixed(1).replace('.', ',');
+  return short ? 'voto ' + n : '<span class="star">' + n + ' su 10</span>';
 }
+
+function seenBadge() { return '<span class="badge seen">' + IC.check + '</span>'; }
 
 function posterCard(x, prefix) {
   cardData[prefix + '-' + x.kind + x.id] = x;
@@ -177,10 +254,10 @@ function posterCard(x, prefix) {
   var href = isShow ? '#/show/' + x.id : '#/item/' + x.id;
   var img = x.poster || x.thumb;
   var badge = isShow
-    ? (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : '<span class="badge seen">✓</span>')
-    : (x.watched ? '<span class="badge seen">✓</span>' : '');
-  var sub = [x.year || '', isShow ? 'Serie' : '', stars(x)].filter(Boolean).join(' · ');
-  return '<a class="card poster f" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
+    ? (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge())
+    : (x.watched ? seenBadge() : '');
+  var sub = [x.year || '', isShow ? 'Serie' : '', stars(x, true)].filter(Boolean).join(' · ');
+  return '<a class="card poster f" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
@@ -203,7 +280,7 @@ function sagaCard(x, prefix) {
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
       '<span class="q saga">Saga</span>' +
-      (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : '<span class="badge seen">✓</span>') +
+      (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge()) +
     '</div>' +
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
 }
@@ -214,11 +291,12 @@ function wideCard(x, prefix) {
   var title = isEp ? (x.show_title || x.title) : x.title;
   var sub = isEp ? 'S' + x.season + ' · E' + x.episode + ' · ' + esc(x.title) : (x.year || '');
   if (x.position && x.duration && !x.watched) sub += ' · mancano ' + fmtDur(x.duration - x.position);
+  if (x.friend) sub += ' · di ' + esc(x.friend);
   var img = isEp ? x.thumb : (x.backdrop || x.thumb);
   return '<button class="card wide f" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
     '<div class="art" style="--h:' + hue(title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
-      '<span class="playico">▶</span>' + progressBar(x) + MORE +
+      '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></button>';
 }
@@ -227,6 +305,34 @@ function section(title, cards, note) {
   if (!cards.length) return '';
   return '<section class="section"><h2>' + title + (note ? '<small>' + note + '</small>' : '') +
     '</h2><div class="row">' + cards.join('') + '</div></section>';
+}
+
+// Griglia lunga: si disegnano le prime locandine e le altre arrivano man mano che
+// si scende. Con mille titoli la pagina resta leggera anche sulle TV piu' lente.
+var CHUNK = 60;
+
+function cardKey(x, prefix) { return prefix + '-' + x.kind + x.id; }
+
+function gridCard(x, n) {
+  var html = x.kind === 'collection' ? sagaCard(x, chunk.prefix) : posterCard(x, chunk.prefix);
+  return n === 0 ? html.replace('class="card', 'data-autofocus class="card') : html;
+}
+
+function gridHtml(list, prefix, wantKey) {
+  var first = Math.max(CHUNK, cache.keepShown || 0);
+  if (wantKey) {   // la locandina su cui si era rimasti deve esserci subito
+    for (var i = 0; i < list.length; i++) if (cardKey(list[i], prefix) === wantKey) { first = Math.max(first, i + 14); break; }
+  }
+  chunk = { list: list, prefix: prefix, shown: Math.min(first, list.length) };
+  return '<div class="grid" id="grid">' + list.slice(0, chunk.shown).map(gridCard).join('') + '</div>';
+}
+
+function growGrid(upTo) {
+  var el = document.getElementById('grid');
+  if (!chunk || !el || chunk.shown >= chunk.list.length) return;
+  var from = chunk.shown, to = Math.min(chunk.list.length, Math.max(from + CHUNK, upTo || 0));
+  el.insertAdjacentHTML('beforeend', chunk.list.slice(from, to).map(function (x, n) { return gridCard(x, from + n); }).join(''));
+  chunk.shown = to;
 }
 
 function chips(list, base, key) {
@@ -259,6 +365,7 @@ async function home() {
   var recent = [];
   d.libraries.forEach(function (l) { recent = recent.concat(l.items); });
   if (!d.continue.length && !d.nextup.length && !recent.length) return emptyLibrary(d.has_libraries);
+  var mine = d.mylist || [];
 
   var map = {};
   function reg(x, prefix, kicker) {
@@ -269,8 +376,12 @@ async function home() {
   var rows =
     section('Continua a guardare', d.continue.map(function (x) { return wideCard(reg(x, 'cont', 'Continua a guardare'), 'cont'); })) +
     section('Prossimi episodi', d.nextup.map(function (x) { return wideCard(reg(x, 'next', 'Prossimo episodio'), 'next'); })) +
+    section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine'); })) +
     d.libraries.map(function (l) {
-      return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, l.name), 'lib' + l.id); }), 'aggiunti di recente');
+      // Le raccolte degli amici: stessa fila, con il nome dell'amico bene in vista
+      var note = l.friend ? 'di ' + esc(l.friend) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
+      var kicker = l.friend ? l.name + ' · di ' + l.friend : l.name;
+      return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id); }), note);
     }).join('') +
     section('Saghe', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Saga'), 'saga'); }), 'i film della stessa serie, in ordine') +
     section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top'); }));
@@ -300,10 +411,14 @@ function paintStage(key) {
   var s = stageMap && stageMap[key], el = document.getElementById('stage');
   if (!s || !el || key !== stageKey) return;
   var x = s.x, isEp = x.kind === 'episode', isShow = x.kind === 'show', isSaga = x.kind === 'collection';
-  el.querySelector('.info').innerHTML =
-    '<div class="kicker">' + esc(s.kicker) + '</div>' +
+  var info = el.querySelector('.info');
+  info.classList.remove('in');
+  void info.offsetWidth;               // fa ripartire l'animazione del testo
+  info.classList.add('in');
+  info.innerHTML =
     '<h1>' + esc(isEp ? (x.show_title || x.title) : x.title) + '</h1>' +
     metaLine([
+      '<b class="lead">' + esc(s.kicker) + '</b>',
       isEp ? 'S' + x.season + ' · E' + x.episode + ' · ' + esc(x.title) : '',
       isSaga ? sagaYears(x) : x.year,
       isShow ? x.seasons_count + (x.seasons_count === 1 ? ' stagione' : ' stagioni')
@@ -312,7 +427,8 @@ function paintStage(key) {
       (x.genres || []).slice(0, 3).map(esc).join(', '),
       !isShow && x.position > 20 && !x.watched ? 'mancano ' + fmtDur(x.duration - x.position) : ''
     ]) +
-    (x.overview ? '<p class="overview">' + esc(x.overview) + '</p>' : '');
+    (x.overview ? '<p class="overview">' + esc(x.overview) + '</p>' : '') +
+    '<p class="hint">' + HINT + '</p>';
 
   var layers = el.querySelectorAll('.bg');
   var next = layers[stageFlip ? 0 : 1], prev = layers[stageFlip ? 1 : 0];
@@ -333,7 +449,7 @@ function paintStage(key) {
 function emptyLibrary(hasLibraries) {
   if (hasLibraries) {
     return '<div class="page"><div class="empty center"><h2>Le raccolte sono ancora vuote</h2>' +
-      '<p>Se hai appena aggiunto delle cartelle, FrenkPlex le sta leggendo: i titoli compaiono qui tra poco. ' +
+      '<p>Se hai appena aggiunto delle cartelle, BunkerPlex le sta leggendo: i titoli compaiono qui tra poco. ' +
       'Altrimenti controlla le cartelle in <b>Impostazioni</b>.</p>' +
       '<p id="scanmsg"></p>' +
       '<div class="actions"><a class="btn primary f" href="#/settings" data-key="to-settings">Apri Impostazioni</a>' +
@@ -418,10 +534,15 @@ async function libraryPage(id) {
   if (!lib) throw new Error('Questa raccolta non esiste più.');
   var q = parseQuery(location.hash);
   var all = await api('/libraries/' + lib.id + '/items');
+  var owner = lib.friend ? '<span class="count">di ' + esc(lib.friend) + (lib.offline ? ' · ' + dot(false) + ' non raggiungibile: vedi l\'ultimo elenco salvato' : '') + '</span>' : '';
+  if (!all.length && lib.friend) {
+    return '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1>' + owner + '</div><div class="empty">' +
+      '<p>Questa raccolta di ' + esc(lib.friend) + ' è vuota, oppure il suo elenco non è ancora arrivato.</p></div></div>';
+  }
   if (!all.length) {
     return '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1></div><div class="empty">' +
       (lib.folders.length
-        ? '<p>In questa raccolta non c\'è ancora nessun titolo. Se hai appena aggiunto una cartella, aspetta che FrenkPlex finisca di leggerla.</p>'
+        ? '<p>In questa raccolta non c\'è ancora nessun titolo. Se hai appena aggiunto una cartella, aspetta che BunkerPlex finisca di leggerla.</p>'
         : '<p>Questa raccolta non ha ancora cartelle: aggiungine una per riempirla.</p>') +
       '<p id="scanmsg"></p><div class="actions">' +
       '<a class="btn primary f" href="#/browse/' + lib.id + '" data-key="add-folder">+ Aggiungi una cartella</a>' +
@@ -437,26 +558,68 @@ async function libraryPage(id) {
   }
 
   var hasFilters = q.type || q.genre || q.director || q.actor || q.year || q.state;
-  var html = '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1>' +
+  var byTitle = !q.sort || q.sort === 'title';
+  cache.libView = { id: lib.id, list: list };
+  var html = '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1>' + owner +
     '<span class="count">' + list.length + (list.length !== all.length ? ' di ' + all.length : '') +
-      (list.length === 1 ? ' titolo' : ' titoli') + '</span></div>' +
+      (list.length === 1 ? ' titolo' : ' titoli') + '</span><span class="hint">' + HINT + '</span></div>' +
     '<div class="filters">' +
     fbtn('sort', 'Ordina', SORTS[q.sort || 'title'], !!q.sort && q.sort !== 'title') +
+    (byTitle && list.length > 30 ? '<button class="filter f" data-act="letters" data-key="lib-letters"><b>Vai alla lettera</b></button>' : '') +
     (mixed ? fbtn('type', 'Tipo', TYPES[q.type || ''], !!q.type) : '') +
     fbtn('genre', 'Genere', q.genre || 'Tutti', !!q.genre) +
     fbtn('year', 'Anno', yearLabel(q.year), !!q.year) +
     fbtn('director', 'Regia', q.director || 'Tutti', !!q.director) +
     fbtn('actor', 'Attore', q.actor || 'Tutti', !!q.actor) +
     fbtn('state', 'Stato', STATES[q.state || ''], !!q.state) +
-    '<button class="filter f" data-act="refreshmenu" data-arg="' + lib.id + '" data-key="lib-refresh"><b>⟳ Aggiorna</b></button>' +
-    (hasFilters ? '<button class="filter f" data-act="clearfilters" data-arg="' + lib.id + '" data-key="filter-clear"><b>✕ Azzera filtri</b></button>' : '') +
+    (hasFilters ? '<button class="filter f" data-act="clearfilters" data-arg="' + lib.id + '" data-key="filter-clear"><b>Azzera filtri</b></button>' : '') +
+    (list.length > 1 ? '<button class="filter f" data-act="lucky" data-key="lib-lucky"><b>Scegli tu</b></button>' : '') +
+    (lib.friend ? '' : '<button class="filter f" data-act="refreshmenu" data-arg="' + lib.id + '" data-key="lib-refresh"><b>Aggiorna</b></button>') +
     '</div>';
   html += list.length
-    ? '<div class="grid">' + list.map(function (x, n) {
-        return posterCard(x, 'lib').replace('class="card', (n === 0 ? 'data-autofocus ' : '') + 'class="card');
-      }).join('') + '</div>'
+    ? gridHtml(list, 'lib', focusMemory[location.hash])
     : '<div class="empty"><h2>Nessun risultato</h2><p>Nessun titolo corrisponde ai filtri scelti.</p></div>';
   return html + '</div>';
+}
+
+// "Vai alla lettera": con mille titoli, dal telecomando si arriva subito alla R
+function openLetters() {
+  var v = cache.libView;
+  if (!v) return;
+  var firstAt = {};
+  v.list.forEach(function (x, n) {
+    var c = norm(x.title).replace(/^[^a-z0-9]+/, '').charAt(0).toUpperCase();
+    if (c >= '0' && c <= '9') c = '#';
+    if (c && firstAt[c] === undefined) firstAt[c] = n;
+  });
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.innerHTML = '<div class="sheet"><h3>Vai alla lettera</h3><div class="letters">' +
+    '#ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(function (c) {
+      return '<button class="letter' + (firstAt[c] === undefined ? '" disabled' : ' f" data-act="letter" data-arg="' + firstAt[c] + '"') + '>' + c + '</button>';
+    }).join('') + '</div></div>';
+  modal.hidden = false;
+  var first = modal.querySelector('.f');
+  if (first) first.focus();
+}
+
+// Porta a una locandina della griglia, anche se non e' ancora stata disegnata
+function goToCard(index) {
+  if (!chunk || !chunk.list[index]) return;
+  growGrid(index + 14);
+  var el = byKey(cardKey(chunk.list[index], chunk.prefix));
+  if (!el) return;
+  setKb(true);
+  el.focus();
+}
+
+// "Scegli tu": un titolo a caso tra quelli a schermo, preferendo i non visti
+function lucky() {
+  var v = cache.libView;
+  if (!v || !v.list.length) return;
+  var pool = v.list.filter(function (x) { return !x.watched; });
+  if (!pool.length) pool = v.list;
+  var x = pool[Math.floor(Math.random() * pool.length)];
+  location.hash = x.kind === 'show' ? '#/show/' + x.id : '#/item/' + x.id;
 }
 
 function openFilter(arg) {
@@ -516,6 +679,32 @@ function openFilter(arg) {
 
 // ---------------------------------------------------------------- Scheda film / episodio
 
+// Cast con le foto: una fila di volti; OK su un attore mostra i suoi titoli nella raccolta
+function castRow(x, base) {
+  var list = x.cast || [];
+  if (!list.length) return '';
+  return '<section class="section people"><h2>Cast</h2><div class="row">' + list.map(function (p, n) {
+    return '<a class="person f" href="' + base + buildQuery({ actor: p.name }) + '" data-key="cast-' + n + '">' +
+      '<span class="face">' + (p.photo
+        ? '<img loading="lazy" decoding="async" src="' + p.photo + '" alt="" onerror="this.style.display=\'none\'">' : '') +
+        '<i>' + esc(initials(p.name)) + '</i></span>' +
+      '<b>' + esc(p.name) + '</b><small>' + (esc(p.role) || '&nbsp;') + '</small></a>';
+  }).join('') + '</div></section>';
+}
+
+// "La mia lista": i titoli messi da parte per dopo (film e serie)
+function favButton(x) {
+  return '<button class="btn f' + (x.fav ? ' on' : '') + '" data-act="fav" data-arg="' + x.kind + ':' + x.id + ':' + (x.fav ? 0 : 1) + '" data-key="fav">' +
+    (x.fav ? IC.check + 'Nella mia lista' : IC.plus + 'La mia lista') + '</button>';
+}
+
+function setFav(kind, id, on) {
+  return post('/fav', { kind: kind, id: +id, fav: !!on }).then(function () {
+    toast(on ? 'Aggiunto alla tua lista' : 'Tolto dalla tua lista');
+    render();
+  }, function (e) { toast(e.message); });
+}
+
 async function item(id) {
   var x = await api('/items/' + id);
   cache.navLib = x.library_id;
@@ -524,35 +713,39 @@ async function item(id) {
   var base = '#/lib/' + x.library_id;
   var tech = [x.filename, fmtSize(x.size), [x.vcodec, x.acodec].filter(Boolean).join(' + ').toUpperCase()].filter(Boolean).join('  ·  ');
 
-  return '<header class="hero">' + heroBg(x) + '<div class="in">' + cover(x) + '<div class="txt">' +
-      (isEp ? '<div class="kicker">' + esc(x.show_title || '') + ' · Stagione ' + x.season + ' · Episodio ' + x.episode + '</div>' : '') +
+  var faces = isEp ? '' : castRow(x, base);
+  return '<header class="hero' + (faces ? ' more' : '') + '">' + heroBg(x) + '<div class="in">' + cover(x) + '<div class="txt">' +
       '<h1>' + esc(x.title) + '</h1>' +
       (x.tagline ? '<div class="tagline">' + esc(x.tagline) + '</div>' : '') +
       metaLine([
+        isEp ? '<b class="lead">' + esc(x.show_title || '') + ' · Stagione ' + x.season + ' · Episodio ' + x.episode + '</b>' : '',
+        x.friend ? '<b class="lead">Di ' + esc(x.friend) + '</b>' : '',
         x.year, fmtDur(x.duration), stars(x),
         x.quality ? '<span class="tag">' + x.quality + '</span>' : '',
-        x.watched ? '<span class="okdot">✓ Visto</span>' : ''
+        x.watched ? '<span class="okdot">' + IC.check + ' Visto</span>' : '',
+        resume ? 'mancano ' + fmtDur(x.duration - x.position) : ''
       ]) +
-      '<p class="overview full">' + esc(x.overview || (x.matched || isEp ? '' : 'Nessuna scheda trovata per questo file: prova «Correggi scheda».')) + '</p>' +
+      '<p class="overview full">' + esc(x.overview || (x.matched || isEp || x.friend ? '' : 'Nessuna scheda trovata per questo file: prova «Correggi scheda».')) + '</p>' +
       '<div class="actions">' +
-        '<button class="btn primary f" data-act="play" data-arg="' + x.id + '" data-key="play"><span class="ico">▶</span>' +
+        '<button class="btn primary f" data-act="play" data-arg="' + x.id + '" data-key="play">' + IC.play +
           (resume ? 'Riprendi da ' + fmtTime(x.position) : 'Riproduci') + '</button>' +
         (resume ? '<button class="btn f" data-act="playstart" data-arg="' + x.id + '" data-key="restart">Dall\'inizio</button>' : '') +
+        (isEp || x.friend ? '' : favButton(x)) +
         '<button class="btn f" data-act="watched" data-arg="' + x.id + ':' + (x.watched ? 0 : 1) + '" data-key="watched">' +
           (x.watched ? 'Segna come da vedere' : 'Segna come visto') + '</button>' +
         (isEp
           ? '<a class="btn f" href="#/show/' + x.show_id + '" data-key="toshow">Vai alla serie</a>'
-          : '<a class="btn f" href="#/match/movie/' + x.id + '" data-key="match">Correggi scheda</a>') +
+          : (x.friend ? '' : '<a class="btn f" href="#/match/movie/' + x.id + '" data-key="match">Correggi scheda</a>')) +
       '</div>' +
       (!isEp && (x.genres.length || x.director || x.actors.length || x.collection) ? '<div class="credits">' +
         (x.collection ? '<div><b>Saga</b><a class="chip f" href="#/saga/' + x.collection.id + '" data-key="chip-saga">' +
           esc(x.collection.title) + ' · ' + x.collection.count + ' film</a></div>' : '') +
         (x.genres.length ? '<div><b>Genere</b>' + chips(x.genres, base, 'genre') + '</div>' : '') +
         (x.director ? '<div><b>Regia</b>' + chips(directorsOf(x), base, 'director') + '</div>' : '') +
-        (x.actors.length ? '<div><b>Cast</b>' + chips(x.actors, base, 'actor') + '</div>' : '') +
+        (x.actors.length && !faces ? '<div><b>Cast</b>' + chips(x.actors, base, 'actor') + '</div>' : '') +
       '</div>' : '') +
       '<div class="fine">' + esc(tech) + '</div>' +
-    '</div></div></header>';
+    '</div></div></header>' + faces;
 }
 
 // ---------------------------------------------------------------- Scheda serie
@@ -567,6 +760,7 @@ async function show(id) {
   if (isNaN(current)) current = up ? up.season : (s.seasons[0] ? s.seasons[0].season : 1);
   var season = s.seasons.filter(function (x) { return x.season === current; })[0] || s.seasons[0];
 
+  var faces = castRow(s, base);
   var tabs = s.seasons.length > 1 ? '<div class="seasons">' + s.seasons.map(function (x) {
     return '<button class="filter f' + (x === season ? ' active' : '') + '" data-act="season" data-arg="' + s.id + ':' + x.season +
       '" data-key="season-' + x.season + '"><b>' + (x.season === 0 ? 'Speciali' : 'Stagione ' + x.season) + '</b></button>';
@@ -576,33 +770,38 @@ async function show(id) {
     return '<div class="eprow">' +
       '<button class="ep f" data-act="play" data-arg="' + e.id + '" data-key="ep-' + e.id + '">' +
         '<div class="art" style="--h:' + hue(s.title) + '"><img loading="lazy" decoding="async" src="' + e.thumb + '" alt="" onerror="this.style.display=\'none\'">' + progressBar(e) + '</div>' +
-        '<div class="body"><div class="num">EPISODIO ' + e.episode + (e.duration ? ' · ' + fmtDur(e.duration) : '') + '</div>' +
+        '<div class="body"><div class="num">Episodio ' + e.episode + (e.duration ? ' · ' + fmtDur(e.duration) : '') +
+          (e.position > 20 && !e.watched ? ' · mancano ' + fmtDur(e.duration - e.position) : '') + '</div>' +
         '<h3>' + esc(e.title) + '</h3><p>' + esc(e.overview || '') + '</p></div>' +
       '</button>' +
       '<button class="seenbtn f' + (e.watched ? ' on' : '') + '" data-act="watched" data-arg="' + e.id + ':' + (e.watched ? 0 : 1) +
-        '" data-key="seen-' + e.id + '" title="Visto / da vedere">✓</button>' +
+        '" data-key="seen-' + e.id + '" title="Visto / da vedere" aria-label="' + (e.watched ? 'Segna come da vedere' : 'Segna come visto') + '">' + IC.check + '</button>' +
     '</div>';
   }).join('') : '';
 
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
       metaLine([
+        s.friend ? '<b class="lead">Di ' + esc(s.friend) + '</b>' : '',
         s.year, s.seasons_count + (s.seasons_count === 1 ? ' stagione' : ' stagioni'),
         s.episodes + ' episodi', stars(s),
-        s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">✓ Vista</span>'
+        s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">' + IC.check + ' Vista</span>'
       ]) +
       '<p class="overview">' + esc(s.overview || '') + '</p>' +
       '<div class="actions">' +
-        (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play"><span class="ico">▶</span>' +
+        (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play">' + IC.play +
           (up.position > 20 ? 'Riprendi' : 'Riproduci') + ' S' + up.season + ' · E' + up.episode + '</button>' : '') +
-        '<a class="btn f" href="#/match/show/' + s.id + '" data-key="match">Correggi scheda</a>' +
+        (s.friend ? '' : favButton(s)) +
+        '<button class="btn f" data-act="showwatched" data-arg="' + s.id + ':' + (s.watched ? 0 : 1) + '" data-key="allseen">' +
+          (s.watched ? 'Segna tutta come da vedere' : 'Segna tutta come vista') + '</button>' +
+        (s.friend ? '' : '<a class="btn f" href="#/match/show/' + s.id + '" data-key="match">Correggi scheda</a>') +
       '</div>' +
       (s.genres.length || s.director || s.actors.length ? '<div class="credits">' +
         (s.genres.length ? '<div><b>Genere</b>' + chips(s.genres, base, 'genre') + '</div>' : '') +
         (s.director ? '<div><b>Creata da</b>' + chips(directorsOf(s), base, 'director') + '</div>' : '') +
-        (s.actors.length ? '<div><b>Cast</b>' + chips(s.actors, base, 'actor') + '</div>' : '') +
+        (s.actors.length && !faces ? '<div><b>Cast</b>' + chips(s.actors, base, 'actor') + '</div>' : '') +
       '</div>' : '') +
-    '</div></div></header>' + tabs + '<div class="eps">' + eps + '</div>';
+    '</div></div></header>' + tabs + '<div class="eps">' + eps + '</div>' + faces;
 }
 
 // ---------------------------------------------------------------- Saghe
@@ -623,9 +822,22 @@ async function sagasPage() {
   }
   return '<div class="page"><div class="toolbar"><h1>Saghe</h1>' +
     '<span class="count">' + all.length + (all.length === 1 ? ' saga' : ' saghe') + '</span></div>' +
-    '<div class="grid">' + all.map(function (x, n) {
-      return sagaCard(x, 'sagas').replace('class="card', (n === 0 ? 'data-autofocus ' : '') + 'class="card');
-    }).join('') + '</div></div>';
+    gridHtml(all, 'sagas', focusMemory[location.hash]) + '</div>';
+}
+
+// ---------------------------------------------------------------- La mia lista
+
+async function myListPage() {
+  var all = await api('/mylist');
+  if (!all.length) {
+    return '<div class="page"><div class="toolbar"><h1>La mia lista</h1></div><div class="empty">' +
+      '<p>Qui trovi i film e le serie che metti da parte per dopo. Per aggiungerne uno apri la sua scheda e premi <b>La mia lista</b>' +
+      (TVLOOK ? ', oppure tieni premuto OK sulla locandina.' : ', oppure usa il menu della locandina.') + '</p>' +
+      '<div class="actions"><a class="btn primary f" href="#/home" data-key="to-home">Torna alla Home</a></div></div></div>';
+  }
+  return '<div class="page"><div class="toolbar"><h1>La mia lista</h1>' +
+    '<span class="count">' + all.length + (all.length === 1 ? ' titolo' : ' titoli') + '</span></div>' +
+    gridHtml(all, 'mine', focusMemory[location.hash]) + '</div>';
 }
 
 async function sagaPage(id) {
@@ -634,20 +846,26 @@ async function sagaPage(id) {
   var resume = up && up.position > 20 && !up.watched;
   var missing = (s.missing || []).map(function (m) { return esc(m.title) + (m.year ? ' (' + m.year + ')' : ''); });
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
-      '<div class="kicker">Saga</div>' +
       '<h1>' + esc(s.title) + '</h1>' +
       metaLine([
+        '<b class="lead">Saga</b>',
         sagaYears(s), s.count + ' film' + (s.total > s.count ? ' su ' + s.total : ''), stars(s),
-        s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">✓ Vista</span>'
+        s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">' + IC.check + ' Vista</span>'
       ]) +
       '<p class="overview">' + esc(s.overview || '') + '</p>' +
       '<div class="actions">' +
-        (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play"><span class="ico">▶</span>' +
+        (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play">' + IC.play +
           (resume ? 'Riprendi ' : 'Riproduci ') + esc(up.title) + '</button>' : '') +
       '</div>' +
       (missing.length ? '<div class="fine">Ti ' + (missing.length === 1 ? 'manca' : 'mancano') + ': ' + missing.join(' · ') + '</div>' : '') +
     '</div></div></header>' +
     '<div class="grid">' + s.items.map(function (x) { return posterCard(x, 'saga'); }).join('') + '</div>';
+}
+
+// Generi piu' presenti in catalogo: sulla TV si sfoglia senza scrivere
+function topGenres(all) {
+  var map = countBy(all.map(function (e) { return e.x; }), function (x) { return x.genres || []; });
+  return Object.keys(map).sort(function (a, b) { return map[b] - map[a] || norm(a).localeCompare(norm(b)); }).slice(0, 18);
 }
 
 // ---------------------------------------------------------------- Cerca
@@ -658,7 +876,8 @@ async function search() {
     return { x: x, hay: norm([x.title, x.original_title, x.year, x.director, (x.actors || []).join(' '), (x.genres || []).join(' ')].join(' ')) };
   });
   return {
-    html: '<div class="page"><div class="searchbox"><input class="field f" id="q" data-key="search-input" autocomplete="off" ' +
+    html: '<div class="page"><div class="toolbar"><h1>Cerca</h1></div>' +
+      '<div class="searchbox" style="margin-top:1rem"><input class="field f" id="q" data-key="search-input" autocomplete="off" aria-label="Cerca" ' +
       'placeholder="Titolo, regista, attore, genere o anno" value="' + esc(cache.searchQuery) + '"></div><div id="results"></div></div>',
     mount: function () {
       var input = document.getElementById('q'), out = document.getElementById('results');
@@ -666,18 +885,23 @@ async function search() {
         cache.searchQuery = input.value;
         var terms = norm(input.value).split(/\s+/).filter(Boolean);
         if (!terms.length) {
-          out.innerHTML = '<div class="empty"><p>Scrivi qualcosa: puoi cercare un titolo, una saga, un regista, un attore, un genere o un anno, in tutte le raccolte.</p></div>';
+          var genres = topGenres(all);
+          chunk = null;
+          out.innerHTML = genres.length
+            ? '<div class="browse"><h2>Oppure sfoglia per genere</h2>' + genres.map(function (g) {
+                return '<button class="chip f" data-act="searchfor" data-arg="' + esc(g) + '" data-key="sg-' + esc(g) + '">' + esc(g) + '</button>';
+              }).join('') + '</div>'
+            : '<div class="empty"><p>Puoi cercare un titolo, una saga, un regista, un attore, un genere o un anno, in tutte le raccolte.</p></div>';
           return;
         }
         var found = all.filter(function (e) {
           return terms.every(function (t) { return e.hay.indexOf(t) >= 0; });
-        }).slice(0, 120);
+        }).map(function (e) { return e.x; });
         out.innerHTML = found.length
-          ? '<div class="grid">' + found.map(function (e) {
-              return e.x.kind === 'collection' ? sagaCard(e.x, 'search') : posterCard(e.x, 'search');
-            }).join('') + '</div>'
+          ? gridHtml(found, 'search', focusMemory[location.hash]).replace(' data-autofocus', '')
           : '<div class="empty"><p>Nessun risultato per «' + esc(input.value) + '».</p></div>';
       }
+      cache.searchRun = function (text) { input.value = text; run(); };
       input.addEventListener('input', run);
       run();
     }
@@ -721,7 +945,7 @@ async function matchSearch() {
 // ---------------------------------------------------------------- Impostazioni
 
 function scanStatus(i) {
-  if (i.scanning) return '⏳ ' + esc(i.message || 'Lettura delle cartelle in corso…');
+  if (i.scanning) return esc(i.message || 'Lettura delle cartelle in corso…');
   if (i.message) return '<span class="nodot">' + esc(i.message) + '</span>';
   if (!i.last_scan) return '';
   var d = new Date(i.last_scan * 1000);
@@ -731,7 +955,8 @@ function scanStatus(i) {
 function dot(ok) { return ok ? '<span class="okdot">●</span>' : '<span class="nodot">●</span>'; }
 
 async function settings() {
-  var res = await Promise.all([api('/info'), loadLibs(true), api('/update').catch(function () { return null; })]);
+  var res = await Promise.all([api('/info'), loadLibs(true), api('/update').catch(function () { return null; }),
+    api('/sharing').catch(function () { return null; })]);
   var i = res[0];
 
   var libsHtml = libs.map(function (l) {
@@ -758,7 +983,7 @@ async function settings() {
   return '<div class="page"><div class="toolbar"><h1>Impostazioni</h1></div>' +
     '<div class="panel"><h2>Le tue raccolte</h2>' +
     '<p>Ogni raccolta è una sezione del tuo cinema, con il nome che scegli tu e una o più cartelle del PC. ' +
-    'Film e serie vengono riconosciuti da soli. FrenkPlex legge soltanto: non modifica né cancella mai i tuoi file.</p>' +
+    'Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.</p>' +
     libsHtml +
     '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div>' +
     '</div>' +
@@ -785,7 +1010,11 @@ async function settings() {
       (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
     '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>' +
 
+    friendsPanel(res[3]) +
+
     updatePanel(res[2]) +
+
+    devicePanel() +
 
     '<div class="panel"><h2>Collegamento</h2>' +
     '<p>Indirizzo del server: <b>http://' + esc(location.host) + '</b> · ' + esc(i.name) + ' ' + esc(i.version) + '</p>' +
@@ -794,10 +1023,100 @@ async function settings() {
           '<div class="actions" style="margin-top:0"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
           '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>'
         : (i.apk
-          ? '<p>App per la TV' + (i.apk_version_name ? ' (versione ' + esc(i.apk_version_name) + ')' : '') + ': la prima volta, sulla TV apri <b>http://' + esc(location.host) + '/FrenkPlex.apk</b> con l\'app «Downloader», oppure scaricala qui e mettila su una chiavetta USB. Poi si aggiorna da sola: quando ricompili l\'APK, la TV lo propone all\'avvio.</p>' +
-            '<div class="actions" style="margin-top:0"><a class="btn f" href="/FrenkPlex.apk" download data-key="apk">Scarica FrenkPlex.apk</a></div>'
+          ? '<p>App per la TV' + (i.apk_version_name ? ' (versione ' + esc(i.apk_version_name) + ')' : '') + ': la prima volta, sulla TV apri <b>http://' + esc(location.host) + '/BunkerPlex.apk</b> con l\'app «Downloader», oppure scaricala qui e mettila su una chiavetta USB. Poi si aggiorna da sola: quando ricompili l\'APK, la TV lo propone all\'avvio.</p>' +
+            '<div class="actions" style="margin-top:0"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>'
           : '<p>App per la TV non ancora compilata: avvia <b>Compila APK.bat</b> sul PC.</p>')) +
     '</div></div>';
+}
+
+// Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte.
+// Si manda una richiesta, l'altro la accetta, e da li' in poi fa tutto da solo.
+var QUALITIES = [['720', '720p (consigliata: leggera per la linea dell\'amico)'], ['1080', '1080p'], ['orig', 'Originale (serve una linea molto veloce)']];
+
+function whenSeen(sec) {
+  if (!sec) return 'mai collegato';
+  var d = new Date(sec * 1000);
+  return 'ultimo accesso ' + d.toLocaleDateString('it-IT') + ' alle ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+}
+
+function friendsPanel(sh) {
+  if (!sh) return '';
+  var pending = sh.accounts.filter(function (a) { return !a.approved; });
+  var guests = sh.accounts.filter(function (a) { return a.approved; });
+  shareRequests = pending.length;
+  markRequests();
+
+  var asks = pending.map(function (a) {
+    return '<div class="folder"><div class="where"><b>' + esc(a.name) + ' chiede di condividere le raccolte</b><small>' +
+      (a.back_url ? 'Se accetti lui vede le tue e tu vedi le sue (' + esc(a.back_url) + ').' : 'Se accetti lui vede le tue raccolte.') + '</small></div>' +
+      '<button class="btn primary f" style="margin-right:.5rem" data-act="accapprove" data-arg="' + a.id + ':1" data-key="acc-ok-' + a.id + '">Accetta</button>' +
+      '<button class="btn f" data-act="accdel" data-arg="' + a.id + '" data-key="acc-no-' + a.id + '">Rifiuta</button></div>';
+  }).join('');
+
+  var mine = friends.map(function (fr) {
+    var n = fr.libraries.length;
+    var state = fr.online === false
+      ? dot(false) + ' ' + esc(fr.error || 'non raggiungibile') + (n ? ' · resta sfogliabile l\'ultimo elenco salvato' : '')
+      : (fr.online ? dot(true) + ' collegato' : 'collegamento in corso…');
+    return '<div class="folder"><div class="where"><b>' + esc(fr.name) + '</b><small>' + state + ' · ' +
+      (n ? n + (n === 1 ? ' raccolta' : ' raccolte') : 'nessuna raccolta ancora') + ' · ' + esc(fr.url) + '</small></div>' +
+      '<button class="btn f" style="margin-right:.5rem" data-act="friendretry" data-arg="' + fr.n + '" data-key="fr-retry-' + fr.n + '">Riprova</button>' +
+      '<button class="btn danger f" data-act="frienddel" data-arg="' + fr.n + '" data-key="fr-del-' + fr.n + '">Togli</button></div>';
+  }).join('');
+
+  var seen = guests.map(function (a) {
+    return '<div class="folder"><div class="where"><b>' + esc(a.name) + '</b><small>può vedere le tue raccolte · ' + whenSeen(a.last_seen) + '</small></div>' +
+      '<button class="btn f" style="margin-right:.5rem" data-act="accapprove" data-arg="' + a.id + ':0" data-key="acc-stop-' + a.id + '">Sospendi</button>' +
+      '<button class="btn danger f" data-act="accdel" data-arg="' + a.id + '" data-key="acc-del-' + a.id + '">Togli</button></div>';
+  }).join('');
+
+  return '<div class="panel"><h2>Amici</h2>' +
+    '<p>Tu e un amico con BunkerPlex potete guardare ciascuno le raccolte dell\'altro, anche da case diverse. ' +
+    'Uno dei due manda la richiesta, l\'altro la accetta: da quel momento, quando il PC dell\'amico è acceso, le sue raccolte compaiono nel menu e nella Home. ' +
+    'Si guarda soltanto: nessuno può modificare la libreria dell\'altro.</p>' +
+    (asks ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da approvare</b></div></div>' + asks + '</div>' : '') +
+    (mine ? '<div class="lib"><div class="head"><div class="name"><b>Le raccolte che vedi</b></div></div>' + mine + '</div>' : '') +
+    (seen ? '<div class="lib"><div class="head"><div class="name"><b>Chi vede le tue</b></div></div>' + seen + '</div>' : '') +
+    '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Condivisione con gli amici<small>' +
+      (sh.on ? 'Attiva' : 'Spenta: nessuno può entrare né mandare richieste') + '</small></button>' +
+    '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità dei video degli amici<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
+    '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
+    '<p>Serve che i due PC si raggiungano: il modo consigliato è <b>Tailscale</b> su entrambi (vedi README). ' +
+    'Gli indirizzi sono quelli di Tailscale, con la porta degli amici <b>' + sh.port + '</b>: per esempio <b>100.101.102.103:' + sh.port + '</b>.' +
+    (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+    '<input class="field f" style="margin-bottom:.6rem" id="fname" data-key="fname" autocomplete="off" maxlength="30" placeholder="Nome dell\'amico (come lo vedrai nel menu)">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 100.101.102.103:' + sh.port + ')">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="fmy" data-key="fmy" autocomplete="off" value="' + esc(sh.address) + '" placeholder="Il tuo indirizzo (quello con cui l\'amico raggiunge te)">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="fuser" data-key="fuser" autocomplete="off" maxlength="30" placeholder="Il nome con cui ti presenti da lui">' +
+    '<input class="field f" id="fpass" data-key="fpass" type="password" autocomplete="new-password" placeholder="Una password per il tuo account da lui (almeno 8 caratteri)">' +
+    '<div class="actions"><button class="btn primary f" data-act="friendadd" data-arg="1" data-key="friendadd">Manda la richiesta</button>' +
+    '<button class="btn f" data-act="friendadd" data-arg="0" data-key="friendlogin">Ho già un account da lui: accedi</button></div>' +
+    '</div>';
+}
+
+// Un segno sulla voce Impostazioni quando c'e' una richiesta da guardare
+function markRequests() {
+  var el = rail.querySelector('[data-key=nav-settings]');
+  if (el) el.classList.toggle('alert', shareRequests > 0);
+}
+
+// Regolazioni che valgono solo per il dispositivo da cui si guarda
+var ANIMS = [['', 'Automatiche'], ['full', 'Complete'], ['lite', 'Ridotte']];
+var POSTERS = [['', 'Normali'], ['big', 'Grandi']];
+
+function labelOf(list, key) {
+  for (var i = 0; i < list.length; i++) if (list[i][0] === (key || '')) return list[i][1];
+  return list[0][1];
+}
+
+function devicePanel() {
+  var auto = !device.anim && device.slow ? ' (ridotte: questo dispositivo è lento)' : '';
+  return '<div class="panel"><h2>Questo dispositivo</h2>' +
+    '<p>Valgono solo ' + (TV ? 'per questa TV' : 'per questo browser') + ': ogni TV, telefono o PC tiene le sue.</p>' +
+    '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
+    '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
+    (TV ? '' : '<button class="setting f" data-act="devtv" data-key="devtv">Aspetto da TV (per il browser di una smart TV)<small>' + (device.tv ? 'Attivo' : 'Spento') + '</small></button>') +
+    '</div>';
 }
 
 // ---------------------------------------------------------------- Nuova raccolta / rinomina
@@ -839,11 +1158,11 @@ async function browsePage(id) {
 
   var list = d.dirs.map(function (x, n) {
     return '<button class="result dir f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="browse" data-arg="' + esc(x.path) + '" data-key="dir-' + n + '">' +
-      '<span class="dirico">' + (d.root ? '⛁' : '▸') + '</span><span><b>' + esc(x.name) + '</b></span></button>';
+      '<span class="dirico">' + (d.root ? IC.disk : IC.folder) + '</span><span><b>' + esc(x.name) + '</b></span></button>';
   }).join('');
   if (!list) {
     list = d.root
-      ? '<p><b>Non vedo i dischi del PC.</b> Chiudi e riavvia il server con <b>Avvia FrenkPlex.bat</b>: è quel file a collegare i dischi.</p>'
+      ? '<p><b>Non vedo i dischi del PC.</b> Chiudi e riavvia il server con <b>Avvia BunkerPlex.bat</b>: è quel file a collegare i dischi.</p>'
       : '<p>Qui dentro non ci sono altre cartelle.</p>';
   }
 
@@ -853,8 +1172,8 @@ async function browsePage(id) {
     'Puoi ripetere per aggiungerne altre.</p>' +
     '<p>Sei in: <b>' + esc(d.display) + '</b>' + (d.videos ? ' · ' + d.videos + ' video qui dentro' : '') + '</p>' +
     '<div class="actions" style="margin-top:0">' +
-      (d.root ? '' : '<button class="btn primary f" data-act="usefolder" data-key="use">✓ Usa questa cartella</button>') +
-      (d.parent ? '<button class="btn f" data-act="browse" data-arg="' + esc(d.parent) + '" data-key="up">↑ Cartella superiore</button>' : '') +
+      (d.root ? '' : '<button class="btn primary f" data-act="usefolder" data-key="use">' + IC.check + 'Usa questa cartella</button>') +
+      (d.parent ? '<button class="btn f" data-act="browse" data-arg="' + esc(d.parent) + '" data-key="up">Cartella superiore</button>' : '') +
       '<button class="btn f" data-act="goback" data-key="cancel">Fine</button>' +
     '</div>' +
     '<div style="margin-top:1rem">' + list + '</div></div>' +
@@ -894,15 +1213,15 @@ async function playRoute(id) {
   cache.pendingPlay = null;
   return {
     html: '<div class="player" id="player"><video playsinline></video><div class="note"></div>' +
-      '<div class="top"><button class="pbtn" data-p="exit" title="Indietro (Esc)">←</button><b>' + esc(p.title) + '</b><span>' + esc(p.subtitle) + '</span></div>' +
-      '<div class="bottom"><input class="seek" type="range" min="0" max="' + Math.max(1, Math.floor(p.duration)) + '" step="1" value="0">' +
-      '<div class="ctl"><button class="pbtn" data-p="toggle" title="Play / Pausa (Spazio)">❚❚</button>' +
+      '<div class="top"><button class="pbtn" data-p="exit" title="Indietro (Esc)" aria-label="Indietro">' + IC.back + '</button><b>' + esc(p.title) + '</b><span>' + esc(p.subtitle) + '</span></div>' +
+      '<div class="bottom"><input class="seek" type="range" min="0" max="' + Math.max(1, Math.floor(p.duration)) + '" step="1" value="0" aria-label="Posizione nel video">' +
+      '<div class="ctl"><button class="pbtn" data-p="toggle" title="Play / Pausa (Spazio)" aria-label="Play o pausa">' + IC.pause + '</button>' +
       '<button class="pbtn wide" data-p="back" title="Indietro (←)"></button><button class="pbtn wide" data-p="fwd" title="Avanti (→)"></button>' +
-      (p.next ? '<button class="pbtn wide" data-p="next" title="Episodio successivo (N)">Successivo ⏭</button>' : '') +
-      '<button class="pbtn" data-p="mute" title="Audio sì / no (M)">🔊</button>' +
-      '<input class="vol" type="range" min="0" max="100" step="5" value="100" title="Volume (↑ ↓)">' +
+      (p.next ? '<button class="pbtn wide" data-p="next" title="Episodio successivo (N)">Successivo</button>' : '') +
+      '<button class="pbtn" data-p="mute" title="Audio sì / no (M)" aria-label="Audio sì o no">' + IC.vol + '</button>' +
+      '<input class="vol" type="range" min="0" max="100" step="5" value="100" title="Volume (↑ ↓)" aria-label="Volume">' +
       (p.subs.length ? '<button class="pbtn wide" data-p="subs" title="Sottotitoli (S)">Sottotitoli</button>' : '') +
-      '<button class="pbtn wide" data-p="menu" title="Opzioni (O)">⚙ Opzioni</button>' +
+      '<button class="pbtn wide" data-p="menu" title="Opzioni (O)">Opzioni</button>' +
       '<button class="pbtn wide" data-p="fs" title="Schermo intero (F)">Schermo intero</button><span class="time"></span></div></div></div>',
     mount: function () { startPlayer(p); }
   };
@@ -952,7 +1271,7 @@ function startPlayer(p) {
     v.volume = prefs.volume === undefined ? 1 : prefs.volume;
     v.muted = !!prefs.muted;
     vol.value = Math.round(v.volume * 100);
-    muteBtn.textContent = v.muted || !v.volume ? '🔇' : '🔊';
+    muteBtn.innerHTML = v.muted || !v.volume ? IC.mute : IC.vol;
   }
 
   function showSubs() {
@@ -1000,7 +1319,7 @@ function startPlayer(p) {
     v.defaultPlaybackRate = st.rate;
     v.playbackRate = st.rate;
     var pr = v.play();
-    if (pr && pr.catch) pr.catch(function () { if (id === st.loadId && v.paused) note.textContent = 'Premi ▶ per avviare'; });
+    if (pr && pr.catch) pr.catch(function () { if (id === st.loadId && v.paused) note.textContent = 'Premi Play per avviare'; });
   }
 
   // Salto: nel file originale subito; in conversione si aspetta che si smetta di
@@ -1020,7 +1339,7 @@ function startPlayer(p) {
     if (st.recov >= 3) {
       st.fatal = true;
       v.pause();
-      note.textContent = 'Il video non riparte. Controlla che il PC sia acceso e il disco collegato, poi premi ▶.';
+      note.textContent = 'Il video non riparte. Controlla che il PC sia acceso e il disco collegato, poi premi Play.';
       return;
     }
     st.recov++;
@@ -1085,7 +1404,8 @@ function startPlayer(p) {
     var lines = [
       (v.videoWidth ? v.videoWidth + '×' + v.videoHeight + ' · ' : '') + (p.vcodec || '').toUpperCase(),
       a ? 'Audio: ' + a.label : '',
-      !st.transcoding ? 'Riproduzione diretta del file' :
+      !st.transcoding ? 'Riproduzione diretta del file' + (p.friend ? ' dal PC di ' + p.friend : '') :
+        p.friend && p.friend_quality !== 'orig' ? 'Convertito a ' + p.friend_quality + 'p dal PC di ' + p.friend :
         (st.vcopy || (p.vcodec === 'h264' && p.bits === 8) ? 'Conversione leggera (video originale)' : 'Conversione completa sul PC')
     ].filter(Boolean);
     openPicker(p.title + (p.subtitle ? ' — ' + p.subtitle : '') + ' · ' + lines.join(' · '), [{ value: 'ok', label: 'Chiudi' }], 'ok', wake);
@@ -1200,11 +1520,11 @@ function startPlayer(p) {
       note.textContent = 'Impossibile riprodurre questo video.';
     }
   });
-  v.addEventListener('playing', function () { note.textContent = ''; toggleBtn.textContent = '❚❚'; wake(); });
+  v.addEventListener('playing', function () { note.textContent = ''; toggleBtn.innerHTML = IC.pause; wake(); });
   v.addEventListener('canplay', function () {
     if (note.textContent === LOADING || note.textContent === CONVERTING) note.textContent = '';
   });
-  v.addEventListener('pause', function () { toggleBtn.textContent = '▶'; root.classList.remove('idle'); report(); });
+  v.addEventListener('pause', function () { toggleBtn.innerHTML = IC.play; root.classList.remove('idle'); report(); });
   v.addEventListener('timeupdate', function () {
     if (v.currentTime > 0 && !v.seeking && st.pending === null) st.at = pos();
     if (!st.dragging && st.pending === null) seek.value = pos();
@@ -1235,7 +1555,7 @@ function startPlayer(p) {
         return 'Prossimo episodio tra ' + left + ' s' + (p.next_label ? ' — ' + p.next_label : '');
       };
       openPicker(heading(), [
-        { value: 'go', label: '▶  Guarda subito' },
+        { value: 'go', label: 'Guarda subito' },
         { value: 'stay', label: 'Annulla (resta qui)' },
         { value: 'no', label: 'Torna alla scheda' }
       ], null, function (answer) {
@@ -1253,7 +1573,7 @@ function startPlayer(p) {
     } else if (p.saga && !p.next && !st.sleepEnd) {
       // Fine di un film di una saga: il successivo si propone, non parte da solo
       openPicker('Saga ' + p.saga.name + ' · film ' + p.saga.number + ' di ' + p.saga.count, [
-        { value: 'go', label: '▶  Guarda ' + sagaLabel() },
+        { value: 'go', label: 'Guarda ' + sagaLabel() },
         { value: 'no', label: 'Torna alla scheda' }
       ], null, function (answer) {
         if (answer !== 'go') { history.back(); return; }
@@ -1348,7 +1668,7 @@ function openPicker(title, options, current, onPick) {
   modalState = { options: options, onPick: onPick, returnFocus: document.activeElement };
   modal.innerHTML = '<div class="sheet"><h3>' + esc(title) + '</h3><div class="opts">' + options.map(function (o, i) {
     return '<button class="opt f' + (o.value === current ? ' sel' : '') + '" data-act="opt" data-arg="' + i + '">' +
-      (o.value === current ? '● ' : '') + esc(o.label) +
+      (o.value === current ? '<span class="mark">' + IC.check + '</span>' : '') + esc(o.label) +
       (o.count !== undefined ? '<small>' + o.count + '</small>' : '') + '</button>';
   }).join('') + '</div></div>';
   modal.hidden = false;
@@ -1373,8 +1693,8 @@ function openCardMenu(key) {
   function fail(e) { toast(e.message); }
 
   if (!isShow) {
-    add(resume ? '▶  Riprendi da ' + fmtTime(x.position) : '▶  Riproduci', function () { play(x.id, false); });
-    if (resume) add('↺  Riproduci dall\'inizio', function () { play(x.id, true); });
+    add(resume ? 'Riprendi da ' + fmtTime(x.position) : 'Riproduci', function () { play(x.id, false); });
+    if (resume) add('Riproduci dall\'inizio', function () { play(x.id, true); });
   }
   add('Apri la scheda', function () {
     location.hash = isShow ? '#/show/' + x.id : (isEp ? '#/show/' + x.show_id : '#/item/' + x.id);
@@ -1383,7 +1703,10 @@ function openCardMenu(key) {
              : (x.watched ? 'Segna come da vedere' : 'Segna come visto'), function () {
     post(isShow ? '/shows/' + x.id + '/watched' : '/watched/' + x.id, { watched: !x.watched }).then(render, fail);
   });
-  if (!isEp) {
+  if (!isEp && !x.friend) {
+    add(x.fav ? 'Togli dalla mia lista' : 'Aggiungi alla mia lista', function () { setFav(x.kind, x.id, !x.fav); });
+  }
+  if (!isEp && !x.friend) {       // la scheda di un titolo di un amico la cura lui
     add('Correggi scheda (titolo sbagliato)', function () {
       location.hash = '#/match/' + (isShow ? 'show' : 'movie') + '/' + x.id;
     });
@@ -1451,12 +1774,12 @@ function checkUpdate(manual) {
       try { told = localStorage.getItem('fpOldApp') || ''; } catch (e) {}
       if (!manual && told === String(i.apk_version)) return;
       try { localStorage.setItem('fpOldApp', String(i.apk_version)); } catch (e) {}
-      openPicker('C\'è una versione più nuova dell\'app FrenkPlex' + name + '. Quella installata su questa TV non sa ancora aggiornarsi da sola: ' +
-        'installa la nuova un\'ultima volta con l\'app «Downloader», aprendo http://' + location.host + '/FrenkPlex.apk. Dalla prossima farà tutto da sé.',
+      openPicker('C\'è una versione più nuova dell\'app BunkerPlex' + name + '. Quella installata su questa TV non sa ancora aggiornarsi da sola: ' +
+        'installa la nuova un\'ultima volta con l\'app «Downloader», aprendo http://' + location.host + '/BunkerPlex.apk. Dalla prossima farà tutto da sé.',
         [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       return;
     }
-    openPicker('È disponibile un aggiornamento dell\'app FrenkPlex' + name + '. Vuoi installarlo adesso?',
+    openPicker('È disponibile un aggiornamento dell\'app BunkerPlex' + name + '. Vuoi installarlo adesso?',
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startUpdate();
         else { updateLater = i.apk_version; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
@@ -1478,7 +1801,7 @@ window.fpUpdate = function (state, value) {
   }
   if (state === 'install') {
     openPicker('Aggiornamento scaricato: conferma «Installa» o «Aggiorna» nella finestra della TV. ' +
-      'Se la TV chiede il permesso di installare app sconosciute, consentilo per FrenkPlex e poi premi «Riprova».',
+      'Se la TV chiede il permesso di installare app sconosciute, consentilo per BunkerPlex e poi premi «Riprova».',
       [{ value: 'ok', label: 'Chiudi' }, { value: 'retry', label: 'Riprova' }], 'ok', function (answer) {
         if (answer === 'retry') startUpdate();
       });
@@ -1490,7 +1813,7 @@ window.fpUpdate = function (state, value) {
   }
 };
 
-// ---------------------------------------------------------------- Aggiornamento di FrenkPlex (da GitHub)
+// ---------------------------------------------------------------- Aggiornamento di BunkerPlex (da GitHub)
 // Il server sul PC controlla da solo ogni 12 ore. Da qui (PC o TV) si vede
 // l'avviso, si controlla a mano e si lancia l'installazione: il server scarica
 // i file nuovi e la nuova app per la TV, poi si riavvia.
@@ -1514,9 +1837,9 @@ function updatePanel(u) {
   var state;
   if (u.access === false) state = dot(false) + ' Questo PC non ha ancora l\'accesso al repository privato degli aggiornamenti (<b>' + esc(u.repo) + '</b>).';
   else if (u.error) state = dot(false) + ' ' + esc(u.error);
-  else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Avvia FrenkPlex.bat</b> sul PC.';
+  else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Avvia BunkerPlex.bat</b> sul PC.';
   else if (u.available) state = dot(false) + ' È disponibile un aggiornamento' + updateWhat(u) + '.';
-  else if (u.checked_at) state = dot(true) + ' FrenkPlex è aggiornato.';
+  else if (u.checked_at) state = dot(true) + ' BunkerPlex è aggiornato.';
   else state = 'Il primo controllo parte un paio di minuti dopo l\'avvio.';
   var when = updateTime(u.checked_at);
   var hours = u.check_hours === 24 ? 'una volta al giorno' : 'ogni ' + u.check_hours + ' ore';
@@ -1528,7 +1851,7 @@ function updatePanel(u) {
       (u.dev_copy ? ' Questa è la copia di sviluppo: i file del programma li aggiorna git, da qui arriva solo l\'app per la TV.' : '') + '</p>' +
     (u.access === false
       ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
-            : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: LEGGIMI, capitolo «Aggiornamenti»). Resta salvato sul disco di FrenkPlex.</p>' +
+            : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: README, «Per chi lo modifica»). Resta salvato sul disco di BunkerPlex.</p>' +
               '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
       : '') +
@@ -1543,7 +1866,7 @@ function updatePanel(u) {
 function watchServerUpdate() {
   serverUpdating = true;
   var down = false, tries = 0;
-  openPicker('Aggiorno FrenkPlex… ci vuole circa un minuto.', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
+  openPicker('Aggiorno BunkerPlex… ci vuole circa un minuto.', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
   modalState.serverUpdate = true;
   var timer = setInterval(function () {
     tries++;
@@ -1558,12 +1881,12 @@ function watchServerUpdate() {
       serverUpdating = false;
       if (modalState && modalState.serverUpdate) closeModal(true);
       if (u.phase === 'host') {
-        openPicker('Aggiornamento scaricato. Per completarlo rilancia «Avvia FrenkPlex.bat» sul PC.',
+        openPicker('Aggiornamento scaricato. Per completarlo rilancia «Avvia BunkerPlex.bat» sul PC.',
           [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       } else if (u.error) {
         openPicker('Aggiornamento non riuscito: ' + u.error, [{ value: 'ok', label: 'Chiudi' }], 'ok', function () {});
       } else {
-        toast('FrenkPlex è aggiornato');
+        toast('BunkerPlex è aggiornato');
         if (/^#\/settings/.test(location.hash)) render();
         if (TV) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
       }
@@ -1586,7 +1909,7 @@ function checkServerUpdate() {
     if (serverUpdateLater === sig) return;
     // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
     if (player || !modal.hidden || /^#\/play/.test(location.hash)) { setTimeout(checkServerUpdate, 60000); return; }
-    openPicker('È disponibile un aggiornamento di FrenkPlex' + updateWhat(u) + '. Vuoi installarlo adesso?' +
+    openPicker('È disponibile un aggiornamento di BunkerPlex' + updateWhat(u) + '. Vuoi installarlo adesso?' +
       (TV ? ' Si aggiorna il server sul PC; se c\'è una nuova app, subito dopo la TV propone di installarla.' : ''),
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startServerUpdate();
@@ -1643,7 +1966,7 @@ function warnPaths() {
       moved.reduce(function (p, b) { return p.then(function () { return relocateFolder(b.lib, b.f); }); }, Promise.resolve()).then(render);
     });
   } else {
-    openPicker(text + ' I titoli restano in catalogo, ma i video non partono finché non colleghi il disco e rilanci «Avvia FrenkPlex.bat».',
+    openPicker(text + ' I titoli restano in catalogo, ma i video non partono finché non colleghi il disco e rilanci «Avvia BunkerPlex.bat».',
       [{ value: 'ok', label: 'Ho capito' }, { value: 'set', label: 'Apri Impostazioni' }], 'ok', function (answer) {
         if (answer === 'set') location.hash = '#/settings';
       });
@@ -1695,11 +2018,64 @@ var actions = {
     }, function (e) { toast(e.message); });
   },
   resetserver: function () { if (TV) window.FrancoPlexTV.resetServer(); },
+
+  // --- amici
+  friendadd: function (arg) {
+    function val(id) { var el = document.getElementById(id); return el ? el.value.trim() : ''; }
+    var body = { name: val('fname'), url: val('furl'), my_url: val('fmy'), user: val('fuser'),
+      password: (document.getElementById('fpass') || {}).value || '', register: arg === '1' };
+    if (!body.url || !body.user || !body.password) { toast('Scrivi indirizzo, nome e password'); return; }
+    toast('Contatto il server dell\'amico…');
+    post('/friends', body).then(function (r) {
+      toast(r.approved ? 'Collegato: le sue raccolte arrivano tra poco' : 'Richiesta inviata: ora deve accettarla lui');
+      libsLoadedAt = 0;
+      setTimeout(render, 2500);
+    }, function (e) { toast(e.message); });
+  },
+  frienddel: function (n) {
+    confirmBox('Togliere questo amico? Non vedrai più le sue raccolte e lui non vedrà più le tue.', 'Sì, toglilo', function () {
+      api('/friends/' + n, { method: 'DELETE' }).then(function () {
+        return libsChanged('Amico tolto').then(render);
+      }).catch(function (e) { toast(e.message); });
+    });
+  },
+  friendretry: function (n) {
+    toast('Riprovo il collegamento…');
+    post('/friends/' + n + '/refresh').then(function () {
+      setTimeout(function () { libsLoadedAt = 0; render(); }, 3000);
+    }, function (e) { toast(e.message); });
+  },
+  friendquality: function () {
+    openPicker('Qualità dei video degli amici', QUALITIES.map(function (q) { return { value: q[0], label: q[1] }; }), friendQuality, function (q) {
+      post('/friends/quality', { quality: q }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
+    });
+  },
+  sharetoggle: function (arg) {
+    post('/sharing', { on: arg === '1' }).then(function () {
+      toast(arg === '1' ? 'Condivisione attiva' : 'Condivisione spenta');
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  accapprove: function (arg) {
+    var parts = arg.split(':');
+    post('/sharing/accounts/' + parts[0], { approved: parts[1] === '1' }).then(function (r) {
+      toast(parts[1] !== '1' ? 'Sospeso: non può più entrare' : (r.linked ? 'Accettato: ora vi vedete a vicenda' : 'Accettato'));
+      libsLoadedAt = 0;
+      setTimeout(render, r.linked ? 2500 : 0);
+    }, function (e) { toast(e.message); });
+  },
+  accdel: function (id) {
+    confirmBox('Togliere questo amico? Non potrà più vedere le tue raccolte, e le sue spariscono da qui.', 'Sì, toglilo', function () {
+      api('/sharing/accounts/' + id, { method: 'DELETE' }).then(function () {
+        return libsChanged('Fatto').then(render);
+      }).catch(function (e) { toast(e.message); });
+    });
+  },
   checkupdate: function () { checkUpdate(true); },
   updcheck: function () {
     toast('Controllo su GitHub…');
     post('/update/check').then(function (u) {
-      toast(u.access === false ? 'Questo PC non ha l\'accesso al repository' : (u.error || (u.available ? 'C\'è un aggiornamento' + updateWhat(u) : 'FrenkPlex è già aggiornato')));
+      toast(u.access === false ? 'Questo PC non ha l\'accesso al repository' : (u.error || (u.available ? 'C\'è un aggiornamento' + updateWhat(u) : 'BunkerPlex è già aggiornato')));
       render();
     }, function (e) { toast(e.message); });
   },
@@ -1718,6 +2094,48 @@ var actions = {
   },
   goback: function () { history.back(); },
   refreshmenu: refreshMenu,
+
+  // --- lista, lettere, scelta a caso
+  fav: function (arg) {
+    var parts = arg.split(':');
+    setFav(parts[0], parts[1], parts[2] === '1');
+  },
+  showwatched: function (arg) {
+    var parts = arg.split(':');
+    post('/shows/' + parts[0] + '/watched', { watched: parts[1] === '1' }).then(render, function (e) { toast(e.message); });
+  },
+  letters: openLetters,
+  letter: function (arg) { closeModal(true); goToCard(+arg); },
+  lucky: lucky,
+  searchfor: function (text) {
+    if (!cache.searchRun) return;
+    cache.searchRun(text);
+    var first = view.querySelector('#grid .card');
+    if (first && kb) first.focus();
+  },
+
+  // --- questo dispositivo
+  devanim: function () {
+    openPicker('Animazioni', ANIMS.map(function (a) {
+      return { value: a[0], label: a[1] + (a[0] === '' ? ' (si riducono da sole se il dispositivo è lento)' : '') };
+    }), device.anim || '', function (value) {
+      device.anim = value;
+      if (value === 'full') device.slow = false;
+      saveDevicePrefs(device); applyDevice(); render();
+    });
+  },
+  devposters: function () {
+    openPicker('Locandine nelle raccolte', POSTERS.map(function (a) { return { value: a[0], label: a[1] }; }), device.posters || '', function (value) {
+      device.posters = value;
+      saveDevicePrefs(device); applyDevice(); render();
+    });
+  },
+  devtv: function () {
+    device.tv = !device.tv;
+    saveDevicePrefs(device);
+    location.replace(location.pathname + '#/settings');
+    location.reload();
+  },
   refreshall: function () {
     confirmBox('Riscaricare locandine e schede di tutto il catalogo?', 'Sì, riscarica tutto', function () { forceRefresh({ all: true }); });
   },
@@ -1887,23 +2305,62 @@ function move(dir) {
   target.focus();
 }
 
+// Scorrimento: morbido dove il dispositivo regge, immediato con le animazioni ridotte
+function scrollBox(box, pos) {
+  pos.behavior = smooth;
+  try { box.scrollTo(pos); }
+  catch (e) {   // browser vecchi: niente opzioni
+    if (pos.left !== undefined) box.scrollLeft = pos.left;
+    if (pos.top !== undefined) { if (box === window) window.scrollTo(0, pos.top); else box.scrollTop = pos.top; }
+  }
+  if (smooth === 'smooth') probeFrames();
+}
+
 function scrollToEl(el) {
   if (rail.contains(el) || modal.contains(el)) {
-    if (modal.contains(el)) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (modal.contains(el)) el.scrollIntoView({ behavior: smooth, block: 'center' });
     return;
   }
   var row = el.closest('.row');
   if (row) {   // la scheda selezionata resta sempre allineata a sinistra, la fila scorre sotto
-    row.scrollTo({ left: Math.max(0, el.offsetLeft - parseFloat(getComputedStyle(row).paddingLeft)), behavior: 'smooth' });
+    scrollBox(row, { left: Math.max(0, el.offsetLeft - parseFloat(getComputedStyle(row).paddingLeft)) });
   }
   var rows = el.closest('.rows');
   if (rows) {  // Home: la fila selezionata resta alla stessa altezza, sotto l'anteprima
     var sec = el.closest('.section');
-    if (sec) rows.scrollTo({ top: Math.max(0, sec.offsetTop - parseFloat(getComputedStyle(rows).paddingTop)), behavior: 'smooth' });
+    if (sec) scrollBox(rows, { top: Math.max(0, sec.offsetTop) });
     return;
   }
-  if (el.closest('.hero') || el.closest('.toolbar') || el.closest('.filters')) { window.scrollTo({ top: 0, behavior: 'smooth' }); return; }
-  el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+  if (el.closest('.toolbar') || el.closest('.filters')) { scrollBox(window, { top: 0 }); return; }
+  // Scheda: si resta in cima finche' l'elemento ci sta; i dettagli piu' in basso si vanno a prendere
+  if (el.closest('.hero') && el.getBoundingClientRect().bottom + window.pageYOffset <= window.innerHeight - 8) { scrollBox(window, { top: 0 }); return; }
+  var grid = el.parentNode;   // prima riga di una griglia: si rivedono titolo e filtri
+  if (grid && grid.id === 'grid' && grid.firstElementChild && el.offsetTop === grid.firstElementChild.offsetTop &&
+      grid.getBoundingClientRect().top + window.pageYOffset < window.innerHeight * 0.5) { scrollBox(window, { top: 0 }); return; }
+  el.scrollIntoView({ behavior: smooth, block: 'center', inline: 'nearest' });
+}
+
+// Misura quanto e' fluido lo scorrimento. Se il dispositivo perde troppi fotogrammi,
+// le animazioni si riducono da sole (e la scelta resta, finche' non la si cambia).
+var probe = { busy: false, runs: 0, slow: 0 };
+function probeFrames() {
+  if (probe.busy || device.anim || device.slow || probe.runs >= 12 || !window.requestAnimationFrame) return;
+  probe.busy = true;
+  var last = 0, n = 0, late = 0;
+  function tick(t) {
+    if (last && t - last > 40) late++;
+    last = t;
+    if (++n < 14) { requestAnimationFrame(tick); return; }
+    probe.busy = false;
+    probe.runs++;
+    if (late >= 5) probe.slow++;
+    if (probe.runs >= 6 && probe.slow >= probe.runs * 0.6) {
+      device.slow = true;
+      saveDevicePrefs(device);
+      applyDevice();
+    }
+  }
+  requestAnimationFrame(tick);
 }
 
 document.addEventListener('focusin', function (e) {
@@ -1915,6 +2372,11 @@ document.addEventListener('focusin', function (e) {
     var row = el.closest('.row');
     if (row) row._last = el;
     if (key) setStage(key);
+    // Verso il fondo di una griglia lunga: si preparano le locandine successive
+    if (chunk && chunk.shown < chunk.list.length && el.parentNode && el.parentNode.id === 'grid') {
+      var kids = el.parentNode.children, at = Array.prototype.indexOf.call(kids, el);
+      if (at >= kids.length - 16) growGrid();
+    }
   }
   if (kb) scrollToEl(el);
 });
@@ -1940,7 +2402,7 @@ document.addEventListener('keydown', function (e) {
   if (!key || key === 'Unidentified') key = KEYCODES[e.keyCode] || '';
   var t = e.target;
   var typing = t.tagName === 'INPUT' && t.type !== 'range';
-  kb = true;
+  setKb(true);
 
   if (player && modal.hidden) {   // con il menu Opzioni aperto i tasti servono al menu
     if (key === 'Enter' && t.tagName === 'BUTTON') return;
@@ -2000,9 +2462,21 @@ document.addEventListener('keyup', function (e) {
   if (!p.done && document.activeElement === p.el) p.el.click();
 });
 
-document.addEventListener('mousedown', function () { kb = false; });
-document.addEventListener('touchstart', function () { kb = false; }, { passive: true });
-window.addEventListener('scroll', function () { if (currentHash) scrollMemory[currentHash] = window.pageYOffset; }, { passive: true });
+document.addEventListener('mousedown', function () { setKb(false); });
+document.addEventListener('touchstart', function () { setKb(false); }, { passive: true });
+window.addEventListener('scroll', function () {
+  if (currentHash) scrollMemory[currentHash] = window.pageYOffset;
+  if (chunk && chunk.shown < chunk.list.length &&
+      window.pageYOffset + window.innerHeight * 2.5 > document.documentElement.scrollHeight) growGrid();
+}, { passive: true });
+
+// Orologio in alto a destra (solo con l'aspetto da TV)
+var clockEl = document.getElementById('clock');
+function tickClock() {
+  var d = new Date(), m = d.getMinutes();
+  clockEl.textContent = d.getHours() + ':' + (m < 10 ? '0' : '') + m;
+}
+if (TVLOOK && clockEl) { tickClock(); setInterval(tickClock, 20000); }
 
 // ---------------------------------------------------------------- Pagine
 
@@ -2014,6 +2488,7 @@ var routes = [
   [/^#\/play\/(\d+)$/, playRoute],
   [/^#\/search$/, search],
   [/^#\/sagas$/, sagasPage],
+  [/^#\/mylist$/, myListPage],
   [/^#\/saga\/(\d+)$/, sagaPage],
   [/^#\/settings$/, settings],
   [/^#\/newlib$/, newLibPage],
@@ -2040,6 +2515,9 @@ async function render() {
   try {
     await loadLibs();
     cache.navLib = null;
+    // Stessa pagina che si ridisegna: restano a schermo tante locandine quante ce n'erano
+    cache.keepShown = chunk && currentHash === h ? chunk.shown : 0;
+    chunk = null;
     out = await handler.apply(null, match.slice(1));
   } catch (e) {
     out = '<div class="page"><div class="empty center"><h2>Qualcosa non va</h2><p>' + esc(e.message) +
@@ -2048,13 +2526,23 @@ async function render() {
   if (token !== renderToken) return;   // nel frattempo si e' cambiata pagina
   if (typeof out === 'string') out = { html: out };
   var samePage = currentHash === h;
+  // Aggiornamento in sottofondo senza novita': la pagina resta com'e', senza sfarfallii
+  if (samePage && out.html === lastHtml && view.firstChild) return;
+  lastHtml = out.html;
   var keepScroll = window.pageYOffset;
   var hadFocusInRail = rail.contains(document.activeElement);
   currentHash = h;
   press = null;
   stageMap = null;
   stageKey = '';
+  view.classList.remove('enter');
   view.innerHTML = out.html;
+  if (!samePage) {   // pagina nuova: entra con un movimento breve (solo opacita' e spostamento)
+    void view.offsetWidth;
+    view.classList.add('enter');
+    clearTimeout(enterTimer);
+    enterTimer = setTimeout(function () { view.classList.remove('enter'); }, 900);
+  }
   if (out.mount) out.mount();
   markRail(h);
   setTimeout(warnPaths, 0);
@@ -2105,6 +2593,21 @@ setInterval(function () {
   }).catch(function () {});
 }, 3000);
 
+// Amici: ogni minuto si guarda se e' arrivata una richiesta di condivisione e
+// se le raccolte di un amico sono comparse (o lui si e' spento). Tutto in locale.
+function watchFriends() {
+  if (player) return;
+  api('/info').then(function (i) {
+    var n = i.share_requests || 0;
+    if (n > shareRequests) toast(n === 1 ? 'Un amico chiede di condividere le raccolte: apri Impostazioni' : n + ' richieste di condivisione: apri Impostazioni');
+    shareRequests = n;
+    markRequests();
+    if (friends.length) loadLibs(true).then(function () { markRail(location.hash); }).catch(function () {});
+  }).catch(function () {});
+}
+setTimeout(watchFriends, 4000);
+setInterval(watchFriends, 60000);
+
 // Sulla TV: all'avvio (cioe' appena collegata al server) e poi ogni mezz'ora,
 // perche' l'app puo' restare aperta per giorni.
 if (TV) {
@@ -2112,7 +2615,7 @@ if (TV) {
   setInterval(checkUpdate, 30 * 60 * 1000);
 }
 
-// Su PC e TV: c'e' un aggiornamento di FrenkPlex trovato dal server su GitHub?
+// Su PC e TV: c'e' un aggiornamento di BunkerPlex trovato dal server su GitHub?
 setTimeout(checkServerUpdate, 1500);
 setInterval(checkServerUpdate, 30 * 60 * 1000);
 

@@ -15,7 +15,7 @@
         android:banner="@drawable/banner"
         android:hardwareAccelerated="true"
         android:icon="@drawable/ic_launcher"
-        android:label="FrenkPlex"
+        android:label="BunkerPlex"
         android:largeHeap="true"
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">

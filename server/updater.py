@@ -1,8 +1,8 @@
-"""Aggiornamento di FrenkPlex da GitHub, fatto dal server stesso.
+"""Aggiornamento di BunkerPlex da GitHub, fatto dal server stesso.
 
 Fa lo stesso lavoro di strumenti/Aggiorna.ps1, ma da dentro Docker: cosi' il
 server controlla da solo ogni 12 ore e l'aggiornamento si puo' lanciare anche
-dalla TV. La cartella di FrenkPlex e' montata in /programma: i file nuovi
+dalla TV. La cartella di BunkerPlex e' montata in /programma: i file nuovi
 vengono scritti li' e il server si riavvia per usarli.
 
 Regole uguali allo script del PC (con cui divide strumenti/versione.json):
@@ -43,7 +43,7 @@ except ValueError:
 PROTECTED_DIRS = ("data", "apk", ".git", "android\\out", "android\\keystore")
 PROTECTED_FILES = {".env", "docker-compose.override.yml",
                    "strumenti\\github-token.txt", "strumenti\\versione.json"}
-# Se cambiano questi non basta riavviare il server: va rilanciato "Avvia FrenkPlex.bat"
+# Se cambiano questi non basta riavviare il server: va rilanciato "Avvia BunkerPlex.bat"
 NEEDS_HOST = {"server\\Dockerfile", "server\\requirements.txt", "docker-compose.yml"}
 BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico aspetta
 
@@ -118,7 +118,7 @@ def token():
 def _fetch(url, accept, tok, timeout=30, dest=None):
     """Scarica da GitHub. I rimandi verso altri server (pacchetti, allegati) si
     seguono a mano e senza token: il loro indirizzo e' gia' firmato."""
-    headers = {"Accept": accept, "User-Agent": "FrenkPlex-updater",
+    headers = {"Accept": accept, "User-Agent": "BunkerPlex-updater",
                "X-GitHub-Api-Version": "2022-11-28"}
     if tok:
         headers["Authorization"] = "Bearer " + tok
@@ -128,7 +128,7 @@ def _fetch(url, accept, tok, timeout=30, dest=None):
         where = ex.headers.get("Location") if ex.code in (301, 302, 303, 307, 308) else None
         if not where:
             raise
-        plain = {"User-Agent": "FrenkPlex-updater"}
+        plain = {"User-Agent": "BunkerPlex-updater"}
         if urllib.parse.urlsplit(where).hostname == "api.github.com":
             plain = headers
         resp = urllib.request.urlopen(urllib.request.Request(where, headers=plain), timeout=timeout)
@@ -253,7 +253,7 @@ def _install_files(cfg, tok, sha):
                 raise RuntimeError("pacchetto vuoto")
             top = names[0].split("/", 1)[0] + "/"
             if not all(n.startswith(top) for n in names) or top + "strumenti/Aggiorna.ps1" not in names:
-                raise RuntimeError("il pacchetto scaricato non sembra FrenkPlex")
+                raise RuntimeError("il pacchetto scaricato non sembra BunkerPlex")
             files = []
             for name in names:
                 rel = name[len(top):].replace("/", "\\")

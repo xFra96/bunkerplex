@@ -1,4 +1,4 @@
-# FrenkPlex - avvio. Lo lancia "Avvia FrenkPlex.bat": non serve aprirlo a mano.
+# BunkerPlex - avvio. Lo lancia "Avvia BunkerPlex.bat": non serve aprirlo a mano.
 #
 # Fa tutto da solo, su qualsiasi PC con Docker Desktop:
 #   1. trova Docker e, se e' spento, lo accende e aspetta che sia pronto;
@@ -12,7 +12,7 @@
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $root
-$Host.UI.RawUI.WindowTitle = 'FrenkPlex'
+$Host.UI.RawUI.WindowTitle = 'BunkerPlex'
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 
@@ -133,7 +133,7 @@ if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
         Say ''
         foreach ($line in $news) { Say $line Cyan }
         if ($env:FRANCOPLEX_NO_PAUSE) {
-            Say 'Per installarlo: "Aggiorna FrenkPlex.bat".'
+            Say 'Per installarlo: "Aggiorna BunkerPlex.bat".'
         } elseif (Ask 'Lo installo adesso?') {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $updater -NoRestart
             # Si riparte da capo: questo stesso file puo' essere appena cambiato
@@ -142,7 +142,7 @@ if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
             exit $LASTEXITCODE
         }
     } elseif ($found -eq 2) {
-        Say 'Aggiornamenti: questo PC non ha ancora l''accesso a GitHub (lancia "Aggiorna FrenkPlex.bat").' DarkGray
+        Say 'Aggiornamenti: questo PC non ha ancora l''accesso a GitHub (lancia "Aggiorna BunkerPlex.bat").' DarkGray
     }
 }
 
@@ -153,14 +153,14 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue) -and $desktop) {
     $env:Path += ';' + (Join-Path (Split-Path $desktop) 'resources\bin')
 }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Say 'Su questo PC non c''e'' Docker Desktop: FrenkPlex ne ha bisogno.' Yellow
+    Say 'Su questo PC non c''e'' Docker Desktop: BunkerPlex ne ha bisogno.' Yellow
     if ((Get-Command winget -ErrorAction SilentlyContinue) -and (Ask 'Vuoi che lo installi adesso?')) {
         winget install -e --id Docker.DockerDesktop --accept-source-agreements --accept-package-agreements
         Stop-Here @('Finita l''installazione riavvia il PC, apri Docker Desktop una volta',
-                    '(accetta le condizioni) e poi rilancia "Avvia FrenkPlex.bat".')
+                    '(accetta le condizioni) e poi rilancia "Avvia BunkerPlex.bat".')
     }
     Stop-Here @('Installa Docker Desktop da https://www.docker.com/products/docker-desktop/',
-                'poi rilancia "Avvia FrenkPlex.bat".')
+                'poi rilancia "Avvia BunkerPlex.bat".')
 }
 
 if (-not (Docker-Ready)) {
@@ -188,7 +188,7 @@ $wsl = $kernel -match 'microsoft|WSL'
 
 # ---------------------------------------------------------------- 2. Catalogo
 # Il catalogo (elenco dei film, schede, locandine, visti) sta sempre nella
-# cartella "data" qui accanto: viaggia insieme a FrenkPlex, qualunque lettera
+# cartella "data" qui accanto: viaggia insieme a BunkerPlex, qualunque lettera
 # abbia il disco su questo PC. Se non c'e' ancora, nasce vuoto.
 
 if (-not (Test-Path -LiteralPath 'apk')) { New-Item -ItemType Directory -Path 'apk' | Out-Null }
@@ -202,7 +202,7 @@ if (-not (Test-Path -LiteralPath $data -PathType Container)) {
 # una cartella vuota creata da Docker perche' il disco mancava.
 $marker = Join-Path $data '.francoplex'
 try {
-    [System.IO.File]::WriteAllText($marker, "Catalogo di FrenkPlex: non cancellare questo file.`r`n")
+    [System.IO.File]::WriteAllText($marker, "Catalogo di BunkerPlex: non cancellare questo file.`r`n")
 } catch {
     Stop-Here @("Non riesco a scrivere in $data", 'Il disco e'' protetto da scrittura o pieno?')
 }
@@ -216,7 +216,7 @@ if ($wsl) {
 }
 
 function Write-Override($list) {
-    $lines = @('# Creato da "Avvia FrenkPlex.bat" a ogni avvio: non modificarlo a mano.',
+    $lines = @('# Creato da "Avvia BunkerPlex.bat" a ogni avvio: non modificarlo a mano.',
                'services:', '  francoplex:', '    volumes:')
     foreach ($d in $list) {
         $lines += '      - type: bind'
@@ -232,7 +232,7 @@ Write-Override $drives
 # ---------------------------------------------------------------- 4. Server
 
 Say ''
-Say 'Avvio FrenkPlex... la prima volta su un PC ci vuole qualche minuto.'
+Say 'Avvio BunkerPlex... la prima volta su un PC ci vuole qualche minuto.'
 Say ("Dischi collegati: " + (($drives | ForEach-Object { "${_}:" }) -join ' '))
 Say "Catalogo: $data"
 Say ''
@@ -302,7 +302,7 @@ try {
 
 Say ''
 Say '============================================================' Green
-Say ' FrenkPlex e'' acceso.' Green
+Say ' BunkerPlex e'' acceso.' Green
 Say ''
 Say ' Dal PC:      http://localhost:32500'
 Say ' Dalla TV:    l''app trova il server da sola.'
@@ -317,4 +317,4 @@ Say ' Se colleghi un altro disco, rilancia questo file.'
 Say '============================================================' Green
 Say ''
 if (-not $env:FRANCOPLEX_NO_BROWSER) { Start-Process 'http://localhost:32500' }
-if (-not $env:FRANCOPLEX_NO_PAUSE) { Read-Host 'Premi INVIO per chiudere questa finestra (FrenkPlex resta acceso)' | Out-Null }
+if (-not $env:FRANCOPLEX_NO_PAUSE) { Read-Host 'Premi INVIO per chiudere questa finestra (BunkerPlex resta acceso)' | Out-Null }

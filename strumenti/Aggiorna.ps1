@@ -1,5 +1,5 @@
-# FrenkPlex - aggiornamento da GitHub. Lo lancia "Aggiorna FrenkPlex.bat"
-# (e "Avvia FrenkPlex.bat", che a ogni avvio controlla se c'e' qualcosa di nuovo).
+# BunkerPlex - aggiornamento da GitHub. Lo lancia "Aggiorna BunkerPlex.bat"
+# (e "Avvia BunkerPlex.bat", che a ogni avvio controlla se c'e' qualcosa di nuovo).
 #
 # Scarica dal repository indicato in strumenti\aggiornamenti.json:
 #   - i file del programma (server, script, sorgenti dell'app per la TV);
@@ -56,7 +56,7 @@ try { $cfg = Get-Content -LiteralPath $cfgFile -Raw | ConvertFrom-Json } catch {
 $repo = "$($cfg.repo)".Trim()
 $branch = if ($cfg.branch) { "$($cfg.branch)".Trim() } else { 'main' }
 $apkTag = if ($cfg.apk_release) { "$($cfg.apk_release)".Trim() } else { 'app-tv' }
-if ($repo -notmatch '^[\w.-]+/[\w.-]+$') { Fail @('In strumenti\aggiornamenti.json manca "repo" (es. utente/FrenkPlex).') }
+if ($repo -notmatch '^[\w.-]+/[\w.-]+$') { Fail @('In strumenti\aggiornamenti.json manca "repo" (es. utente/BunkerPlex).') }
 
 $state = $null
 if (Test-Path -LiteralPath $stateFile) {
@@ -88,11 +88,11 @@ function Api($path, $accept = 'application/vnd.github+json', $outFile = $null) {
     if ($script:token) { $headers['Authorization'] = "Bearer $script:token" }
     $url = "https://api.github.com/repos/$repo/$path"
     if ($outFile) {
-        Invoke-WebRequest -Uri $url -Headers $headers -UserAgent 'FrenkPlex-updater' -UseBasicParsing `
+        Invoke-WebRequest -Uri $url -Headers $headers -UserAgent 'BunkerPlex-updater' -UseBasicParsing `
             -OutFile $outFile -TimeoutSec 900 -ErrorAction Stop
     } else {
         $wait = if ($Check) { 8 } else { 30 }
-        Invoke-RestMethod -Uri $url -Headers $headers -UserAgent 'FrenkPlex-updater' -UseBasicParsing `
+        Invoke-RestMethod -Uri $url -Headers $headers -UserAgent 'BunkerPlex-updater' -UseBasicParsing `
             -TimeoutSec $wait -ErrorAction Stop
     }
 }
@@ -126,7 +126,7 @@ for ($try = 0; $try -lt 2 -and -not $remoteSha; $try++) {
             Say 'e questo PC non ha ancora l''accesso.' Yellow
         }
         Say ''
-        Say 'Incolla qui un token di GitHub di sola lettura (come crearlo: LEGGIMI.md,'
+        Say 'Incolla qui un token di GitHub di sola lettura (come crearlo: README.md,'
         Say 'capitolo "Aggiornamenti"). Resta salvato in strumenti\github-token.txt,'
         Say 'quindi sul disco esterno vale per tutti i PC. Oppure premi INVIO per uscire'
         Say 'e collega questo PC con GitHub CLI: gh auth login'
@@ -188,7 +188,7 @@ if ($Check) {
         $what = @()
         if ($codeUpdate) { $what += 'il programma' }
         if ($apkAsset) { $what += 'l''app per la TV' }
-        Write-Output ("E' disponibile un aggiornamento di FrenkPlex (" + ($what -join ' e ') + ').')
+        Write-Output ("E' disponibile un aggiornamento di BunkerPlex (" + ($what -join ' e ') + ').')
         exit 10
     }
     exit 0
@@ -196,7 +196,7 @@ if ($Check) {
 
 if (-not $codeUpdate -and -not $apkAsset) {
     Say ''
-    Say 'FrenkPlex e'' gia'' aggiornato.' Green
+    Say 'BunkerPlex e'' gia'' aggiornato.' Green
     if ($gitCopy -and -not $haveGit) {
         Say '(Questa e'' la copia di sviluppo e su questo PC non c''e'' git: ho controllato solo l''app per la TV.)'
     }
@@ -228,7 +228,7 @@ function Update-Files {
         Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $tmp 'x') -Force -ErrorAction Stop
         $src = (Get-ChildItem -LiteralPath (Join-Path $tmp 'x') -Directory | Select-Object -First 1).FullName
         if (-not $src -or -not (Test-Path -LiteralPath (Join-Path $src 'strumenti\Aggiorna.ps1'))) {
-            throw 'il pacchetto scaricato non sembra FrenkPlex'
+            throw 'il pacchetto scaricato non sembra BunkerPlex'
         }
 
         $files = @()
@@ -324,14 +324,14 @@ if ($codeDone -and -not $NoRestart) {
     }
     Say ''
     if ($running) {
-        if (Ask 'FrenkPlex e'' acceso con la versione vecchia. Lo riavvio adesso?') {
+        if (Ask 'BunkerPlex e'' acceso con la versione vecchia. Lo riavvio adesso?') {
             $env:FRANCOPLEX_NO_UPDATE = '1'
             & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Avvia.ps1')
             exit $LASTEXITCODE
         }
-        Say 'La versione nuova parte al prossimo "Avvia FrenkPlex.bat".'
+        Say 'La versione nuova parte al prossimo "Avvia BunkerPlex.bat".'
     } else {
-        Say 'La versione nuova parte al prossimo "Avvia FrenkPlex.bat".'
+        Say 'La versione nuova parte al prossimo "Avvia BunkerPlex.bat".'
     }
 }
 if ($codeUpdate -and -not $codeDone) { exit 1 }

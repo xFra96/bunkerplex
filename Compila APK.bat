@@ -1,5 +1,5 @@
 @echo off
-title FrenkPlex - compilazione APK
+title BunkerPlex - compilazione APK
 cd /d "%~dp0"
 
 docker info >nul 2>&1
@@ -31,5 +31,5 @@ if not exist "android\keystore\francoplex.jks" copy "android\out\keystore\franco
 echo.
 echo Fatto: apk\FrenkPlex.apk
 echo Se l'app e' gia' sulla TV (dalla versione 1.3): al prossimo avvio propone
-echo da sola l'aggiornamento. Altrimenti leggi LEGGIMI.md o usa "Installa su TV.bat".
+echo da sola l'aggiornamento. Altrimenti leggi README.md o usa "Installa su TV.bat".
 pause

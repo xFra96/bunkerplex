@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "FrenkPlex"
+rootProject.name = "BunkerPlex"
 include(":app")
