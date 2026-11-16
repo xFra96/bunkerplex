@@ -84,17 +84,23 @@ Android TV, Google TV, Chromecast con Google TV, Fire TV Stick (Fire OS). Su Chr
 
 Due BunkerPlex in case diverse possono mostrarsi a vicenda le raccolte. **Si guarda soltanto**: nessuno tocca impostazioni, file o «visto» dell'altro. Tutto il resto continua a funzionare offline.
 
-1. Installate [Tailscale](https://tailscale.com) (gratuito) su entrambi i computer; uno condivide il suo computer con l'altro dal sito di Tailscale (*Machines → Share*). Non si apre nessuna porta del router.
-2. Uno dei due apre **Impostazioni → Amici → Manda la richiesta** e scrive l'indirizzo Tailscale dell'amico con la porta `32501` (es. `100.101.102.103:32501`), il proprio indirizzo, un nome e una password a scelta.
+1. Entrambi accendete **Impostazioni → Amici → Condivisione con gli amici**. BunkerPlex chiede da solo al router di casa di aprire la porta per gli amici (la `32501`, e solo quella) e ti mostra **il tuo indirizzo**: è quello da dare all'amico.
+2. Uno dei due apre **Manda una richiesta** (dal browser di un computer, non dalla TV) e scrive l'indirizzo dell'amico, un nome e una password a scelta.
 3. L'amico preme **Accetta** in *Impostazioni → Amici*.
 
-Da lì è automatico. Quando l'amico è spento le sue raccolte restano sfogliabili ma i video non partono. I video arrivano convertiti a 720p (si cambia in *Impostazioni → Amici*), perché viaggiano sulla linea in caricamento di chi condivide.
+Da lì è automatico: il collegamento è cifrato, la porta sul router viene tenuta aperta finché la condivisione è accesa, e se il tuo indirizzo di casa cambia BunkerPlex lo comunica da solo agli amici (se cambiano entrambi nello stesso momento, uno dei due rimanda la richiesta).
+
+**Se la porta non si apre da sola** — in *Impostazioni → Amici* lo leggi chiaramente. Capita quando nel router UPnP (o NAT-PMP) è spento: accendilo. Oppure quando l'operatore non ti dà un indirizzo pubblico (frequente con le linee radio e mobili): in quel caso installate [Tailscale](https://tailscale.com) (gratuito) su entrambi i computer, uno condivide il suo computer con l'altro dal sito di Tailscale (*Machines → Share*), e nella richiesta scrivete gli indirizzi Tailscale (quelli che cominciano per `100.`), il proprio compreso. Se preferisci Tailscale comunque, spegni **Apri da solo la porta sul router**.
+
+Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli serve che l'app sia stata aperta almeno una volta da un altro dispositivo di casa (la TV o il telefono). Quando l'amico è spento le sue raccolte restano sfogliabili ma i video non partono. I video arrivano convertiti a 720p (si cambia in *Impostazioni → Amici*), perché viaggiano sulla linea in caricamento di chi condivide.
 
 **Sicurezza**
 
 - La porta **32500** è senza password: non farla mai raggiungere da fuori casa. Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
 - Con Tailscale l'amico raggiunge il tuo computer su tutte le porte: condividi solo con chi ti fidi, oppure limita l'accesso alla `32501` nelle *Access controls* di Tailscale.
-- Senza Tailscale puoi inoltrare dal router la sola porta 32501, ma il collegamento è **HTTP non cifrato**: password e video viaggiano in chiaro. Sconsigliato.
+- La porta 32501 è **cifrata** (HTTPS) con un certificato creato dal tuo server: l'amico ne ricorda l'impronta alla prima richiesta e da lì in poi accetta solo quello. Il punto debole è quel primo collegamento: per sicurezza piena, la prima richiesta fatela sapendo che l'indirizzo è davvero quello dell'amico.
+- Con la porta aperta sul router, la 32501 è visibile da Internet: risponde solo alla registrazione (che resta ferma finché non la approvi) e agli amici approvati. Dopo 5 password sbagliate l'accesso si blocca per un po'.
+- Non inoltrare mai a mano altre porte, e mai la 32500.
 
 ## Aggiornamenti
 

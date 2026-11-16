@@ -9,6 +9,8 @@ import difflib
 import gzip
 import hashlib
 import hmac
+import http.client
+import ipaddress
 import json
 import math
 import mimetypes
@@ -16,7 +18,9 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
+import ssl
 import struct
 import subprocess
 import threading
@@ -265,7 +269,9 @@ def init_db():
                           ("items", "collection_id INT"), ("items", "coll_done INT DEFAULT 0"),
                           ("items", "fav REAL DEFAULT 0"), ("shows", "fav REAL DEFAULT 0"),
                           # people: il cast con ruolo e foto (JSON). NULL = ancora da scaricare.
-                          ("items", "people TEXT"), ("shows", "people TEXT")):
+                          ("items", "people TEXT"), ("shows", "people TEXT"),
+                          # back_pin: impronta del certificato dell'amico che ha mandato la richiesta
+                          ("accounts", "back_pin TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -1471,6 +1477,8 @@ class SmallAndFast:
         self.gzip = GZipMiddleware(inner, minimum_size=2048, compresslevel=5)
 
     async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and (scope.get("server") or ("", 0))[1] != SHARE_PORT:
+            learn_lan(scope)
         if scope["type"] == "http" and scope["path"].startswith(self.PLAYING):
             updater.playing()     # qualcuno sta guardando: l'aggiornamento automatico aspetta
         if scope["type"] == "http" and not scope["path"].startswith(self.RAW):
@@ -1546,6 +1554,7 @@ def startup():
     threading.Thread(target=friends_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
+        threading.Thread(target=portmap_loop, daemon=True).start()
 
 
 # ---- Aggiornamenti da GitHub ----------------------------------------------
@@ -2732,6 +2741,7 @@ def share_guard(request: Request):
             friend_nudge(r["id"])
     if not known[1]:
         raise HTTPException(403, "Registrazione in attesa di approvazione")
+    request.state.share_account = known[0]
 
 
 def friend_nudge(account):
@@ -2762,10 +2772,12 @@ async def share_register(request: Request):
     # 'back': chi chiede offre gia' le sue raccolte (indirizzo + gettone per entrare da lui).
     # Si usano solo se e quando il padrone di casa approva la richiesta.
     back = body.get("back") if isinstance(body.get("back"), dict) else {}
-    back_url = back_token = ""
+    back_url = back_token = back_pin = ""
     if isinstance(back.get("token"), str) and 20 <= len(back["token"]) <= 200:
         try:
             back_url, back_token = friend_address(back.get("url")), back["token"]
+            if re.fullmatch(r"[0-9a-f]{64}", str(back.get("pin") or "")):
+                back_pin = back["pin"]
         except HTTPException:
             pass
     now = time.time()
@@ -2782,9 +2794,9 @@ async def share_register(request: Request):
             if con.execute("SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] >= 30:
                 raise HTTPException(429, "Troppe richieste in attesa: riprova più tardi")
             salt = secrets.token_bytes(16)
-            cur = con.execute("INSERT INTO accounts(name, salt, hash, approved, created, back_url, back_token) "
-                              "VALUES(?,?,?,0,?,?,?)",
-                              (name, salt, password_hash(password, salt), now, back_url, back_token))
+            cur = con.execute("INSERT INTO accounts(name, salt, hash, approved, created, back_url, back_token, "
+                              "back_pin) VALUES(?,?,?,0,?,?,?,?)",
+                              (name, salt, password_hash(password, salt), now, back_url, back_token, back_pin))
             token = new_session(con, cur.lastrowid)
             con.commit()
             return {"ok": True, "token": token, "approved": False, "server": SERVER_NAME}
@@ -2838,8 +2850,11 @@ def sharing_status():
                     for r in con.execute("SELECT * FROM accounts ORDER BY approved, name COLLATE NOCASE")]
     finally:
         con.close()
+    sh = config.get("share") or {}
     return {"on": share_on(), "port": SHARE_PORT, "accounts": accounts,
-            "address": (config.get("share") or {}).get("address") or ""}
+            "address": my_address(), "manual": bool(sh.get("manual") and sh.get("address")),
+            "tls": share_tls["on"], "auto_port": auto_port(), "lan": lan["ip"],
+            "portmap": {k: portmap[k] for k in ("ok", "method", "ip", "port", "public", "error", "at")}}
 
 
 @app.post("/api/sharing")
@@ -2850,9 +2865,14 @@ async def sharing_set(request: Request):
         sh = config.setdefault("share", {})
         if "on" in body:
             sh["on"] = bool(body["on"])
+        if "auto_port" in body:
+            sh["auto_port"] = bool(body["auto_port"])
         if address:
-            sh["address"] = address
+            sh.update(address=address, manual=True)
+        elif "address" in body:          # campo svuotato: si torna all'indirizzo trovato da solo
+            sh["manual"] = False
         save_config()
+    portmap_wake.set()                   # apre o richiude subito la porta sul router
     return {"ok": True, "on": share_on()}
 
 
@@ -2876,7 +2896,7 @@ async def sharing_approve(account: int, request: Request):
     if body.get("approved") and r["back_url"] and r["back_token"]:
         friends = get_friends()
         if not any(f["url"] == r["back_url"] for f in friends) and len(friends) < FRIEND_MAX:
-            friend_store(r["name"], r["back_url"], "", r["back_token"], account)
+            friend_store(r["name"], r["back_url"], "", r["back_token"], account, r["back_pin"])
             linked = True
     return {"ok": True, "linked": linked}
 
@@ -3030,6 +3050,26 @@ def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int =
     return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0)
 
 
+@share.post("/hello")
+async def share_hello(request: Request):
+    """L'amico avvisa che il suo indirizzo e' cambiato (capita con le linee di
+    casa). Vale solo per il collegamento di ritorno verso di lui: e' l'unica cosa
+    che un amico puo' scrivere qui."""
+    body = await read_json(request)
+    url = friend_address(body.get("url"))
+    account = request.state.share_account
+    changed = None
+    with config_lock:
+        for f in config.get("friends") or []:
+            if f.get("account") == account and f["url"] != url:
+                f["url"] = url
+                changed = f["n"]
+                save_config()
+    if changed:
+        friend_status.pop(changed, None)
+    return {"ok": True}
+
+
 app.include_router(share)
 
 
@@ -3055,8 +3095,10 @@ class ShareOnly:
 def share_listener():
     try:
         import uvicorn
+        cert = share_cert()
+        tls = {"ssl_certfile": cert[0], "ssl_keyfile": cert[1]} if cert else {}
         uvicorn.run(ShareOnly(app), host="0.0.0.0", port=SHARE_PORT, lifespan="off",
-                    log_level="warning")
+                    log_level="warning", **tls)
     except BaseException as ex:      # porta occupata: il resto del server va avanti lo stesso
         print("Porta per gli amici non disponibile:", SHARE_PORT, ex, flush=True)
 
@@ -3080,6 +3122,332 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 friend_opener = urllib.request.build_opener(_NoRedirect)
+
+
+# ---- Porta per gli amici: cifratura e apertura sul router ------------------
+# Perche' un amico arrivi da Internet senza installare nulla servono due cose,
+# e il server le fa da solo:
+# 1. la porta per gli amici parla HTTPS con un certificato creato qui; ogni
+#    amico ne ricorda l'impronta al primo collegamento e da li' in poi non
+#    accetta altro (password, gettone e video non viaggiano in chiaro);
+# 2. il server chiede al router di casa di aprire quella sola porta (NAT-PMP,
+#    poi UPnP), come fanno Plex e le console. Se il router non lo permette o
+#    l'operatore non da' un indirizzo pubblico, lo dice e resta la strada di
+#    Tailscale. Niente servizi esterni: si parla solo con il proprio router.
+
+SHARE_CERT = DATA / "share_cert.pem"
+SHARE_KEY = DATA / "share_key.pem"
+NATPMP_PORT = int(os.environ.get("NATPMP_PORT", "5351"))
+SSDP_PORT = int(os.environ.get("SSDP_PORT", "1900"))
+IN_DOCKER = Path("/.dockerenv").exists()
+# Gli indirizzi che i router di casa usano quasi sempre
+ROUTERS = ("192.168.1.1", "192.168.0.1", "192.168.1.254", "192.168.178.1", "192.168.100.1",
+           "192.168.2.1", "192.168.8.1", "192.168.50.1", "192.168.68.1", "192.168.88.1",
+           "192.168.10.1", "192.168.3.1", "192.168.0.254", "192.168.4.1", "192.168.5.1",
+           "192.168.11.1", "192.168.31.1", "192.168.123.254", "10.0.0.1", "10.0.0.138",
+           "10.0.1.1", "10.1.1.1", "172.16.0.1")
+share_tls = {"on": False, "pin": ""}
+lan = {"ip": ""}                 # l'indirizzo di questo PC in casa (lo si impara da chi apre l'app)
+portmap = {"ok": False, "method": "", "router": "", "ip": "", "port": 0, "public": False,
+           "error": "", "at": 0.0}
+portmap_wake = threading.Event()
+LAN_NET = re.compile(r"^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)\d")
+TLS_ANY = ssl.create_default_context()
+TLS_ANY.check_hostname = False
+TLS_ANY.verify_mode = ssl.CERT_NONE      # non ci si fida di un ente: si confronta l'impronta ricordata
+
+
+def share_cert():
+    """Il certificato della porta per gli amici (creato una volta, resta con il
+    catalogo). None se non si riesce a crearlo: la porta resta in chiaro."""
+    try:
+        if not (SHARE_CERT.is_file() and SHARE_KEY.is_file()):
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                            "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(SHARE_KEY),
+                            "-out", str(SHARE_CERT), "-days", "7300", "-subj", "/CN=BunkerPlex"],
+                           capture_output=True, timeout=60, check=True)
+        der = ssl.PEM_cert_to_DER_cert(SHARE_CERT.read_text("ascii"))
+        share_tls.update(on=True, pin=hashlib.sha256(der).hexdigest())
+        return str(SHARE_CERT), str(SHARE_KEY)
+    except Exception as ex:
+        print("Certificato per gli amici non creato (la porta resta non cifrata):", repr(ex), flush=True)
+        return None
+
+
+def learn_lan(scope):
+    """Chi apre BunkerPlex da casa scrive l'indirizzo di questo PC (es. 192.168.1.50):
+    dentro Docker e' l'unico modo per conoscerlo, e serve per parlare con il router."""
+    for k, v in scope.get("headers") or ():
+        if k == b"host":
+            host = v.decode("latin-1").rsplit(":", 1)[0]
+            if LAN_NET.match(host) and re.fullmatch(r"[\d.]{7,15}", host) and host != lan["ip"]:
+                lan["ip"] = host
+                portmap_wake.set()
+            return
+
+
+def auto_port():
+    return (config.get("share") or {}).get("auto_port", True) is not False
+
+
+def my_address():
+    """L'indirizzo con cui un amico raggiunge questo server: quello scritto a
+    mano (Tailscale) oppure quello pubblico trovato aprendo la porta sul router."""
+    sh = config.get("share") or {}
+    if sh.get("manual") and sh.get("address"):
+        return sh["address"]
+    if portmap["ok"] and portmap["public"]:
+        return f"{'https' if share_tls['on'] else 'http'}://{portmap['ip']}:{portmap['port']}"
+    return sh.get("address") or ""
+
+
+def router_candidates():
+    fixed = os.environ.get("ROUTER_IP", "")
+    if fixed:                    # router indicato a mano: non si cerca altrove
+        return [fixed]
+    out = [(config.get("share") or {}).get("router", "")]
+    if lan["ip"]:
+        net = lan["ip"].rsplit(".", 1)[0]
+        out += [net + ".1", net + ".254"]
+    out += ROUTERS
+    seen = []
+    for r in out:
+        if r and r not in seen:
+            seen.append(r)
+    return seen
+
+
+def natpmp_scan(routers):
+    """Chi tra i possibili router risponde a NAT-PMP: [(router, indirizzo pubblico)]."""
+    found = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(0.3)
+        for attempt in range(2):
+            for r in routers:
+                try:
+                    s.sendto(b"\x00\x00", (r, NATPMP_PORT))
+                except OSError:
+                    pass
+            end = time.time() + 0.7
+            while time.time() < end:
+                try:
+                    data, addr = s.recvfrom(64)
+                except socket.timeout:
+                    continue
+                except OSError:      # su Windows: "porta irraggiungibile" di un indirizzo vuoto
+                    continue
+                if len(data) >= 12 and data[1] == 128 and data[2:4] == b"\x00\x00" \
+                        and addr[0] in routers and addr[0] not in [f[0] for f in found]:
+                    found.append((addr[0], socket.inet_ntoa(data[8:12])))
+            if found:
+                break
+    finally:
+        s.close()
+    return found
+
+
+def natpmp_map(router, port, lifetime):
+    """Chiede al router di girare la porta 'port' a questo PC. Restituisce la
+    porta pubblica ottenuta, None se rifiuta. lifetime=0 la richiude."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(0.8)
+        ask = struct.pack("!BBHHHI", 0, 2, 0, port, port if lifetime else 0, lifetime)
+        for attempt in range(3):
+            try:
+                s.sendto(ask, (router, NATPMP_PORT))
+                data, _ = s.recvfrom(64)
+            except OSError:
+                continue
+            if len(data) >= 16 and data[1] == 130:
+                _, _, result, _, _, external, _ = struct.unpack("!BBHIHHI", data[:16])
+                return (external or port) if result == 0 else None
+    finally:
+        s.close()
+    return None
+
+
+LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+IGD_SERVICES = ("WANIPConnection", "WANPPPConnection")
+
+
+def ssdp_find(routers):
+    """Cerca il router che parla UPnP: prima con la ricerca normale (funziona
+    quando il server gira direttamente sul PC), poi chiedendo uno per uno agli
+    indirizzi probabili (dentro Docker la ricerca normale non esce).
+    Restituisce gli indirizzi delle descrizioni trovate."""
+    found = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(0.3)
+        for st in ("urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+                   "urn:schemas-upnp-org:device:InternetGatewayDevice:2", "upnp:rootdevice"):
+            msg = ("M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\n"
+                   f"MX: 1\r\nST: {st}\r\n\r\n").encode()
+            for target in ([] if os.environ.get("ROUTER_IP") else ["239.255.255.250"]) + list(routers):
+                try:
+                    s.sendto(msg, (target, 1900 if target.startswith("239.") else SSDP_PORT))
+                except OSError:
+                    pass
+        end = time.time() + 1.6
+        while time.time() < end:
+            try:
+                data, addr = s.recvfrom(2048)
+            except OSError:
+                continue
+            m = re.search(rb"(?im)^location:\s*(http://\S+)", data)
+            if m:
+                loc = m.group(1).decode("latin-1")
+                host = urllib.parse.urlsplit(loc).hostname or ""
+                # La descrizione deve stare sul dispositivo che ha risposto, in casa
+                if host == addr[0] and (LAN_NET.match(host) or host in routers) and loc not in found:
+                    found.append(loc)
+    finally:
+        s.close()
+    return found
+
+
+def upnp_service(location):
+    """Dalla descrizione del router: (indirizzo dei comandi, tipo di servizio)."""
+    with LOCAL_HTTP.open(location, timeout=4) as r:
+        xml = r.read(1 << 20)
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml)
+    base = location
+    for el in root.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "URLBase" and (el.text or "").strip().startswith("http://"):
+            base = el.text.strip()
+        if tag == "service":
+            fields = {c.tag.rsplit("}", 1)[-1]: (c.text or "").strip() for c in el}
+            if any(name in fields.get("serviceType", "") for name in IGD_SERVICES) and fields.get("controlURL"):
+                control = urllib.parse.urljoin(base, fields["controlURL"])
+                if urllib.parse.urlsplit(control).hostname == urllib.parse.urlsplit(location).hostname:
+                    return control, fields["serviceType"]
+    return None
+
+
+def upnp_call(control, service, action, args):
+    body = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+            f'<u:{action} xmlns:u="{service}">' +
+            "".join(f"<{k}>{v}</{k}>" for k, v in args) + f"</u:{action}></s:Body></s:Envelope>").encode()
+    req = urllib.request.Request(control, data=body, method="POST", headers={
+        "Content-Type": 'text/xml; charset="utf-8"', "SOAPAction": f'"{service}#{action}"'})
+    try:
+        with LOCAL_HTTP.open(req, timeout=5) as r:
+            return r.read(1 << 16).decode("utf-8", "replace")
+    except urllib.error.HTTPError as ex:
+        text = ex.read(1 << 16).decode("utf-8", "replace")
+        ex.close()
+        m = re.search(r"<errorCode>(\d+)</errorCode>", text)
+        raise OSError(f"UPnP {m.group(1) if m else ex.code}")
+
+
+def upnp_map(location, port):
+    """Apre la porta con UPnP. Restituisce (comandi, servizio, indirizzo pubblico)."""
+    found = upnp_service(location)
+    if not found:
+        raise OSError("il router non offre l'apertura delle porte")
+    control, service = found
+    client = lan["ip"]
+    if not client and not IN_DOCKER:     # server direttamente sul PC: l'indirizzo e' quello della scheda di rete
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((urllib.parse.urlsplit(control).hostname, 9))
+            client = s.getsockname()[0]
+        finally:
+            s.close()
+    if not client:
+        raise OSError("apri una volta BunkerPlex dalla TV o dal telefono: serve per conoscere l'indirizzo di questo PC")
+    args = [("NewRemoteHost", ""), ("NewExternalPort", port), ("NewProtocol", "TCP"),
+            ("NewInternalPort", port), ("NewInternalClient", client), ("NewEnabled", 1),
+            ("NewPortMappingDescription", "BunkerPlex amici"), ("NewLeaseDuration", 7200)]
+    try:
+        upnp_call(control, service, "AddPortMapping", args)
+    except OSError as ex:
+        if "725" not in str(ex):         # 725: il router accetta solo aperture senza scadenza
+            raise
+        upnp_call(control, service, "AddPortMapping", args[:-1] + [("NewLeaseDuration", 0)])
+    text = upnp_call(control, service, "GetExternalIPAddress", [])
+    m = re.search(r"<NewExternalIPAddress>\s*([\d.]+)\s*</NewExternalIPAddress>", text)
+    return control, service, m.group(1) if m else ""
+
+
+def is_public(ip):
+    try:
+        return ipaddress.ip_address(ip).is_global
+    except ValueError:
+        return False
+
+
+def portmap_open():
+    """Apre (o rinnova) la porta per gli amici sul router di casa."""
+    port = SHARE_PORT
+    before = my_address()
+    routers = router_candidates()
+    done, error = None, "il router non risponde: attiva UPnP (o NAT-PMP) nelle sue impostazioni, oppure usa Tailscale"
+    for router, ip in natpmp_scan(routers):
+        external = natpmp_map(router, port, 7200)
+        if external:
+            done = {"method": "NAT-PMP", "router": router, "ip": ip, "port": external}
+            break
+    if not done:
+        for location in ssdp_find(routers):
+            try:
+                control, service, ip = upnp_map(location, port)
+                done = {"method": "UPnP", "router": urllib.parse.urlsplit(location).hostname, "ip": ip,
+                        "port": port, "control": control, "service": service}
+                break
+            except Exception as ex:
+                error = f"il router ha rifiutato ({ex})"
+    if not done:
+        portmap.update(ok=False, public=False, error=error, at=time.time())
+        return
+    public = is_public(done["ip"])
+    portmap.update(done, ok=True, public=public, at=time.time(),
+                   error="" if public else "il router ha aperto la porta, ma il tuo operatore non ti dà un "
+                                           "indirizzo pubblico (o c'è un secondo router davanti): da fuori non ci si arriva. Usa Tailscale")
+    with config_lock:
+        sh = config.setdefault("share", {})
+        if sh.get("router") != done["router"]:
+            sh["router"] = done["router"]
+            save_config()
+    if my_address() != before:
+        # Indirizzo nuovo (per esempio l'operatore l'ha cambiato): lo si dice subito agli amici
+        for f in get_friends():
+            threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+
+
+def portmap_close():
+    try:
+        if portmap["method"] == "NAT-PMP":
+            natpmp_map(portmap["router"], SHARE_PORT, 0)
+        elif portmap["method"] == "UPnP":
+            upnp_call(portmap["control"], portmap["service"], "DeletePortMapping",
+                      [("NewRemoteHost", ""), ("NewExternalPort", portmap["port"]), ("NewProtocol", "TCP")])
+    except Exception:
+        pass
+    portmap.update(ok=False, public=False, method="", error="", at=time.time())
+
+
+def portmap_loop():
+    """Tiene aperta la porta finche' la condivisione e' accesa: rinnovo ogni 25
+    minuti, nuovo tentativo ogni 5 se il router non ha risposto."""
+    while True:
+        try:
+            if SHARE_PORT and share_on() and auto_port():
+                portmap_open()
+            elif portmap["ok"]:
+                portmap_close()
+            else:
+                portmap.update(error="", at=time.time())
+        except Exception as ex:
+            portmap.update(ok=False, public=False, error="errore: " + str(ex)[:120], at=time.time())
+        portmap_wake.wait(1500 if portmap["ok"] else 300)
+        portmap_wake.clear()
+        time.sleep(1)
 
 
 def get_friends():
@@ -3128,7 +3496,36 @@ def friend_open(f, path, timeout=5, headers=None, method="GET", data=None):
     h = {"X-Share-Token": f.get("token") or "", "User-Agent": "BunkerPlex/" + VERSION}
     h.update(headers or {})
     req = urllib.request.Request(f["url"] + "/api/share" + path, data=data, headers=h, method=method)
-    return friend_opener.open(req, timeout=timeout)
+    if not f["url"].startswith("https://"):
+        return friend_opener.open(req, timeout=timeout)
+    pin = f.get("pin")
+
+    class Pinned(http.client.HTTPSConnection):
+        """Collegamento cifrato che accetta solo il certificato ricordato per questo
+        amico (al primo collegamento non c'e' ancora: lo si prende e lo si ricorda)."""
+
+        def connect(self):
+            super().connect()
+            got = hashlib.sha256(self.sock.getpeercert(True)).hexdigest()
+            if pin and not hmac.compare_digest(got, pin):
+                self.close()
+                raise ssl.SSLError("certificato cambiato")
+            f["_pin"] = got
+
+    class Handler(urllib.request.HTTPSHandler):
+        def https_open(self, r):
+            return self.do_open(Pinned, r, context=TLS_ANY)
+
+    return urllib.request.build_opener(_NoRedirect, Handler).open(req, timeout=timeout)
+
+
+def friend_set(n, **fields):
+    with config_lock:
+        for f in config.get("friends") or []:
+            if f["n"] == n:
+                f.update(fields)
+                save_config()
+                return
 
 
 def http_detail(ex):
@@ -3161,10 +3558,17 @@ def friend_json(f, path, timeout=5, body=None):
             raise HTTPException(404, "Questo titolo non c'è più sul server dell'amico")
         friend_mark(n, False, detail or f"errore {ex.code}")
         raise FriendDown(detail or f"errore {ex.code}", ex.code)
-    except Exception:
-        friend_mark(n, False, "non raggiungibile")
-        raise FriendDown("non raggiungibile")
+    except Exception as ex:
+        why = "non raggiungibile"
+        if "certificato cambiato" in str(ex):
+            why = ("il certificato del suo server è cambiato: se ha reinstallato BunkerPlex, "
+                   "togli l'amico e rimanda la richiesta")
+        friend_mark(n, False, why)
+        raise FriendDown(why)
     friend_mark(n, True)
+    if n and f.get("_pin") and not f.get("pin"):     # primo collegamento cifrato: da ora vale solo questo certificato
+        f["pin"] = f["_pin"]
+        friend_set(n, pin=f["pin"])
     return out
 
 
@@ -3261,6 +3665,7 @@ def friend_sync(f):
                 fc_save(n, f"lib_{l['id']}.json", items)
                 everything += items
         friend_status.setdefault(n, {})["synced"] = time.time()
+        friend_hello(f)
         # Le locandine: scaricate una volta, poi si vedono anche con l'amico spento
         for x in everything:
             m = F_IMG.match(x.get("poster") or "") if isinstance(x, dict) else None
@@ -3274,6 +3679,21 @@ def friend_sync(f):
         print("Amico", f.get("name"), "- aggiornamento non riuscito:", ex, flush=True)
     finally:
         lock.release()
+
+
+def friend_hello(f):
+    """Dice all'amico a quale indirizzo trova questo server, se e' cambiato
+    dall'ultima volta (cosi' il collegamento di ritorno non si perde)."""
+    mine = my_address()
+    if not mine or not f.get("account") or f.get("told") == mine:
+        return
+    try:
+        with friend_open(f, "/hello", 6, {"Content-Type": "application/json"}, "POST",
+                         json.dumps({"url": mine}).encode()) as r:
+            r.read(4096)
+        friend_set(f["n"], told=mine)
+    except Exception:
+        pass                     # si riprova al prossimo giro
 
 
 def friends_loop():
@@ -3702,12 +4122,13 @@ def friend_continue(con, cont):
 # ---- Impostazioni: aggiungere e togliere amici -----------------------------
 
 def friend_address(raw):
-    """Indirizzo scritto a mano -> http://host:porta (porta degli amici se manca)."""
+    """Indirizzo scritto a mano -> https://host:porta (cifrato e sulla porta degli
+    amici, se non e' scritto altro)."""
     raw = str(raw or "").strip()
     if not raw:
         raise HTTPException(400, "Scrivi l'indirizzo dell'amico")
     if "://" not in raw:
-        raw = "http://" + raw
+        raw = "https://" + raw
     try:
         u = urllib.parse.urlsplit(raw)
         port, host = u.port, u.hostname
@@ -3717,9 +4138,7 @@ def friend_address(raw):
         raise HTTPException(400, "Indirizzo non valido")
     if ":" in host:
         host = f"[{host}]"
-    if port is None and u.scheme == "http":
-        port = 32501
-    return f"{u.scheme}://{host}" + (f":{port}" if port else "")
+    return f"{u.scheme}://{host}:{port or 32501}"
 
 
 @app.get("/api/friends")
@@ -3756,17 +4175,41 @@ async def friends_add(request: Request):
     if body.get("register"):
         # Richiesta di condivisione reciproca: insieme alla richiesta si offre l'ingresso
         # qui. Serve sapere a quale indirizzo l'amico raggiunge questo server.
-        mine = friend_address(body["my_url"]) if body.get("my_url") else \
-            (config.get("share") or {}).get("address")
+        typed = friend_address(body["my_url"]) if body.get("my_url") else ""
+        if not share_on():
+            # Prima richiesta: si accende la condivisione e si prova ad aprire la porta sul router
+            with config_lock:
+                config.setdefault("share", {})["on"] = True
+                save_config()
+            asked = time.time()
+            portmap_wake.set()
+            if not typed:
+                for _ in range(40):
+                    if portmap["at"] >= asked:
+                        break
+                    await asyncio.sleep(0.25)
+        if typed and typed != my_address():
+            with config_lock:
+                config.setdefault("share", {}).update(address=typed, manual=True)
+                save_config()
+        mine = typed or my_address()
         if not mine:
-            raise HTTPException(400, "Scrivi il tuo indirizzo: è quello con cui l'amico raggiunge il tuo server")
-        with config_lock:
-            config.setdefault("share", {}).update(on=True, address=mine)
-            save_config()
+            raise HTTPException(400, "Non sono riuscito ad aprire la porta sul router ("
+                                     + (portmap["error"] or "nessuna risposta") + "). Scrivi tu il tuo indirizzo, "
+                                     "per esempio quello di Tailscale")
         account, token = await in_thread(account_for_friend, name or user)
-        ask["back"] = {"url": mine, "token": token}
+        ask["back"] = {"url": mine, "token": token, "pin": share_tls["pin"]}
+    path = "/register" if body.get("register") else "/login"
     try:
-        got = await in_thread(friend_json, probe, "/register" if body.get("register") else "/login", 8, ask)
+        try:
+            got = await in_thread(friend_json, probe, path, 8, ask)
+        except FriendDown as ex:
+            # Indirizzo scritto senza http/https: se dall'altra parte la porta non e' cifrata si riprova in chiaro
+            if ex.code or "://" in str(body.get("url")):
+                raise
+            probe = {"url": "http://" + url[len("https://"):], "token": ""}
+            got = await in_thread(friend_json, probe, path, 8, ask)
+            url = probe["url"]
     except FriendDown as ex:
         if account:
             account_drop(account)
@@ -3778,11 +4221,12 @@ async def friends_add(request: Request):
         if account:
             account_drop(account)
         raise HTTPException(502, "A quell'indirizzo non risponde un BunkerPlex")
-    n = friend_store(name or str(got.get("server") or "Amico")[:30], url, user, got["token"], account)
+    n = friend_store(name or str(got.get("server") or "Amico")[:30], url, user, got["token"], account,
+                     probe.get("_pin"))
     return {"ok": True, "n": n, "approved": bool(got.get("approved"))}
 
 
-def friend_store(name, url, user, token, account=None):
+def friend_store(name, url, user, token, account=None, pin=None):
     """Mette un amico tra i collegamenti e comincia subito a scaricarne gli elenchi."""
     with config_lock:
         current = config.setdefault("friends", [])
@@ -3791,6 +4235,8 @@ def friend_store(name, url, user, token, account=None):
         f = {"n": n, "name": name, "url": url, "user": user, "token": token}
         if account:
             f["account"] = account       # l'account con cui lui entra qui: se ne va insieme a lui
+        if pin:
+            f["pin"] = pin               # impronta del suo certificato: si accetta solo quello
         current.append(f)
         save_config()
     shutil.rmtree(FRIENDS_DIR / str(n), ignore_errors=True)
