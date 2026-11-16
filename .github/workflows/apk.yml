@@ -1,0 +1,75 @@
+# Ricompila l'app per la TV a ogni push su main che tocca android/ e la allega
+# alla release "app-tv" (FrenkPlex.apk). I server BunkerPlex la trovano li' e la
+# propongono alle TV da soli (vedi server/updater.py).
+#
+# Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/francoplex.jks
+# in base64 (vedi README, «App per la TV compilata da GitHub»). Deve essere la stessa
+# con cui e' firmata l'app gia' installata, se no la TV rifiuta l'aggiornamento:
+# per questo, se il segreto manca, la compilazione si ferma invece di crearne una nuova.
+
+name: App per la TV
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Chiave di firma
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma): leggi il README."
+            exit 1
+          fi
+          mkdir -p android/keystore
+          echo "$KEYSTORE_B64" | base64 -d > android/keystore/francoplex.jks
+          keytool -list -keystore android/keystore/francoplex.jks -storepass francoplex -alias francoplex > /dev/null
+
+      # Stessi strumenti del Dockerfile di "Compila APK.bat" (Java 17, Gradle 8.11.1);
+      # l'SDK Android e' gia' sul server di GitHub. In cache vanno solo le librerie
+      # di Gradle, mai la chiave di firma.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Compila l'APK
+        working-directory: android
+        run: |
+          gradle --no-daemon assembleRelease
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk ../out/FrenkPlex.apk
+          ls -l ../out/FrenkPlex.apk
+
+      - name: Allega alla release app-tv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view app-tv > /dev/null 2>&1; then
+            gh release upload app-tv out/FrenkPlex.apk --clobber
+          else
+            gh release create app-tv out/FrenkPlex.apk --title "App per la TV" \
+              --notes "APK di BunkerPlex per Android TV, Google TV e Fire TV. Viene sostituito a ogni pubblicazione."
+          fi

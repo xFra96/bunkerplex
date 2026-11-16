@@ -2,6 +2,8 @@
 # Serve solo sul PC dove modifichi BunkerPlex (con git e GitHub CLI installati):
 #   1. salva le modifiche (commit) e le manda al repository (push);
 #   2. se apk\FrenkPlex.apk e' cambiato, lo allega alla release "app-tv".
+#      Con .github\workflows\apk.yml l'APK lo compila e lo allega GitHub da solo:
+#      allora questo passo si salta e GitHub CLI non serve.
 # Gli altri PC li ricevono con "Aggiorna BunkerPlex.bat" o all'avvio.
 #
 # Mai pubblicati (vedi .gitignore): catalogo, .env, chiave di firma, token.
@@ -24,7 +26,8 @@ function Fail($lines) {
 # una funzione di nome Git che chiama "git" richiamerebbe se stessa all'infinito.
 function Git { & git.exe -c 'safe.directory=*' @args }
 
-foreach ($tool in 'git', 'gh') {
+$ci = Test-Path -LiteralPath (Join-Path $root '.github\workflows\apk.yml')
+foreach ($tool in @('git') + @(if (-not $ci) { 'gh' })) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         Fail @("Su questo PC manca '$tool': serve per pubblicare.",
                'git: https://git-scm.com   GitHub CLI: https://cli.github.com')
@@ -60,7 +63,10 @@ Say "Programma pubblicato su $repo." Green
 
 # ------------------------------------------------------------ 2. app per la TV
 
-if (Test-Path -LiteralPath $apkFile) {
+if ($ci) {
+    Say 'L''app per la TV la compila GitHub da sola, se hai cambiato qualcosa in android\'
+    Say "(avanzamento: https://github.com/$repo/actions)."
+} elseif (Test-Path -LiteralPath $apkFile) {
     $mine = (Get-FileHash -LiteralPath $apkFile -Algorithm SHA256).Hash
     $size = (Get-Item -LiteralPath $apkFile).Length
     $release = $null

@@ -136,7 +136,8 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 ## Per chi lo modifica
 
 - `Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
-- `Pubblica aggiornamento.bat` manda le modifiche su GitHub e allega l'APK alla release `app-tv` (servono git e GitHub CLI).
+- `Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git).
+- **App per la TV compilata da GitHub**: a ogni push su `main` che tocca `android/`, l'Action *App per la TV* (`.github/workflows/apk.yml`) ricompila l'APK e lo allega alla release `app-tv`. Da lì i server lo scaricano e le TV lo propongono da sole. Si può lanciare anche a mano: *Actions → App per la TV → Run workflow*. Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64; se manca, l'Action si ferma invece di firmare con una chiave diversa, che le TV rifiuterebbero). Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
 - `Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.
