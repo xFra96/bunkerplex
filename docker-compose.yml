@@ -1,0 +1,26 @@
+# Nome fisso: cosi' la cartella si puo' rinominare o copiare su un altro disco
+# senza che Docker la scambi per un'altra installazione.
+name: francoplex
+
+services:
+  francoplex:
+    build: ./server
+    image: francoplex-server
+    container_name: francoplex
+    restart: unless-stopped
+    ports:
+      - "32500:32500"
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_LANG: ${TMDB_LANG:-it-IT}
+      SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
+    volumes:
+      # Il catalogo: lo trova "Avvia FrenkPlex.bat" a ogni avvio (la cartella
+      # "data" qui accanto, oppure DATA_PATH del file .env) e lo passa qui.
+      - type: bind
+        source: ${DATA_PATH:-./data}
+        target: /data
+      - ./apk:/apk:ro
+    # I dischi del PC (C:, G:, ..., anche quelli esterni) vengono collegati in sola lettura sotto /host
+    # dal file docker-compose.override.yml, che "Avvia FrenkPlex.bat" riscrive
+    # a ogni avvio. Le cartelle dei video si scelgono poi dall'app.

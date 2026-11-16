@@ -1,0 +1,26 @@
+# Mai su GitHub: restano solo sul tuo disco.
+
+# Catalogo (film, locandine, visti, chiave TMDB)
+/data/
+# Impostazioni di questo PC
+/.env
+/docker-compose.override.yml
+# Chiave di firma dell'app per la TV e risultati della compilazione
+/android/keystore/
+/android/out/
+*.jks
+# L'APK compilato viaggia come allegato della release "app-tv", non nel codice
+/apk/
+# Accesso a GitHub e versione installata
+/strumenti/github-token.txt
+/strumenti/versione.json
+
+__pycache__/
+*.pyc
+.gradle/
+/android/build/
+/android/app/build/
+/android/local.properties
+.idea/
+*.iml
+.claude/
