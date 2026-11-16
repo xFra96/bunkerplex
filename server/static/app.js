@@ -1080,10 +1080,12 @@ function friendsPanel(sh) {
     '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Condivisione con gli amici<small>' +
       (sh.on ? 'Attiva' : 'Spenta: nessuno può entrare né mandare richieste') + '</small></button>' +
     '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità dei video degli amici<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
+    // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
+    (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
     '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
     '<p>Serve che i due PC si raggiungano: il modo consigliato è <b>Tailscale</b> su entrambi (vedi README). ' +
     'Gli indirizzi sono quelli di Tailscale, con la porta degli amici <b>' + sh.port + '</b>: per esempio <b>100.101.102.103:' + sh.port + '</b>.' +
-    (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+    '</p>' +
     '<input class="field f" style="margin-bottom:.6rem" id="fname" data-key="fname" autocomplete="off" maxlength="30" placeholder="Nome dell\'amico (come lo vedrai nel menu)">' +
     '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 100.101.102.103:' + sh.port + ')">' +
     '<input class="field f" style="margin-bottom:.6rem" id="fmy" data-key="fmy" autocomplete="off" value="' + esc(sh.address) + '" placeholder="Il tuo indirizzo (quello con cui l\'amico raggiunge te)">' +
@@ -1091,7 +1093,7 @@ function friendsPanel(sh) {
     '<input class="field f" id="fpass" data-key="fpass" type="password" autocomplete="new-password" placeholder="Una password per il tuo account da lui (almeno 8 caratteri)">' +
     '<div class="actions"><button class="btn primary f" data-act="friendadd" data-arg="1" data-key="friendadd">Manda la richiesta</button>' +
     '<button class="btn f" data-act="friendadd" data-arg="0" data-key="friendlogin">Ho già un account da lui: accedi</button></div>' +
-    '</div>';
+    '</div>');
 }
 
 // Un segno sulla voce Impostazioni quando c'e' una richiesta da guardare
