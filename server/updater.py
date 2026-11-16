@@ -11,6 +11,13 @@ Regole uguali allo script del PC (con cui divide strumenti/versione.json):
   - la copia di sviluppo (cartella .git) non viene sovrascritta: li' i file
     del programma li gestisce git, da qui arriva solo l'app per la TV.
 
+Se sul PC gira l'aiutante (strumenti/Agente.ps1, lo accende "Avvia
+BunkerPlex.bat") l'installazione la fa lui: il server gli lascia una
+richiesta in strumenti/richiesta-aggiornamento.json e lui scarica le novita',
+aggiorna anche la copia di sviluppo con git e, se servono, ricostruisce
+l'immagine Docker (pacchetti nuovi, Dockerfile, docker-compose.yml) e riaccende
+il contenitore. Senza aiutante il server si aggiorna da solo come sopra.
+
 L'accesso al repository privato viene dal file strumenti/github-token.txt
 (un token di sola lettura). Solo libreria standard: niente dipendenze.
 """
@@ -34,6 +41,12 @@ CFG_FILE = TOOLS / "aggiornamenti.json"
 STATE_FILE = TOOLS / "versione.json"
 TOKEN_FILE = TOOLS / "github-token.txt"
 APK_FILE = PROGRAM / "apk" / "FrenkPlex.apk"
+AGENT_FILE = TOOLS / "agente.json"
+REQUEST_FILE = TOOLS / "richiesta-aggiornamento.json"
+RESULT_FILE = TOOLS / "esito-aggiornamento.json"
+AGENT_FRESH = 120             # secondi: l'aiutante scrive "ci sono" ogni 30
+AGENT_PICKUP = 60             # se in questo tempo non prende la richiesta, non c'e'
+AGENT_TIMEOUT = 45 * 60       # una ricostruzione di Docker da zero ci mette un po'
 try:
     CHECK_HOURS = max(1.0, float(os.environ.get("UPDATE_CHECK_HOURS", "12") or 12))
 except ValueError:
@@ -42,7 +55,9 @@ except ValueError:
 # I percorsi in versione.json sono scritti alla Windows (li legge anche Aggiorna.ps1)
 PROTECTED_DIRS = ("data", "apk", ".git", "android\\out", "android\\keystore")
 PROTECTED_FILES = {".env", "docker-compose.override.yml",
-                   "strumenti\\github-token.txt", "strumenti\\versione.json"}
+                   "strumenti\\github-token.txt", "strumenti\\versione.json",
+                   "strumenti\\agente.json", "strumenti\\richiesta-aggiornamento.json",
+                   "strumenti\\esito-aggiornamento.json", "strumenti\\aggiornamento.log"}
 # Se cambiano questi non basta riavviare il server: va rilanciato "Avvia BunkerPlex.bat"
 NEEDS_HOST = {"server\\Dockerfile", "server\\requirements.txt", "docker-compose.yml"}
 BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico aspetta
@@ -50,7 +65,7 @@ BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico asp
 _op = threading.Lock()        # un'operazione alla volta (controllo o installazione)
 _guard = threading.Lock()
 _status = {"phase": "", "access": None, "checked_at": 0, "code": False, "apk": False,
-           "error": "", "result": "", "remote": ""}
+           "docker": False, "error": "", "result": "", "remote": ""}
 _asset = None
 _last_play = 0.0
 
@@ -99,6 +114,92 @@ def _state():
 
 def _dev_copy():
     return (PROGRAM / ".git").exists()
+
+
+def _read_json(path):
+    try:
+        return json.loads(path.read_text("utf-8-sig"))
+    except Exception:
+        return None
+
+
+def _write_json(path, value):
+    part = path.with_name(path.name + ".nuovo")
+    part.write_text(json.dumps(value), "utf-8")
+    os.replace(part, path)
+
+
+def fingerprint():
+    """La stessa impronta di strumenti/Impronta.ps1: riassume i file che decidono
+    come gira il contenitore (server/ e docker-compose.yml)."""
+    lines = []
+    paths = []
+    server = PROGRAM / "server"
+    for folder, dirs, names in os.walk(server):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for n in names:
+            if n.endswith(".pyc") or n.endswith(".nuovo"):
+                continue
+            paths.append(Path(folder) / n)
+    compose = PROGRAM / "docker-compose.yml"
+    if compose.is_file():
+        paths.append(compose)
+    for p in paths:
+        try:
+            lines.append(p.relative_to(PROGRAM).as_posix() + ":" + _sha256(p).upper())
+        except OSError:
+            pass
+    lines.sort()
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+
+
+def stale():
+    """True se il contenitore e' stato acceso con file diversi da quelli di
+    adesso (es. pacchetti o Dockerfile nuovi): va ricostruito dall'aiutante."""
+    running = os.environ.get("BUNKERPLEX_BUILD", "").strip()
+    if not running or not (PROGRAM / "server").is_dir():
+        return False     # acceso senza "Avvia" di Windows (es. Mac): non si sa
+    try:
+        return fingerprint() != running
+    except Exception:
+        return False
+
+
+def agent():
+    """True se sul PC e' acceso l'aiutante che puo' ricostruire Docker."""
+    a = _read_json(AGENT_FILE)
+    try:
+        return abs(time.time() - float(a.get("at") or 0)) < AGENT_FRESH
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _git_commits(branch):
+    """Copia di sviluppo: i commit di HEAD e di origin/<branch>, letti dalla
+    cartella .git senza bisogno di git (il server non ce l'ha)."""
+    g = PROGRAM / ".git"
+
+    def resolve(ref):
+        try:
+            return (g / ref).read_text("ascii").strip()
+        except OSError:
+            pass
+        try:
+            for line in (g / "packed-refs").read_text("ascii").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref:
+                    return parts[0]
+        except OSError:
+            pass
+        return ""
+
+    try:
+        head = (g / "HEAD").read_text("ascii").strip()
+    except OSError:
+        return set()
+    if head.startswith("ref: "):
+        head = resolve(head[5:].strip())
+    return {c for c in (head, resolve(f"refs/remotes/origin/{branch}")) if c}
 
 
 def token():
@@ -204,8 +305,17 @@ def _check():
         _set(error="Risposta di GitHub non valida", checked_at=time.time())
         return None
     _asset = _apk_asset(cfg, tok)
-    code = (not _dev_copy()) and _state().get("commit") != sha
-    _set(access=True, code=code, apk=bool(_asset), error="", remote=sha, checked_at=time.time())
+    if _dev_copy():
+        # La copia di sviluppo la aggiorna git, cioe' l'aiutante sul PC. Se il
+        # commit di GitHub e' gia' qui (anche solo scaricato) non c'e' niente da fare:
+        # un commit locale non ancora pubblicato non e' un aggiornamento.
+        code = agent() and sha not in _git_commits(cfg["branch"])
+    else:
+        code = _state().get("commit") != sha
+    # Docker da riallineare: conta solo se c'e' l'aiutante, l'unico che puo' farlo
+    docker = agent() and stale()
+    _set(access=True, code=code, apk=bool(_asset), docker=docker, error="", remote=sha,
+         checked_at=time.time())
     return cfg, tok, sha
 
 
@@ -343,11 +453,88 @@ def _install():
         _op.release()
 
 
+def _follow_agent(rid, started, asked):
+    """Segue il lavoro dell'aiutante sul PC finche' non scrive l'esito. Se nel
+    frattempo il contenitore viene ricostruito, questo server si spegne: quello
+    nuovo riprende a seguirlo da resume()."""
+    try:
+        _set(phase="pc", result="", error="")
+        seen = not asked
+        lost = 0.0
+        while time.time() - started < AGENT_TIMEOUT:
+            r = _read_json(RESULT_FILE) or {}
+            if str(r.get("id")) == rid:
+                seen = True
+                # L'aiutante "batte" anche mentre lavora: se tace, il PC e' stato
+                # spento o il disco scollegato a meta'
+                if r.get("phase") != "done" and not agent():
+                    lost = lost or time.time()
+                    if time.time() - lost > AGENT_FRESH:
+                        _set(error="L'aiutante sul PC si è fermato a metà aggiornamento: "
+                                   "rilancia «Avvia BunkerPlex.bat» sul PC")
+                        return
+                else:
+                    lost = 0.0
+                if r.get("phase") == "done":
+                    if r.get("ok"):
+                        _set(result="ok", code=False, apk=False, docker=False)
+                        try:
+                            _check()
+                        except Exception:
+                            pass
+                    else:
+                        _set(error=str(r.get("message") or "Aggiornamento non riuscito sul PC"))
+                    return
+            elif asked and not seen and time.time() - started > AGENT_PICKUP and REQUEST_FILE.exists():
+                REQUEST_FILE.unlink(missing_ok=True)
+                _set(error="L'aiutante degli aggiornamenti sul PC non risponde: "
+                           "rilancia «Avvia BunkerPlex.bat» sul PC")
+                return
+            time.sleep(2)
+        _set(error="L'aggiornamento sul PC non ha finito in tempo: "
+                   "guarda strumenti\\aggiornamento.log sul PC")
+    except Exception as ex:
+        print("Aggiornamento tramite l'aiutante non riuscito:", repr(ex), flush=True)
+        _set(error=f"{ex}" or "errore sconosciuto")
+    finally:
+        if _status["phase"] == "pc":
+            _set(phase="")
+        _op.release()
+
+
+def _ask_agent():
+    rid = os.urandom(8).hex()
+    try:
+        _write_json(REQUEST_FILE, {"id": rid, "at": int(time.time())})
+    except Exception as ex:
+        _set(error=f"Non riesco a scrivere la richiesta per il PC: {ex}")
+        _op.release()
+        return
+    _follow_agent(rid, time.time(), True)
+
+
+def resume():
+    """All'avvio del server: se l'aiutante sta ancora lavorando (ha appena
+    riacceso questo contenitore) si continua a mostrare l'aggiornamento in corso."""
+    r = _read_json(RESULT_FILE) or {}
+    try:
+        at = float(r.get("at") or 0)
+    except (TypeError, ValueError):
+        return
+    if r.get("phase") != "running" or time.time() - at > AGENT_TIMEOUT or not r.get("id"):
+        return
+    if not _op.acquire(blocking=False):
+        return
+    threading.Thread(target=_follow_agent, args=(str(r["id"]), at, False), daemon=True).start()
+
+
 def start_install():
-    """Installa in sottofondo cio' che c'e' di nuovo. False se e' gia' in corso."""
-    if _status["phase"] in ("restarting", "host") or not _op.acquire(blocking=False):
+    """Installa in sottofondo cio' che c'e' di nuovo. False se e' gia' in corso.
+    Con l'aiutante acceso sul PC lo fa lui (Docker compreso), altrimenti il server."""
+    if _status["phase"] in ("restarting", "host", "pc") or not _op.acquire(blocking=False):
         return False
-    threading.Thread(target=_install, daemon=True).start()
+    target = _ask_agent if agent() and TOOLS.is_dir() else _install
+    threading.Thread(target=target, daemon=True).start()
     return True
 
 
@@ -366,7 +553,7 @@ def set_token(tok):
 
 
 def available():
-    return bool(_status["code"] or _status["apk"])
+    return bool(_status["code"] or _status["apk"] or _status["docker"])
 
 
 def snapshot():
@@ -383,7 +570,8 @@ def snapshot():
         "installed_at": str(state.get("date") or ""),
         "remote": out["remote"][:7],
         "has_token": bool(token()),
-        "available": bool(out["code"] or out["apk"]),
+        "agent": agent(),
+        "available": bool(out["code"] or out["apk"] or out["docker"]),
         "check_hours": CHECK_HOURS,
     })
     return out

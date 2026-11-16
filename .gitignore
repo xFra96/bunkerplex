@@ -14,6 +14,12 @@
 # Accesso a GitHub e versione installata
 /strumenti/github-token.txt
 /strumenti/versione.json
+# Scambio tra server e aiutante degli aggiornamenti (Agente.ps1)
+/strumenti/agente.json
+/strumenti/richiesta-aggiornamento.json
+/strumenti/esito-aggiornamento.json
+/strumenti/aggiornamento.log
+/strumenti/*.nuovo
 
 __pycache__/
 *.pyc

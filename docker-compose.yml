@@ -16,6 +16,9 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANG: ${TMDB_LANG:-it-IT}
       SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
+      # Impronta dei file con cui e' acceso il server: la scrive "Avvia BunkerPlex.bat"
+      # e serve a capire se Docker va ricostruito (vedi strumenti/Impronta.ps1)
+      BUNKERPLEX_BUILD: ${BUNKERPLEX_BUILD:-}
     volumes:
       # Il catalogo: la cartella "data" qui accanto.
       - type: bind

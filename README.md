@@ -106,9 +106,13 @@ Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli ser
 
 BunkerPlex si aggiorna da questo repository, senza account né password.
 
-- **Da solo**: il server controlla ogni 12 ore e installa quando nessuno sta guardando. Si può spegnere in *Impostazioni → Aggiornamenti*.
-- **Dall'app o dal browser**: compare l'avviso, scegli **Aggiorna ora**.
-- **A mano su Windows**: `Aggiorna BunkerPlex.bat`.
+- **Da solo**: il server controlla ogni 12 ore e installa quando nessuno sta guardando. Anche «Avvia» installa da solo le novità che trova. Si può spegnere in *Impostazioni → Aggiornamenti*.
+- **Da qualsiasi dispositivo** (TV, telefono, browser di un altro PC): compare l'avviso, scegli **Aggiorna ora**, oppure *Impostazioni → Aggiornamenti*.
+- **Dal PC del server**: `Aggiorna BunkerPlex.bat`, oppure **Aggiorna ora** da `http://localhost:32500`.
+
+Ogni aggiornamento riallinea anche Docker: se sono cambiati codice, `Dockerfile`, pacchetti (`requirements.txt`) o `docker-compose.yml`, l'immagine viene ricostruita (scaricando anche la versione più recente dell'immagine di base) e il server si riaccende da solo. Lo stesso succede se il server sta girando con file più vecchi di quelli nella cartella, per esempio dopo un `git pull` fatto a mano.
+
+Su Windows il lavoro sul PC lo fa un **aiutante** nascosto (`strumenti\Agente.ps1`): lo accende «Avvia» e riparte da solo a ogni accesso a Windows (collegamento *BunkerPlex aggiornamenti* nella cartella Esecuzione automatica). È lui che permette alla TV di aggiornare tutto, compresa la copia di sviluppo con git. Com'è andato l'ultimo aggiornamento: `strumenti\aggiornamento.log`. Se l'aiutante è spento il server si aggiorna lo stesso, ma per le novità che toccano Docker chiede di rilanciare «Avvia».
 
 Non vengono mai toccati il catalogo (cartella `data`), il file `.env` e la chiave di firma dell'app. Se copi la cartella sopra una copia esistente, **non sovrascrivere `data`**.
 
@@ -117,6 +121,7 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 ## Se qualcosa non va
 
 - **Cartella «non raggiungibile»**: collega il disco e rilancia «Avvia».
+- **Docker Desktop non parte** con *«The file cannot be accessed by the system»* su un file `.sock`: lancia «Avvia», che a Docker spento toglie da solo quei file rimasti bloccati.
 - **La TV non trova il server**: computer e TV devono essere sulla stessa rete. Se dal telefono `http://INDIRIZZO-DEL-COMPUTER:32500` non si apre, è il firewall: consenti Docker o imposta la rete come «Privata».
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.

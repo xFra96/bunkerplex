@@ -25,6 +25,7 @@ function Stop-Here($text) {
 }
 
 function Ask($question) {
+    if ($env:FRANCOPLEX_AUTO) { return $false }    # lanciato dall'aiutante: nessuno puo' rispondere
     $answer = Read-Host "$question [S/N]"
     return $answer -match '^\s*[sSyY]'
 }
@@ -59,6 +60,26 @@ function Wait-Docker($seconds) {
     return $false
 }
 
+# Su alcuni Windows i "socket" che Docker Desktop lascia quando si spegne
+# diventano illeggibili e alla riaccensione Docker si blocca con "The file cannot
+# be accessed by the system". A Docker spento si tolgono; se non si riesce, si
+# sposta da parte la cartella che li contiene: Docker la ricrea pulita.
+function Clear-DockerSockets {
+    if (Get-Process 'com.docker.backend' -ErrorAction SilentlyContinue) { return }
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    foreach ($d in "$env:LOCALAPPDATA\Docker\run", "$env:LOCALAPPDATA\docker-secrets-engine") {
+        if (-not (Test-Path -LiteralPath $d)) { continue }
+        $stuck = $false
+        foreach ($f in Get-ChildItem -LiteralPath $d -Force -File -ErrorAction SilentlyContinue) {
+            if (-not ($f.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            try { [IO.File]::Delete($f.FullName) } catch { $stuck = $true }
+        }
+        if ($stuck) {
+            try { [IO.Directory]::Move($d, "$d.vecchia-$stamp") } catch { }
+        }
+    }
+}
+
 function Restart-Docker($desktop) {
     Say 'Riavvio Docker Desktop: ci vuole un minuto...'
     docker desktop restart 2>$null | Out-Null
@@ -67,6 +88,7 @@ function Restart-Docker($desktop) {
             Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
         wsl.exe --terminate docker-desktop 2>$null | Out-Null
+        Clear-DockerSockets
         if ($desktop) { Start-Process -FilePath $desktop }
     }
     Start-Sleep -Seconds 5
@@ -132,12 +154,25 @@ if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
     if ($found -eq 10) {
         Say ''
         foreach ($line in $news) { Say $line Cyan }
-        if ($env:FRANCOPLEX_NO_PAUSE) {
-            Say 'Per installarlo: "Aggiorna BunkerPlex.bat".'
-        } elseif (Ask 'Lo installo adesso?') {
+        # Aggiornamento automatico (Impostazioni -> Aggiornamenti): si installa
+        # senza chiedere. Se e' spento, si chiede (o si avvisa e basta).
+        $autoUpdate = $true
+        try {
+            $cfgData = Get-Content -LiteralPath (Join-Path $root 'data\config.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($cfgData.auto_update -eq $false) { $autoUpdate = $false }
+        } catch { }
+        $install = $autoUpdate
+        if (-not $install) {
+            if ($env:FRANCOPLEX_NO_PAUSE -or $env:FRANCOPLEX_AUTO) { Say 'Per installarlo: "Aggiorna BunkerPlex.bat".' }
+            else { $install = Ask 'Lo installo adesso?' }
+        }
+        if ($install) {
+            Say 'Lo installo...' Cyan
             & powershell -NoProfile -ExecutionPolicy Bypass -File $updater -NoRestart
-            # Si riparte da capo: questo stesso file puo' essere appena cambiato
+            # Si riparte da capo: questo stesso file puo' essere appena cambiato,
+            # e l'immagine Docker si ricostruisce con i pacchetti nuovi
             $env:FRANCOPLEX_NO_UPDATE = '1'
+            $env:FRANCOPLEX_PULL = '1'
             & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
             exit $LASTEXITCODE
         }
@@ -169,6 +204,7 @@ if (-not (Docker-Ready)) {
                     'Aprilo a mano, aspetta che sia pronto e rilancia questo file.')
     }
     Say 'Docker Desktop e'' spento: lo accendo e aspetto che sia pronto...'
+    Clear-DockerSockets
     Start-Process -FilePath $desktop
     if (-not (Wait-Docker 300)) {
         Stop-Here @('Docker Desktop non e'' partito in tempo.',
@@ -237,8 +273,22 @@ Say ("Dischi collegati: " + (($drives | ForEach-Object { "${_}:" }) -join ' '))
 Say "Catalogo: $data"
 Say ''
 
-docker compose build
-$built = $LASTEXITCODE -eq 0
+# L'impronta dei file del server va nel contenitore: cosi' Aggiorna.ps1 sa se
+# il server acceso e' allineato a questi file (vedi Impronta.ps1).
+. (Join-Path $PSScriptRoot 'Impronta.ps1')
+$env:BUNKERPLEX_BUILD = Get-Impronta $root
+
+# Dopo un aggiornamento si scarica anche l'immagine di base piu' recente
+# (Python, ffmpeg): senza Internet si torna alla ricostruzione normale.
+$built = $false
+if ($env:FRANCOPLEX_PULL) {
+    docker compose build --pull
+    $built = $LASTEXITCODE -eq 0
+}
+if (-not $built) {
+    docker compose build
+    $built = $LASTEXITCODE -eq 0
+}
 if (-not $built) {
     docker image inspect francoplex-server 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
@@ -292,6 +342,34 @@ if ($missing) {
         Say 'File sharing, aggiungi quei dischi e rilancia questo file.' Yellow
         Say '(Oppure attiva "Use the WSL 2 based engine" in Settings - General.)' Yellow
     }
+}
+
+# ---------------------------------------------------------------- 5. Aiutante aggiornamenti
+# Agente.ps1 resta acceso nascosto: fa gli aggiornamenti chiesti dal server
+# (dalla TV, dal telefono, dal browser o dal controllo automatico), compresa
+# la ricostruzione di Docker. Parte anche da solo all'accesso a Windows.
+
+$agent = Join-Path $PSScriptRoot 'Agente.ps1'
+if (Test-Path -LiteralPath $agent) {
+    $agentArgs = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$agent`""
+    try {
+        $startup = [Environment]::GetFolderPath('Startup')
+        $link = Join-Path $startup 'BunkerPlex aggiornamenti.lnk'
+        $shell = New-Object -ComObject WScript.Shell
+        $current = if (Test-Path -LiteralPath $link) { $shell.CreateShortcut($link) } else { $null }
+        # Si riscrive solo se manca o punta a un'altra cartella (disco con un'altra lettera)
+        if (-not $current -or $current.Arguments -ne $agentArgs) {
+            $lnk = $shell.CreateShortcut($link)
+            $lnk.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            $lnk.Arguments = $agentArgs
+            $lnk.WorkingDirectory = $PSScriptRoot
+            $lnk.WindowStyle = 7
+            $lnk.Description = 'BunkerPlex: aggiornamenti chiesti da TV e browser'
+            $lnk.Save()
+        }
+    } catch { }
+    # Ne gira uno solo: se e' gia' acceso, quello nuovo si chiude da solo
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList $agentArgs -ErrorAction SilentlyContinue
 }
 
 $ip = ''
