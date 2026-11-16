@@ -199,7 +199,19 @@ def _git_commits(branch):
         return set()
     if head.startswith("ref: "):
         head = resolve(head[5:].strip())
-    return {c for c in (head, resolve(f"refs/remotes/origin/{branch}")) if c}
+    known = {c for c in (head, resolve(f"refs/remotes/origin/{branch}")) if c}
+    # Anche i commit su cui questa copia e' gia' passata (storia di HEAD e di
+    # origin): GitHub per un minuto dopo un push puo' rispondere col commit di
+    # prima, che qui e' gia' vecchio e non e' un aggiornamento.
+    for log in (g / "logs" / "HEAD", g / "logs" / "refs" / "remotes" / "origin" / branch):
+        try:
+            for line in log.read_text("utf-8", "replace").splitlines():
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    known.update(p for p in parts[:2] if len(p) == 40)
+        except OSError:
+            pass
+    return known
 
 
 def token():
