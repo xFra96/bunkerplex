@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Mostra l'interfaccia di FrenkPlex (servita dal PC) e passa i video al
+ * Mostra l'interfaccia di BunkerPlex (servita dal PC) e passa i video al
  * player nativo. Al primo avvio cerca da solo il server sulla rete di casa.
  */
 class MainActivity : AppCompatActivity() {
@@ -43,7 +43,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         web = WebView(this)
-        web.setBackgroundColor(Color.parseColor("#0B0F1A"))
+        web.setBackgroundColor(Color.parseColor("#060A07"))
         web.isFocusable = true
         web.isFocusableInTouchMode = true
         setContentView(web)
@@ -183,7 +183,7 @@ class MainActivity : AppCompatActivity() {
                     updateFile.delete()
                     Net.download("$base/FrenkPlex.apk", updateFile) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
                     val found = packageManager.getPackageArchiveInfo(updateFile.path, 0)
-                    if (found?.packageName != packageName) throw IOException("il file scaricato non è l'app FrenkPlex")
+                    if (found?.packageName != packageName) throw IOException("il file scaricato non è l'app BunkerPlex")
                     runOnUiThread {
                         try {
                             startActivity(installIntent())
@@ -210,7 +210,7 @@ class MainActivity : AppCompatActivity() {
         fun saveServer(input: String) {
             val url = Net.normalize(input)
             thread {
-                if (Net.isFrancoPlex(url)) {
+                if (Net.isBunkerPlex(url)) {
                     server = url
                     runOnUiThread { openServer() }
                 } else {

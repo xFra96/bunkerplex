@@ -1,4 +1,4 @@
-# Compila l'APK di FrenkPlex senza installare nulla sul PC.
+# Compila l'APK di BunkerPlex senza installare nulla sul PC.
 # Uso:  docker build --output ../apk .   (lo fa "Compila APK.bat")
 FROM eclipse-temurin:17-jdk AS build
 
@@ -40,7 +40,7 @@ RUN mkdir -p keystore \
  && if [ ! -f keystore/francoplex.jks ]; then \
       keytool -genkeypair -keystore keystore/francoplex.jks -alias francoplex \
         -keyalg RSA -keysize 2048 -validity 12000 \
-        -storepass francoplex -keypass francoplex -dname "CN=FrenkPlex"; \
+        -storepass francoplex -keypass francoplex -dname "CN=BunkerPlex"; \
     fi
 
 RUN gradle --no-daemon assembleRelease

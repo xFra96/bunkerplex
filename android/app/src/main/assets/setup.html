@@ -3,28 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FrancoPlex</title>
+<title>BunkerPlex</title>
 <style>
   * { box-sizing: border-box; }
-  html { font-size: 1.25vw; font-size: clamp(14px, 1.25vw, 34px); }
+  html { font-size: 14px; font-size: clamp(14px, 1.5vw, 40px); }
   body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-         background: #0b0f1a; color: #eef1f7; font-family: Roboto, "Segoe UI", sans-serif; }
+         background: #060a07; color: #f2f5f2; font-family: Roboto, "Segoe UI", sans-serif; }
   .box { width: 40rem; max-width: 92vw; text-align: center; }
-  .logo { font-size: 2.6rem; font-weight: 300; margin-bottom: .4rem; }
-  .logo b { color: #ff6b4a; font-weight: 800; }
+  .logo { font-size: 2.6rem; font-weight: 400; letter-spacing: -.02em; margin-bottom: .4rem; }
+  .logo b { font-weight: 800; }
   h1 { font-size: 1.5rem; font-weight: 600; margin: 1.6rem 0 .6rem; }
-  p { color: #98a1b8; line-height: 1.6; margin: 0 0 1.2rem; font-size: 1.05rem; }
-  p b { color: #eef1f7; }
-  .err { color: #ff6b4a; min-height: 1.6rem; }
-  input { width: 100%; padding: .9rem 1.2rem; font: inherit; font-size: 1.3rem; text-align: center; color: #eef1f7;
-          background: #1a2236; border: 2px solid #2a3450; border-radius: .7rem; outline: none; }
-  input:focus { border-color: #eef1f7; }
+  p { color: #9fada3; line-height: 1.6; margin: 0 0 1.2rem; font-size: 1.05rem; }
+  p b { color: #f2f5f2; }
+  .err { color: #e0a030; min-height: 1.6rem; }
+  input { width: 100%; padding: .9rem 1.2rem; font: inherit; font-size: 1.3rem; text-align: center; color: #f2f5f2;
+          background: #0e1510; border: 2px solid #17211a; border-radius: .4rem; outline: none; }
+  input:focus { border-color: #f2f5f2; background: #17211a; }
   .row { display: flex; justify-content: center; margin-top: 1.2rem; }
   button { font: inherit; font-weight: 700; font-size: 1.1rem; padding: .8rem 1.8rem; margin: 0 .5rem; border: 0;
-           border-radius: .6rem; background: #ffffff1c; color: #eef1f7; outline: none; }
-  button.primary { background: #ff6b4a; color: #1a0d08; }
-  button:focus { background: #eef1f7; color: #0b0f1a; transform: scale(1.07); }
-  .spin { width: 3rem; height: 3rem; margin: 1.5rem auto; border: .3rem solid #2a3450; border-top-color: #ff6b4a;
+           border-radius: .4rem; background: #ffffff24; color: #f2f5f2; outline: none; }
+  button.primary { background: #1a7f45; color: #ffffff; }
+  button:focus, button.primary:focus { background: #f2f5f2; color: #060a07; transform: scale(1.05); }
+  .spin { width: 3rem; height: 3rem; margin: 1.5rem auto; border: .3rem solid #17211a; border-top-color: #4cbf7f;
           border-radius: 50%; animation: s 1s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
   [hidden] { display: none !important; }
@@ -32,17 +32,17 @@
 </head>
 <body>
 <div class="box">
-  <div class="logo"><b>Franco</b>Plex</div>
+  <div class="logo"><b>Bunker</b>Plex</div>
 
   <div id="searching">
     <div class="spin"></div>
     <h1 id="stitle">Cerco il server sulla rete di casa…</h1>
-    <p>Il PC con FrancoPlex deve essere acceso e collegato alla stessa rete della TV.</p>
+    <p>Il PC con BunkerPlex deve essere acceso e collegato alla stessa rete della TV.</p>
   </div>
 
   <div id="manual" hidden>
     <h1 id="mtitle">Server non trovato</h1>
-    <p>Scrivi l'indirizzo del PC. Lo trovi nella finestra che si apre quando avvii FrancoPlex sul PC
+    <p>Scrivi l'indirizzo del PC. Lo trovi nella finestra che si apre quando avvii BunkerPlex sul PC
        (ad esempio <b>192.168.1.20</b>).</p>
     <input id="addr" class="f" inputmode="decimal" autocomplete="off" placeholder="192.168.1.20">
     <p class="err" id="err"></p>
@@ -85,7 +85,7 @@ function connect() {
 window.setupFound = function (url) { showSearching('Trovato! ' + url.replace('http://', '')); };
 window.setupNotFound = function () { showManual('Server non trovato', ''); };
 window.setupError = function (url) {
-  showManual('Collegamento non riuscito', 'Nessun FrancoPlex risponde a ' + url.replace('http://', '') + '. Il PC è acceso?');
+  showManual('Collegamento non riuscito', 'Nessun BunkerPlex risponde a ' + url.replace('http://', '') + '. Il PC è acceso?');
 };
 
 $('connect').addEventListener('click', connect);
@@ -110,7 +110,7 @@ document.addEventListener('keydown', function (e) {
 var offline = location.hash === '#offline';
 if (offline) {
   window.setupNotFound = function () {
-    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che FrancoPlex sia avviato, oppure scrivi l\'indirizzo.');
+    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo.');
   };
   showSearching('Il server salvato non risponde, lo cerco sulla rete…');
   if (app) app.discover(); else setupNotFound();

@@ -10,6 +10,8 @@ services:
     restart: unless-stopped
     ports:
       - "32500:32500"
+      # Porta per gli amici: risponde solo a /api/share/ (vedi «Amici» in README.md)
+      - "32501:32501"
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANG: ${TMDB_LANG:-it-IT}
@@ -20,9 +22,9 @@ services:
         source: ./data
         target: /data
       - ./apk:/apk:ro
-      # Tutta la cartella di FrenkPlex: il server parte dai file di ./server e
+      # Tutta la cartella di BunkerPlex: il server parte dai file di ./server e
       # ci scrive gli aggiornamenti scaricati da GitHub (vedi server/updater.py).
       - .:/programma
     # I dischi del PC (C:, G:, ..., anche quelli esterni) vengono collegati in sola lettura sotto /host
-    # dal file docker-compose.override.yml, che "Avvia FrenkPlex.bat" riscrive
+    # dal file docker-compose.override.yml, che "Avvia BunkerPlex.bat" riscrive
     # a ogni avvio. Le cartelle dei video si scelgono poi dall'app.

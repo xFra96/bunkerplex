@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#0B0F1A</color>
-    <color name="accent">#FF6B4A</color>
+    <color name="bg">#060A07</color>
+    <color name="accent">#1A7F45</color>
 
     <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>

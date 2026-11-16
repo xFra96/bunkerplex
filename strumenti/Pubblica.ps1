@@ -1,8 +1,8 @@
-# FrenkPlex - pubblicazione su GitHub. Lo lancia "Pubblica aggiornamento.bat".
-# Serve solo sul PC dove modifichi FrenkPlex (con git e GitHub CLI installati):
+# BunkerPlex - pubblicazione su GitHub. Lo lancia "Pubblica aggiornamento.bat".
+# Serve solo sul PC dove modifichi BunkerPlex (con git e GitHub CLI installati):
 #   1. salva le modifiche (commit) e le manda al repository (push);
 #   2. se apk\FrenkPlex.apk e' cambiato, lo allega alla release "app-tv".
-# Gli altri PC li ricevono con "Aggiorna FrenkPlex.bat" o all'avvio.
+# Gli altri PC li ricevono con "Aggiorna BunkerPlex.bat" o all'avvio.
 #
 # Mai pubblicati (vedi .gitignore): catalogo, .env, chiave di firma, token.
 #
@@ -82,7 +82,7 @@ if (Test-Path -LiteralPath $apkFile) {
             & gh release upload $apkTag $apkFile --clobber --repo $repo
         } else {
             & gh release create $apkTag $apkFile --repo $repo --title 'App per la TV' `
-                --notes 'APK di FrenkPlex per Android TV, Google TV e Fire TV. Viene sostituito a ogni pubblicazione.'
+                --notes 'APK di BunkerPlex per Android TV, Google TV e Fire TV. Viene sostituito a ogni pubblicazione.'
         }
         if ($LASTEXITCODE -ne 0) { Fail @('Caricamento dell''APK non riuscito: leggi il messaggio qui sopra.') }
         Say 'App per la TV pubblicata.' Green
@@ -92,4 +92,4 @@ if (Test-Path -LiteralPath $apkFile) {
 }
 
 Say ''
-Say 'Fatto. Sugli altri PC: "Aggiorna FrenkPlex.bat" (o al prossimo avvio).' Green
+Say 'Fatto. Sugli altri PC: "Aggiorna BunkerPlex.bat" (o al prossimo avvio).' Green

@@ -1,5 +1,5 @@
 @echo off
-title FrenkPlex - installazione sulla TV
+title BunkerPlex - installazione sulla TV
 cd /d "%~dp0"
 
 if not exist "apk\FrenkPlex.apk" (
@@ -13,7 +13,7 @@ where adb >nul 2>&1
 if errorlevel 1 set "ADB=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
 if not "%ADB%"=="adb" if not exist "%ADB%" (
   echo Su questo PC non c'e' "adb".
-  echo Usa uno degli altri metodi descritti in LEGGIMI.md ^(chiavetta USB o app Downloader^).
+  echo Usa uno degli altri metodi descritti in README.md ^(chiavetta USB o app Downloader^).
   pause
   exit /b 1
 )

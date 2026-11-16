@@ -1,4 +1,4 @@
-"""FrenkPlex - media server casalingo.
+"""BunkerPlex - media server casalingo.
 
 Scansiona le cartelle di Film e Serie TV, cataloga tutto in SQLite
 (locandine, trama, anno, regista, generi, cast, voto da TMDB) e manda
@@ -6,11 +6,15 @@ i video in streaming.
 """
 import asyncio
 import difflib
+import gzip
+import hashlib
+import hmac
 import json
 import math
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import sqlite3
 import struct
@@ -24,7 +28,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,11 +39,11 @@ VERSION = "1.1"
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TMDB_LANG = os.environ.get("TMDB_LANG", "it-IT")
 SCAN_INTERVAL_MIN = int(os.environ.get("SCAN_INTERVAL_MIN", "30") or 30)
-SERVER_NAME = os.environ.get("SERVER_NAME", "FrenkPlex")
+SERVER_NAME = os.environ.get("SERVER_NAME", "BunkerPlex")
 
 IMG = DATA / "images"
 # Il catalogo (questa cartella) viaggia sul disco insieme ai video: "Avvia
-# FrenkPlex.bat" ci mette un segnaposto prima di accendere il server. Se il
+# BunkerPlex.bat" ci mette un segnaposto prima di accendere il server. Se il
 # segnaposto manca, il disco non e' collegato a Docker: invece di creare un
 # catalogo vuoto da un'altra parte, il server si ferma e lo dice.
 MARKER = DATA / ".francoplex"
@@ -48,7 +52,7 @@ MARKER = DATA / ".francoplex"
 def data_problem():
     if os.environ.get("DATA_CHECK", "1") != "0" and not MARKER.is_file():
         return ("Il disco con il catalogo non è collegato al server. "
-                "Collegalo e rilancia «Avvia FrenkPlex.bat» sul PC.")
+                "Collegalo e rilancia «Avvia BunkerPlex.bat» sul PC.")
     try:
         IMG.mkdir(parents=True, exist_ok=True)
         test = DATA / ".scrittura"
@@ -56,7 +60,7 @@ def data_problem():
         test.unlink()
     except OSError:
         return ("Non riesco a scrivere nella cartella del catalogo. "
-                "Rilancia «Avvia FrenkPlex.bat» sul PC.")
+                "Rilancia «Avvia BunkerPlex.bat» sul PC.")
     return ""
 
 
@@ -93,7 +97,7 @@ def tmdb_key():
 # --------------------------------------------------------------------------
 
 # I dischi del PC sono montati in sola lettura sotto /host (es. /host/C, /host/G):
-# lo fa "Avvia FrenkPlex.bat". Da li' l'app puo' sfogliare e scegliere le cartelle.
+# lo fa "Avvia BunkerPlex.bat". Da li' l'app puo' sfogliare e scegliere le cartelle.
 HOST_ROOT = Path(os.environ.get("HOST_ROOT", "/host"))
 HIDDEN_DIRS = {"system volume information", "config.msi", "recovery", "perflogs",
                "documents and settings", "msocache"}
@@ -194,7 +198,7 @@ def folder_from_input(raw):
         drive = next((d for d in (HOST_ROOT / letter.upper(), HOST_ROOT / letter.lower()) if d.is_dir()), None)
         if drive is None:
             raise HTTPException(400, f"Il disco {letter.upper()}: non è collegato al server. "
-                                     "Chiudi e riavvia con «Avvia FrenkPlex.bat»")
+                                     "Chiudi e riavvia con «Avvia BunkerPlex.bat»")
         rest = (m.group(2) or "").replace("\\", "/").strip("/")
         path = browse_path(str(drive / rest) if rest else str(drive))
     else:
@@ -242,12 +246,26 @@ def init_db():
     CREATE TABLE IF NOT EXISTS collections(
         id INTEGER PRIMARY KEY, name TEXT, overview TEXT, poster TEXT, backdrop TEXT,
         parts TEXT, updated REAL);
+    -- Titoli degli amici: visto e punto di ripresa restano qui (sul server dell'amico non si scrive nulla)
+    CREATE TABLE IF NOT EXISTS friend_state(
+        friend INT, item INT, show INT, position REAL DEFAULT 0, watched INT DEFAULT 0,
+        last_played REAL DEFAULT 0, PRIMARY KEY(friend, item));
+    -- Amici registrati su questo server (chi puo' guardare le raccolte da fuori) e i loro gettoni
+    CREATE TABLE IF NOT EXISTS accounts(
+        id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE NOCASE, salt BLOB, hash BLOB,
+        approved INT DEFAULT 0, created REAL, last_seen REAL DEFAULT 0,
+        back_url TEXT, back_token TEXT);
+    CREATE TABLE IF NOT EXISTS share_sessions(token TEXT PRIMARY KEY, account INT, created REAL);
     """)
     # library_id: la raccolta a cui appartiene il titolo (aggiunta in un secondo momento)
     # collection_id: la saga TMDB di cui il film fa parte (id della tabella collections);
     # coll_done: 1 quando si e' gia' controllato se il film appartiene a una saga.
+    # fav: "La mia lista". 0 = no, altrimenti il momento in cui il titolo e' stato aggiunto.
     for table, column in (("items", "library_id INT"), ("shows", "library_id INT"),
-                          ("items", "collection_id INT"), ("items", "coll_done INT DEFAULT 0")):
+                          ("items", "collection_id INT"), ("items", "coll_done INT DEFAULT 0"),
+                          ("items", "fav REAL DEFAULT 0"), ("shows", "fav REAL DEFAULT 0"),
+                          # people: il cast con ruolo e foto (JSON). NULL = ancora da scaricare.
+                          ("items", "people TEXT"), ("shows", "people TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -539,6 +557,22 @@ def fetch_image(tmdb_path, size):
     return name
 
 
+def cast_people(credits):
+    """I primi interpreti di un film o di una serie, con ruolo e foto (scaricata
+    una volta sola: lo stesso attore serve a tutti i suoi titoli)."""
+    out = []
+    for c in (credits or {}).get("cast", [])[:8]:
+        if c.get("name"):
+            out.append({"name": c["name"], "role": c.get("character") or "",
+                        "photo": fetch_image(c.get("profile_path"), "w185")})
+    return json.dumps(out, ensure_ascii=False)
+
+
+def people_json(text):
+    return [{"name": p.get("name") or "", "role": p.get("role") or "", "photo": img_url(p.get("photo"))}
+            for p in jlist(text) if isinstance(p, dict)]
+
+
 def _year(date, fallback):
     return int(date[:4]) if date and date[:4].isdigit() else fallback
 
@@ -601,13 +635,13 @@ def apply_movie(con, item_id, tmdb_id):
         else fetch_image(m.get("poster_path"), "w500")
     con.execute(
         "UPDATE items SET title=?, original_title=?, year=?, overview=?, tagline=?, poster=?, "
-        "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, meta_done=1 WHERE id=?",
+        "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1 WHERE id=?",
         (m.get("title") or row["title"], m.get("original_title"),
          _year(m.get("release_date"), row["year"]), overview, m.get("tagline") or "",
          poster, fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(directors), json.dumps(actors, ensure_ascii=False),
-         round(m.get("vote_average") or 0, 1), item_id))
+         round(m.get("vote_average") or 0, 1), cast_people(credits), item_id))
     set_collection(con, item_id, m)
 
 
@@ -625,14 +659,14 @@ def apply_show(con, show_id, tmdb_id):
         else fetch_image(m.get("poster_path"), "w500")
     con.execute(
         "UPDATE shows SET title=?, original_title=?, year=?, overview=?, poster=?, backdrop=?, "
-        "tmdb_id=?, genres=?, director=?, actors=?, rating=?, meta_done=1 WHERE id=?",
+        "tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1 WHERE id=?",
         (m.get("name") or row["title"], m.get("original_name"),
          _year(m.get("first_air_date"), row["year"]), overview, poster,
          fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(c["name"] for c in m.get("created_by", [])),
          json.dumps(actors, ensure_ascii=False),
-         round(m.get("vote_average") or 0, 1), show_id))
+         round(m.get("vote_average") or 0, 1), cast_people(m.get("credits")), show_id))
     con.execute("UPDATE items SET meta_done=0 WHERE show_id=?", (show_id,))
 
 
@@ -1055,6 +1089,22 @@ def scan():
                 for n, r in enumerate(todo, 1):
                     state["message"] = f"Scarico i titoli degli episodi... serie {n} di {len(todo)}"
                     enrich_episodes(con, r)
+                # Foto del cast: i titoli che avevano gia' la scheda prima che esistessero
+                todo = [("items", "movie", r) for r in con.execute(
+                    "SELECT id, tmdb_id FROM items WHERE kind='movie' AND tmdb_id IS NOT NULL "
+                    "AND people IS NULL").fetchall()]
+                todo += [("shows", "tv", r) for r in con.execute(
+                    "SELECT id, tmdb_id FROM shows WHERE tmdb_id IS NOT NULL AND people IS NULL").fetchall()]
+                for n, (table, kind, r) in enumerate(todo, 1):
+                    state["message"] = f"Scarico le foto del cast... {n} di {len(todo)}"
+                    try:
+                        credits = tmdb(f"/{kind}/{r['tmdb_id']}/credits")
+                    except urllib.error.HTTPError as ex:
+                        if ex.code != 404:
+                            raise
+                        credits = {}
+                    con.execute(f"UPDATE {table} SET people=? WHERE id=?", (cast_people(credits), r["id"]))
+                    con.commit()
             except Exception as ex:  # rete assente, chiave errata...
                 state["message"] = f"TMDB non raggiungibile: {ex}"
                 print("TMDB error:", repr(ex), flush=True)
@@ -1238,6 +1288,7 @@ def item_json(r, show=None):
                            "episode", "show_id", "added_at", "director", "rating",
                            "library_id")}
     d["watched"] = bool(d["watched"])
+    d["fav"] = bool(r["fav"])
     d["genres"] = jlist(r["genres"])
     d["actors"] = jlist(r["actors"])
     d["quality"] = quality(r)
@@ -1259,6 +1310,7 @@ def show_json(con, r):
     d = {k: r[k] for k in ("id", "title", "original_title", "year", "overview",
                            "added_at", "director", "rating", "library_id")}
     d["kind"] = "show"
+    d["fav"] = bool(r["fav"])
     d["genres"] = jlist(r["genres"])
     d["actors"] = jlist(r["actors"])
     d["poster"] = img_url(r["poster"])
@@ -1401,15 +1453,18 @@ def saga_next(con, r):
 # API
 # --------------------------------------------------------------------------
 
-app = FastAPI(title="FrenkPlex", docs_url=None, redoc_url=None)
+app = FastAPI(title="BunkerPlex", docs_url=None, redoc_url=None)
 
 
 class SmallAndFast:
     """Comprime elenchi e pagine (l'elenco di una raccolta pesa centinaia di KB:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
-    RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/FrenkPlex.apk", "/FrancoPlex.apk")
-    PLAYING = ("/api/stream", "/api/transcode", "/api/progress")
+    RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/BunkerPlex.apk",
+           "/FrenkPlex.apk", "/FrancoPlex.apk", "/api/share/stream", "/api/share/transcode",
+           "/api/share/image", "/api/share/thumb", "/api/friend/")
+    PLAYING = ("/api/stream", "/api/transcode", "/api/progress", "/api/share/stream",
+               "/api/share/transcode")
 
     def __init__(self, inner):
         self.inner = inner
@@ -1458,10 +1513,10 @@ def migrate_catalog():
 
 
 NO_DATA_PAGE = """<!doctype html><html lang="it"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>FrenkPlex</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>BunkerPlex</title>
 <body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-background:#07080c;color:#f2f2f5;font-family:system-ui,sans-serif;text-align:center">
-<div style="max-width:34rem;padding:2rem"><h1 style="color:#ff6b4a">Catalogo non raggiungibile</h1>
+background:#060a07;color:#f2f5f2;font-family:system-ui,sans-serif;text-align:center">
+<div style="max-width:34rem;padding:2rem"><h1 style="color:#4cbf7f">Catalogo non raggiungibile</h1>
 <p style="font-size:1.2rem;line-height:1.6">%s</p>
 <p style="color:#9a9aa8">La tua libreria non è persa: è sul disco. Questa pagina si riaggiorna da sola.</p></div>
 <script>setTimeout(function () { location.reload(); }, 8000);</script></body></html>"""
@@ -1488,6 +1543,9 @@ def startup():
     migrate_catalog()
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
+    threading.Thread(target=friends_loop, daemon=True).start()
+    if SHARE_PORT:
+        threading.Thread(target=share_listener, daemon=True).start()
 
 
 # ---- Aggiornamenti da GitHub ----------------------------------------------
@@ -1634,6 +1692,9 @@ def info():
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
             "apk_version": apk_code, "apk_version_name": apk_name,
             "update": updater.available(),
+            # Richieste di condivisione degli amici ancora da approvare
+            "share_requests": con.execute(
+                "SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] if share_on() else 0,
         }
     finally:
         con.close()
@@ -1701,6 +1762,8 @@ def libraries_list():
 @app.get("/api/libraries/{lib_id}/items")
 def library_items(lib_id: int):
     """Tutto il contenuto di una raccolta: film e serie insieme."""
+    if lib_id >= FRIEND_BASE:
+        return friend_library_items(lib_id)
     con = db()
     try:
         out = [item_json(r) for r in con.execute(
@@ -1965,6 +2028,9 @@ async def refresh(request: Request):
 
 @app.post("/api/shows/{show_id}/watched")
 async def show_watched(show_id: int, request: Request):
+    if show_id >= FRIEND_BASE:
+        body = await read_json(request)
+        return await in_thread(friend_show_watched, show_id, bool(body.get("watched")))
     """Segna tutta la serie come vista / da vedere."""
     body = await read_json(request)
     con = db()
@@ -1986,7 +2052,7 @@ def home():
         def j(r):
             return item_json(r, shows.get(r["show_id"]))
 
-        cont = [j(r) for r in con.execute(
+        cont = [dict(j(r), last_played=r["last_played"]) for r in con.execute(
             "SELECT * FROM items WHERE position>20 AND watched=0 ORDER BY last_played DESC LIMIT 20")]
         cont_ids = {c["id"] for c in cont}
 
@@ -2024,8 +2090,54 @@ def home():
                              "items": [x for _, x in recent[:24]]})
         sagas = sorted((collection_json(con, r) for r in collection_rows(con)),
                        key=lambda c: c["latest"] or 0, reverse=True)[:24]
+        cont = friend_continue(con, cont)
+        rows += friend_home_rows()
         return {"continue": cont, "nextup": nextup, "libraries": rows, "collections": sagas,
-                "top_movies": top_movies, "has_libraries": bool(libs)}
+                "top_movies": top_movies, "mylist": my_list(con)[:24], "has_libraries": bool(libs)}
+    finally:
+        con.close()
+
+
+def my_list(con):
+    """"La mia lista": film e serie messi da parte, dall'ultimo aggiunto."""
+    found = [(r["fav"], item_json(r)) for r in con.execute(
+        "SELECT * FROM items WHERE kind='movie' AND fav>0")]
+    found += [(r["fav"], show_json(con, r)) for r in con.execute(
+        "SELECT * FROM shows WHERE fav>0").fetchall()]
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    return [x for _, x in found]
+
+
+@app.get("/api/mylist")
+def mylist():
+    con = db()
+    try:
+        return my_list(con)
+    finally:
+        con.close()
+
+
+@app.post("/api/fav")
+async def set_fav(request: Request):
+    """Aggiunge o toglie un film o una serie dalla lista."""
+    body = await read_json(request)
+    table = {"movie": "items", "show": "shows"}.get(body.get("kind"))
+    if not table:
+        raise HTTPException(400, "Richiesta non valida")
+    try:
+        target = int(body.get("id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Richiesta non valida")
+    if target >= FRIEND_BASE:
+        raise HTTPException(400, "«La mia lista» vale solo per i titoli di questo server")
+    con = db()
+    try:
+        done = con.execute(f"UPDATE {table} SET fav=? WHERE id=?",
+                           (time.time() if body.get("fav") else 0, target))
+        con.commit()
+        if not done.rowcount:
+            raise HTTPException(404, "Elemento non trovato")
+        return {"ok": True}
     finally:
         con.close()
 
@@ -2053,6 +2165,8 @@ def collections_list():
 
 @app.get("/api/collections/{coll_id}")
 def collection_detail(coll_id: int):
+    if coll_id >= FRIEND_BASE:
+        return friend_collection(coll_id)
     con = db()
     try:
         rows = collection_rows(con, coll_id)
@@ -2091,12 +2205,15 @@ def shows_list(library: int = 0):
 
 @app.get("/api/shows/{show_id}")
 def show_detail(show_id: int):
+    if show_id >= FRIEND_BASE:
+        return friend_show(show_id)
     con = db()
     try:
         s = get_show(con, show_id)
         if not s:
             raise HTTPException(404, "Serie non trovata")
         d = show_json(con, s)
+        d["cast"] = people_json(s["people"])
         eps = [item_json(r, s) for r in con.execute(
             "SELECT * FROM items WHERE show_id=? ORDER BY season, episode, path", (show_id,))]
         seasons = {}
@@ -2115,11 +2232,14 @@ def show_detail(show_id: int):
 
 @app.get("/api/items/{item_id}")
 def item_detail(item_id: int):
+    if item_id >= FRIEND_BASE:
+        return friend_item(item_id)
     con = db()
     try:
         r = get_item(con, item_id)
         show = get_show(con, r["show_id"]) if r["show_id"] else None
         d = item_json(r, show)
+        d["cast"] = people_json(r["people"])
         d["collection"] = None
         if r["collection_id"]:
             saga = collection_rows(con, r["collection_id"])
@@ -2137,6 +2257,8 @@ def item_detail(item_id: int):
 
 @app.get("/api/play/{item_id}")
 def play(item_id: int):
+    if item_id >= FRIEND_BASE:
+        return friend_play(item_id)
     con = db()
     try:
         return play_info(con, get_item(con, item_id))
@@ -2149,6 +2271,8 @@ async def progress(item_id: int, request: Request):
     body = await read_json(request)
     pos = float(body.get("position") or 0)
     dur = float(body.get("duration") or 0)
+    if item_id >= FRIEND_BASE:
+        return await in_thread(friend_progress, item_id, pos, dur, bool(body.get("ended")))
     con = db()
     try:
         r = get_item(con, item_id)
@@ -2169,6 +2293,8 @@ async def progress(item_id: int, request: Request):
 @app.post("/api/watched/{item_id}")
 async def set_watched(item_id: int, request: Request):
     body = await read_json(request)
+    if item_id >= FRIEND_BASE:
+        return await in_thread(friend_set_watched, item_id, bool(body.get("watched")))
     con = db()
     try:
         get_item(con, item_id)
@@ -2194,6 +2320,8 @@ thumb_slots = threading.Semaphore(2)
 @app.get("/api/thumb/{item_id}")
 def thumb(item_id: int):
     """Fotogramma del video, usato quando non c'e' una locandina."""
+    if item_id >= FRIEND_BASE:
+        return friend_thumb(item_id)
     target = IMG / f"thumb_{item_id}.jpg"
     if not target.exists():
         con = db()
@@ -2250,6 +2378,8 @@ def shift_vtt(text, offset):
 
 @app.get("/api/subs/{item_id}/{index}")
 def subs(item_id: int, index: int, offset: float = 0):
+    if item_id >= FRIEND_BASE:
+        return friend_subs(item_id, index, offset)
     con = db()
     try:
         r = get_item(con, item_id)
@@ -2276,6 +2406,8 @@ def subs(item_id: int, index: int, offset: float = 0):
 @app.api_route("/api/stream/{item_id}", methods=["GET", "HEAD"])
 def stream(item_id: int, request: Request):
     """File originale, con supporto Range (serve per andare avanti/indietro)."""
+    if item_id >= FRIEND_BASE:
+        return friend_stream(item_id, request)
     con = db()
     try:
         path = get_item(con, item_id)["path"]
@@ -2355,6 +2487,8 @@ def audio_tracks(path):
 @app.get("/api/tracks/{item_id}")
 def tracks(item_id: int):
     """Tracce audio tra cui scegliere nel player (lingua)."""
+    if item_id >= FRIEND_BASE:
+        return friend_tracks(item_id)
     con = db()
     try:
         r = get_item(con, item_id)
@@ -2433,12 +2567,41 @@ def transcode_plan(r, vcopy=False):
     return vargs, aargs, heavy
 
 
+def uplink_plan(r, height):
+    """Conversione per un amico che guarda da fuori casa: il collo di bottiglia
+    e' la velocita' di caricamento di questa linea, quindi il video viene
+    rimpicciolito a 'height' (720 o 1080) con un tetto ai dati al secondo.
+    Se il file e' gia' H.264 leggero e non piu' grande, si copia senza lavoro."""
+    cap = 3500 if height == 720 else 8000          # kbit/s
+    vcodec, pix = r["vcodec"] or "", r["pix"] or ""
+    kbps = (r["size"] or 0) * 8 / 1000 / r["duration"] if r["duration"] else 0
+    if (vcodec == "h264" and pix in ("yuv420p", "yuvj420p") and 0 < (r["height"] or 0) <= height + 8
+            and 0 < kbps <= cap * 1.25):
+        vargs, heavy = ["-c:v", "copy"], False
+    else:
+        hdr = "10" in pix and is_hdr(r["path"])
+        chain = f"scale=-2:min({height}\\,ih):flags=fast_bilinear"
+        if hdr and not SLOW_PC:
+            chain += (",zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,"
+                      "tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv")
+        vargs, heavy = ["-c:v", "libx264", "-preset", "ultrafast" if SLOW_PC else "superfast",
+                        "-crf", "23", "-maxrate", f"{cap}k", "-bufsize", f"{cap * 2}k",
+                        "-vf", chain + ",format=yuv420p", "-g", "96", "-sc_threshold", "0"], True
+    return vargs, ["-c:a", "aac", "-ac", "2", "-b:a", "128k"], heavy
+
+
 @app.get("/api/transcode/{item_id}")
 def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0):
     """Conversione al volo in MP4 per i dispositivi che non leggono il file
     originale. Non si puo' saltare dentro il flusso: per spostarsi il player
     richiede di nuovo l'indirizzo con un altro 'start'.
     'vcopy=1': il dispositivo sa decodificare il video, va cambiato solo il resto."""
+    if item_id >= FRIEND_BASE:
+        return friend_transcode(item_id, start, vcopy, audio)
+    return run_transcode(item_id, start, vcopy, audio)
+
+
+def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0):
     con = db()
     try:
         r = get_item(con, item_id)
@@ -2447,9 +2610,9 @@ def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0):
     path = r["path"]
     if not os.path.isfile(path):
         raise HTTPException(404, "File non trovato sul disco")
-    vargs, aargs, heavy = transcode_plan(r, bool(vcopy))
+    vargs, aargs, heavy = uplink_plan(r, height) if height else transcode_plan(r, bool(vcopy))
     audio = max(0, audio)
-    if audio:
+    if audio and not height:
         # Un'altra lingua: il suo formato puo' essere diverso da quello della prima traccia
         aargs = ["-c:a", "aac", "-ac", "2", "-b:a", "192k"]
     # nice: la conversione lascia sempre la precedenza al resto del PC.
@@ -2484,14 +2647,1214 @@ def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0):
                              headers={"Cache-Control": "no-store"})
 
 
-@app.get("/FrancoPlex.apk")     # l'app installata prima del cambio di nome si aggiorna da qui
+# --------------------------------------------------------------------------
+# Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte
+# --------------------------------------------------------------------------
+# Chi offre: accende la condivisione; gli amici si registrano (nome + password)
+# dal loro BunkerPlex e aspettano che il padrone di casa li approvi. Da li' in
+# poi le loro richieste portano un gettone e possono SOLO leggere il catalogo e
+# guardare i video, e solo sotto /api/share/. Tutto il resto del server resta
+# com'era (senza password, pensato per la rete di casa) e NON va esposto:
+# per questo c'e' una seconda porta (SHARE_PORT) che risponde soltanto a
+# /api/share/ ed e' l'unica da far raggiungere agli amici.
+# Chi guarda: il suo server fa da tramite (catalogo, immagini, video), quindi
+# TV e browser continuano a parlare solo con il server di casa propria.
+
+SHARE_PORT = int(os.environ.get("SHARE_PORT", "32501") or 0)
+FRIEND_BASE = 1_000_000_000      # da qui in su un id e' di un amico: base + posto dell'amico + id suo
+FRIEND_SPAN = 50_000_000
+FRIEND_MAX = 20                  # 20 amici: gli id restano dentro un intero a 32 bit (app TV)
+FRIENDS_DIR = DATA / "friends"   # copia locale di catalogo e immagini: si sfoglia anche se l'amico e' spento
+QUALITIES = ("720", "1080", "orig")
+
+
+async def in_thread(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(None, lambda: fn(*args))
+
+
+# ---- Lato di chi offre: account degli amici --------------------------------
+
+share_tokens = {}                # impronta del gettone -> (account, approvato, quando controllato)
+login_fails = {}                 # nome -> [errori, fermo fino a]
+register_times = []              # registrazioni recenti (freno contro chi ci prova a raffica)
+ACCOUNT_NAME = re.compile(r"^[\w .\-]{2,30}$")
+
+
+def share_on():
+    return bool((config.get("share") or {}).get("on"))
+
+
+def token_hash(token):
+    return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
+
+
+def password_hash(password, salt):
+    return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
+
+
+def new_session(con, account):
+    """Un gettone nuovo per l'account (sul disco resta solo la sua impronta)."""
+    token = secrets.token_urlsafe(32)
+    con.execute("INSERT INTO share_sessions(token, account, created) VALUES(?,?,?)",
+                (token_hash(token), account, time.time()))
+    # Al massimo 10 dispositivi per account: i piu' vecchi decadono
+    con.execute("DELETE FROM share_sessions WHERE account=? AND token NOT IN "
+                "(SELECT token FROM share_sessions WHERE account=? ORDER BY created DESC LIMIT 10)",
+                (account, account))
+    return token
+
+
+def share_guard(request: Request):
+    """Chi puo' usare /api/share/...: solo un amico registrato e approvato."""
+    if not share_on():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    token = request.headers.get("x-share-token", "")
+    if not token:
+        raise HTTPException(401, "Accesso riservato agli amici registrati")
+    key = token_hash(token)
+    known = share_tokens.get(key)
+    if not known or time.time() - known[2] > 30:
+        con = db()
+        try:
+            r = con.execute("SELECT a.id, a.approved, a.last_seen FROM share_sessions s JOIN accounts a "
+                            "ON a.id=s.account WHERE s.token=?", (key,)).fetchone()
+            if r and r["approved"] and time.time() - (r["last_seen"] or 0) > 300:
+                con.execute("UPDATE accounts SET last_seen=? WHERE id=?", (time.time(), r["id"]))
+                con.commit()
+        finally:
+            con.close()
+        if not r:
+            raise HTTPException(401, "Accesso non valido: ripeti l'accesso")
+        if len(share_tokens) > 500:
+            share_tokens.clear()
+        known = share_tokens[key] = (r["id"], bool(r["approved"]), time.time())
+        if r["approved"]:
+            friend_nudge(r["id"])
+    if not known[1]:
+        raise HTTPException(403, "Registrazione in attesa di approvazione")
+
+
+def friend_nudge(account):
+    """L'amico si e' appena fatto vivo qui: vuol dire che il suo PC e' acceso. Se da
+    questa parte risultava spento (o in attesa), si riprova subito invece di aspettare."""
+    for f in get_friends():
+        if f.get("account") == account and (friend_status.get(f["n"]) or {}).get("online") is not True:
+            threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+
+
+def _credentials(body):
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()
+    password = str(body.get("password") or "")
+    if not ACCOUNT_NAME.match(name):
+        raise HTTPException(400, "Nome non valido: da 2 a 30 lettere, numeri o spazi")
+    if not 8 <= len(password) <= 200:
+        raise HTTPException(400, "La password deve avere almeno 8 caratteri")
+    return name, password
+
+
+@app.post("/api/share/register")
+async def share_register(request: Request):
+    """Un amico chiede di entrare: l'account nasce spento, lo accende il padrone di casa."""
+    if not share_on():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    body = await read_json(request)
+    name, password = _credentials(body)
+    # 'back': chi chiede offre gia' le sue raccolte (indirizzo + gettone per entrare da lui).
+    # Si usano solo se e quando il padrone di casa approva la richiesta.
+    back = body.get("back") if isinstance(body.get("back"), dict) else {}
+    back_url = back_token = ""
+    if isinstance(back.get("token"), str) and 20 <= len(back["token"]) <= 200:
+        try:
+            back_url, back_token = friend_address(back.get("url")), back["token"]
+        except HTTPException:
+            pass
+    now = time.time()
+    register_times[:] = [t for t in register_times if now - t < 3600]
+    if len(register_times) >= 10:
+        raise HTTPException(429, "Troppe registrazioni: riprova più tardi")
+    register_times.append(now)
+
+    def work():
+        con = db()
+        try:
+            if con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+                raise HTTPException(409, "Questo nome è già registrato: scegline un altro, oppure usa «Accedi»")
+            if con.execute("SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] >= 30:
+                raise HTTPException(429, "Troppe richieste in attesa: riprova più tardi")
+            salt = secrets.token_bytes(16)
+            cur = con.execute("INSERT INTO accounts(name, salt, hash, approved, created, back_url, back_token) "
+                              "VALUES(?,?,?,0,?,?,?)",
+                              (name, salt, password_hash(password, salt), now, back_url, back_token))
+            token = new_session(con, cur.lastrowid)
+            con.commit()
+            return {"ok": True, "token": token, "approved": False, "server": SERVER_NAME}
+        finally:
+            con.close()
+
+    return await in_thread(work)
+
+
+@app.post("/api/share/login")
+async def share_login(request: Request):
+    """Accesso con un account gia' registrato (per esempio da un altro PC)."""
+    if not share_on():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    name, password = _credentials(await read_json(request))
+    fail = login_fails.get(name.lower())
+    if fail and fail[0] >= 5 and time.time() < fail[1]:
+        raise HTTPException(429, "Troppi tentativi: riprova tra qualche minuto")
+
+    def work():
+        con = db()
+        try:
+            r = con.execute("SELECT * FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            # Il conto si fa anche se il nome non esiste: stessi tempi, stessa risposta
+            good = hmac.compare_digest(password_hash(password, r["salt"] if r else b"0" * 16),
+                                       r["hash"] if r else b"")
+            if not r or not good:
+                if len(login_fails) > 1000:
+                    login_fails.clear()
+                count = (fail[0] if fail else 0) + 1
+                login_fails[name.lower()] = [count, time.time() + min(900, 30 * count)]
+                raise HTTPException(401, "Nome o password sbagliati")
+            login_fails.pop(name.lower(), None)
+            token = new_session(con, r["id"])
+            con.commit()
+            return {"ok": True, "token": token, "approved": bool(r["approved"]), "server": SERVER_NAME}
+        finally:
+            con.close()
+
+    return await in_thread(work)
+
+
+@app.get("/api/sharing")
+def sharing_status():
+    """Per Impostazioni (rete di casa): stato della condivisione e amici registrati."""
+    con = db()
+    try:
+        accounts = [{"id": r["id"], "name": r["name"], "approved": bool(r["approved"]),
+                     "created": r["created"], "last_seen": r["last_seen"] or 0,
+                     "back_url": r["back_url"] or ""}
+                    for r in con.execute("SELECT * FROM accounts ORDER BY approved, name COLLATE NOCASE")]
+    finally:
+        con.close()
+    return {"on": share_on(), "port": SHARE_PORT, "accounts": accounts,
+            "address": (config.get("share") or {}).get("address") or ""}
+
+
+@app.post("/api/sharing")
+async def sharing_set(request: Request):
+    body = await read_json(request)
+    address = friend_address(body["address"]) if body.get("address") else None
+    with config_lock:
+        sh = config.setdefault("share", {})
+        if "on" in body:
+            sh["on"] = bool(body["on"])
+        if address:
+            sh["address"] = address
+        save_config()
+    return {"ok": True, "on": share_on()}
+
+
+@app.post("/api/sharing/accounts/{account}")
+async def sharing_approve(account: int, request: Request):
+    """Accetta (o sospende) la richiesta di un amico. Accettando, lo scambio e'
+    reciproco: se lui ha offerto le sue raccolte, compaiono qui da sole."""
+    body = await read_json(request)
+    con = db()
+    try:
+        done = con.execute("UPDATE accounts SET approved=? WHERE id=?",
+                           (1 if body.get("approved") else 0, account))
+        con.commit()
+        r = con.execute("SELECT * FROM accounts WHERE id=?", (account,)).fetchone()
+    finally:
+        con.close()
+    share_tokens.clear()
+    if not done.rowcount:
+        raise HTTPException(404, "Account non trovato")
+    linked = False
+    if body.get("approved") and r["back_url"] and r["back_token"]:
+        friends = get_friends()
+        if not any(f["url"] == r["back_url"] for f in friends) and len(friends) < FRIEND_MAX:
+            friend_store(r["name"], r["back_url"], "", r["back_token"], account)
+            linked = True
+    return {"ok": True, "linked": linked}
+
+
+@app.delete("/api/sharing/accounts/{account}")
+def sharing_remove(account: int):
+    """Toglie un amico: non entra piu' qui, e le sue raccolte spariscono da questo server."""
+    con = db()
+    try:
+        r = con.execute("SELECT back_url FROM accounts WHERE id=?", (account,)).fetchone()
+    finally:
+        con.close()
+    account_drop(account)
+    for f in get_friends():
+        if f.get("account") == account or (r and r["back_url"] and f["url"] == r["back_url"]):
+            friend_drop(f["n"])
+    return {"ok": True}
+
+
+def account_drop(account):
+    con = db()
+    try:
+        con.execute("DELETE FROM share_sessions WHERE account=?", (account,))
+        con.execute("DELETE FROM accounts WHERE id=?", (account,))
+        con.commit()
+    finally:
+        con.close()
+    share_tokens.clear()
+
+
+def account_for_friend(label):
+    """L'account con cui l'amico a cui si manda una richiesta potra' entrare qui
+    (gia' approvato: la richiesta parte da noi). Restituisce (id, gettone)."""
+    con = db()
+    try:
+        base = re.sub(r"[^\w .\-]", " ", label).strip()[:24] or "Amico"
+        name, i = base, 1
+        while len(name) < 2 or con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+            i += 1
+            name = f"{base} {i}"
+        salt = secrets.token_bytes(16)       # password a caso: si entra solo con il gettone
+        cur = con.execute("INSERT INTO accounts(name, salt, hash, approved, created) VALUES(?,?,?,1,?)",
+                          (name, salt, password_hash(secrets.token_urlsafe(24), salt), time.time()))
+        token = new_session(con, cur.lastrowid)
+        con.commit()
+        return cur.lastrowid, token
+    finally:
+        con.close()
+
+
+# ---- Lato di chi offre: cosa puo' leggere un amico -------------------------
+# Solo lettura del catalogo e video. Niente impostazioni, cartelle, scansioni,
+# aggiornamenti, "visto", lista: quelle strade qui sotto non esistono.
+
+share = APIRouter(prefix="/api/share", dependencies=[Depends(share_guard)])
+
+
+def _own(i):
+    """Un amico vede solo i titoli di questo server, non quelli degli amici di questo server."""
+    if i < 0 or i >= FRIEND_BASE:
+        raise HTTPException(404, "Elemento non trovato")
+    return i
+
+
+def scrub(x):
+    """Toglie dal catalogo cio' che riguarda chi abita qui (visto, ripresa, lista)."""
+    if isinstance(x, list):
+        for v in x:
+            scrub(v)
+    elif isinstance(x, dict):
+        for k in ("position", "start"):
+            if k in x:
+                x[k] = 0
+        for k in ("watched", "fav"):
+            if k in x:
+                x[k] = False
+        if x.get("kind") == "show" and "episodes" in x:
+            x["unwatched"] = x["episodes"]
+        elif x.get("kind") == "collection" and "count" in x:
+            x["unwatched"] = x["count"]
+        for v in x.values():
+            scrub(v)
+    return x
+
+
+@share.get("/info")
+def share_info():
+    return {"app": "francoplex", "name": SERVER_NAME, "version": VERSION, "share": 1}
+
+
+@share.get("/libraries")
+def share_libraries():
+    """Le raccolte, senza i percorsi delle cartelle."""
+    return [{"id": l["id"], "name": l["name"], "movies": l["movies"], "shows": l["shows"]}
+            for l in libraries_list()]
+
+
+@share.get("/libraries/{lib_id}/items")
+def share_library_items(lib_id: int):
+    return scrub(library_items(_own(lib_id)))
+
+
+@share.get("/shows/{show_id}")
+def share_show(show_id: int):
+    return scrub(show_detail(_own(show_id)))
+
+
+@share.get("/items/{item_id}")
+def share_item(item_id: int):
+    return scrub(item_detail(_own(item_id)))
+
+
+@share.get("/collections/{coll_id}")
+def share_collection(coll_id: int):
+    return scrub(collection_detail(_own(coll_id)))
+
+
+@share.get("/play/{item_id}")
+def share_play(item_id: int):
+    return scrub(play(_own(item_id)))
+
+
+@share.get("/tracks/{item_id}")
+def share_tracks(item_id: int):
+    return tracks(_own(item_id))
+
+
+@share.get("/image/{name}")
+def share_image(name: str):
+    return image(name)
+
+
+@share.get("/thumb/{item_id}")
+def share_thumb(item_id: int):
+    return thumb(_own(item_id))
+
+
+@share.get("/subs/{item_id}/{index}")
+def share_subs(item_id: int, index: int, offset: float = 0):
+    return subs(_own(item_id), index, offset)
+
+
+@share.api_route("/stream/{item_id}", methods=["GET", "HEAD"])
+def share_stream(item_id: int, request: Request):
+    return stream(_own(item_id), request)
+
+
+@share.get("/transcode/{item_id}")
+def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, height: int = 0):
+    """'height' (720 o 1080): conversione leggera, a misura della linea di casa."""
+    return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0)
+
+
+app.include_router(share)
+
+
+class ShareOnly:
+    """La porta per gli amici: lascia passare soltanto /api/share/..."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return
+        if scope["path"].startswith("/api/share/"):
+            await self.inner(scope, receive, send)
+            return
+        body = json.dumps({"detail": "Non disponibile"}).encode()
+        await send({"type": "http.response.start", "status": 404,
+                    "headers": [(b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
+def share_listener():
+    try:
+        import uvicorn
+        uvicorn.run(ShareOnly(app), host="0.0.0.0", port=SHARE_PORT, lifespan="off",
+                    log_level="warning")
+    except BaseException as ex:      # porta occupata: il resto del server va avanti lo stesso
+        print("Porta per gli amici non disponibile:", SHARE_PORT, ex, flush=True)
+
+
+# ---- Lato di chi guarda: collegamento con il server dell'amico -------------
+
+friend_status = {}               # posto dell'amico -> {online, tried, error, synced}
+friend_locks = {}
+fc_memory = {}                   # file della copia locale -> (data di modifica, contenuto)
+
+
+class FriendDown(Exception):
+    def __init__(self, message, code=0):
+        super().__init__(message)
+        self.code = code
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):     # il gettone non segue mai un reindirizzamento
+        return None
+
+
+friend_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def get_friends():
+    with config_lock:
+        return json.loads(json.dumps(config.get("friends") or []))
+
+
+def friend_by_n(n):
+    for f in get_friends():
+        if f["n"] == n:
+            return f
+    return None
+
+
+def fvid(n, rid):
+    return FRIEND_BASE + (n - 1) * FRIEND_SPAN + rid
+
+
+def friend_of(vid):
+    """Da un id 'di un amico' a (amico, id sul suo server)."""
+    n, rid = divmod(vid - FRIEND_BASE, FRIEND_SPAN)
+    f = friend_by_n(n + 1)
+    if not f:
+        raise HTTPException(404, "Questo amico non è più tra i tuoi collegamenti")
+    return f, rid
+
+
+def friend_quality():
+    q = str(config.get("friend_quality") or "720")
+    return q if q in QUALITIES else "720"
+
+
+def friend_mark(n, online, error=""):
+    if n:
+        friend_status.setdefault(n, {}).update(online=online, tried=time.time(), error=error)
+
+
+def friend_usable(n):
+    """Un amico appena trovato spento non si riprova a ogni richiesta: per 30
+    secondi si risponde subito con la copia locale (la Home non deve aspettare)."""
+    s = friend_status.get(n) or {}
+    return s.get("online") is not False or time.time() - s.get("tried", 0) > 30
+
+
+def friend_open(f, path, timeout=5, headers=None, method="GET", data=None):
+    h = {"X-Share-Token": f.get("token") or "", "User-Agent": "BunkerPlex/" + VERSION}
+    h.update(headers or {})
+    req = urllib.request.Request(f["url"] + "/api/share" + path, data=data, headers=h, method=method)
+    return friend_opener.open(req, timeout=timeout)
+
+
+def http_detail(ex):
+    try:
+        return str(json.loads(ex.read(4096)).get("detail") or "")[:200]
+    except Exception:
+        return ""
+
+
+def friend_json(f, path, timeout=5, body=None):
+    """Una risposta JSON dal server dell'amico. FriendDown se non si arriva a lui
+    o se rifiuta l'accesso; mai attese lunghe."""
+    n = f.get("n")
+    headers = {"Accept-Encoding": "gzip"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    try:
+        with friend_open(f, path, timeout, headers, "POST" if data else "GET", data) as r:
+            raw = r.read(64 << 20)
+            if (r.headers.get("Content-Encoding") or "").lower() == "gzip":
+                raw = gzip.decompress(raw)
+            out = json.loads(raw)
+    except urllib.error.HTTPError as ex:
+        detail = http_detail(ex)
+        ex.close()
+        if ex.code == 404 and body is None:
+            friend_mark(n, True)
+            raise HTTPException(404, "Questo titolo non c'è più sul server dell'amico")
+        friend_mark(n, False, detail or f"errore {ex.code}")
+        raise FriendDown(detail or f"errore {ex.code}", ex.code)
+    except Exception:
+        friend_mark(n, False, "non raggiungibile")
+        raise FriendDown("non raggiungibile")
+    friend_mark(n, True)
+    return out
+
+
+def friend_bytes(f, path, timeout=6, limit=8 << 20, mark=True):
+    """Un file piccolo (immagine, sottotitoli) dall'amico; None se non arriva."""
+    n = f["n"]
+    if not friend_usable(n):
+        return None
+    try:
+        with friend_open(f, path, timeout) as r:
+            data = r.read(limit + 1)
+    except urllib.error.HTTPError as ex:
+        ex.close()
+        return None
+    except Exception:
+        if mark:
+            friend_mark(n, False, "non raggiungibile")
+        return None
+    return data if 0 < len(data) <= limit else None
+
+
+# ---- Copia locale del catalogo dell'amico ----------------------------------
+
+def fc_path(n, name):
+    return FRIENDS_DIR / str(n) / name
+
+
+def fc_load(n, name):
+    """(contenuto, eta' in secondi) di un file della copia locale; (None, 0) se manca."""
+    p = fc_path(n, name)
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        return None, 0
+    known = fc_memory.get(str(p))
+    if not known or known[0] != mtime:
+        try:
+            known = (mtime, json.loads(p.read_text("utf-8")))
+        except (OSError, ValueError):
+            return None, 0
+        if len(fc_memory) > 300:
+            fc_memory.clear()
+        fc_memory[str(p)] = known
+    return known[1], max(0, time.time() - mtime)
+
+
+def fc_save(n, name, data):
+    if not friend_by_n(n):           # tolto nel frattempo: non si ricrea la sua cartella
+        return
+    p = fc_path(n, name)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp%d" % threading.get_ident())
+    tmp.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    os.replace(tmp, p)
+
+
+def friend_data(f, name, path, max_age=600, timeout=5):
+    """Catalogo dell'amico: la copia locale se e' fresca, altrimenti si chiede a
+    lui (attesa breve); se non risponde va bene anche la copia vecchia."""
+    n = f["n"]
+    cached, age = fc_load(n, name)
+    if cached is not None and age < max_age:
+        return cached
+    if friend_usable(n):
+        try:
+            data = friend_json(f, path, timeout)
+            fc_save(n, name, data)
+            return data
+        except FriendDown:
+            pass
+    if cached is not None:
+        return cached
+    raise HTTPException(502, f"«{f['name']}» non è raggiungibile e questa pagina non è ancora in memoria")
+
+
+def friend_sync(f):
+    """Aggiorna la copia locale di raccolte ed elenchi (in sottofondo)."""
+    n = f["n"]
+    lock = friend_locks.setdefault(n, threading.Lock())
+    if not lock.acquire(blocking=False):
+        return
+    try:
+        libs = friend_json(f, "/libraries", timeout=6)
+        clean = []
+        for l in libs if isinstance(libs, list) else []:
+            if isinstance(l, dict) and _is_id(l.get("id")):
+                clean.append({"id": l["id"], "name": str(l.get("name") or "Raccolta")[:40],
+                              "movies": int(_num(l.get("movies"))), "shows": int(_num(l.get("shows")))})
+        fc_save(n, "libraries.json", clean)
+        everything = []
+        for l in clean:
+            items = friend_json(f, f"/libraries/{l['id']}/items", timeout=20)
+            if isinstance(items, list):
+                fc_save(n, f"lib_{l['id']}.json", items)
+                everything += items
+        friend_status.setdefault(n, {})["synced"] = time.time()
+        # Le locandine: scaricate una volta, poi si vedono anche con l'amico spento
+        for x in everything:
+            m = F_IMG.match(x.get("poster") or "") if isinstance(x, dict) else None
+            if m and not fc_path(n, "img/" + m.group(1)).exists():
+                if not friend_by_n(n) or not friend_image_file(f, m.group(1)):
+                    break
+                time.sleep(0.05)
+    except FriendDown:
+        pass
+    except Exception as ex:
+        print("Amico", f.get("name"), "- aggiornamento non riuscito:", ex, flush=True)
+    finally:
+        lock.release()
+
+
+def friends_loop():
+    """Tiene aggiornata la copia locale: ogni 10 minuti se l'amico risponde,
+    un tentativo al minuto se e' spento. Mai dentro una richiesta dell'utente."""
+    while True:
+        time.sleep(15)
+        try:
+            for f in get_friends():
+                s = friend_status.get(f["n"]) or {}
+                due = 600 if s.get("online") and s.get("synced") else 60
+                if time.time() - max(s.get("tried", 0) if not s.get("online") else 0,
+                                     s.get("synced", 0)) >= due:
+                    friend_sync(f)
+        except Exception as ex:
+            print("Amici:", ex, flush=True)
+
+
+# ---- Dal catalogo dell'amico a quello che l'interfaccia si aspetta ---------
+
+F_IMG = re.compile(r"^/api/image/([\w.\-]{1,120}\.(?:jpg|jpeg|png|webp))$", re.I)
+F_REF = re.compile(r"^/api/(thumb|stream|transcode)/(\d{1,8})$")
+F_SUB = re.compile(r"^/api/subs/(\d{1,8})/(\d{1,3})$")
+F_ID = {"id", "show_id", "library_id", "next"}
+F_URL = {"poster", "backdrop", "thumb", "photo", "url", "transcode"}
+F_NUM = {"year", "year_to", "season", "episode", "count", "total", "episodes", "seasons_count",
+         "unwatched", "number", "bits", "size", "index", "duration", "position", "added_at",
+         "latest", "rating", "start", "width", "height"}
+F_CODE = {"vcodec", "acodec", "codec", "lang"}
+F_KINDS = ("movie", "episode", "show", "collection")
+
+
+def _is_id(v):
+    return isinstance(v, int) and not isinstance(v, bool) and 0 < v < FRIEND_SPAN
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else 0
+
+
+def f_url(n, v):
+    """Gli indirizzi dentro il catalogo dell'amico diventano indirizzi di questo
+    server (che fa da tramite). Qualsiasi altra cosa viene scartata."""
+    if not isinstance(v, str):
+        return None
+    m = F_IMG.match(v)
+    if m:
+        return f"/api/friend/{n}/image/{m.group(1)}"
+    m = F_REF.match(v)
+    if m:
+        return f"/api/{m.group(1)}/{fvid(n, int(m.group(2)))}"
+    m = F_SUB.match(v)
+    if m:
+        return f"/api/subs/{fvid(n, int(m.group(1)))}/{m.group(2)}"
+    return None
+
+
+def friend_states(n):
+    """Visto e punto di ripresa dei titoli di un amico (tenuti qui, in locale)."""
+    con = db()
+    try:
+        rows = {r["item"]: r for r in con.execute("SELECT * FROM friend_state WHERE friend=?", (n,))}
+    finally:
+        con.close()
+    seen = {}
+    for r in rows.values():
+        if r["watched"] and r["show"]:
+            seen[r["show"]] = seen.get(r["show"], 0) + 1
+    return rows, seen
+
+
+def f_adapt(f, x, st=None):
+    """Ricopia un pezzo di catalogo dell'amico: id e indirizzi tradotti, tipi
+    controllati (non ci si fida alla cieca di un altro server), stato locale."""
+    n = f["n"]
+    if isinstance(x, list):
+        return [f_adapt(f, v, st) for v in x]
+    if not isinstance(x, dict):
+        return x if isinstance(x, (str, bool)) or x is None else (_num(x) if _num(x) == x else None)
+    out = {}
+    for k, v in x.items():
+        if k in F_ID:
+            out[k] = fvid(n, v) if _is_id(v) else (0 if k == "next" else None)
+        elif k in F_URL:
+            out[k] = f_url(n, v)
+        elif k in F_NUM and not isinstance(v, list):    # 'episodes' e' un numero nella serie, un elenco nella stagione
+            out[k] = v if v is not None and _num(v) == v and not isinstance(v, bool) else None
+        elif k in F_CODE:
+            out[k] = re.sub(r"[^a-z0-9_]", "", str(v or "").lower())[:20]
+        elif k == "quality":
+            out[k] = v if v in ("4K", "1080p", "720p", "SD") else ""
+        elif k == "kind":
+            out[k] = v if v in F_KINDS else "movie"
+        else:
+            out[k] = f_adapt(f, v, st)
+    kind = out.get("kind")
+    if kind:
+        out["friend"] = f["name"]
+        out["fav"] = False
+        for k in ("genres", "actors"):
+            if not isinstance(out.get(k), list):
+                out[k] = []
+        rid = x.get("id")
+        if kind in ("movie", "episode"):
+            s = st[0].get(rid) if st else None
+            out["watched"] = bool(s and s["watched"])
+            out["position"] = s["position"] if s and not s["watched"] else 0
+        elif kind == "show":
+            eps = int(out.get("episodes") or 0)
+            done = min(eps, st[1].get(rid, 0)) if st else 0
+            out["unwatched"] = eps - done
+            out["watched"] = eps > 0 and done == eps
+        else:
+            out["unwatched"] = int(out.get("count") or 0)
+            out["watched"] = False
+    return out
+
+
+def _up_next(items):
+    started = [e for e in items if (e.get("position") or 0) > 20 and not e.get("watched")]
+    unwatched = [e for e in items if not e.get("watched")]
+    return started[0] if started else (unwatched[0] if unwatched else (items[0] if items else None))
+
+
+def friend_library_items(vid):
+    f, rid = friend_of(vid)
+    # Sempre dalla copia locale se c'e' (la rinfresca friends_loop): risposta immediata
+    items = friend_data(f, f"lib_{rid}.json", f"/libraries/{rid}/items", max_age=10 ** 9, timeout=15)
+    return f_adapt(f, [x for x in items if isinstance(x, dict)] if isinstance(items, list) else [],
+                   friend_states(f["n"]))
+
+
+def _detail(f, name, path):
+    d = friend_data(f, name, path)
+    if not isinstance(d, dict):
+        raise HTTPException(502, f"Risposta non valida dal server di «{f['name']}»")
+    return f_adapt(f, d, friend_states(f["n"]))
+
+
+def friend_show(vid):
+    f, rid = friend_of(vid)
+    d = _detail(f, f"show_{rid}.json", f"/shows/{rid}")
+    seasons = [s for s in d.get("seasons") or [] if isinstance(s, dict) and isinstance(s.get("episodes"), list)]
+    d["seasons"] = seasons
+    eps = [e for s in seasons for e in s["episodes"] if isinstance(e, dict)]
+    d["episodes"] = len(eps)
+    d["unwatched"] = sum(1 for e in eps if not e.get("watched"))
+    d["watched"] = bool(eps) and d["unwatched"] == 0
+    d["up_next"] = _up_next(eps)
+    return d
+
+
+def friend_item(vid):
+    f, rid = friend_of(vid)
+    return _detail(f, f"item_{rid}.json", f"/items/{rid}")
+
+
+def friend_collection(vid):
+    f, rid = friend_of(vid)
+    d = _detail(f, f"coll_{rid}.json", f"/collections/{rid}")
+    items = [x for x in d.get("items") or [] if isinstance(x, dict)]
+    d["items"] = items
+    d["missing"] = [m for m in d.get("missing") or [] if isinstance(m, dict)]
+    d["unwatched"] = sum(1 for x in items if not x.get("watched"))
+    d["watched"] = bool(items) and d["unwatched"] == 0
+    d["up_next"] = _up_next(items)
+    return d
+
+
+def friend_item_meta(f, rid):
+    """La scheda di un titolo dell'amico, cosi' com'e' arrivata (None se non si ha)."""
+    try:
+        d = friend_data(f, f"item_{rid}.json", f"/items/{rid}", max_age=7 * 86400, timeout=4)
+    except HTTPException:
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def friend_put_state(n, rid, show, position, watched, played):
+    con = db()
+    try:
+        con.execute(
+            "INSERT INTO friend_state(friend, item, show, position, watched, last_played) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(friend, item) DO UPDATE SET show=COALESCE(excluded.show, show), "
+            "position=excluded.position, watched=excluded.watched, "
+            "last_played=CASE WHEN excluded.last_played>0 THEN excluded.last_played ELSE last_played END",
+            (n, rid, show, position, 1 if watched else 0, played))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _show_of(meta):
+    return meta["show_id"] if meta and _is_id(meta.get("show_id")) else None
+
+
+def friend_progress(vid, pos, dur, ended):
+    """Punto di ripresa di un titolo dell'amico: resta su questo server."""
+    f, rid = friend_of(vid)
+    meta = friend_item_meta(f, rid)
+    dur = dur or _num((meta or {}).get("duration"))
+    finished = ended or (dur > 0 and pos / dur > 0.93)
+    friend_put_state(f["n"], rid, _show_of(meta), 0 if finished else pos, finished, time.time())
+    return {"ok": True, "watched": finished}
+
+
+def friend_set_watched(vid, on):
+    f, rid = friend_of(vid)
+    friend_put_state(f["n"], rid, _show_of(friend_item_meta(f, rid)), 0, on, 0)
+    return {"ok": True}
+
+
+def friend_show_watched(vid, on):
+    f, rid = friend_of(vid)
+    d = friend_data(f, f"show_{rid}.json", f"/shows/{rid}")
+    for s in (d.get("seasons") or []) if isinstance(d, dict) else []:
+        for e in (s.get("episodes") or []) if isinstance(s, dict) else []:
+            if isinstance(e, dict) and _is_id(e.get("id")):
+                friend_put_state(f["n"], e["id"], rid, 0, on, 0)
+    return {"ok": True}
+
+
+def friend_play(vid):
+    """Avvio di un titolo dell'amico. Per non intasare la sua linea, di norma il
+    video arriva convertito (720p o 1080p): lo decide 'friend_quality'."""
+    f, rid = friend_of(vid)
+    try:
+        p = friend_json(f, f"/play/{rid}", timeout=6)
+    except FriendDown as ex:
+        raise HTTPException(502, f"«{f['name']}» non è raggiungibile ({ex}): riprova più tardi")
+    if not isinstance(p, dict):
+        raise HTTPException(502, f"Risposta non valida dal server di «{f['name']}»")
+    friend_item_meta(f, rid)         # la scheda serve poi a «Continua a guardare»
+    out = f_adapt(f, p)
+    out["friend"] = f["name"]
+    out["subs"] = [s for s in out.get("subs") or [] if isinstance(s, dict) and s.get("url")]
+    s = friend_states(f["n"])[0].get(rid)
+    out["start"] = s["position"] if s and not s["watched"] else 0
+    quality = friend_quality()
+    out["friend_quality"] = quality
+    if quality != "orig":
+        # Sempre convertito. Il browser lo capisce da 'browser_direct'; l'app TV prova
+        # prima 'url': li' trova un file che non e' un video e passa da sola alla conversione.
+        out.update(browser_direct=False, url="/api/friend/convert", vcodec="h264", bits=8)
+    return out
+
+
+def friend_tracks(vid):
+    f, rid = friend_of(vid)
+    try:
+        t = friend_json(f, f"/tracks/{rid}", timeout=8)
+    except FriendDown:
+        t = None
+    t = f_adapt(f, t) if isinstance(t, dict) else {}
+    t["audio"] = [a for a in t.get("audio") or [] if isinstance(a, dict)]
+    return t
+
+
+def friend_image_file(f, name):
+    """Un'immagine dell'amico, dalla copia locale (scaricata la prima volta)."""
+    target = fc_path(f["n"], "img/" + name)
+    if target.is_file():
+        return target
+    data = friend_bytes(f, "/image/" + name)
+    if not data:
+        return None
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp%d" % threading.get_ident())
+    tmp.write_bytes(data)
+    os.replace(tmp, target)
+    return target
+
+
+@app.get("/api/friend/{n}/image/{name}")
+def friend_image(n: int, name: str):
+    f = friend_by_n(n)
+    if not f or not F_IMG.match("/api/image/" + name):
+        raise HTTPException(404)
+    target = friend_image_file(f, name)
+    if not target:
+        raise HTTPException(404)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable",
+                                         "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/friend/convert")
+def friend_convert():
+    """Non e' un video, apposta: vedi friend_play."""
+    return Response(b"BunkerPlex: questo titolo arriva convertito.\n" * 40,
+                    media_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+
+
+def friend_thumb(vid):
+    f, rid = friend_of(vid)
+    target = fc_path(f["n"], f"img/thumb_{rid}.jpg")
+    if not target.is_file():
+        # Il fotogramma lo prepara il PC dell'amico: puo' volerci un po', e non dice nulla sul collegamento
+        data = friend_bytes(f, f"/thumb/{rid}", timeout=20, mark=False)
+        if not data or data[:2] != b"\xff\xd8":
+            raise HTTPException(404)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp%d" % threading.get_ident())
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=86400",
+                                         "X-Content-Type-Options": "nosniff"})
+
+
+def friend_subs(vid, index, offset):
+    f, rid = friend_of(vid)
+    data = friend_bytes(f, f"/subs/{rid}/{int(index)}?offset={max(0.0, offset):.1f}", timeout=8)
+    if not data:
+        raise HTTPException(404)
+    return Response(data, media_type="text/vtt; charset=utf-8",
+                    headers={"X-Content-Type-Options": "nosniff"})
+
+
+def friend_pipe(f, path, request=None):
+    """Fa passare un video dall'amico al dispositivo, senza tenerne copia."""
+    headers, method = {}, "GET"
+    if request is not None:
+        method = request.method
+        if request.headers.get("range"):
+            headers["Range"] = request.headers["range"]
+    try:
+        up = friend_open(f, path, 30, headers, method)
+    except urllib.error.HTTPError as ex:
+        code, total = ex.code, ex.headers.get("Content-Range") or ""
+        ex.close()
+        if code == 416:
+            return Response(status_code=416, headers={"Content-Range": total})
+        raise HTTPException(404 if code == 404 else 502,
+                            "File non trovato sul disco dell'amico" if code == 404
+                            else f"«{f['name']}» ha rifiutato la richiesta")
+    except Exception:
+        friend_mark(f["n"], False, "non raggiungibile")
+        raise HTTPException(502, f"«{f['name']}» non è raggiungibile")
+    keep = {k: up.headers[k] for k in ("Content-Length", "Content-Range", "Accept-Ranges")
+            if up.headers.get(k)}
+    keep["Cache-Control"] = "no-store"
+    keep["X-Content-Type-Options"] = "nosniff"
+    ctype = (up.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if not ctype.startswith(("video/", "audio/")):
+        ctype = "application/octet-stream"
+    if method == "HEAD":
+        up.close()
+        return Response(status_code=up.status, headers=keep, media_type=ctype)
+
+    async def body():
+        # Come per la conversione di casa: se il dispositivo chiude o salta, il
+        # 'finally' chiude subito il collegamento e il PC dell'amico smette di lavorare.
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, up.read1, 256 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            up.close()
+
+    return StreamingResponse(body(), status_code=up.status, headers=keep, media_type=ctype)
+
+
+def friend_stream(vid, request):
+    f, rid = friend_of(vid)
+    return friend_pipe(f, f"/stream/{rid}", request)
+
+
+def friend_transcode(vid, start, vcopy, audio):
+    f, rid = friend_of(vid)
+    q = {"start": f"{max(0.0, start):.2f}", "audio": max(0, audio)}
+    quality = friend_quality()
+    if quality == "orig":
+        q["vcopy"] = 1 if vcopy else 0
+    else:
+        q["height"] = quality
+    return friend_pipe(f, f"/transcode/{rid}?" + urllib.parse.urlencode(q))
+
+
+# ---- Home e menu: le raccolte degli amici ----------------------------------
+
+def friend_home_rows():
+    """Una fila per ogni raccolta di ogni amico. Solo dalla copia locale: la
+    Home non aspetta mai la rete."""
+    rows = []
+    for f in get_friends():
+        try:
+            n = f["n"]
+            libs, _ = fc_load(n, "libraries.json")
+            st = None
+            for l in libs or []:
+                items, _ = fc_load(n, f"lib_{l['id']}.json")
+                items = [x for x in items or [] if isinstance(x, dict)]
+                if not items:
+                    continue
+                items.sort(key=lambda x: _num(x.get("latest")) or _num(x.get("added_at")), reverse=True)
+                st = st or friend_states(n)
+                rows.append({"id": fvid(n, l["id"]), "name": l["name"], "friend": f["name"],
+                             "offline": (friend_status.get(n) or {}).get("online") is False,
+                             "items": f_adapt(f, items[:24], st)})
+        except Exception as ex:
+            print("Amici (Home):", ex, flush=True)
+    return rows
+
+
+def friend_continue(con, cont):
+    """Aggiunge a «Continua a guardare» i titoli degli amici lasciati a meta'."""
+    try:
+        rows = con.execute("SELECT * FROM friend_state WHERE position>20 AND watched=0 "
+                           "ORDER BY last_played DESC LIMIT 20").fetchall()
+        states = {}
+        for r in rows:
+            f = friend_by_n(r["friend"])
+            meta, _ = fc_load(r["friend"], f"item_{r['item']}.json") if f else (None, 0)
+            if isinstance(meta, dict):
+                if r["friend"] not in states:
+                    states[r["friend"]] = friend_states(r["friend"])
+                cont.append(dict(f_adapt(f, meta, states[r["friend"]]), last_played=r["last_played"]))
+    except Exception as ex:
+        print("Amici (Home):", ex, flush=True)
+    cont.sort(key=lambda x: x.get("last_played") or 0, reverse=True)
+    return cont[:20]
+
+
+# ---- Impostazioni: aggiungere e togliere amici -----------------------------
+
+def friend_address(raw):
+    """Indirizzo scritto a mano -> http://host:porta (porta degli amici se manca)."""
+    raw = str(raw or "").strip()
+    if not raw:
+        raise HTTPException(400, "Scrivi l'indirizzo dell'amico")
+    if "://" not in raw:
+        raw = "http://" + raw
+    try:
+        u = urllib.parse.urlsplit(raw)
+        port, host = u.port, u.hostname
+    except ValueError:
+        raise HTTPException(400, "Indirizzo non valido")
+    if u.scheme not in ("http", "https") or not host:
+        raise HTTPException(400, "Indirizzo non valido")
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None and u.scheme == "http":
+        port = 32501
+    return f"{u.scheme}://{host}" + (f":{port}" if port else "")
+
+
+@app.get("/api/friends")
+def friends_list():
+    out = []
+    for f in get_friends():
+        n = f["n"]
+        s = friend_status.get(n) or {}
+        libs, age = fc_load(n, "libraries.json")
+        out.append({"n": n, "name": f["name"], "url": f["url"], "user": f.get("user") or "",
+                    "online": s.get("online"), "error": s.get("error") or "",
+                    "synced": time.time() - age if libs is not None else 0,
+                    "libraries": [{"id": fvid(n, l["id"]), "name": l["name"],
+                                   "movies": l["movies"], "shows": l["shows"]} for l in libs or []]})
+    return {"friends": out, "quality": friend_quality()}
+
+
+@app.post("/api/friends")
+async def friends_add(request: Request):
+    """Collega il server di un amico: ci si registra da lui (o si accede con un
+    account gia' fatto). La password non viene conservata: resta solo il gettone."""
+    body = await read_json(request)
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:30]
+    url = friend_address(body.get("url"))
+    user, password = _credentials({"name": body.get("user"), "password": body.get("password")})
+    friends = get_friends()
+    if any(f["url"] == url for f in friends):
+        raise HTTPException(409, "Questo indirizzo è già tra i tuoi amici")
+    if len(friends) >= FRIEND_MAX:
+        raise HTTPException(400, f"Puoi collegare al massimo {FRIEND_MAX} amici")
+    probe = {"url": url, "token": ""}
+    ask = {"name": user, "password": password}
+    account = None
+    if body.get("register"):
+        # Richiesta di condivisione reciproca: insieme alla richiesta si offre l'ingresso
+        # qui. Serve sapere a quale indirizzo l'amico raggiunge questo server.
+        mine = friend_address(body["my_url"]) if body.get("my_url") else \
+            (config.get("share") or {}).get("address")
+        if not mine:
+            raise HTTPException(400, "Scrivi il tuo indirizzo: è quello con cui l'amico raggiunge il tuo server")
+        with config_lock:
+            config.setdefault("share", {}).update(on=True, address=mine)
+            save_config()
+        account, token = await in_thread(account_for_friend, name or user)
+        ask["back"] = {"url": mine, "token": token}
+    try:
+        got = await in_thread(friend_json, probe, "/register" if body.get("register") else "/login", 8, ask)
+    except FriendDown as ex:
+        if account:
+            account_drop(account)
+        if ex.code:
+            raise HTTPException(400, f"Il server dell'amico risponde: {ex}")
+        raise HTTPException(502, "Non riesco a raggiungere questo indirizzo: controlla che sia giusto, "
+                                 "che il PC dell'amico sia acceso e che la condivisione sia attiva")
+    if not isinstance(got, dict) or not isinstance(got.get("token"), str) or not got["token"]:
+        if account:
+            account_drop(account)
+        raise HTTPException(502, "A quell'indirizzo non risponde un BunkerPlex")
+    n = friend_store(name or str(got.get("server") or "Amico")[:30], url, user, got["token"], account)
+    return {"ok": True, "n": n, "approved": bool(got.get("approved"))}
+
+
+def friend_store(name, url, user, token, account=None):
+    """Mette un amico tra i collegamenti e comincia subito a scaricarne gli elenchi."""
+    with config_lock:
+        current = config.setdefault("friends", [])
+        used = {f["n"] for f in current}
+        n = next(i for i in range(1, FRIEND_MAX + 2) if i not in used)
+        f = {"n": n, "name": name, "url": url, "user": user, "token": token}
+        if account:
+            f["account"] = account       # l'account con cui lui entra qui: se ne va insieme a lui
+        current.append(f)
+        save_config()
+    shutil.rmtree(FRIENDS_DIR / str(n), ignore_errors=True)
+    friend_status.pop(n, None)
+    threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+    return n
+
+
+@app.delete("/api/friends/{n}")
+def friends_remove(n: int):
+    """Toglie un amico: spariscono le sue raccolte e lui non entra piu' qui."""
+    f = friend_by_n(n)
+    if f and f.get("account"):
+        account_drop(f["account"])
+    return friend_drop(n)
+
+
+def friend_drop(n):
+    with config_lock:
+        config["friends"] = [f for f in config.get("friends") or [] if f["n"] != n]
+        save_config()
+    con = db()
+    try:
+        con.execute("DELETE FROM friend_state WHERE friend=?", (n,))
+        con.commit()
+    finally:
+        con.close()
+    shutil.rmtree(FRIENDS_DIR / str(n), ignore_errors=True)
+    friend_status.pop(n, None)
+    fc_memory.clear()
+    return {"ok": True}
+
+
+@app.post("/api/friends/{n}/refresh")
+def friends_refresh(n: int):
+    """Riprova subito il collegamento e riscarica gli elenchi (in sottofondo)."""
+    f = friend_by_n(n)
+    if not f:
+        raise HTTPException(404, "Amico non trovato")
+    threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+    return {"ok": True}
+
+
+@app.post("/api/friends/quality")
+async def friends_quality(request: Request):
+    body = await read_json(request)
+    q = str(body.get("quality") or "")
+    if q not in QUALITIES:
+        raise HTTPException(400, "Richiesta non valida")
+    with config_lock:
+        config["friend_quality"] = q
+        save_config()
+    return {"ok": True}
+
+
+@app.get("/FrancoPlex.apk")     # le app installate con i nomi precedenti si aggiornano da qui
 @app.get("/FrenkPlex.apk")
+@app.get("/BunkerPlex.apk")
 def apk():
     """L'app per la TV, scaricabile direttamente dal server."""
     if not APK_PATH.is_file():
         raise HTTPException(404, "APK non ancora compilato: avvia 'Compila APK.bat' sul PC")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
-                        filename="FrenkPlex.apk")
+                        filename="BunkerPlex.apk")
 
 
 class UIFiles(StaticFiles):

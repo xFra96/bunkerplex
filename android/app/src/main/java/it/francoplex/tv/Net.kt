@@ -78,7 +78,7 @@ object Net {
         }
     }
 
-    fun isFrancoPlex(baseUrl: String, timeoutMs: Int = 4000): Boolean =
+    fun isBunkerPlex(baseUrl: String, timeoutMs: Int = 4000): Boolean =
         try {
             get("$baseUrl/api/info", timeoutMs).contains("francoplex")
         } catch (_: Exception) {
@@ -124,7 +124,7 @@ object Net {
                     try {
                         Socket().use { it.connect(InetSocketAddress(host, PORT), 400) }
                         val url = "http://$host:$PORT"
-                        if (isFrancoPlex(url, 2500)) found.compareAndSet(null, url)
+                        if (isBunkerPlex(url, 2500)) found.compareAndSet(null, url)
                     } catch (_: Exception) {
                     }
                 }
