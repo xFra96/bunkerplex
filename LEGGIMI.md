@@ -134,7 +134,7 @@ Dal browser le stesse opzioni sono nel tasto **⚙ Opzioni** del player (tasto `
 
 ## Aggiornamenti (da GitHub)
 
-FrenkPlex si aggiorna dal repository privato indicato in `strumenti/aggiornamenti.json`.
+FrenkPlex si aggiorna dal repository pubblico <https://github.com/xFra96/bunkerplex> (indicato in `strumenti/aggiornamenti.json`). Non servono account, password o chiavi: ogni copia si aggiorna da sola.
 
 - **Da solo, ogni 12 ore**: il server acceso controlla GitHub e installa le novità quando nessuno sta guardando un video (aspetta 10 minuti dall'ultimo), poi si riavvia in pochi secondi. In **Impostazioni → Aggiornamenti** puoi spegnere l'installazione automatica: in quel caso ti avvisa soltanto.
 - **Dalla TV o dal browser**: quando c'è una versione nuova compare «È disponibile un aggiornamento di FrenkPlex». Con **Aggiorna ora** il PC scarica tutto e si riavvia; se è arrivata anche una nuova app, subito dopo la TV propone di installarla. In ogni momento: **Impostazioni → Aggiornamenti → Controlla adesso**.
@@ -147,9 +147,9 @@ Alcuni aggiornamenti (rari: quando cambiano i componenti di Docker) non si compl
 
 Arrivano sia il programma (server e script) sia l'app per la TV già compilata: la TV poi la prende dal PC come sempre. Non vengono mai toccati il catalogo (`data`), il file `.env`, la chiave di firma e l'APK compilato da te più di recente. Non serve installare git.
 
-### Dare l'accesso a un PC
+### Se il repository torna privato
 
-Il repository è privato, quindi ogni PC deve farsi riconoscere. Due modi, basta uno:
+Finché il repository è pubblico questo capitolo non serve. Se un giorno lo rendi privato, ogni PC deve farsi riconoscere. Due modi, basta uno:
 
 1. **Token sul disco** (vale per tutti i PC a cui colleghi il disco). Su github.com: Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token. Scegli *Only select repositories* → il repository di FrenkPlex, e in *Repository permissions* metti **Contents: Read-only**. Incollalo in **Impostazioni → Aggiornamenti** dal browser del PC, oppure lancia `Aggiorna FrenkPlex.bat` e incollalo quando lo chiede: resta in `strumenti/github-token.txt`, che non viene mai pubblicato. È l'unico modo che vale anche per il controllo automatico e per l'aggiornamento dalla TV. Il token permette solo di leggere quel repository; alla scadenza se ne crea uno nuovo allo stesso modo.
 2. **Accesso del PC**: installa [GitHub CLI](https://cli.github.com) ed esegui una volta `gh auth login`. Sul disco non resta nessuna credenziale, ma vale solo per `Avvia FrenkPlex.bat` e `Aggiorna FrenkPlex.bat`: il server dentro Docker non lo vede.
@@ -163,9 +163,9 @@ Serve solo sul PC dove modifichi FrenkPlex, con git e GitHub CLI:
 
 Su GitHub non finiscono mai catalogo, `.env`, chiave di firma e token (elenco in `.gitignore`). La chiave di firma (`android/keystore`) resta quindi solo sul disco: tienine una copia.
 
-### Installare su un disco nuovo
+### Installare su un disco nuovo (o darlo a un amico)
 
-Scarica il repository da GitHub (Code → Download ZIP), scompattalo e lancia `Aggiorna FrenkPlex.bat` (scarica anche l'app per la TV), poi `Avvia FrenkPlex.bat`.
+Serve Docker Desktop. Scarica il repository da <https://github.com/xFra96/bunkerplex> (Code → Download ZIP), scompattalo e lancia `Aggiorna FrenkPlex.bat` (scarica anche l'app per la TV), poi `Avvia FrenkPlex.bat`.
 
 ## Se qualcosa non va
 
