@@ -145,7 +145,9 @@ if ($remoteSha -notmatch '^[0-9a-f]{40}$') { Fail @('Risposta di GitHub non vali
 $gitCopy = Test-Path -LiteralPath (Join-Path $root '.git')
 $haveGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
 
-function Git { & git -c 'safe.directory=*' @args }
+# "git.exe" e non "git": PowerShell non distingue maiuscole e minuscole, quindi
+# una funzione di nome Git che chiama "git" richiamerebbe se stessa all'infinito.
+function Git { & git.exe -c 'safe.directory=*' @args }
 
 $codeUpdate = $false
 if ($gitCopy) {
