@@ -2,7 +2,7 @@
 # Avvia BunkerPlex su Mac (doppio clic dal Finder). Fa quello che su Windows fa
 # "Avvia BunkerPlex.bat": accende Docker se e' spento, prepara il catalogo,
 # collega i dischi (anche quelli esterni) in sola lettura e accende il server.
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1
 
 fine() {
   echo

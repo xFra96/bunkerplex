@@ -1,6 +1,6 @@
 @echo off
 title BunkerPlex - installazione sulla TV
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if not exist "apk\FrenkPlex.apk" (
   echo Manca apk\FrenkPlex.apk: avvia prima "Compila APK.bat".
