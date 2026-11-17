@@ -1,6 +1,6 @@
 @echo off
 title BunkerPlex - compilazione APK
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 docker info >nul 2>&1
 if errorlevel 1 (

@@ -14,17 +14,28 @@ Funziona anche senza Internet, con la copia dell'account salvata sul PC. La rete
 
 Serve [Docker Desktop](https://www.docker.com/products/docker-desktop/) (gratuito). La prima volta ci vogliono Internet e qualche minuto.
 
+Gli script per accendere e spegnere stanno in due cartelle, una per sistema operativo:
+
+```
+BunkerPlex/
+├─ Windows/   Avvia, Ferma, Aggiorna, Compila APK, Installa su TV, Pubblica aggiornamento (.bat)
+├─ macOS/     Avvia, Ferma (.command)
+└─ strumenti/ gli strumenti che gli script usano (non serve aprirli)
+```
+
+Se arrivi da una versione precedente, i file `.bat` e `.command` non stanno più accanto a `README.md`: l'aggiornamento li sposta da solo nelle cartelle `Windows` e `macOS`, con gli stessi nomi di prima.
+
 ### Windows
 
 1. Installa Docker Desktop e aprilo una volta.
 2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)** (sempre l'ultima versione, con dentro anche l'app per la TV), poi scompatta la cartella dove vuoi (anche su un disco esterno, accanto ai video).
-3. Doppio clic su **`Avvia BunkerPlex.bat`**. Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
+3. Apri la cartella **`Windows`** e fai doppio clic su **`Avvia BunkerPlex.bat`**. Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
 
 ### Mac
 
 1. Installa Docker Desktop e aprilo una volta.
 2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)**, poi scompatta la cartella dove vuoi.
-3. Doppio clic su **`Avvia BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**.
+3. Apri la cartella **`macOS`** e fai doppio clic su **`Avvia BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**.
 4. Si apre il browser; la finestra mostra l'indirizzo da usare su TV e telefono.
 
 Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: al primo avvio BunkerPlex si porta da solo all'ultima versione e scarica l'app per la TV.
@@ -35,7 +46,7 @@ Gli script per Mac sono nuovi e non ancora provati su molte macchine: se qualcos
 
 ### Spegnere e riaccendere
 
-- Per spegnere: `Ferma BunkerPlex.bat` (Windows) o `Ferma BunkerPlex.command` (Mac). Fallo prima di staccare un disco esterno.
+- Per spegnere: `Windows\Ferma BunkerPlex.bat` o `macOS/Ferma BunkerPlex.command`. Fallo prima di staccare un disco esterno.
 - **Rilancia «Avvia» ogni volta che riaccendi il computer o ricolleghi un disco esterno**: senza, i dischi USB risultano «non raggiungibili» (il catalogo non si perde, ma i video non partono).
 
 ## Primi passi
@@ -141,7 +152,7 @@ BunkerPlex si aggiorna da questo repository, senza account né password.
 
 - **Da solo**: il server controlla ogni 12 ore e installa quando nessuno sta guardando. Anche «Avvia» installa da solo le novità che trova. Si può spegnere in *Impostazioni → Aggiornamenti*.
 - **Da qualsiasi dispositivo** (TV, telefono, browser di un altro PC): compare l'avviso, scegli **Aggiorna ora**, oppure *Impostazioni → Aggiornamenti*.
-- **Dal PC del server**: `Aggiorna BunkerPlex.bat`, oppure **Aggiorna ora** da `http://localhost:32500`.
+- **Dal PC del server**: `Windows\Aggiorna BunkerPlex.bat`, oppure **Aggiorna ora** da `http://localhost:32500`.
 
 Ogni aggiornamento riallinea anche Docker: se sono cambiati codice, `Dockerfile`, pacchetti (`requirements.txt`) o `docker-compose.yml`, l'immagine viene ricostruita (scaricando anche la versione più recente dell'immagine di base) e il server si riaccende da solo. Lo stesso succede se il server sta girando con file più vecchi di quelli nella cartella, per esempio dopo un `git pull` fatto a mano.
 
@@ -166,10 +177,10 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 ## Per chi lo modifica
 
-- `Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
-- `Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
+- `Windows\Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
+- `Windows\Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
 - **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `FrenkPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
-- `Installa su TV.bat` installa l'APK via adb.
+- `Windows\Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.
 - Se il repository diventa privato serve un token di sola lettura (*Contents: Read-only*) da incollare in *Impostazioni → Aggiornamenti*.
