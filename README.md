@@ -60,7 +60,10 @@ Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La
 - **Cambio password**: *Impostazioni → Account → Cambia password*. Gli altri PC chiedono di rientrare con quella nuova.
 - **TV**: se su quel PC è entrato un solo account, la TV entra da sola; se sono di più, si sceglie il nome. Si può spegnere per il proprio account (*Impostazioni → Account*), e allora sulla TV servono nome e password.
 - **Raccolte condivise**: sullo stesso PC una raccolta si può condividere con gli altri account (*Impostazioni → Le tue raccolte → Condividi*). Ognuno conserva i suoi visti.
-- **Senza Internet** si entra lo stesso con l'ultima password usata su quel PC; le modifiche partono appena torna la rete.
+- **Senza Internet** (o con il servizio account fermo) BunkerPlex usa la copia dell'account salvata su quel PC: impostazioni, chiavi, visti e lista dell'ultima sincronizzazione. In basso compare «Offline · copia locale».
+  - Si entra con l'ultima password usata su quel PC, oppure con **Continua offline** nella pagina di accesso, senza password, come uno degli account già entrati lì.
+  - Su un PC dove non è mai entrato nessun account c'è **Continua offline senza accesso**: BunkerPlex funziona come prima degli account.
+  - Le modifiche fatte offline restano sul PC. Quando torna Internet bisogna rientrare con la password, e BunkerPlex chiede come sincronizzare: **da questo PC all'account** (le modifiche fatte qui vincono) oppure **dall'account a questo PC** (le modifiche fatte qui si scartano). Se offline non è cambiato nulla, o se l'account è ancora vuoto, non chiede niente.
 - Il primo account che entra su un PC già in uso prende raccolte, visti, lista e chiavi che c'erano prima.
 - **Al primo accesso** su un PC (o da un browser o una TV), se le chiavi API o le preferenze di visione di lì sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di lì senza chiedere. Volume e audio muto restano di ogni dispositivo.
 

@@ -37,9 +37,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import contextvars
+
 import accounts
 import updater
 from accounts import CURRENT
+
+# Entrato offline senza account (PC dove nessun account e' mai entrato): tutto come prima degli account
+GUEST = contextvars.ContextVar("bunkerplex_guest", default=False)
 
 VERSION = "1.2"
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -346,7 +351,11 @@ def init_db():
                           # people: il cast con ruolo e foto (JSON). NULL = ancora da scaricare.
                           ("items", "people TEXT"), ("shows", "people TEXT"),
                           # back_pin: impronta del certificato dell'amico che ha mandato la richiesta
-                          ("accounts", "back_pin TEXT")):
+                          ("accounts", "back_pin TEXT"),
+                          # offline_since: modifiche fatte offline, da mandare o scartare al rientro
+                          ("users", "offline_since REAL DEFAULT 0"), ("users", "last_sync REAL DEFAULT 0"),
+                          # offline: entrato senza password perche' il servizio account non rispondeva
+                          ("user_sessions", "offline INT DEFAULT 0")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -1746,7 +1755,8 @@ def session_token(scope):
 
 
 def session_user(token):
-    """L'account di un gettone (None se non vale piu')."""
+    """L'account di un gettone (None se non vale piu'). {"guest": True} per chi
+    e' entrato offline senza account (solo finche' su questo PC non ce n'e' nessuno)."""
     if not token or len(token) > 100:
         return None
     key = token_hash(token)
@@ -1754,8 +1764,9 @@ def session_user(token):
     if not known or time.time() - known[1] > 30:
         con = db(raw=True)
         try:
-            r = con.execute("SELECT u.id, u.name, u.admin, u.must_change, s.last_seen FROM user_sessions s "
-                            "JOIN users u ON u.id=s.user_id WHERE s.token=?", (key,)).fetchone()
+            r = con.execute("SELECT s.user_id, s.offline, s.last_seen, u.id, u.name, u.admin, u.must_change "
+                            "FROM user_sessions s LEFT JOIN users u ON u.id=s.user_id WHERE s.token=?",
+                            (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
                 con.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (time.time(), key))
                 con.commit()
@@ -1764,11 +1775,117 @@ def session_user(token):
         if len(user_cache) > 500:
             user_cache.clear()
         known = user_cache[key] = (dict(r) if r else None, time.time())
-    if not known[0]:
-        return None
     r = known[0]
-    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]),
+    if not r:
+        return None
+    # Entrato offline senza password: appena il servizio risponde si deve rientrare
+    if r["offline"] and cloud_link["online"] is True:
+        return None
+    if r["user_id"] == 0:
+        return {"guest": True, "session": token}
+    if r["id"] is None:
+        return None
+    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]), "offline": bool(r["offline"]),
             "must_change": bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token}
+
+
+def local_users_exist():
+    con = db(raw=True)
+    try:
+        return con.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+    finally:
+        con.close()
+
+
+# ---- Modalita' offline --------------------------------------------------------
+# Senza Internet (o con il servizio account fermo) BunkerPlex va avanti con la
+# copia dell'account salvata su questo PC: impostazioni, chiavi, visti e lista
+# dell'ultima sincronizzazione. Dalla pagina di accesso si puo' anche continuare
+# offline senza password. Le modifiche restano qui; quando l'account rientra con
+# Internet sceglie se mandarle all'account o tenere quelle dell'account.
+
+cloud_link = {"online": None, "at": 0.0}     # il servizio account risponde? (None: non si sa ancora)
+
+
+def mark_cloud(online):
+    cloud_link.update(online=online, at=time.time())
+
+
+def cloud_ping():
+    try:
+        accounts.call("GET", "/", timeout=6)
+        mark_cloud(True)
+    except accounts.CloudError:
+        mark_cloud(True)          # risponde, anche se con un errore
+    except accounts.CloudOffline:
+        mark_cloud(False)
+    return cloud_link["online"]
+
+
+def offline_changes(con, uid):
+    """Modifiche fatte su questo PC e non ancora mandate all'account."""
+    return (con.execute("SELECT COUNT(*) FROM user_items WHERE user_id=? AND dirty=1", (uid,)).fetchone()[0]
+            + con.execute("SELECT COUNT(*) FROM user_shows WHERE user_id=? AND dirty=1", (uid,)).fetchone()[0]
+            + con.execute("SELECT COUNT(*) FROM user_settings WHERE user_id=? AND dirty=1 "
+                          "AND k NOT LIKE 'pending.%'", (uid,)).fetchone()[0])
+
+
+def start_offline(con, uid):
+    """Da qui in poi le modifiche di questo account restano sul PC finche' non sceglie."""
+    con.execute("UPDATE users SET offline_since=? WHERE id=? AND COALESCE(offline_since, 0)=0",
+                (time.time(), uid))
+
+
+def offline_up(uid, token):
+    """Le modifiche fatte offline vincono: vanno nell'account anche se li' c'e' qualcosa di piu' recente."""
+    now = time.time()
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE user_items SET t=? WHERE user_id=? AND dirty=1", (now, uid))
+        con.execute("UPDATE user_shows SET t=? WHERE user_id=? AND dirty=1", (now, uid))
+        con.execute("UPDATE user_settings SET t=? WHERE user_id=? AND dirty=1 AND k NOT LIKE 'pending.%'", (now, uid))
+        con.execute("UPDATE users SET offline_since=0 WHERE id=?", (uid,))
+        con.commit()
+    finally:
+        con.close()
+    sync_user(uid, token)
+
+
+def offline_down(uid, token):
+    """Vince l'account: le modifiche fatte offline si scartano e si riprende tutto dall'account."""
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE user_items SET position=0, watched=0, last_played=0, fav=0, t=0, dirty=0 "
+                    "WHERE user_id=? AND dirty=1", (uid,))
+        con.execute("UPDATE user_shows SET fav=0, t=0, dirty=0 WHERE user_id=? AND dirty=1", (uid,))
+        con.execute("DELETE FROM user_settings WHERE user_id=? AND dirty=1 AND k NOT LIKE 'pending.%'", (uid,))
+        con.execute("UPDATE users SET offline_since=0, state_rev=0 WHERE id=?", (uid,))
+        con.commit()
+    finally:
+        con.close()
+    with settings_lock:
+        settings_cache.clear()
+    sync_user(uid, token)
+
+
+def settle_offline(uid, token):
+    """Rientro con Internet: niente da decidere se offline non e' cambiato nulla,
+    o se l'account e' ancora vuoto (allora le modifiche di qui vanno su da sole)."""
+    con = db(raw=True)
+    try:
+        row = con.execute("SELECT offline_since FROM users WHERE id=?", (uid,)).fetchone()
+        if not row or not row["offline_since"]:
+            return
+        changes = offline_changes(con, uid)
+        if not changes:
+            con.execute("UPDATE users SET offline_since=0 WHERE id=?", (uid,))
+            con.commit()
+            return
+    finally:
+        con.close()
+    remote = accounts.call("GET", "/state?since=0", token=token)
+    if not remote.get("rows"):
+        offline_up(uid, token)
 
 
 class AuthGate:
@@ -1786,9 +1903,13 @@ class AuthGate:
             return
         path = scope["path"]
         user = session_user(session_token(scope))
-        ctx = CURRENT.set(user)
+        guest = bool(user and user.get("guest"))
+        if guest and local_users_exist():      # ora ci sono account: si entra con quelli
+            user, guest = None, False
+        ctx = CURRENT.set(None if guest else user)
+        gctx = GUEST.set(guest)
         try:
-            if path.startswith("/api/") and not path.startswith(OPEN_PATHS):
+            if path.startswith("/api/") and not path.startswith(OPEN_PATHS) and not guest:
                 if user is None:
                     await self._reply(send, 401, "Accedi con il tuo account per continuare")
                     return
@@ -1797,6 +1918,7 @@ class AuthGate:
                     return
             await self.inner(scope, receive, send)
         finally:
+            GUEST.reset(gctx)
             CURRENT.reset(ctx)
 
     @staticmethod
@@ -1858,10 +1980,10 @@ def with_session(data, token):
     return resp
 
 
-def open_session(con, uid, device):
+def open_session(con, uid, device, offline=False):
     token = secrets.token_urlsafe(32)
-    con.execute("INSERT INTO user_sessions(token, user_id, device, created, last_seen) VALUES(?,?,?,?,?)",
-                (token_hash(token), uid, str(device or "")[:60], time.time(), time.time()))
+    con.execute("INSERT INTO user_sessions(token, user_id, device, created, last_seen, offline) VALUES(?,?,?,?,?,?)",
+                (token_hash(token), uid, str(device or "")[:60], time.time(), time.time(), 1 if offline else 0))
     return token
 
 
@@ -1880,6 +2002,8 @@ def store_user(con, cloud_user, token, ver):
         uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
                           "cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?)",
                           (*fields, cloud_user["id"], time.time())).lastrowid
+    # Chi era entrato offline senza account: da ora si entra con gli account
+    con.execute("DELETE FROM user_sessions WHERE user_id=0")
     con.commit()
     user_cache.clear()
     adopt_legacy(uid)
@@ -1903,6 +2027,10 @@ def adopt_legacy(uid):
                     "WHERE position>0 OR watched=1 OR fav>0", (uid,))
         con.execute("INSERT OR IGNORE INTO user_shows(user_id, show_id, fav, t, dirty) "
                     "SELECT ?, id, fav, fav, 1 FROM shows WHERE fav>0", (uid,))
+        # Visti e lista di questo PC sono come modifiche fatte offline: al primo accesso
+        # si sceglie se mandarli all'account o tenere quelli dell'account
+        if offline_changes(con, uid):
+            start_offline(con, uid)
         con.commit()
     finally:
         con.close()
@@ -2038,6 +2166,11 @@ async def finish_login(res, ver, device):
         except Exception:
             pass
         conflicts = await first_login_conflicts(uid, res["token"])
+        try:                       # modifiche fatte offline: se non c'e' niente da decidere, si sistemano da sole
+            await asyncio.to_thread(settle_offline, uid, res["token"])
+        except Exception:
+            pass
+    mark_cloud(True)
     sync_soon()
     return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts}, token)
 
@@ -2048,18 +2181,85 @@ def auth_state():
     if not auth_on():
         return {"on": False}
     u = CURRENT.get()
+    # Sulla pagina di accesso serve sapere subito se c'e' rete (per «Continua offline»)
+    if cloud_link["online"] is None or (u is None and time.time() - cloud_link["at"] > 20):
+        cloud_ping()
+    offline = cloud_link["online"] is False
     con = db(raw=True)
     try:
         profiles = [{"id": r["id"], "name": r["name"]} for r in con.execute(
             "SELECT id, name FROM users WHERE token IS NOT NULL AND must_change=0 AND tv_quick=1 "
             "ORDER BY name COLLATE NOCASE")]
+        # Offline si puo' continuare con la copia di un account gia' entrato qui
+        local = [{"id": r["id"], "name": r["name"], "last_sync": r["last_sync"] or r["last_login"] or 0}
+                 for r in con.execute("SELECT id, name, last_sync, last_login FROM users WHERE token IS NOT NULL "
+                                      "AND vcheck IS NOT NULL ORDER BY last_login DESC")] if offline else []
         me = con.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone() if u else None
+        user = None
+        if me:
+            pending = bool(me["offline_since"]) and offline_changes(con, me["id"]) > 0
+            user = dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=bool(me["token"]),
+                        offline_session=bool(u.get("offline")), offline_pending=pending,
+                        offline_since=me["offline_since"] or 0, last_sync=me["last_sync"] or 0)
     finally:
         con.close()
-    return {"on": True, "user": dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=bool(me["token"]))
-            if me else None,
+    return {"on": True, "user": user, "guest": GUEST.get(), "offline": offline, "local": local,
+            "can_guest": offline and not local_users_exist(),
             "profiles": profiles, "setup": SETUP_FILE.is_file() and cloud_ready() is False,
             "server": SERVER_NAME}
+
+
+@app.post("/api/auth/offline")
+async def auth_offline(request: Request):
+    """«Continua offline»: senza Internet si entra senza password con la copia di un
+    account gia' usato su questo PC (o senza account, se qui non ne e' mai entrato nessuno)."""
+    body = await read_json(request)
+    if await asyncio.to_thread(cloud_ping):
+        raise HTTPException(409, "Il servizio account risponde: entra con nome e password")
+    con = db(raw=True)
+    try:
+        if body.get("id"):
+            u = con.execute("SELECT * FROM users WHERE id=? AND token IS NOT NULL AND vcheck IS NOT NULL",
+                            (int(body["id"]),)).fetchone()
+            if not u:
+                raise HTTPException(404, "Su questo PC non c'è una copia di questo account")
+            token = open_session(con, u["id"], body.get("device"), offline=True)
+            start_offline(con, u["id"])
+        else:
+            if con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                raise HTTPException(400, "Scegli con quale account continuare")
+            token = open_session(con, 0, body.get("device"), offline=True)
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+    return with_session({"ok": True, "offline": True}, token)
+
+
+@app.post("/api/auth/offline-sync")
+async def auth_offline_sync(request: Request):
+    """Rientro dopo l'uso offline: «up» manda all'account le modifiche fatte su questo PC,
+    «down» le scarta e riprende tutto dall'account."""
+    u = CURRENT.get()
+    if u is None:
+        raise HTTPException(401, "Accedi con il tuo account per continuare")
+    body = await read_json(request)
+    con = db(raw=True)
+    try:
+        row = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        con.close()
+    if not row or not row["token"]:
+        raise HTTPException(401, "Rientra con il tuo account")
+    fn = offline_up if body.get("direction") == "up" else offline_down
+    try:
+        await asyncio.to_thread(fn, u["id"], row["token"])
+    except accounts.CloudOffline as ex:
+        mark_cloud(False)
+        raise HTTPException(503, str(ex))
+    except accounts.CloudError as ex:
+        raise HTTPException(502, ex.detail)
+    return {"ok": True}
 
 
 @app.post("/api/auth/setup")
@@ -2092,6 +2292,7 @@ async def auth_login(request: Request):
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
         # Senza Internet: vale l'ultima password usata su questo PC
+        mark_cloud(False)
         con = db(raw=True)
         try:
             u = con.execute("SELECT * FROM users WHERE name=? AND token IS NOT NULL", (name,)).fetchone()
@@ -2101,6 +2302,7 @@ async def auth_login(request: Request):
                 raise HTTPException(503, "Il servizio account non risponde e su questo PC non risulta "
                                          "questo accesso: controlla la connessione del PC")
             token = open_session(con, u["id"], body.get("device"))
+            start_offline(con, u["id"])
             con.commit()
         finally:
             con.close()
@@ -2120,6 +2322,8 @@ async def auth_profile(request: Request):
         if not u:
             raise HTTPException(403, "Questo account va aperto con la password")
         token = open_session(con, u["id"], "tv")
+        if cloud_link["online"] is False:    # senza Internet: le modifiche aspettano la scelta al rientro
+            start_offline(con, u["id"])
         con.commit()
     finally:
         con.close()
@@ -2281,11 +2485,14 @@ def chunks(rows, n=SYNC_ROWS):
 
 def sync_loop():
     """Ogni pochi minuti, e subito dopo una modifica, manda e riceve impostazioni e visti."""
+    first = True
     while True:
-        sync_wake.wait(180)
+        if not first:             # offline si riprova ogni minuto, per accorgersi presto che e' tornata la rete
+            sync_wake.wait(60 if cloud_link["online"] is False else 180)
+        first = False
         time.sleep(3)             # raccoglie le modifiche fatte una dopo l'altra
         sync_wake.clear()
-        if not auth_on():
+        if not auth_on() or not cloud_ping():
             continue
         try:
             con = db(raw=True)
@@ -2297,8 +2504,17 @@ def sync_loop():
             continue
         for u in users:
             try:
+                settle_offline(u["id"], u["token"])
+                con = db(raw=True)
+                try:
+                    waiting = con.execute("SELECT offline_since FROM users WHERE id=?", (u["id"],)).fetchone()[0]
+                finally:
+                    con.close()
+                if waiting:       # modifiche fatte offline: aspettano la scelta dell'account
+                    continue
                 sync_user(u["id"], u["token"])
             except accounts.CloudOffline:
+                mark_cloud(False)
                 break             # niente Internet: si riprova al prossimo giro
             except accounts.CloudError as ex:
                 if ex.status == 401:
@@ -2315,6 +2531,13 @@ def sync_user(uid, token):
     push_state(uid, token)
     pull_state(uid, token)
     apply_cloud_state(uid)
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
+        con.commit()
+    finally:
+        con.close()
+    mark_cloud(True)
 
 
 def push_settings(uid, token):
@@ -2591,7 +2814,7 @@ def apk_version():
 @app.get("/api/info")
 def info():
     apk_code, apk_name = apk_version()
-    if auth_on() and CURRENT.get() is None:
+    if auth_on() and CURRENT.get() is None and not GUEST.get():
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
         return {"app": "francoplex", "name": SERVER_NAME, "version": VERSION, "login": True,
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name}

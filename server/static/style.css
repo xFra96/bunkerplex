@@ -533,3 +533,9 @@ body.locked #view { margin-left: 0; }
 .profile:focus { background: var(--ink); color: var(--bg); }
 @media (max-width: 720px) { .panel.login { margin: 2rem 1rem 0; } }
 .panel.login.wide { max-width: 44rem; }
+
+/* Modalita' offline */
+.offbox { margin: 0 0 1.4rem; padding: 1rem 1.2rem; border-radius: var(--r); background: var(--surface2); border-left: 4px solid #d9a441; }
+.offbox h2 { margin-bottom: .5rem; }
+#offpill { position: fixed; right: 1rem; bottom: 1rem; z-index: 50; padding: .45rem .9rem; border-radius: 999px; background: #3a2f12; color: #f3d48a; font-size: .9rem; font-weight: 600; pointer-events: none; }
+#offpill[hidden] { display: none; }

@@ -196,13 +196,28 @@ function loginPage() {
       '<input class="field f" id="lpass2" data-key="lpass2" type="password" autocomplete="new-password" data-enter="setup" placeholder="Ripeti la password">' +
       '<div class="actions"><button class="btn primary f" data-act="setup" data-key="setup">Crea e entra</button></div></div></div>';
   }
+  // Senza Internet: si continua con la copia salvata su questo PC, senza password
+  var off = '';
+  if (a.offline && ((a.local && a.local.length) || a.can_guest)) {
+    off = '<div class="offbox"><h2>Niente Internet</h2>' +
+      '<p>Il servizio account non risponde. Puoi continuare con la copia salvata su questo PC: impostazioni, chiavi, visti e lista dell\'ultima sincronizzazione. ' +
+      'Quando torna Internet ti chiederò di entrare e di scegliere se mandare all\'account le modifiche fatte qui o tenere quelle dell\'account.</p>' +
+      '<div class="actions" style="margin-top:.4rem">' +
+      ((a.local && a.local.length) ? a.local.map(function (p, n) {
+        return '<button class="btn' + (n === 0 ? ' primary' : '') + ' f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="gooffline" data-arg="' + p.id + '" data-key="off-' + p.id + '">' +
+          'Continua offline come ' + esc(p.name) + '</button>';
+      }).join('') : '<button class="btn primary f" data-autofocus data-act="gooffline" data-arg="" data-key="off-guest">Continua offline senza accesso</button>') +
+      '</div>' + ((a.local && a.local.length) ? '<p style="margin:.6rem 0 0"><small>Ultima sincronizzazione: ' + a.local.map(function (p) {
+        return esc(p.name) + ' ' + whenDate(p.last_sync);
+      }).join(' · ') + '</small></p>' : '') + '</div>';
+  }
   var pick = TV && a.profiles && a.profiles.length ? '<h2>Chi guarda?</h2><div class="profiles">' + a.profiles.map(function (p, n) {
     return '<button class="profile f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="profile" data-arg="' + p.id + '" data-key="prof-' + p.id + '">' +
       avatar(p.name) + '<span>' + esc(p.name) + '</span></button>';
   }).join('') + '</div><h2 style="margin-top:1.6rem">Oppure entra con nome e password</h2>' : '';
-  return '<div class="page"><div class="panel login"><h1>Accedi a BunkerPlex</h1>' + pick +
+  return '<div class="page"><div class="panel login"><h1>Accedi a BunkerPlex</h1>' + off + pick +
     (pick ? '' : '<p>Entra con il tuo account: ritrovi impostazioni, visti e la tua lista su ogni PC e TV.</p>') +
-    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname"' + (pick ? '' : ' data-autofocus') + ' autocomplete="username" maxlength="32" placeholder="Nome utente">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname"' + (pick || off ? '' : ' data-autofocus') + ' autocomplete="username" maxlength="32" placeholder="Nome utente">' +
     '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login" placeholder="Password">' +
     '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button></div>' +
     '<p style="margin-top:1.2rem">Gli account li crea l\'amministratore, con una password provvisoria da cambiare al primo accesso.' +
@@ -223,13 +238,56 @@ function passwordPage(forced) {
     '</div></div></div>';
 }
 
-function accountPanel() {
-  if (!auth || !auth.on || !auth.user) return '';
+function whenDate(sec) {
+  if (!sec) return 'mai';
+  var d = new Date(sec * 1000);
+  return d.toLocaleDateString('it-IT') + ' alle ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Segnale fisso in basso: si sta usando la copia locale
+function markOffline() {
+  var on = !!(auth && auth.on && (auth.guest || (auth.user && (auth.offline || auth.user.offline_session))));
+  var el = document.getElementById('offpill');
+  if (on && !el) {
+    el = document.createElement('div');
+    el.id = 'offpill';
+    document.body.appendChild(el);
+  }
+  if (el) {
+    el.hidden = !on;
+    el.textContent = 'Offline · copia locale' + (auth && auth.guest ? ' senza account' : '');
+  }
+}
+
+function offlinePage() {
   var u = auth.user;
+  return '<div class="page"><div class="panel login wide"><h1>Bentornato online</h1>' +
+    '<p>Dal ' + whenDate(u.offline_since) + ' hai usato BunkerPlex su questo PC senza Internet. Le modifiche fatte qui (visti, punti di ripresa, lista, impostazioni) ' +
+    'non sono ancora nel tuo account, che nel frattempo può essere cambiato su altri PC.</p>' +
+    '<p><b>Come vuoi sincronizzare?</b></p>' +
+    '<div class="actions"><button class="btn primary f" data-autofocus data-act="offsync" data-arg="up" data-key="offup">Da questo PC all\'account</button>' +
+    '<button class="btn f" data-act="offsync" data-arg="down" data-key="offdown">Dall\'account a questo PC</button></div>' +
+    '<p style="margin-top:1rem"><small>«Da questo PC all\'account»: le modifiche fatte qui sostituiscono quelle dell\'account. ' +
+    '«Dall\'account a questo PC»: le modifiche fatte qui si perdono e si riprende tutto dall\'account.</small></p></div></div>';
+}
+
+function accountPanel() {
+  if (!auth || !auth.on) return '';
+  if (auth.guest) {
+    return '<div class="panel"><h2>Account</h2><p>' + dot(false) + ' Stai usando BunkerPlex <b>offline, senza account</b>: visti e impostazioni restano su questo PC. ' +
+      'Quando torna Internet entra con il tuo account: ti chiederò se portare nell\'account quello che hai fatto qui.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="logout" data-key="logout">Entra con un account</button></div></div>';
+  }
+  if (!auth.user) return '';
+  var u = auth.user;
+  var state = auth.offline || u.offline_session
+    ? ' ' + dot(false) + ' <b>Offline</b>: stai usando la copia del tuo account salvata su questo PC (ultima sincronizzazione: ' + whenDate(u.last_sync) + '). ' +
+      'Le modifiche restano qui finché torna Internet.'
+    : (u.last_sync ? ' Ultima sincronizzazione: ' + whenDate(u.last_sync) + '.' : '');
   return '<div class="panel"><h2>Account</h2>' +
     '<p>Sei entrato come <b>' + esc(u.name) + '</b>' + (u.admin ? ' (amministratore)' : '') + '. ' +
     'Chiavi API, preferenze, visti, punti di ripresa e la tua lista sono salvati nell\'account: li ritrovi su ogni PC dove entri. ' +
-    'Le raccolte invece sono di questo PC.' + (u.online ? '' : ' ' + dot(false) + ' Servizio account non raggiungibile: le modifiche partono appena torna Internet.') + '</p>' +
+    'Le raccolte invece sono di questo PC.' + state + '</p>' +
     '<button class="setting f" data-act="tvquick" data-arg="' + (u.tv_quick ? 0 : 1) + '" data-key="tvquick">Dalle TV di casa si entra scegliendo il tuo nome, senza password<small>' +
       (u.tv_quick ? 'Sì' : 'No') + '</small></button>' +
     '<div class="actions">' +
@@ -2408,7 +2466,26 @@ var actions = {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
     if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
     toast('Entro…');
-    post('/auth/login', { username: name, password: pass, device: TV ? 'tv' : 'browser' }).then(enterApp, function (e) { toast(e.message); });
+    post('/auth/login', { username: name, password: pass, device: TV ? 'tv' : 'browser' }).then(enterApp, function (e) {
+      toast(e.message);
+      // Forse e' andata via la rete: se ora si puo' continuare offline, la pagina lo mostra
+      var was = auth && auth.offline;
+      loadAuth().then(function () { if (auth.offline && !was) render(); });
+    });
+  },
+  gooffline: function (id) {
+    post('/auth/offline', { id: id ? +id : 0, device: TV ? 'tv' : 'browser' }).then(enterApp, function (e) {
+      toast(e.message);
+      loadAuth().then(render);
+    });
+  },
+  offsync: function (direction) {
+    toast(direction === 'up' ? 'Mando le modifiche all\'account…' : 'Riprendo tutto dall\'account…');
+    post('/auth/offline-sync', { direction: direction }).then(function () {
+      toast('Sincronizzato');
+      libsLoadedAt = 0;
+      return loadAuth().then(function () { return pullPrefs(); }).then(function () { location.replace('#/home'); render(); });
+    }, function (e) { toast(e.message); });
   },
   setup: function () {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
@@ -3036,7 +3113,8 @@ var routes = [
 // Prima di ogni pagina: serve l'accesso? (pagina di accesso o password provvisoria da cambiare)
 async function gate() {
   if (!auth) await loadAuth();
-  if (!auth.on) { lockScreen(false); return null; }
+  markOffline();
+  if (!auth.on || auth.guest) { lockScreen(false); return null; }
   if (!auth.user) {
     // Sulla TV, con un solo account su questo PC, si entra da soli (non dopo aver premuto «Esci»)
     var noAuto = false;
@@ -3056,6 +3134,8 @@ async function gate() {
   }
   if (auth.user.must_change) { lockScreen(true); return passwordPage(true); }
   if (conflicts) { lockScreen(true); return conflictsPage(); }
+  // Rientro dopo l'uso offline: in che direzione sincronizzare
+  if (auth.user.offline_pending && !auth.offline && !auth.user.offline_session) { lockScreen(true); return offlinePage(); }
   lockScreen(false);
   return null;
 }
@@ -3176,6 +3256,19 @@ function watchFriends() {
 }
 setTimeout(watchFriends, 4000);
 setInterval(watchFriends, 60000);
+
+// Ogni mezzo minuto: e' andata via (o tornata) la rete? Si aggiorna il segnale «Offline»
+// e, se serve, la pagina (accesso offline, oppure la scelta di come sincronizzare)
+setInterval(function () {
+  if (!auth || !auth.on || player) return;
+  var before = JSON.stringify([auth.offline, auth.user && auth.user.offline_pending, !!auth.user, auth.guest]);
+  loadAuth().then(function () {
+    markOffline();
+    var after = JSON.stringify([auth.offline, auth.user && auth.user.offline_pending, !!auth.user, auth.guest]);
+    var typing = document.activeElement && document.activeElement.tagName === 'INPUT';
+    if (after !== before && !typing && modal.hidden) render();
+  });
+}, 30000);
 
 // Sulla TV: all'avvio (cioe' appena collegata al server) e poi ogni mezz'ora,
 // perche' l'app puo' restare aperta per giorni.
