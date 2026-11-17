@@ -1,10 +1,10 @@
-# BunkerPlex - pubblicazione su GitHub. Lo lancia "Pubblica aggiornamento.bat".
+# BunkerPlex - pubblicazione su GitHub. Lo lancia strumenti\sviluppo\"Pubblica aggiornamento.bat".
 # Serve solo sul PC dove modifichi BunkerPlex (con git e GitHub CLI installati):
 #   1. salva le modifiche (commit) e le manda al repository (push);
 #   2. se apk\FrenkPlex.apk e' cambiato, lo allega alla release "app-tv".
 #      Con .github\workflows\apk.yml l'APK lo compila e lo allega GitHub da solo:
 #      allora questo passo si salta e GitHub CLI non serve.
-# Gli altri PC li ricevono con "Aggiorna BunkerPlex.bat" o all'avvio.
+# Gli altri PC li ricevono da soli (controllo ogni 12 ore) o dall'app.
 #
 # Mai pubblicati (vedi .gitignore): catalogo, .env, chiave di firma, token.
 #
@@ -98,4 +98,4 @@ if ($ci) {
 }
 
 Say ''
-Say 'Fatto. Sugli altri PC: "Aggiorna BunkerPlex.bat" (o al prossimo avvio).' Green
+Say 'Fatto. Gli altri PC lo ricevono da soli (o dall''app: Impostazioni - Aggiornamenti).' Green

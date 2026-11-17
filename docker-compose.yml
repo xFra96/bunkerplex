@@ -1,12 +1,12 @@
 # Nome fisso: cosi' la cartella si puo' rinominare o copiare su un altro disco
 # senza che Docker la scambi per un'altra installazione.
-name: francoplex
+name: bunkerplex
 
 services:
-  francoplex:
+  bunkerplex:
     build: ./server
-    image: francoplex-server
-    container_name: francoplex
+    image: bunkerplex-server
+    container_name: bunkerplex
     restart: unless-stopped
     ports:
       - "32500:32500"
@@ -18,9 +18,9 @@ services:
       SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
       # Servizio account: vuoto = l'indirizzo scritto in server/cloud.json (vedi «Account» in README.md)
       BUNKERPLEX_CLOUD: ${BUNKERPLEX_CLOUD:-}
-      # Indirizzo del PC nella rete di casa: lo scrive "Avvia BunkerPlex.bat" (serve al QR dell'app)
+      # Indirizzo del PC nella rete di casa: lo passa "Installa BunkerPlex" (serve al QR dell'app)
       BUNKERPLEX_LAN_IP: ${BUNKERPLEX_LAN_IP:-}
-      # Impronta dei file con cui e' acceso il server: la scrive "Avvia BunkerPlex.bat"
+      # Impronta dei file con cui e' acceso il server: la passa "Installa BunkerPlex"
       # e serve a capire se Docker va ricostruito (vedi strumenti/Impronta.ps1)
       BUNKERPLEX_BUILD: ${BUNKERPLEX_BUILD:-}
     volumes:
@@ -32,6 +32,9 @@ services:
       # Tutta la cartella di BunkerPlex: il server parte dai file di ./server e
       # ci scrive gli aggiornamenti scaricati da GitHub (vedi server/updater.py).
       - .:/programma
-    # I dischi del PC (C:, G:, ..., anche quelli esterni) vengono collegati in sola lettura sotto /host
-    # dal file docker-compose.override.yml, che "Avvia BunkerPlex.bat" riscrive
-    # a ogni avvio. Le cartelle dei video si scelgono poi dall'app.
+    # I dischi del computer (anche quelli esterni) vengono collegati in sola lettura sotto /host
+    # dal file docker-compose.override.yml, che "Installa BunkerPlex" scrive una volta:
+    #   - Windows: tutta la cartella dei dischi di Docker Desktop (/mnt/host -> /host/c, /host/g, ...),
+    #     con propagazione "rslave": i dischi collegati dopo compaiono da soli (strumenti/Agente.ps1);
+    #   - Mac: /Volumes e /Users.
+    # Le cartelle dei video si scelgono poi dall'app.

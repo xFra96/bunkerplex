@@ -10,7 +10,15 @@
 #   - scrive com'e' andata in strumenti\esito-aggiornamento.json e il
 #     racconto completo in strumenti\aggiornamento.log.
 #
-# Lo accende "Avvia BunkerPlex.bat" e parte da solo all'accesso a Windows
+#
+# Segue anche i dischi del PC: Docker Desktop vede da solo solo quelli che
+# c'erano quando si e' acceso. Quando colleghi un disco (anche USB) l'aiutante
+# lo collega a Docker in pochi secondi e il server lo vede subito (la cartella
+# dei dischi e' collegata con la propagazione "rslave", vedi Installa.ps1);
+# quando lo stacchi lo scollega, cosi' alla prossima volta si ricollega pulito.
+# Se torna il disco su cui sta BunkerPlex stesso, riaccende il server.
+#
+# Lo accende "Installa BunkerPlex.bat" e parte da solo all'accesso a Windows
 # (collegamento "BunkerPlex aggiornamenti" in Esecuzione automatica).
 # Ne gira uno solo per PC. Si spegne da solo se il disco viene scollegato.
 #
@@ -92,6 +100,69 @@ function Run-Update($id) {
     Write-Json $resultFile ([ordered]@{ id = $id; phase = 'done'; ok = $ok; message = $msg; at = (Now) })
 }
 
+# ---------------------------------------------------------------- dischi
+
+$homeDrive = if ($root -match '^([A-Za-z]):') { $Matches[1].ToLower() } else { '' }
+$lastDrives = ''
+$lastSync = 0
+
+function Docker-Up { return [bool](Get-Process 'com.docker.backend' -ErrorAction SilentlyContinue) }
+
+# Lettere di Windows: quelle con dati (dischi interni, USB, chiavette) e tutte quelle presenti
+function Windows-Drives {
+    $all = @(); $data = @()
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+        $l = $d.Name.Substring(0, 1).ToLower()
+        $all += $l
+        try { if ($d.IsReady -and $d.DriveType -in 'Fixed', 'Removable') { $data += $l } } catch { }
+    }
+    return @{ all = $all; data = ($data | Sort-Object -Unique) }
+}
+
+function Has-Files($letter) {
+    try { return [bool](Get-ChildItem -LiteralPath "${letter}:\" -Force -ErrorAction Stop | Select-Object -First 1) }
+    catch { return $false }
+}
+
+# --exec: il comando va a sh cosi' com'e', senza passare dalla shell della macchina
+function In-Vm($script) { return @(wsl.exe -d docker-desktop --exec sh -c $script 2>$null) }
+
+# Dischi collegati nella macchina di Docker: lettera e se si legge ("c 1", "e 0")
+function Vm-Drives {
+    $out = @{}
+    # Niente virgolette doppie: PowerShell 5 non le passa intatte a wsl.exe
+    $lines = In-Vm 'for m in $(grep -o '' /mnt/host/[a-z] '' /proc/mounts | sort -u); do l=${m#/mnt/host/}; if ls -A $m 2>/dev/null | head -n 1 | grep -q .; then echo $l 1; else echo $l 0; fi; done'
+    foreach ($line in $lines) {
+        if ("$line" -match '^([a-z]) ([01])$') { $out[$Matches[1]] = $Matches[2] -eq '1' }
+    }
+    return $out
+}
+
+function Sync-Drives($force) {
+    if (-not (Docker-Up)) { return }
+    $win = Windows-Drives
+    $key = $win.data -join ''
+    if (-not $force -and $key -eq $script:lastDrives -and (Now) - $script:lastSync -lt 60) { return }
+    $vm = Vm-Drives
+    if (-not $vm.Count) { return }          # Docker non ancora pronto: si riprova
+    $script:lastDrives = $key
+    $script:lastSync = Now
+    $restart = $false
+    foreach ($l in $win.data) {
+        $mounted = $vm.ContainsKey($l)
+        if ($mounted -and ($vm[$l] -or -not (Has-Files $l))) { continue }
+        # Nuovo, oppure collegato ma illeggibile (disco staccato e ricollegato): si (ri)collega
+        $m = "/mnt/host/$l"
+        In-Vm "umount -l $m 2>/dev/null; mkdir -p $m; mount -t drvfs $($l.ToUpper()): $m -o rw" | Out-Null
+        if ($l -eq $homeDrive) { $restart = $true }
+    }
+    foreach ($l in @($vm.Keys)) {
+        if ($win.all -notcontains $l) { In-Vm "umount -l /mnt/host/$l 2>/dev/null" | Out-Null }   # staccato
+    }
+    # Il disco di BunkerPlex era sparito: il server va riacceso per ritrovare il catalogo
+    if ($restart) { docker restart bunkerplex 2>$null | Out-Null }
+}
+
 $startHash = Self-Hash
 $lastBeat = 0
 try {
@@ -99,6 +170,7 @@ try {
         # Disco scollegato o cartella spostata: non c'e' piu' niente da fare qui
         if (-not (Test-Path -LiteralPath $updater)) { break }
         if ((Now) - $lastBeat -ge 30) { Beat; $lastBeat = Now }
+        try { Sync-Drives $false } catch { }
 
         if (Test-Path -LiteralPath $requestFile) {
             $id = ''

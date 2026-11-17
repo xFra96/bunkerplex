@@ -200,6 +200,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        /** Chiude l'app: la pagina lo chiede dopo la conferma di uscita dalla Home. */
+        @JavascriptInterface
+        fun exit() = runOnUiThread { finish() }
+
         @JavascriptInterface
         fun getServer(): String = server ?: ""
 

@@ -1,5 +1,6 @@
-# BunkerPlex - aggiornamento da GitHub. Lo lancia "Aggiorna BunkerPlex.bat"
-# (e "Avvia BunkerPlex.bat", che a ogni avvio controlla se c'e' qualcosa di nuovo).
+# BunkerPlex - aggiornamento da GitHub. Lo lancia l'aiutante (Agente.ps1) quando
+# l'aggiornamento si chiede dall'app, e "Installa BunkerPlex.bat", che controlla
+# se c'e' qualcosa di nuovo prima di installare.
 #
 # Scarica dal repository indicato in strumenti\aggiornamenti.json:
 #   - i file del programma (server, script, sorgenti dell'app per la TV);
@@ -53,7 +54,7 @@ function Ask($question) {
     return $answer -match '^\s*[sSyY]'
 }
 
-# Un aggiornamento alla volta su questo PC (a mano, dall'aiutante, da "Avvia")
+# Un aggiornamento alla volta su questo PC (a mano, dall'aiutante, da "Installa")
 if (-not $Check) {
     $script:lock = New-Object System.Threading.Mutex($false, 'Local\BunkerPlexAggiorna')
     try { $free = $script:lock.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $free = $true }
@@ -347,14 +348,14 @@ if ($apkAsset) { $apkOk = Update-Apk $apkAsset }
 # Il server gira dentro Docker con i file con cui e' stato acceso. Se non sono
 # quelli di adesso (aggiornamento appena scaricato, git pull fatto a mano,
 # aggiornamento fatto dal server da solo ma con Dockerfile o pacchetti nuovi)
-# si ricostruisce l'immagine e si riaccende il contenitore: "Avvia" fa tutto,
+# si ricostruisce l'immagine e si riaccende il contenitore: "Installa" fa tutto,
 # compresi dischi e controlli.
 $failed = ($codeUpdate -and -not $codeDone) -or -not $apkOk
 if (-not $NoRestart) {
     . (Join-Path $PSScriptRoot 'Impronta.ps1')
     $running = Get-ImprontaServer
     if ($null -eq $running) {
-        if ($codeDone) { Say 'Il server e'' spento: la versione nuova parte al prossimo "Avvia BunkerPlex.bat".' }
+        if ($codeDone) { Say 'Il server e'' spento: la versione nuova parte quando Docker lo riaccende.' }
     } elseif ($running -eq (Get-Impronta $root)) {
         Say 'Il server Docker e'' gia'' allineato a questa versione.' Green
     } else {
@@ -364,9 +365,9 @@ if (-not $NoRestart) {
         $env:FRANCOPLEX_NO_PAUSE = '1'
         $env:FRANCOPLEX_NO_BROWSER = '1'
         $env:FRANCOPLEX_PULL = '1'
-        # Avvia potrebbe a sua volta voler aggiornare: il lucchetto va lasciato prima
+        # Installa potrebbe a sua volta voler aggiornare: il lucchetto va lasciato prima
         try { $script:lock.ReleaseMutex() } catch { }
-        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Avvia.ps1')
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Installa.ps1')
         if ($LASTEXITCODE -ne 0) { exit 1 }
     }
 }

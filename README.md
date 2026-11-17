@@ -14,40 +14,42 @@ Funziona anche senza Internet, con la copia dell'account salvata sul PC. La rete
 
 Serve [Docker Desktop](https://www.docker.com/products/docker-desktop/) (gratuito). La prima volta ci vogliono Internet e qualche minuto.
 
-Gli script per accendere e spegnere stanno in due cartelle, una per sistema operativo:
+Si installa con **un solo file**, uno per sistema operativo, e si lancia **una volta sola**. Da lì in poi BunkerPlex lo gestisce Docker: si accende con il computer, si riaccende da solo se si ferma, si aggiorna da solo, e segue i dischi che colleghi e stacchi.
 
 ```
 BunkerPlex/
-├─ Windows/   Avvia, Ferma, Aggiorna, Compila APK, Installa su TV, Pubblica aggiornamento (.bat)
-├─ macOS/     Avvia, Ferma (.command)
-└─ strumenti/ gli strumenti che gli script usano (non serve aprirli)
+├─ Windows/   Installa BunkerPlex.bat
+├─ macOS/     Installa BunkerPlex.command
+└─ strumenti/ gli strumenti che l'installazione usa (non serve aprirli);
+              in strumenti/sviluppo quelli per chi modifica BunkerPlex
 ```
-
-Se arrivi da una versione precedente, i file `.bat` e `.command` non stanno più accanto a `README.md`: l'aggiornamento li sposta da solo nelle cartelle `Windows` e `macOS`, con gli stessi nomi di prima.
 
 ### Windows
 
-1. Installa Docker Desktop e aprilo una volta.
-2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)** (sempre l'ultima versione, con dentro anche l'app per la TV), poi scompatta la cartella dove vuoi (anche su un disco esterno, accanto ai video).
-3. Apri la cartella **`Windows`** e fai doppio clic su **`Avvia BunkerPlex.bat`**. Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
+1. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)** (sempre l'ultima versione, con dentro anche l'app per la TV), poi scompatta la cartella dove vuoi (anche su un disco esterno, accanto ai video).
+2. Apri la cartella **`Windows`** e fai doppio clic su **`Installa BunkerPlex.bat`**. Se Docker Desktop manca te lo propone (poi riavvia il PC, aprilo una volta e rilancia il file). Alla fine si apre il browser e la finestra mostra l'indirizzo da usare su TV e telefono.
+
+L'installazione fa partire Docker Desktop a ogni accesso a Windows e lascia acceso un piccolo **aiutante** nascosto (`strumenti\Agente.ps1`, anche lui parte da solo all'accesso): collega a Docker in pochi secondi ogni disco che attacchi (anche USB) e completa gli aggiornamenti che toccano Docker.
 
 ### Mac
 
-1. Installa Docker Desktop e aprilo una volta.
+1. Installa [Docker Desktop](https://www.docker.com/products/docker-desktop/) e aprilo una volta.
 2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)**, poi scompatta la cartella dove vuoi.
-3. Apri la cartella **`macOS`** e fai doppio clic su **`Avvia BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**.
+3. Apri la cartella **`macOS`** e fai doppio clic su **`Installa BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**. Se chiede di lasciar controllare «System Events», consenti: serve a far partire Docker all'accesso.
 4. Si apre il browser; la finestra mostra l'indirizzo da usare su TV e telefono.
 
-Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: al primo avvio BunkerPlex si porta da solo all'ultima versione e scarica l'app per la TV.
+Se un disco esterno non compare nella scelta delle cartelle: Docker Desktop → Settings → Resources → File sharing, aggiungi `/Volumes` e rilancia il file. Sul Mac gli aggiornamenti che toccano Docker (rari) chiedono di rilanciare «Installa».
 
-Se un disco esterno non compare nella scelta delle cartelle: Docker Desktop → Settings → Resources → File sharing, aggiungi `/Volumes` e rilancia il file.
+Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: BunkerPlex si porta da solo all'ultima versione e scarica l'app per la TV.
 
-Gli script per Mac sono nuovi e non ancora provati su molte macchine: se qualcosa non va, apri una segnalazione.
+### Dopo l'installazione
 
-### Spegnere e riaccendere
+- **Non c'è niente da lanciare**: BunkerPlex parte con Docker Desktop, che parte con il computer.
+- **Dischi**: tutti i dischi del computer sono collegati, anche quelli esterni e quelli che colleghi dopo; quando ne stacchi uno le sue raccolte risultano «non raggiungibili» e tornano da sole quando lo ricolleghi. Se un disco torna con un'altra lettera (o su un altro computer, anche Mac ↔ Windows) le cartelle con lo stesso percorso vengono ritrovate da sole.
+- **Spegnere**: Docker Desktop → *Containers* → `bunkerplex` → *Stop* (e *Start* per riaccenderlo). Chiudere Docker Desktop spegne anche BunkerPlex.
+- **Qualcosa non torna**: rilancia «Installa BunkerPlex»: rimette a posto quello che manca, senza toccare catalogo e impostazioni.
 
-- Per spegnere: `Windows\Ferma BunkerPlex.bat` o `macOS/Ferma BunkerPlex.command`. Fallo prima di staccare un disco esterno.
-- **Rilancia «Avvia» ogni volta che riaccendi il computer o ricolleghi un disco esterno**: senza, i dischi USB risultano «non raggiungibili» (il catalogo non si perde, ma i video non partono).
+Se arrivi da una versione precedente: «Avvia», «Ferma» e «Aggiorna» non ci sono più, al loro posto c'è solo «Installa BunkerPlex». Lancialo una volta.
 
 ## Primi passi
 
@@ -110,7 +112,7 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio
 | Nel film: ◀ ▶ | indietro 10 s / avanti 30 s |
 | Nel film: ▲ ▼ | mostrano i comandi; con le frecce si sceglie un bottone, l'ingranaggio apre le opzioni (audio, sottotitoli, velocità, formato, spegnimento automatico) |
 | Nel film: Menu / Info | opzioni, se il telecomando ha il tasto |
-| Indietro | torna indietro; nel film esce salvando il punto |
+| Indietro | torna indietro; nel film esce salvando il punto; nella Home chiede se uscire dall'app |
 
 Dal browser: `Spazio` pausa, `← →` salti, `↓` comandi (poi `← →` per scegliere un bottone), `M` muto, `S` sottotitoli, `N` episodio successivo, `F` schermo intero, `O` opzioni.
 
@@ -150,22 +152,22 @@ Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli ser
 
 BunkerPlex si aggiorna da questo repository, senza account né password.
 
-- **Da solo**: il server controlla ogni 12 ore e installa quando nessuno sta guardando. Anche «Avvia» installa da solo le novità che trova. Si può spegnere in *Impostazioni → Aggiornamenti*.
+- **Da solo**: il server controlla ogni 12 ore e installa quando nessuno sta guardando. Anche «Installa» installa da solo le novità che trova. Si può spegnere in *Impostazioni → Aggiornamenti*.
 - **Da qualsiasi dispositivo** (TV, telefono, browser di un altro PC): compare l'avviso, scegli **Aggiorna ora**, oppure *Impostazioni → Aggiornamenti*.
-- **Dal PC del server**: `Windows\Aggiorna BunkerPlex.bat`, oppure **Aggiorna ora** da `http://localhost:32500`.
+- **Dal PC del server**: **Aggiorna ora** da `http://localhost:32500`.
 
 Ogni aggiornamento riallinea anche Docker: se sono cambiati codice, `Dockerfile`, pacchetti (`requirements.txt`) o `docker-compose.yml`, l'immagine viene ricostruita (scaricando anche la versione più recente dell'immagine di base) e il server si riaccende da solo. Lo stesso succede se il server sta girando con file più vecchi di quelli nella cartella, per esempio dopo un `git pull` fatto a mano.
 
-Su Windows il lavoro sul PC lo fa un **aiutante** nascosto (`strumenti\Agente.ps1`): lo accende «Avvia» e riparte da solo a ogni accesso a Windows (collegamento *BunkerPlex aggiornamenti* nella cartella Esecuzione automatica). È lui che permette alla TV di aggiornare tutto, compresa la copia di sviluppo con git. Com'è andato l'ultimo aggiornamento: `strumenti\aggiornamento.log`. Se l'aiutante è spento il server si aggiorna lo stesso, ma per le novità che toccano Docker chiede di rilanciare «Avvia».
+Su Windows il lavoro sul PC lo fa un **aiutante** nascosto (`strumenti\Agente.ps1`): lo accende «Installa» e riparte da solo a ogni accesso a Windows (collegamento *BunkerPlex aggiornamenti* nella cartella Esecuzione automatica). È lui che permette alla TV di aggiornare tutto, compresa la copia di sviluppo con git. Com'è andato l'ultimo aggiornamento: `strumenti\aggiornamento.log`. Se l'aiutante è spento il server si aggiorna lo stesso, ma per le novità che toccano Docker chiede di rilanciare «Installa».
 
 Non vengono mai toccati il catalogo (cartella `data`), il file `.env` e la chiave di firma dell'app. Se copi la cartella sopra una copia esistente, **non sovrascrivere `data`**.
 
-Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerPlex sul disco esterno insieme ai video: su ogni computer basta lanciare «Avvia». Anche con installazioni separate, impostazioni, chiavi, visti e lista ti seguono comunque grazie all'account; restano diverse solo le raccolte.
+Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerPlex sul disco esterno insieme ai video: su ogni computer basta lanciare «Installa» una volta. Anche con installazioni separate, impostazioni, chiavi, visti e lista ti seguono comunque grazie all'account; restano diverse solo le raccolte.
 
 ## Se qualcosa non va
 
-- **Cartella «non raggiungibile»**: collega il disco e rilancia «Avvia».
-- **Docker Desktop non parte** con *«The file cannot be accessed by the system»* su un file `.sock`: lancia «Avvia», che a Docker spento toglie da solo quei file rimasti bloccati.
+- **Cartella «non raggiungibile»**: collega il disco; torna da sola in pochi secondi. Se non succede, rilancia «Installa».
+- **Docker Desktop non parte** con *«The file cannot be accessed by the system»* su un file `.sock`: lancia «Installa», che a Docker spento toglie da solo quei file rimasti bloccati.
 - **La TV non trova il server**: computer e TV devono essere sulla stessa rete. Se dal telefono `http://INDIRIZZO-DEL-COMPUTER:32500` non si apre, è il firewall: consenti Docker o imposta la rete come «Privata».
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
@@ -177,10 +179,10 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 ## Per chi lo modifica
 
-- `Windows\Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
-- `Windows\Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
+- `strumenti\sviluppo\Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
+- `strumenti\sviluppo\Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
 - **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `FrenkPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
-- `Windows\Installa su TV.bat` installa l'APK via adb.
+- `strumenti\sviluppo\Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.
 - Se il repository diventa privato serve un token di sola lettura (*Contents: Read-only*) da incollare in *Impostazioni → Aggiornamenti*.
