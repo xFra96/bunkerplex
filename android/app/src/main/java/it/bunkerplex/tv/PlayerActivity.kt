@@ -263,6 +263,8 @@ class PlayerActivity : AppCompatActivity() {
         if (Net.session.isNotEmpty()) http.setDefaultRequestProperties(mapOf("X-BP-Session" to Net.session))
         val sources = DefaultMediaSourceFactory(DefaultDataSource.Factory(this, http))
             .setLoadErrorHandlingPolicy(loadPolicy)
+            // Sottotitoli ASS degli anime: senza i disegni, che apparivano come "m 0 0 l..."
+            .setSubtitleParserFactory(AssDrawingsFilter())
         val p = ExoPlayer.Builder(this, renderers)
             .setMediaSourceFactory(sources)
             .setLoadControl(load)
