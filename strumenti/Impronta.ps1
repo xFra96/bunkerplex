@@ -1,8 +1,8 @@
-# BunkerPlex - "impronta" della versione del server. La usano Avvia.ps1 e Aggiorna.ps1.
+# BunkerPlex - "impronta" della versione del server. La usano Installa.ps1 e Aggiorna.ps1.
 #
 # E' un riassunto dei file che decidono come gira il contenitore Docker: tutto
 # server\ (codice, Dockerfile, pacchetti in requirements.txt) e docker-compose.yml.
-# Avvia.ps1 la scrive nel contenitore (variabile BUNKERPLEX_BUILD); Aggiorna.ps1
+# Installa.ps1 la scrive nel contenitore (variabile BUNKERPLEX_BUILD); Aggiorna.ps1
 # la confronta con quella attuale: se sono diverse il server gira con file vecchi
 # e va ricostruito e riacceso.
 #
@@ -37,9 +37,11 @@ function Get-Impronta($root) {
 # vecchia), $null se non e' acceso.
 function Get-ImprontaServer {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return $null }
-    $running = (docker ps --filter 'name=^francoplex$' --format '{{.Names}}' 2>$null | Out-String).Trim()
+    # bunkerplex, o francoplex per un server acceso da una versione precedente
+    $running = @(docker ps --filter 'name=^(bunkerplex|francoplex)$' --format '{{.Names}}' 2>$null |
+        ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -First 1
     if (-not $running) { return $null }
-    $vars = docker inspect francoplex --format '{{range .Config.Env}}{{println .}}{{end}}' 2>$null
+    $vars = docker inspect $running --format '{{range .Config.Env}}{{println .}}{{end}}' 2>$null
     foreach ($v in $vars) {
         if ("$v" -like 'BUNKERPLEX_BUILD=*') { return "$v".Substring(17).Trim() }
     }

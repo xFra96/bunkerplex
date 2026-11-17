@@ -1,7 +1,10 @@
 #!/bin/bash
-# Avvia BunkerPlex su Mac (doppio clic dal Finder). Fa quello che su Windows fa
-# "Avvia BunkerPlex.bat": accende Docker se e' spento, prepara il catalogo,
-# collega i dischi (anche quelli esterni) in sola lettura e accende il server.
+# Installa BunkerPlex su Mac (doppio clic dal Finder): e' l'unico file da lanciare,
+# una volta sola. Fa quello che su Windows fa "Installa BunkerPlex.bat": accende
+# Docker se e' spento e lo fa partire a ogni accesso, prepara il catalogo, collega
+# i dischi (anche quelli esterni, pure quelli collegati dopo) in sola lettura e
+# accende il server. Da li' in poi BunkerPlex lo tiene acceso Docker.
+# Si puo' rilanciare quando si vuole: rimette a posto quello che manca.
 cd "$(dirname "$0")/.." || exit 1
 
 fine() {
@@ -13,7 +16,7 @@ fine() {
 if ! command -v docker >/dev/null 2>&1; then
   echo "Su questo Mac manca Docker Desktop."
   echo "Scaricalo da https://www.docker.com/products/docker-desktop/ , installalo,"
-  echo "aprilo una volta e poi rilancia questo file."
+  echo "aprilo una volta (accetta le condizioni) e poi rilancia questo file."
   fine 1
 fi
 
@@ -38,11 +41,26 @@ if ! printf 'Catalogo di BunkerPlex: non cancellare questo file.\n' > data/.fran
   fine 1
 fi
 
+# Docker Desktop parte da solo a ogni accesso al Mac, e con lui BunkerPlex
+# (restart: unless-stopped). Si aggiunge agli elementi di login se non c'e' gia'.
+docker_app=""
+for a in /Applications/Docker.app "$HOME/Applications/Docker.app"; do
+  [ -d "$a" ] && docker_app="$a" && break
+done
+if [ -n "$docker_app" ]; then
+  if ! osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | grep -q Docker; then
+    osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$docker_app\", hidden:true}" >/dev/null 2>&1 \
+      || echo "Non riesco a far partire Docker da solo: in Docker Desktop, Settings - General, attiva \"Start Docker Desktop when you sign in\"."
+  fi
+fi
+
 # Dischi: /Volumes (disco interno e dischi esterni) e /Users, in sola lettura.
+# Si collegano le cartelle intere: un disco esterno collegato dopo compare da solo
+# dentro /Volumes, senza rilanciare niente.
 {
-  echo '# Creato da "Avvia BunkerPlex.command" a ogni avvio: non modificarlo a mano.'
+  echo '# Creato da "Installa BunkerPlex.command": non modificarlo a mano.'
   echo 'services:'
-  echo '  francoplex:'
+  echo '  bunkerplex:'
   echo '    volumes:'
   for d in /Volumes /Users; do
     if [ -d "$d" ]; then
@@ -54,6 +72,13 @@ fi
   done
 } > docker-compose.override.yml
 
+# Indirizzo del Mac in casa: dentro Docker il server non lo vede (serve al QR dell'app)
+ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+export BUNKERPLEX_LAN_IP="$ip"
+
+# Il contenitore delle versioni precedenti si chiamava francoplex: terrebbe occupata la porta
+docker rm -f francoplex >/dev/null 2>&1
+
 echo
 echo "Avvio BunkerPlex... la prima volta su un Mac ci vuole qualche minuto."
 if ! docker compose up -d --build; then
@@ -63,11 +88,13 @@ if ! docker compose up -d --build; then
   fine 1
 fi
 
-ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
 echo
-echo "BunkerPlex e' acceso."
+echo "BunkerPlex e' installato e acceso."
 echo "  Da questo Mac:        http://localhost:32500"
 [ -n "$ip" ] && echo "  Da TV, telefono e PC: http://$ip:32500"
+echo
+echo "Da adesso BunkerPlex lo tiene acceso Docker, anche dopo un riavvio del Mac:"
+echo "non serve rilanciare niente. Per spegnerlo: Docker Desktop, Containers, Stop."
 echo
 echo "Se un disco esterno non si vede nella scelta delle cartelle: Docker Desktop,"
 echo "Settings - Resources - File sharing, aggiungi /Volumes e rilancia questo file."

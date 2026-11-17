@@ -11,8 +11,8 @@ Regole uguali allo script del PC (con cui divide strumenti/versione.json):
   - la copia di sviluppo (cartella .git) non viene sovrascritta: li' i file
     del programma li gestisce git, da qui arriva solo l'app per la TV.
 
-Se sul PC gira l'aiutante (strumenti/Agente.ps1, lo accende "Avvia
-BunkerPlex.bat") l'installazione la fa lui: il server gli lascia una
+Se sul PC gira l'aiutante (strumenti/Agente.ps1, lo accende "Installa
+BunkerPlex") l'installazione la fa lui: il server gli lascia una
 richiesta in strumenti/richiesta-aggiornamento.json e lui scarica le novita',
 aggiorna anche la copia di sviluppo con git e, se servono, ricostruisce
 l'immagine Docker (pacchetti nuovi, Dockerfile, docker-compose.yml) e riaccende
@@ -58,7 +58,7 @@ PROTECTED_FILES = {".env", "docker-compose.override.yml",
                    "strumenti\\github-token.txt", "strumenti\\versione.json",
                    "strumenti\\agente.json", "strumenti\\richiesta-aggiornamento.json",
                    "strumenti\\esito-aggiornamento.json", "strumenti\\aggiornamento.log"}
-# Se cambiano questi non basta riavviare il server: va rilanciato "Avvia BunkerPlex.bat"
+# Se cambiano questi non basta riavviare il server: va rilanciato "Installa BunkerPlex"
 NEEDS_HOST = {"server\\Dockerfile", "server\\requirements.txt", "docker-compose.yml"}
 BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico aspetta
 
@@ -158,7 +158,7 @@ def stale():
     adesso (es. pacchetti o Dockerfile nuovi): va ricostruito dall'aiutante."""
     running = os.environ.get("BUNKERPLEX_BUILD", "").strip()
     if not running or not (PROGRAM / "server").is_dir():
-        return False     # acceso senza "Avvia" di Windows (es. Mac): non si sa
+        return False     # acceso senza l'installazione di Windows (es. Mac): non si sa
     try:
         return fingerprint() != running
     except Exception:
@@ -483,7 +483,7 @@ def _follow_agent(rid, started, asked):
                     lost = lost or time.time()
                     if time.time() - lost > AGENT_FRESH:
                         _set(error="L'aiutante sul PC si è fermato a metà aggiornamento: "
-                                   "rilancia «Avvia BunkerPlex.bat» sul PC")
+                                   "rilancia «Installa BunkerPlex» sul computer")
                         return
                 else:
                     lost = 0.0
@@ -500,7 +500,7 @@ def _follow_agent(rid, started, asked):
             elif asked and not seen and time.time() - started > AGENT_PICKUP and REQUEST_FILE.exists():
                 REQUEST_FILE.unlink(missing_ok=True)
                 _set(error="L'aiutante degli aggiornamenti sul PC non risponde: "
-                           "rilancia «Avvia BunkerPlex.bat» sul PC")
+                           "rilancia «Installa BunkerPlex» sul computer")
                 return
             time.sleep(2)
         _set(error="L'aggiornamento sul PC non ha finito in tempo: "

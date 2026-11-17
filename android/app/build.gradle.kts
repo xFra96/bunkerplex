@@ -15,7 +15,7 @@ android {
         // "piu' nuova" della precedente, cosi' l'app sulla TV si accorge da sola
         // che sul PC c'e' un APK aggiornato e propone di installarlo.
         versionCode = (System.currentTimeMillis() / 60_000L).toInt()
-        versionName = "1.4"
+        versionName = "1.5"
     }
 
     // Chiave di firma personale, creata alla prima compilazione e poi riusata:

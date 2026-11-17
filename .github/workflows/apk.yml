@@ -71,7 +71,7 @@ jobs:
           keytool -list -keystore android/keystore/francoplex.jks -storepass francoplex -alias francoplex > /dev/null
           echo "ok=1" >> "$GITHUB_OUTPUT"
 
-      # Stessi strumenti del Dockerfile di "Compila APK.bat" (Java 17, Gradle 8.11.1);
+      # Stessi strumenti del Dockerfile di strumenti/sviluppo/"Compila APK.bat" (Java 17, Gradle 8.11.1);
       # l'SDK Android e' gia' sul server di GitHub. In cache vanno solo le librerie
       # di Gradle, mai la chiave di firma.
       - uses: actions/setup-java@v4
@@ -144,7 +144,7 @@ jobs:
             echo "**Novita'**"
             echo "$changes"
             echo
-            echo "Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella «Windows» (o «macOS»), lancia «Avvia BunkerPlex.bat» (o «.command»). Dentro c'è già l'app per la TV."
+            echo "Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella «Windows» (o «macOS»), lancia una volta sola «Installa BunkerPlex.bat» (o «.command»). Da lì in poi BunkerPlex lo tiene acceso Docker, anche dopo un riavvio. Dentro c'è già l'app per la TV."
             echo "Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV."
             echo
             echo "FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."

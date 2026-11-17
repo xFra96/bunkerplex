@@ -1,5 +1,5 @@
 # Compila l'APK di BunkerPlex senza installare nulla sul PC.
-# Uso:  docker build --output ../apk .   (lo fa "Compila APK.bat")
+# Uso:  docker build --output ../apk .   (lo fa strumenti/sviluppo/"Compila APK.bat")
 FROM eclipse-temurin:17-jdk AS build
 
 ENV ANDROID_HOME=/opt/android-sdk \

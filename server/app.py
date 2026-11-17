@@ -53,8 +53,8 @@ SCAN_INTERVAL_MIN = int(os.environ.get("SCAN_INTERVAL_MIN", "30") or 30)
 SERVER_NAME = os.environ.get("SERVER_NAME", "BunkerPlex")
 
 IMG = DATA / "images"
-# Il catalogo (questa cartella) viaggia sul disco insieme ai video: "Avvia
-# BunkerPlex.bat" ci mette un segnaposto prima di accendere il server. Se il
+# Il catalogo (questa cartella) viaggia sul disco insieme ai video: "Installa
+# BunkerPlex" ci mette un segnaposto prima di accendere il server. Se il
 # segnaposto manca, il disco non e' collegato a Docker: invece di creare un
 # catalogo vuoto da un'altra parte, il server si ferma e lo dice.
 MARKER = DATA / ".francoplex"
@@ -63,7 +63,7 @@ MARKER = DATA / ".francoplex"
 def data_problem():
     if os.environ.get("DATA_CHECK", "1") != "0" and not MARKER.is_file():
         return ("Il disco con il catalogo non è collegato al server. "
-                "Collegalo e rilancia «Avvia BunkerPlex.bat» sul PC.")
+                "Collegalo: BunkerPlex riparte da solo. Se non succede, rilancia «Installa BunkerPlex».")
     try:
         IMG.mkdir(parents=True, exist_ok=True)
         test = DATA / ".scrittura"
@@ -71,7 +71,7 @@ def data_problem():
         test.unlink()
     except OSError:
         return ("Non riesco a scrivere nella cartella del catalogo. "
-                "Rilancia «Avvia BunkerPlex.bat» sul PC.")
+                "Rilancia «Installa BunkerPlex» sul computer.")
     return ""
 
 
@@ -113,11 +113,17 @@ def tmdb_key():
 # Cartelle della libreria (scelte dall'app, quante se ne vogliono)
 # --------------------------------------------------------------------------
 
-# I dischi del PC sono montati in sola lettura sotto /host (es. /host/C, /host/G):
-# lo fa "Avvia BunkerPlex.bat". Da li' l'app puo' sfogliare e scegliere le cartelle.
+# I dischi del computer si vedono in sola lettura sotto /host, collegati una volta
+# per tutte da "Installa BunkerPlex":
+#   - Windows: /host/c, /host/g, ... (tutti i dischi che Docker Desktop vede; quelli
+#     collegati dopo li aggiunge al volo l'aiutante strumenti/Agente.ps1);
+#   - Mac: /host/Volumes/<nome disco> e /host/Users.
+# Da li' l'app puo' sfogliare e scegliere le cartelle.
 HOST_ROOT = Path(os.environ.get("HOST_ROOT", "/host"))
 HIDDEN_DIRS = {"system volume information", "config.msi", "recovery", "perflogs",
                "documents and settings", "msocache"}
+# Cartelle di servizio di Docker Desktop che stanno accanto ai dischi di Windows
+HOST_SKIP = {"wsl", "wslg"}
 config_lock = threading.Lock()
 
 
@@ -190,21 +196,50 @@ def browse_path(raw):
     return p
 
 
+def drive_roots():
+    """I dischi che il server vede adesso: le lettere di Windows (/host/c) e, sul
+    Mac, i volumi (/host/Volumes/<nome>) e /host/Users."""
+    out = []
+    try:
+        for d in sorted(HOST_ROOT.iterdir()):
+            if d.name.lower() in HOST_SKIP or d.name.startswith(".") or not d.is_dir():
+                continue
+            if d.name == "Volumes":
+                out += sorted(v for v in d.iterdir() if v.is_dir() and not v.name.startswith("."))
+            else:
+                out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def split_drive(path):
+    """/host/g/Video/Film -> (/host/g, ("Video", "Film"))
+    /host/Volumes/Disco/Film -> (/host/Volumes/Disco, ("Film",)). ValueError se fuori da /host."""
+    parts = Path(path).relative_to(HOST_ROOT).parts
+    n = 2 if parts and parts[0] == "Volumes" else 1
+    if len(parts) < n:
+        raise ValueError(path)
+    return HOST_ROOT.joinpath(*parts[:n]), parts[n:]
+
+
 def moved_folder(path):
     """Se la cartella non e' piu' dove era stata scelta, la cerca con lo stesso
-    percorso sugli altri dischi collegati: su questo PC il disco puo' avere
-    un'altra lettera (da G: a H:, stesso percorso). None se non la trova."""
-    p = Path(path)
+    percorso dentro gli altri dischi collegati: su questo computer il disco puo'
+    avere un'altra lettera (da G: a H:), un'altra maiuscola (G -> g) o essere un
+    Mac (G:/Film -> /Volumes/Disco/Film). None se non la trova."""
     try:
-        parts = p.relative_to(HOST_ROOT).parts
-        drives = sorted(d for d in HOST_ROOT.iterdir() if d.is_dir())
-    except (ValueError, OSError):
+        drive, rest = split_drive(path)
+    except ValueError:
         return None
-    if len(parts) < 2:
+    if not rest:
         return None
-    for drive in drives:
-        candidate = drive.joinpath(*parts[1:])
-        if drive.name.lower() != parts[0].lower() and has_content(candidate):
+    # Prima la stessa lettera scritta diversa, poi gli altri dischi
+    for other in sorted(drive_roots(), key=lambda d: d.name.lower() != drive.name.lower()):
+        if other == drive:
+            continue
+        candidate = other.joinpath(*rest)
+        if has_content(candidate):
             return str(candidate)
     return None
 
@@ -229,10 +264,13 @@ def folder_from_input(raw):
         drive = next((d for d in (HOST_ROOT / letter.upper(), HOST_ROOT / letter.lower()) if d.is_dir()), None)
         if drive is None:
             raise HTTPException(400, f"Il disco {letter.upper()}: non è collegato al server. "
-                                     "Chiudi e riavvia con «Avvia BunkerPlex.bat»")
+                                     "Collegalo e riprova tra qualche secondo")
         rest = (m.group(2) or "").replace("\\", "/").strip("/")
         path = browse_path(str(drive / rest) if rest else str(drive))
     else:
+        # Percorso del Mac (/Volumes/Disco/Film, /Users/...): sta sotto /host
+        if raw.startswith("/") and raw != str(HOST_ROOT) and not raw.startswith(str(HOST_ROOT) + "/"):
+            raw = str(HOST_ROOT) + raw
         path = browse_path(raw)
     if path == HOST_ROOT:
         raise HTTPException(400, "Scegli una cartella")
@@ -1334,6 +1372,24 @@ def auto_relocate():
             con.close()
 
 
+def drives_loop():
+    """Segue i dischi del computer: quando se ne collega o stacca uno, le cartelle
+    che si erano spostate (altra lettera, altro computer) si riallineano e le
+    raccolte si rileggono subito, senza aspettare il controllo periodico."""
+    seen = None
+    while True:
+        time.sleep(15)
+        try:
+            now = {str(d) for d in drive_roots() if has_content(d)}
+            if seen is not None and now != seen:
+                print("Dischi cambiati:", ", ".join(sorted(display_path(d) for d in now)) or "nessuno", flush=True)
+                auto_relocate()
+                scan_async()
+            seen = now
+        except Exception as ex:
+            print("Controllo dischi non riuscito:", repr(ex), flush=True)
+
+
 def scan_loop():
     try:
         split_merged_shows()
@@ -1652,6 +1708,7 @@ def startup():
     init_db()
     migrate_catalog()
     threading.Thread(target=scan_loop, daemon=True).start()
+    threading.Thread(target=drives_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
     threading.Thread(target=friends_loop, daemon=True).start()
@@ -3228,6 +3285,10 @@ def browse(path: str = ""):
         try:
             if e.is_dir():
                 if e.name.startswith((".", "$")) or e.name.lower() in HIDDEN_DIRS:
+                    continue
+                # In cima: niente cartelle di Docker Desktop e niente dischi staccati
+                # (la loro lettera resta come cartella vuota finche' non tornano)
+                if at_root and (e.name.lower() in HOST_SKIP or not has_content(Path(e.path))):
                     continue
                 name = f"Disco {e.name.upper()}:" if at_root and len(e.name) == 1 else e.name
                 dirs.append({"name": name, "path": e.path})
@@ -5940,7 +6001,7 @@ async def friends_quality(request: Request):
 def apk():
     """L'app per la TV, scaricabile direttamente dal server."""
     if not APK_PATH.is_file():
-        raise HTTPException(404, "APK non ancora compilato: avvia 'Compila APK.bat' sul PC")
+        raise HTTPException(404, "APK non ancora compilato: avvia strumenti/sviluppo/'Compila APK.bat' sul PC")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
                         filename="BunkerPlex.apk")
 

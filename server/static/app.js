@@ -1378,7 +1378,7 @@ async function apkPanel(title) {
     return '<div class="panel"><h2>' + title + '</h2><p>App non ancora compilata: avvia <b>Compila APK.bat</b> sul PC.</p></div>';
   }
   if (!link.url) {
-    return '<div class="panel"><h2>' + title + '</h2><p>Non conosco ancora l\'indirizzo di questo PC nella rete di casa: rilancia «Avvia BunkerPlex.bat», oppure apri questa pagina da un altro dispositivo di casa.</p></div>';
+    return '<div class="panel"><h2>' + title + '</h2><p>Non conosco ancora l\'indirizzo di questo PC nella rete di casa: rilancia «Installa BunkerPlex» sul computer, oppure apri questa pagina da un altro dispositivo di casa.</p></div>';
   }
   return '<div class="panel"><h2>' + title + '</h2><div class="apkqr">' +
     (link.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per scaricare l\'app">' + link.svg + '</div>' : '') +
@@ -1392,7 +1392,7 @@ function networkPanel(n) {
   if (!n) return '';
   return '<div class="panel"><h2>Indirizzi di questo PC</h2><dl class="kv">' +
     '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
-      (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Avvia BunkerPlex.bat»</small>') + '</dd>' +
+      (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Installa BunkerPlex»</small>') + '</dd>' +
     '<dt>IP pubblico<small>su Internet: lo usano solo gli amici</small></dt><dd class="num">' +
       (n.public ? esc(n.public) + '<small>' + (n.public_source === 'router' ? 'dal router' : 'dal servizio account') + (n.friends_open ? ' · porta amici ' + n.friends_port + ' aperta' : '') + '</small>'
         : '<span class="nodot">non raggiungibile</span><small>niente Internet?</small>') + '</dd>' +
@@ -1776,7 +1776,7 @@ async function browsePage(id) {
   }).join('');
   if (!list) {
     list = d.root
-      ? '<p><b>Non vedo i dischi del PC.</b> Chiudi e riavvia il server con <b>Avvia BunkerPlex.bat</b>: è quel file a collegare i dischi.</p>'
+      ? '<p><b>Non vedo i dischi del computer.</b> Rilancia <b>Installa BunkerPlex</b>: è lui a collegarli a Docker, una volta per tutte.</p>'
       : '<p>Qui dentro non ci sono altre cartelle.</p>';
   }
 
@@ -2581,7 +2581,7 @@ function updatePanel(u) {
   if (u.access === false) state = dot(false) + ' Questo PC non ha ancora l\'accesso al repository privato degli aggiornamenti (<b>' + esc(u.repo) + '</b>).';
   else if (u.error) state = dot(false) + ' ' + esc(u.error);
   else if (u.phase === 'pc') state = dot(false) + ' Aggiornamento in corso sul PC: scarico le novità e riallineo Docker…';
-  else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Avvia BunkerPlex.bat</b> sul PC.';
+  else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Installa BunkerPlex</b> sul computer.';
   else if (u.available) state = dot(false) + ' È disponibile un aggiornamento' + updateWhat(u) + '.';
   else if (u.checked_at) state = dot(true) + ' BunkerPlex è aggiornato.';
   else state = 'Il primo controllo parte un paio di minuti dopo l\'avvio.';
@@ -2595,8 +2595,8 @@ function updatePanel(u) {
       (u.agent
         ? ' Sul PC è acceso l\'aiutante degli aggiornamenti: da qui, dalla TV o dal telefono si aggiorna tutto, Docker e pacchetti compresi' +
           (u.dev_copy ? ' (questa è la copia di sviluppo: il programma lo aggiorna git).' : '.')
-        : (u.dev_copy ? ' Questa è la copia di sviluppo e l\'aiutante sul PC è spento: da qui arriva solo l\'app per la TV. Rilancia «Avvia BunkerPlex.bat» sul PC per riaccenderlo.'
-                      : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Avvia BunkerPlex.bat».')) + '</p>' +
+        : (u.dev_copy ? ' Questa è la copia di sviluppo e l\'aiutante sul PC è spento: da qui arriva solo l\'app per la TV. Rilancia «Installa BunkerPlex» sul computer per riaccenderlo.'
+                      : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Installa BunkerPlex».')) + '</p>' +
     (u.access === false
       ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
             : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: README, «Per chi lo modifica»). Resta salvato sul disco di BunkerPlex.</p>' +
@@ -2630,7 +2630,7 @@ function watchServerUpdate() {
       serverUpdating = false;
       if (modalState && modalState.serverUpdate) closeModal(true);
       if (u.phase === 'host') {
-        openPicker('Aggiornamento scaricato. Per completarlo rilancia «Avvia BunkerPlex.bat» sul PC.',
+        openPicker('Aggiornamento scaricato. Per completarlo rilancia «Installa BunkerPlex» sul computer.',
           [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       } else if (u.error) {
         openPicker('Aggiornamento non riuscito: ' + u.error, [{ value: 'ok', label: 'Chiudi' }], 'ok', function () {});
@@ -2720,7 +2720,7 @@ function warnPaths() {
       moved.reduce(function (p, b) { return p.then(function () { return relocateFolder(b.lib, b.f); }); }, Promise.resolve()).then(render);
     });
   } else {
-    openPicker(text + ' I titoli restano in catalogo, ma i video non partono finché non colleghi il disco e rilanci «Avvia BunkerPlex.bat».',
+    openPicker(text + ' I titoli restano in catalogo, ma i video non partono finché non colleghi il disco: appena lo colleghi tornano da soli.',
       [{ value: 'ok', label: 'Ho capito' }, { value: 'set', label: 'Apri Impostazioni' }], 'ok', function (answer) {
         if (answer === 'set') location.hash = '#/settings/libraries';
       });
@@ -3563,6 +3563,12 @@ window.addEventListener('hashchange', render);
 window.fpBack = function () {
   if (closeModal()) return true;
   if (player && player.leaveRow && player.leaveRow()) return true;   // Indietro esce dai comandi del video
+  // Dalla Home Indietro chiude l'app: prima si chiede conferma (serve un'app che
+  // sappia chiudersi su richiesta; con una versione vecchia si esce come prima)
+  if (!player && currentHash === '#/home' && TV && typeof window.FrancoPlexTV.exit === 'function') {
+    confirmBox('Vuoi uscire da BunkerPlex?', 'Esci', function () { window.FrancoPlexTV.exit(); });
+    return true;
+  }
   if (rail.contains(document.activeElement)) { focusView(); return true; }
   return false;
 };
@@ -3647,7 +3653,7 @@ function activityState() {
     ops.push({ key: 'upd', title: 'Aggiornamento di BunkerPlex', text: 'Scarico le novità e riallineo Docker…', pct: null, href: '#/settings/updates' });
   }
   if (u && u.phase === 'host') {
-    notes.push({ key: 'updhost', title: 'Aggiornamento da completare', text: 'Rilancia «Avvia BunkerPlex.bat» sul PC', href: '#/settings/updates' });
+    notes.push({ key: 'updhost', title: 'Aggiornamento da completare', text: 'Rilancia «Installa BunkerPlex» sul computer', href: '#/settings/updates' });
   } else if (i.update && !(u && u.phase)) {
     notes.push({ key: 'upd', title: 'Aggiornamento disponibile', text: 'Installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
