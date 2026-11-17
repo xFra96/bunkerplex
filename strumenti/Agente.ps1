@@ -65,7 +65,7 @@ function Last-Words {
 
 function Run-Update($id) {
     Write-Json $resultFile ([ordered]@{ id = $id; phase = 'running'; ok = $false; message = ''; at = (Now) })
-    $env:FRANCOPLEX_AUTO = '1'
+    $env:BUNKERPLEX_AUTO = '1'
     $code = 1
     $errFile = "$logFile.errori"
     try {

@@ -36,7 +36,7 @@ fi
 # Il catalogo sta nella cartella "data" qui accanto. Il segnaposto dice al server
 # che e' davvero la cartella del catalogo e non una cartella vuota creata da Docker.
 mkdir -p data apk
-if ! printf 'Catalogo di BunkerPlex: non cancellare questo file.\n' > data/.francoplex; then
+if ! printf 'Catalogo di BunkerPlex: non cancellare questo file.\n' > data/.bunkerplex; then
   echo "Non riesco a scrivere nella cartella data: il disco e' protetto o pieno?"
   fine 1
 fi

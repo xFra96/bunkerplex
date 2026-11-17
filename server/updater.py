@@ -40,7 +40,7 @@ TOOLS = PROGRAM / "strumenti"
 CFG_FILE = TOOLS / "aggiornamenti.json"
 STATE_FILE = TOOLS / "versione.json"
 TOKEN_FILE = TOOLS / "github-token.txt"
-APK_FILE = PROGRAM / "apk" / "FrenkPlex.apk"
+APK_FILE = PROGRAM / "apk" / "BunkerPlex.apk"
 AGENT_FILE = TOOLS / "agente.json"
 REQUEST_FILE = TOOLS / "richiesta-aggiornamento.json"
 RESULT_FILE = TOOLS / "esito-aggiornamento.json"
@@ -215,7 +215,7 @@ def _git_commits(branch):
 
 
 def token():
-    env = os.environ.get("FRENKPLEX_GITHUB_TOKEN", "").strip()
+    env = os.environ.get("BUNKERPLEX_GITHUB_TOKEN", "").strip()
     if env:
         return env
     try:
@@ -271,7 +271,7 @@ def _apk_asset(cfg, tok):
         release = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok))
     except Exception:
         return None
-    asset = next((a for a in release.get("assets", []) if a.get("name") == "FrenkPlex.apk"), None)
+    asset = next((a for a in release.get("assets", []) if a.get("name") == "BunkerPlex.apk"), None)
     if not asset:
         return None
     if APK_FILE.is_file():
@@ -366,7 +366,7 @@ def _install_files(cfg, tok, sha):
     l'elenco (alla Windows) dei file nuovi, cambiati o tolti."""
     old = _state()
     touched = []
-    with tempfile.TemporaryDirectory(prefix="frenkplex-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="bunkerplex-") as tmp:
         tmp = Path(tmp)
         _api(cfg, f"zipball/{sha}", tok, timeout=120, dest=tmp / "p.zip")
         with zipfile.ZipFile(tmp / "p.zip") as z:

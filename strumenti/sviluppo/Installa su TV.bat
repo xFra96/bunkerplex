@@ -2,8 +2,8 @@
 title BunkerPlex - installazione sulla TV
 cd /d "%~dp0..\.."
 
-if not exist "apk\FrenkPlex.apk" (
-  echo Manca apk\FrenkPlex.apk: avvia prima "Compila APK.bat".
+if not exist "apk\BunkerPlex.apk" (
+  echo Manca apk\BunkerPlex.apk: avvia prima "Compila APK.bat".
   pause
   exit /b 1
 )
@@ -29,7 +29,7 @@ if "%TVIP%"=="" exit /b 1
 echo.
 echo Se sulla TV compare una richiesta di autorizzazione, accettala e premi un tasto qui.
 pause >nul
-"%ADB%" -s %TVIP%:5555 install -r "apk\FrenkPlex.apk"
+"%ADB%" -s %TVIP%:5555 install -r "apk\BunkerPlex.apk"
 echo.
 "%ADB%" disconnect %TVIP%:5555 >nul
 pause

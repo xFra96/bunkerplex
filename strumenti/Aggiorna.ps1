@@ -8,7 +8,7 @@
 # Non tocca mai: catalogo (data), .env, chiave di firma, token.
 #
 # Il repository puo' essere privato. L'accesso viene preso, nell'ordine, da:
-#   1. variabile d'ambiente FRENKPLEX_GITHUB_TOKEN;
+#   1. variabile d'ambiente BUNKERPLEX_GITHUB_TOKEN;
 #   2. file strumenti\github-token.txt (un token di sola lettura);
 #   3. GitHub CLI, se su questo PC e' installato e collegato (gh auth login).
 # Non serve avere git installato.
@@ -30,7 +30,7 @@
 
 param([switch]$Check, [switch]$NoRestart, [switch]$Auto)
 
-if ($env:FRANCOPLEX_AUTO) { $Auto = $true }
+if ($env:BUNKERPLEX_AUTO) { $Auto = $true }
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -44,7 +44,7 @@ try {
 $cfgFile = Join-Path $PSScriptRoot 'aggiornamenti.json'
 $stateFile = Join-Path $PSScriptRoot 'versione.json'
 $tokenFile = Join-Path $PSScriptRoot 'github-token.txt'
-$apkFile = Join-Path $root 'apk\FrenkPlex.apk'
+$apkFile = Join-Path $root 'apk\BunkerPlex.apk'
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 
@@ -90,7 +90,7 @@ if (Test-Path -LiteralPath $stateFile) {
 # ------------------------------------------------------------ accesso a GitHub
 
 function Get-Token {
-    if ($env:FRENKPLEX_GITHUB_TOKEN) { return $env:FRENKPLEX_GITHUB_TOKEN.Trim() }
+    if ($env:BUNKERPLEX_GITHUB_TOKEN) { return $env:BUNKERPLEX_GITHUB_TOKEN.Trim() }
     if (Test-Path -LiteralPath $tokenFile) {
         foreach ($line in Get-Content -LiteralPath $tokenFile) {
             $t = "$line".Trim()
@@ -187,7 +187,7 @@ if ($gitCopy) {
 
 function Get-ApkAsset {
     try { $release = Api "releases/tags/$apkTag" } catch { return $null }
-    $asset = $release.assets | Where-Object { $_.name -eq 'FrenkPlex.apk' } | Select-Object -First 1
+    $asset = $release.assets | Where-Object { $_.name -eq 'BunkerPlex.apk' } | Select-Object -First 1
     if (-not $asset) { return $null }
     if (Test-Path -LiteralPath $apkFile) {
         $mine = Get-Item -LiteralPath $apkFile
@@ -246,7 +246,7 @@ function Same-File($a, $b) {
 }
 
 function Update-Files {
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('frenkplex-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('bunkerplex-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
         Say 'Scarico il programma da GitHub...'
@@ -361,10 +361,10 @@ if (-not $NoRestart) {
     } else {
         Say ''
         Say 'Allineo il server Docker alla versione nuova (immagine e pacchetti)...' Cyan
-        $env:FRANCOPLEX_NO_UPDATE = '1'
-        $env:FRANCOPLEX_NO_PAUSE = '1'
-        $env:FRANCOPLEX_NO_BROWSER = '1'
-        $env:FRANCOPLEX_PULL = '1'
+        $env:BUNKERPLEX_NO_UPDATE = '1'
+        $env:BUNKERPLEX_NO_PAUSE = '1'
+        $env:BUNKERPLEX_NO_BROWSER = '1'
+        $env:BUNKERPLEX_PULL = '1'
         # Installa potrebbe a sua volta voler aggiornare: il lucchetto va lasciato prima
         try { $script:lock.ReleaseMutex() } catch { }
         & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Installa.ps1')

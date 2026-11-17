@@ -7,7 +7,12 @@ var view = document.getElementById('view');
 var rail = document.getElementById('rail');
 var modal = document.getElementById('modal');
 var toastEl = document.getElementById('toast');
-var TV = !!window.FrancoPlexTV;      // true dentro l'app Android TV
+// L'app Android TV. Quella installata prima del cambio di nome in BunkerPlex
+// (un'altra app per Android) si presenta col nome vecchio: funziona ancora, ma
+// non puo' aggiornarsi da sola alla nuova e le si chiede di sostituirla.
+var tvApp = window.BunkerPlexTV || window.FrancoPlexTV || null;
+var OLD_TV_APP = !!tvApp && !window.BunkerPlexTV;
+var TV = !!tvApp;                    // true dentro l'app Android TV
 var kb = TV;                         // l'ultimo comando e' arrivato da tasti/telecomando
 var focusMemory = {};                // pagina -> ultimo elemento selezionato
 var scrollMemory = {};
@@ -1806,7 +1811,7 @@ async function play(id, fromStart) {
   var p;
   try { p = await api('/play/' + id); } catch (e) { toast(e.message); return; }
   if (fromStart) p.start = 0;
-  if (TV) { window.FrancoPlexTV.play(JSON.stringify(p)); return; }
+  if (TV) { tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
   location.hash = '#/play/' + id;
 }
@@ -2485,22 +2490,22 @@ function forceRefresh(body) {
 var updateLater = 0;                 // versione per cui si e' risposto "Più tardi" (fino al prossimo avvio)
 
 function tvCall(name) {
-  try { return typeof window.FrancoPlexTV[name] === 'function' ? window.FrancoPlexTV[name]() : null; }
+  try { return typeof tvApp[name] === 'function' ? tvApp[name]() : null; }
   catch (e) { return null; }
 }
 
 function startUpdate() {
   openPicker('Scarico l\'aggiornamento… 0%', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
   modalState.update = true;
-  window.FrancoPlexTV.update();
+  tvApp.update();
 }
 
 function checkUpdate(manual) {
   if (!TV) return;
   api('/info').then(function (i) {
-    if (!i.apk_version) { if (manual) toast('Sul PC non c\'è un APK: avvia «Compila APK.bat»'); return; }
+    if (!i.apk_version) { if (manual) toast('Sul PC non c\'è un APK: avvia strumenti/sviluppo/«Compila APK.bat»'); return; }
     var mine = +tvCall('getVersion') || 0;
-    var canUpdate = typeof window.FrancoPlexTV.update === 'function';
+    var canUpdate = !OLD_TV_APP && typeof tvApp.update === 'function';
     if (canUpdate && i.apk_version <= mine) { if (manual) toast('L\'app è già aggiornata'); return; }
     if (!manual) {
       if (updateLater === i.apk_version) return;
@@ -2514,8 +2519,11 @@ function checkUpdate(manual) {
       try { told = localStorage.getItem('fpOldApp') || ''; } catch (e) {}
       if (!manual && told === String(i.apk_version)) return;
       try { localStorage.setItem('fpOldApp', String(i.apk_version)); } catch (e) {}
-      openPicker('C\'è una versione più nuova dell\'app BunkerPlex' + name + '. Quella installata su questa TV non sa ancora aggiornarsi da sola: ' +
-        'installa la nuova un\'ultima volta con l\'app «Downloader», aprendo http://' + location.host + '/BunkerPlex.apk. Dalla prossima farà tutto da sé.',
+      openPicker(OLD_TV_APP
+        ? 'È arrivata la nuova app BunkerPlex per la TV' + name + ' e sostituisce questa, che non riceverà più aggiornamenti. ' +
+          'Installala con l\'app «Downloader», aprendo http://' + location.host + '/BunkerPlex.apk, poi disinstalla questa dalle impostazioni della TV.'
+        : 'C\'è una versione più nuova dell\'app BunkerPlex' + name + '. Quella installata su questa TV non sa ancora aggiornarsi da sola: ' +
+          'installa la nuova un\'ultima volta con l\'app «Downloader», aprendo http://' + location.host + '/BunkerPlex.apk. Dalla prossima farà tutto da sé.',
         [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       return;
     }
@@ -2953,7 +2961,7 @@ var actions = {
       render();
     }, function (e) { toast(e.message); });
   },
-  resetserver: function () { if (TV) window.FrancoPlexTV.resetServer(); },
+  resetserver: function () { if (TV) tvApp.resetServer(); },
 
   // --- amici
   friendadd: function (arg) {
@@ -3565,8 +3573,8 @@ window.fpBack = function () {
   if (player && player.leaveRow && player.leaveRow()) return true;   // Indietro esce dai comandi del video
   // Dalla Home Indietro chiude l'app: prima si chiede conferma (serve un'app che
   // sappia chiudersi su richiesta; con una versione vecchia si esce come prima)
-  if (!player && currentHash === '#/home' && TV && typeof window.FrancoPlexTV.exit === 'function') {
-    confirmBox('Vuoi uscire da BunkerPlex?', 'Esci', function () { window.FrancoPlexTV.exit(); });
+  if (!player && currentHash === '#/home' && TV && typeof tvApp.exit === 'function') {
+    confirmBox('Vuoi uscire da BunkerPlex?', 'Esci', function () { tvApp.exit(); });
     return true;
   }
   if (rail.contains(document.activeElement)) { focusView(); return true; }

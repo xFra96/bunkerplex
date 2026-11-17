@@ -51,6 +51,8 @@ Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: 
 
 Se arrivi da una versione precedente: «Avvia», «Ferma» e «Aggiorna» non ci sono più, al loro posto c'è solo «Installa BunkerPlex». Lancialo una volta.
 
+L'app per la TV è nuova (versione 2.0, il nome interno è cambiato con BunkerPlex): quella di prima non può aggiornarsi da sola alla nuova. Te lo ricorda lei stessa: installa la nuova con «Downloader» da `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk`, poi disinstalla la vecchia dalle impostazioni della TV. Il server della TV va reimpostato una volta (lo trova da solo).
+
 ## Primi passi
 
 1. **Entra con il tuo account**: nome e password che ti ha dato l'amministratore (la prima volta è una password provvisoria da cambiare). Vedi [Account](#account).
@@ -179,9 +181,9 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 ## Per chi lo modifica
 
-- `strumenti\sviluppo\Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
+- `strumenti\sviluppo\Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/BunkerPlex.apk`.
 - `strumenti\sviluppo\Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
-- **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `FrenkPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
+- **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `BunkerPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/bunkerplex.jks`.
 - `strumenti\sviluppo\Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.

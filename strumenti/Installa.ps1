@@ -30,7 +30,7 @@ function Stop-Here($text) {
 }
 
 function Ask($question) {
-    if ($env:FRANCOPLEX_AUTO) { return $false }    # lanciato dall'aiutante: nessuno puo' rispondere
+    if ($env:BUNKERPLEX_AUTO) { return $false }    # lanciato dall'aiutante: nessuno puo' rispondere
     $answer = Read-Host "$question [S/N]"
     return $answer -match '^\s*[sSyY]'
 }
@@ -137,7 +137,7 @@ function Seen-By-Server($letter) {
 }
 
 function Catalog-Seen {
-    docker exec bunkerplex test -f /data/.francoplex 2>$null | Out-Null
+    docker exec bunkerplex test -f /data/.bunkerplex 2>$null | Out-Null
     return $LASTEXITCODE -eq 0
 }
 
@@ -155,7 +155,7 @@ function Start-Server($build) {
 # accesso al repository si prosegue in silenzio con la versione che c'e'.
 
 $updater = Join-Path $PSScriptRoot 'Aggiorna.ps1'
-if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
+if (-not $env:BUNKERPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
     $news = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $updater -Check 2>$null)
     $found = $LASTEXITCODE
     if ($found -eq 10) {
@@ -170,7 +170,7 @@ if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
         } catch { }
         $install = $autoUpdate
         if (-not $install) {
-            if ($env:FRANCOPLEX_NO_PAUSE -or $env:FRANCOPLEX_AUTO) { Say 'Per installarlo: Impostazioni - Aggiornamenti, nell''app.' }
+            if ($env:BUNKERPLEX_NO_PAUSE -or $env:BUNKERPLEX_AUTO) { Say 'Per installarlo: Impostazioni - Aggiornamenti, nell''app.' }
             else { $install = Ask 'Lo installo adesso?' }
         }
         if ($install) {
@@ -178,8 +178,8 @@ if (-not $env:FRANCOPLEX_NO_UPDATE -and (Test-Path -LiteralPath $updater)) {
             & powershell -NoProfile -ExecutionPolicy Bypass -File $updater -NoRestart
             # Si riparte da capo: questo stesso file puo' essere appena cambiato,
             # e l'immagine Docker si ricostruisce con i pacchetti nuovi
-            $env:FRANCOPLEX_NO_UPDATE = '1'
-            $env:FRANCOPLEX_PULL = '1'
+            $env:BUNKERPLEX_NO_UPDATE = '1'
+            $env:BUNKERPLEX_PULL = '1'
             & powershell -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
             exit $LASTEXITCODE
         }
@@ -243,7 +243,7 @@ if (-not (Test-Path -LiteralPath $data -PathType Container)) {
 
 # Segnaposto: dice al server che questa e' davvero la cartella del catalogo e non
 # una cartella vuota creata da Docker perche' il disco mancava.
-$marker = Join-Path $data '.francoplex'
+$marker = Join-Path $data '.bunkerplex'
 try {
     [System.IO.File]::WriteAllText($marker, "Catalogo di BunkerPlex: non cancellare questo file.`r`n")
 } catch {
@@ -319,7 +319,7 @@ try {
 # Dopo un aggiornamento si scarica anche l'immagine di base piu' recente
 # (Python, ffmpeg): senza Internet si torna alla ricostruzione normale.
 $built = $false
-if ($env:FRANCOPLEX_PULL) {
+if ($env:BUNKERPLEX_PULL) {
     docker compose build --pull
     $built = $LASTEXITCODE -eq 0
 }
@@ -435,5 +435,5 @@ Say ' del PC: non serve rilanciare niente. I dischi che colleghi dopo'
 Say ' compaiono da soli. Per spegnerlo: Docker Desktop, Containers, Stop.'
 Say '============================================================' Green
 Say ''
-if (-not $env:FRANCOPLEX_NO_BROWSER) { Start-Process 'http://localhost:32500' }
-if (-not $env:FRANCOPLEX_NO_PAUSE) { Read-Host 'Premi INVIO per chiudere questa finestra (BunkerPlex resta acceso)' | Out-Null }
+if (-not $env:BUNKERPLEX_NO_BROWSER) { Start-Process 'http://localhost:32500' }
+if (-not $env:BUNKERPLEX_NO_PAUSE) { Read-Host 'Premi INVIO per chiudere questa finestra (BunkerPlex resta acceso)' | Out-Null }

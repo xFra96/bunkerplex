@@ -57,7 +57,29 @@ IMG = DATA / "images"
 # BunkerPlex" ci mette un segnaposto prima di accendere il server. Se il
 # segnaposto manca, il disco non e' collegato a Docker: invece di creare un
 # catalogo vuoto da un'altra parte, il server si ferma e lo dice.
-MARKER = DATA / ".francoplex"
+MARKER = DATA / ".bunkerplex"
+DB_PATH = DATA / "bunkerplex.db"
+
+
+def rename_old_catalog():
+    """Fino alla versione di novembre 2026 segnaposto e database avevano il nome
+    vecchio del progetto: si rinominano una volta, prima di aprire il catalogo."""
+    old = "francoplex"     # il nome di prima
+    pairs = [(DATA / f".{old}", MARKER)] + [
+        (DATA / f"{old}.db{x}", DB_PATH.with_name(DB_PATH.name + x)) for x in ("", "-wal", "-shm")]
+    if DB_PATH.exists():
+        pairs = pairs[:1]          # catalogo gia' rinominato: il database vecchio non si tocca
+    for src, dst in pairs:
+        try:
+            if src.exists() and not dst.exists():
+                os.replace(src, dst)
+            elif src.exists() and src.name.startswith("."):
+                src.unlink()
+        except OSError as ex:
+            print("Rinomina del catalogo non riuscita:", src.name, repr(ex), flush=True)
+
+
+rename_old_catalog()
 
 
 def data_problem():
@@ -76,10 +98,9 @@ def data_problem():
 
 
 DATA_PROBLEM = data_problem()
-DB_PATH = DATA / "francoplex.db"
 CONFIG_PATH = DATA / "config.json"
 SUBS_DIR = DATA / "subs"            # sottotitoli scaricati da internet, uno per lingua e video
-APK_PATH = Path(os.environ.get("APK_PATH", "/apk/FrenkPlex.apk"))
+APK_PATH = Path(os.environ.get("APK_PATH", "/apk/BunkerPlex.apk"))
 
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv",
              ".flv", ".mpg", ".mpeg", ".m2ts"}
@@ -1625,7 +1646,7 @@ class SmallAndFast:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
     RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/BunkerPlex.apk",
-           "/FrenkPlex.apk", "/FrancoPlex.apk", "/api/share/stream", "/api/share/transcode",
+           "/api/share/stream", "/api/share/transcode",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
     PLAYING = ("/api/stream", "/api/transcode", "/api/progress", "/api/share/stream",
                "/api/share/transcode")
@@ -2998,13 +3019,13 @@ def info():
     apk_code, apk_name = apk_version()
     if auth_on() and CURRENT.get() is None and not GUEST.get():
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
-        return {"app": "francoplex", "name": SERVER_NAME, "version": VERSION, "login": True,
+        return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "login": True,
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name}
     con = db()
     try:
         key = tmdb_key()
         return {
-            "app": "francoplex", "name": SERVER_NAME, "version": VERSION,
+            "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION,
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
             "shows": con.execute("SELECT COUNT(*) FROM shows").fetchone()[0],
             "episodes": con.execute("SELECT COUNT(*) FROM items WHERE kind='episode'").fetchone()[0],
@@ -4686,7 +4707,7 @@ def scrub(x):
 
 @share.get("/info")
 def share_info():
-    return {"app": "francoplex", "name": SERVER_NAME, "version": VERSION, "share": 1}
+    return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "share": 1}
 
 
 @share.get("/libraries")
@@ -5995,8 +6016,6 @@ async def friends_quality(request: Request):
     return {"ok": True}
 
 
-@app.get("/FrancoPlex.apk")     # le app installate con i nomi precedenti si aggiornano da qui
-@app.get("/FrenkPlex.apk")
 @app.get("/BunkerPlex.apk")
 def apk():
     """L'app per la TV, scaricabile direttamente dal server."""

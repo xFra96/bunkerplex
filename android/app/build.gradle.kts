@@ -4,28 +4,28 @@ plugins {
 }
 
 android {
-    namespace = "it.francoplex.tv"
+    namespace = "it.bunkerplex.tv"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "it.francoplex.tv"
+        applicationId = "it.bunkerplex.tv"
         minSdk = 21
         targetSdk = 35
         // Numero di versione automatico (i minuti dal 1970): ogni compilazione e'
         // "piu' nuova" della precedente, cosi' l'app sulla TV si accorge da sola
         // che sul PC c'e' un APK aggiornato e propone di installarlo.
         versionCode = (System.currentTimeMillis() / 60_000L).toInt()
-        versionName = "1.5"
+        versionName = "2.0"
     }
 
     // Chiave di firma personale, creata alla prima compilazione e poi riusata:
     // cosi' gli aggiornamenti si installano sopra la versione precedente.
     signingConfigs {
         create("release") {
-            storeFile = file("../keystore/francoplex.jks")
-            storePassword = "francoplex"
-            keyAlias = "francoplex"
-            keyPassword = "francoplex"
+            storeFile = file("../keystore/bunkerplex.jks")
+            storePassword = "bunkerplex"
+            keyAlias = "bunkerplex"
+            keyPassword = "bunkerplex"
         }
     }
 

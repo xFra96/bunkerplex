@@ -3,10 +3,10 @@
 # BunkerPlex prendono gli aggiornamenti e da cui si scarica la prima volta:
 #   - BunkerPlex.zip: il programma di quel commit, gia' con l'APK e con
 #     strumenti/versione.json (cosi' la copia scaricata sa di essere aggiornata);
-#   - FrenkPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/;
+#   - BunkerPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/;
 #   - il tag app-tv spostato sull'ultimo commit (anche lo zip «Source code» e' quello nuovo).
 #
-# Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/francoplex.jks
+# Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/bunkerplex.jks
 # in base64 (vedi README, «App per la TV compilata da GitHub»). Deve essere la stessa
 # con cui e' firmata l'app gia' installata, se no la TV rifiuta l'aggiornamento:
 # per questo, se il segreto manca, la compilazione si ferma invece di crearne una nuova.
@@ -49,7 +49,7 @@ jobs:
           fi
           [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && build=1
           # Nella release non c'e' ancora l'APK: si compila comunque
-          gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qx FrenkPlex.apk || build=1
+          gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null | grep -qx BunkerPlex.apk || build=1
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Ricompilo l'APK: $build"
 
@@ -67,8 +67,8 @@ jobs:
             exit 0
           fi
           mkdir -p android/keystore
-          echo "$KEYSTORE_B64" | base64 -d > android/keystore/francoplex.jks
-          keytool -list -keystore android/keystore/francoplex.jks -storepass francoplex -alias francoplex > /dev/null
+          echo "$KEYSTORE_B64" | base64 -d > android/keystore/bunkerplex.jks
+          keytool -list -keystore android/keystore/bunkerplex.jks -storepass bunkerplex -alias bunkerplex > /dev/null
           echo "ok=1" >> "$GITHUB_OUTPUT"
 
       # Stessi strumenti del Dockerfile di strumenti/sviluppo/"Compila APK.bat" (Java 17, Gradle 8.11.1);
@@ -91,20 +91,20 @@ jobs:
         run: |
           gradle --no-daemon assembleRelease
           mkdir -p ../out
-          cp app/build/outputs/apk/release/app-release.apk ../out/FrenkPlex.apk
-          rm -f keystore/francoplex.jks
-          ls -l ../out/FrenkPlex.apk
+          cp app/build/outputs/apk/release/app-release.apk ../out/BunkerPlex.apk
+          rm -f keystore/bunkerplex.jks
+          ls -l ../out/BunkerPlex.apk
 
       - name: APK gia' pubblicato
         if: steps.key.outputs.ok != '1'
-        run: gh release download "$TAG" -p FrenkPlex.apk -D out
+        run: gh release download "$TAG" -p BunkerPlex.apk -D out
 
       - name: Prepara BunkerPlex.zip
         run: |
           mkdir -p pkg
           git archive --format=tar --prefix=BunkerPlex/ HEAD | tar -x -C pkg
           mkdir -p pkg/BunkerPlex/apk
-          cp out/FrenkPlex.apk pkg/BunkerPlex/apk/FrenkPlex.apk
+          cp out/BunkerPlex.apk pkg/BunkerPlex/apk/BunkerPlex.apk
           # Stesso formato che scrivono gli aggiornamenti (strumenti/Aggiorna.ps1, server/updater.py)
           python3 - <<'EOF'
           import json, os, datetime
@@ -147,10 +147,10 @@ jobs:
             echo "Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella «Windows» (o «macOS»), lancia una volta sola «Installa BunkerPlex.bat» (o «.command»). Da lì in poi BunkerPlex lo tiene acceso Docker, anche dopo un riavvio. Dentro c'è già l'app per la TV."
             echo "Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV."
             echo
-            echo "FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."
+            echo "BunkerPlex.apk: l'app per Android TV, Google TV e Fire TV."
           } > out/notes.md
           gh release delete "$TAG" --yes || true
-          gh release create "$TAG" out/FrenkPlex.apk out/BunkerPlex.zip             --title "BunkerPlex $(date -u +%Y-%m-%d) ($short)"             --notes-file out/notes.md --target "$GITHUB_SHA" --latest
+          gh release create "$TAG" out/BunkerPlex.apk out/BunkerPlex.zip             --title "BunkerPlex $(date -u +%Y-%m-%d) ($short)"             --notes-file out/notes.md --target "$GITHUB_SHA" --latest
           if [ "${{ steps.key.outputs.ok }}" = 1 ]; then
             git tag -f apk-build HEAD
             git push -f origin refs/tags/apk-build
