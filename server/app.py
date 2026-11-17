@@ -2137,6 +2137,128 @@ async def auth_resolve(request: Request):
     return {"ok": True}
 
 
+# ---- Raccolte nell'account ------------------------------------------------------
+# L'elenco delle raccolte (nome, cartelle, condivisa o no) segue l'account: su un
+# altro PC le raccolte compaiono gia' create. Le cartelle che li' esistono con lo
+# stesso percorso (anche su un disco con un'altra lettera) si collegano da sole;
+# le altre restano «su un altro PC» finche' non si sceglie dove stanno qui.
+# Ogni raccolta ha un sync_id che la riconosce su tutti i PC.
+
+def lib_export(uid):
+    out, changed = [], False
+    with config_lock:
+        for lib in config.get("libraries") or []:
+            if lib.get("owner") != uid:
+                continue
+            if not lib.get("sync_id"):
+                lib["sync_id"] = secrets.token_hex(8)
+                changed = True
+            folders = [{"path": p, "display": display_path(p)} for p in lib["folders"]]
+            folders += [m for m in lib.get("missing") or [] if m not in folders]
+            out.append({"id": lib["sync_id"], "name": lib["name"], "shared": bool(lib.get("shared")),
+                        "folders": folders})
+            if not lib.get("synced"):
+                lib["synced"] = True
+                changed = True
+        if changed:
+            save_config()
+    return out
+
+
+def push_libraries(uid):
+    put_user_setting(uid, "libraries", lib_export(uid))
+
+
+def lib_changed():
+    """Una raccolta e' cambiata da questo PC: l'elenco va nell'account."""
+    u = CURRENT.get()
+    if u is not None:
+        push_libraries(u["id"])
+
+
+def resolve_folder(entry, taken):
+    """Dove sta su questo PC una cartella dell'account (None se qui non c'e')."""
+    path = entry.get("path") or ""
+    if path and path not in taken and has_content(Path(path)):
+        return path
+    try:
+        found = folder_from_input(entry.get("display") or "")
+        if found not in taken and has_content(Path(found)):
+            return found
+    except HTTPException:
+        pass
+    moved = moved_folder(path) if path else None
+    if moved and moved not in taken:
+        return moved
+    return None
+
+
+def reconcile_libraries(uid):
+    """Allinea le raccolte di questo PC all'elenco dell'account. Le raccolte nate qui
+    e mai sincronizzate restano (e poi vanno nell'account); quelle tolte su un altro PC
+    spariscono anche qui."""
+    cloud = user_setting(uid, "libraries")
+    if not isinstance(cloud, list):
+        return False
+    changed = False
+    with config_lock:
+        libs = config.setdefault("libraries", [])
+        by_sync = {l["sync_id"]: l for l in libs if l.get("owner") == uid and l.get("sync_id")}
+        seen = set()
+        for c in cloud:
+            sid = str(c.get("id") or "")
+            if not sid or not isinstance(c.get("folders"), list):
+                continue
+            seen.add(sid)
+            lib = by_sync.get(sid)
+            if lib is None:
+                lib = {"id": max([x["id"] for x in libs] + [0]) + 1, "name": "", "folders": [],
+                       "owner": uid, "sync_id": sid, "synced": True}
+                libs.append(lib)
+                changed = True
+            name = re.sub(r"\s+", " ", str(c.get("name") or "")).strip()[:40] or "Raccolta"
+            if lib["name"] != name:
+                lib["name"] = name
+                changed = True
+            if bool(lib.get("shared")) != bool(c.get("shared")):
+                lib["shared"] = bool(c.get("shared"))
+                changed = True
+            taken = {p for other in libs if other is not lib for p in other["folders"]}
+            folders, missing = [], []
+            for f in c["folders"]:
+                if not isinstance(f, dict):
+                    continue
+                here = next((p for p in lib["folders"]
+                             if p == f.get("path") or display_path(p) == f.get("display")), None)
+                if here is None:
+                    here = resolve_folder(f, taken | set(folders))
+                if here and here not in folders:
+                    folders.append(here)
+                elif not here:
+                    missing.append({"path": f.get("path") or "", "display": f.get("display") or ""})
+            if folders != lib["folders"] or missing != (lib.get("missing") or []):
+                lib["folders"], lib["missing"] = folders, missing
+                changed = True
+        for sid, lib in by_sync.items():
+            if sid not in seen and lib.get("synced"):
+                libs.remove(lib)        # tolta su un altro PC
+                changed = True
+        if changed:
+            save_config()
+    if changed:
+        scan_async()
+    return changed
+
+
+def sync_libraries(uid):
+    """Dopo aver ricevuto le impostazioni: raccolte dell'account qui, raccolte nuove di qui nell'account."""
+    reconcile_libraries(uid)
+    with config_lock:
+        fresh = any(l.get("owner") == uid and not l.get("synced") for l in config.get("libraries") or [])
+    if fresh:
+        push_libraries(uid)
+
+
 def drop_cloud_token(uid):
     """Il servizio non riconosce piu' questo PC per l'account (password cambiata
     altrove, password provvisoria nuova, account eliminato): si deve rientrare."""
@@ -2161,8 +2283,9 @@ async def finish_login(res, ver, device):
         con.close()
     conflicts = []
     if not u["must_change"]:
-        try:                       # impostazioni subito (chiavi, preferenze); visti in sottofondo
+        try:                       # impostazioni e raccolte subito; visti in sottofondo
             await asyncio.to_thread(pull_settings, uid, res["token"])
+            await asyncio.to_thread(sync_libraries, uid)
         except Exception:
             pass
         conflicts = await first_login_conflicts(uid, res["token"])
@@ -2528,6 +2651,8 @@ def sync_loop():
 def sync_user(uid, token):
     push_settings(uid, token)
     pull_settings(uid, token)
+    sync_libraries(uid)               # raccolte dell'account qui, e quelle nuove di qui nell'account
+    push_settings(uid, token)
     push_state(uid, token)
     pull_state(uid, token)
     apply_cloud_state(uid)
@@ -2906,6 +3031,8 @@ def libraries_list():
             "movies": movies.get(lib["id"], 0), "shows": shows.get(lib["id"], 0),
             "folders": [dict(folder_state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
                         for p in lib["folders"]],
+            # cartelle della raccolta che stanno su un altro PC dell'account
+            "missing": [m.get("display") or m.get("path") for m in lib.get("missing") or []],
         })
     return out
 
@@ -2945,6 +3072,7 @@ async def libraries_create(request: Request):
             config["libraries"].remove(lib)
             raise
         save_config()
+    lib_changed()
     scan_async()
     return {"ok": True, "id": lib["id"]}
 
@@ -2960,6 +3088,7 @@ async def libraries_rename(lib_id: int, request: Request):
         if "shared" in body:      # visibile anche agli altri account di questo PC
             lib["shared"] = bool(body.get("shared"))
         save_config()
+    lib_changed()
     return {"ok": True}
 
 
@@ -2969,6 +3098,7 @@ def libraries_delete(lib_id: int):
     with config_lock:
         config["libraries"].remove(_library(lib_id))
         save_config()
+    lib_changed()
     scan_async()   # i suoi titoli escono dal catalogo; i file sul disco non si toccano
     return {"ok": True}
 
@@ -2981,8 +3111,12 @@ async def libraries_add_folders(lib_id: int, request: Request):
         raise HTTPException(400, "Nessuna cartella indicata")
     get_libraries()
     with config_lock:
-        added = _add_folders(_library(lib_id), raw)
+        lib = _library(lib_id)
+        added = _add_folders(lib, raw)
+        if body.get("replace"):   # e' la cartella che sugli altri PC sta altrove: qui sta in questo posto
+            lib["missing"] = [m for m in lib.get("missing") or [] if m.get("display") != body["replace"]]
         save_config()
+    lib_changed()
     scan_async()
     return {"ok": True, "added": added}
 
@@ -2997,7 +3131,50 @@ async def libraries_remove_folder(lib_id: int, request: Request):
             raise HTTPException(404, "Cartella non trovata")
         lib["folders"].remove(body["path"])
         save_config()
+    lib_changed()
     scan_async()
+    return {"ok": True}
+
+
+@app.post("/api/libraries/push-local")
+def libraries_push_local():
+    """Le raccolte dell'account diventano quelle di questo PC: si tolgono dall'account le
+    cartelle che qui non ci sono e le raccolte che qui non hanno nessuna cartella. Visti,
+    punti di ripresa e lista non cambiano."""
+    u = CURRENT.get()
+    if u is None:
+        raise HTTPException(400, "Serve un account per sincronizzare le raccolte")
+    removed_folders = removed_libs = 0
+    with config_lock:
+        libs = config.get("libraries") or []
+        for lib in list(libs):
+            if lib.get("owner") != u["id"]:
+                continue
+            gone = len(lib.get("missing") or [])
+            if gone and not lib["folders"]:
+                libs.remove(lib)        # c'era solo su altri PC
+                removed_libs += 1
+                continue
+            removed_folders += gone
+            lib["missing"] = []
+        save_config()
+    push_libraries(u["id"])           # con l'ora di adesso: vince su quello che c'e' online
+    return {"ok": True, "removed_folders": removed_folders, "removed_libraries": removed_libs}
+
+
+@app.post("/api/libraries/{lib_id}/missing/remove")
+async def libraries_remove_missing(lib_id: int, request: Request):
+    """Toglie dalla raccolta (su tutti i PC dell'account) una cartella che su questo PC non c'e'."""
+    body = await read_json(request)
+    get_libraries()
+    with config_lock:
+        lib = _library(lib_id)
+        before = len(lib.get("missing") or [])
+        lib["missing"] = [m for m in lib.get("missing") or [] if m.get("display") != body.get("display")]
+        if len(lib["missing"]) == before:
+            raise HTTPException(404, "Cartella non trovata")
+        save_config()
+    lib_changed()
     return {"ok": True}
 
 
@@ -3030,6 +3207,7 @@ async def libraries_relocate_folder(lib_id: int, request: Request):
             con.close()
         lib["folders"][lib["folders"].index(old)] = new
         save_config()
+    lib_changed()
     scan_async()
     return {"ok": True, "display": display_path(new)}
 
@@ -5765,6 +5943,72 @@ def apk():
         raise HTTPException(404, "APK non ancora compilato: avvia 'Compila APK.bat' sul PC")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
                         filename="BunkerPlex.apk")
+
+
+# ---- Indirizzi del PC e QR per scaricare l'app --------------------------------
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+public_ip = {"ip": "", "source": "", "at": 0.0}
+
+
+def private_ip(host_header=""):
+    """L'indirizzo di questo PC nella rete di casa: quello con cui e' stata aperta
+    la pagina (se non e' localhost), poi quello che passa «Avvia», poi quello
+    imparato dai dispositivi di casa."""
+    host = (host_header or "").rsplit(":", 1)[0].strip("[]")
+    if host and host not in LOCAL_HOSTS and re.fullmatch(r"[\d.]{7,15}", host):
+        return host
+    env = os.environ.get("BUNKERPLEX_LAN_IP", "").strip()
+    if re.fullmatch(r"[\d.]{7,15}", env):
+        return env
+    return lan["ip"]
+
+
+def find_public_ip():
+    """L'indirizzo con cui la casa esce su Internet: lo dice il router (se la porta
+    per gli amici e' aperta), altrimenti il servizio account. Ricordato 10 minuti."""
+    if portmap.get("ok") and portmap.get("ip"):
+        public_ip.update(ip=portmap["ip"], source="router", at=time.time())
+        return public_ip
+    if time.time() - public_ip["at"] < 600 and public_ip["ip"]:
+        return public_ip
+    try:
+        ip = str(accounts.call("GET", "/ip", timeout=6).get("ip") or "")
+        if re.fullmatch(r"[\d.]{7,15}|[0-9a-fA-F:]{3,45}", ip):
+            public_ip.update(ip=ip, source="servizio account", at=time.time())
+    except Exception:
+        pass
+    return public_ip
+
+
+@app.get("/api/network")
+async def network(request: Request):
+    pub = await asyncio.to_thread(find_public_ip)
+    return {"private": private_ip(request.headers.get("host", "")), "port": 32500,
+            "public": pub["ip"], "public_source": pub["source"],
+            "friends_port": SHARE_PORT, "friends_open": bool(portmap.get("ok") and portmap.get("public"))}
+
+
+@app.get("/api/apk-link")
+def apk_link(request: Request):
+    """L'indirizzo per scaricare l'app da un telefono di casa, con il suo QR (SVG)."""
+    host = request.headers.get("host", "")
+    port = host.rsplit(":", 1)[1] if ":" in host and not host.endswith("]") else "32500"
+    ip = private_ip(host)
+    if not ip:
+        return {"url": "", "svg": "", "apk": APK_PATH.is_file()}
+    url = f"http://{ip}:{port}/BunkerPlex.apk"
+    svg = ""
+    try:
+        import io
+        import segno
+        buf = io.BytesIO()
+        segno.make(url, error="m").save(buf, kind="svg", scale=1, border=2, dark="#060a07",
+                                        light="#f2f5f2", xmldecl=False, omitsize=True, nl=False)
+        svg = buf.getvalue().decode("utf-8")
+    except Exception as ex:          # pacchetto non ancora installato (immagine vecchia)
+        print("QR non disponibile:", repr(ex), flush=True)
+    return {"url": url, "svg": svg, "apk": APK_PATH.is_file()}
 
 
 class UIFiles(StaticFiles):

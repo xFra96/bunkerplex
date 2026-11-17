@@ -46,7 +46,8 @@ var IC = {
   vol: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/></svg>',
   mute: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9.5l5 5M21 9.5l-5 5"/></svg>',
   disk: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M7 14.5h4"/></svg>',
-  folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>'
+  folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>',
+  bell: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5zM10 20.5h4"/></svg>'
 };
 var MORE = '<span class="more" data-menu title="Azioni">' + IC.dots + '</span>';
 var HINT = 'OK apre · tieni premuto OK per le altre azioni · freccia sinistra per il menu';
@@ -213,7 +214,7 @@ function loginPage() {
   }
   var pick = TV && a.profiles && a.profiles.length ? '<h2>Chi guarda?</h2><div class="profiles">' + a.profiles.map(function (p, n) {
     return '<button class="profile f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="profile" data-arg="' + p.id + '" data-key="prof-' + p.id + '">' +
-      avatar(p.name) + '<span>' + esc(p.name) + '</span></button>';
+      face(p.name, 'big') + '<span>' + esc(p.name) + '</span></button>';
   }).join('') + '</div><h2 style="margin-top:1.6rem">Oppure entra con nome e password</h2>' : '';
   return '<div class="page"><div class="panel login"><h1>Accedi a BunkerPlex</h1>' + off + pick +
     (pick ? '' : '<p>Entra con il tuo account: ritrovi impostazioni, visti e la tua lista su ogni PC e TV.</p>') +
@@ -271,71 +272,6 @@ function offlinePage() {
     '«Dall\'account a questo PC»: le modifiche fatte qui si perdono e si riprende tutto dall\'account.</small></p></div></div>';
 }
 
-function accountPanel() {
-  if (!auth || !auth.on) return '';
-  if (auth.guest) {
-    return '<div class="panel"><h2>Account</h2><p>' + dot(false) + ' Stai usando BunkerPlex <b>offline, senza account</b>: visti e impostazioni restano su questo PC. ' +
-      'Quando torna Internet entra con il tuo account: ti chiederò se portare nell\'account quello che hai fatto qui.</p>' +
-      '<div class="actions"><button class="btn primary f" data-act="logout" data-key="logout">Entra con un account</button></div></div>';
-  }
-  if (!auth.user) return '';
-  var u = auth.user;
-  var state = auth.offline || u.offline_session
-    ? ' ' + dot(false) + ' <b>Offline</b>: stai usando la copia del tuo account salvata su questo PC (ultima sincronizzazione: ' + whenDate(u.last_sync) + '). ' +
-      'Le modifiche restano qui finché torna Internet.'
-    : (u.last_sync ? ' Ultima sincronizzazione: ' + whenDate(u.last_sync) + '.' : '');
-  return '<div class="panel"><h2>Account</h2>' +
-    '<p>Sei entrato come <b>' + esc(u.name) + '</b>' + (u.admin ? ' (amministratore)' : '') + '. ' +
-    'Chiavi API, preferenze, visti, punti di ripresa e la tua lista sono salvati nell\'account: li ritrovi su ogni PC dove entri. ' +
-    'Le raccolte invece sono di questo PC.' + state + '</p>' +
-    '<button class="setting f" data-act="tvquick" data-arg="' + (u.tv_quick ? 0 : 1) + '" data-key="tvquick">Dalle TV di casa si entra scegliendo il tuo nome, senza password<small>' +
-      (u.tv_quick ? 'Sì' : 'No') + '</small></button>' +
-    '<div class="actions">' +
-      (TV ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      (u.admin && !TV ? '<a class="btn f" href="#/accounts" data-key="accmanage">Gestisci gli account</a>' : '') +
-      '<button class="btn f" data-act="logout" data-key="logout">Esci</button>' +
-    '</div></div>';
-}
-
-// Password provvisoria facile da dettare: tre gruppi di lettere e numeri
-function tempPassword() {
-  var chars = 'abcdefghjkmnpqrstuvwxyz23456789', out = [];
-  var rnd = new Uint32Array(12);
-  (window.crypto || window.msCrypto).getRandomValues(rnd);
-  for (var i = 0; i < 12; i++) out.push(chars[rnd[i] % chars.length]);
-  return out.slice(0, 4).join('') + '-' + out.slice(4, 8).join('') + '-' + out.slice(8).join('');
-}
-
-function showSecret(title, text) {
-  openPicker(title + ': ' + text + ' (comunicala tu: al primo accesso andrà cambiata)', [{ value: 'ok', label: 'Fatto' }], 'ok', function () {});
-}
-
-async function accountsPage() {
-  if (!auth || !auth.user || !auth.user.admin) throw new Error('Solo l\'amministratore può gestire gli account.');
-  var list = await api('/accounts');
-  cache.accounts = list;
-  var rows = list.map(function (a) {
-    var when = a.last_seen ? 'ultimo accesso ' + new Date(a.last_seen * 1000).toLocaleDateString('it-IT') : 'mai entrato';
-    return '<div class="folder"><div class="where"><b>' + esc(a.username) + (a.admin ? ' · amministratore' : '') + '</b><small>' +
-      (a.must_change ? 'password provvisoria ancora da cambiare · ' : '') + when + ' · ' +
-      a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
-      '<button class="btn f" style="margin-right:.5rem" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
-      (a.username.toLowerCase() === auth.user.name.toLowerCase() ? '' :
-        '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">Elimina</button>') +
-      '</div>';
-  }).join('');
-  cache.newAdmin = false;
-  return '<div class="page"><div class="toolbar"><h1>Account</h1></div>' +
-    '<div class="panel"><h2>Chi può entrare</h2>' +
-    '<p>Ogni account ha le sue raccolte, impostazioni, visti e lista. «Nuova password provvisoria» fa uscire l\'account da tutti i PC: al prossimo accesso sceglierà una password sua.</p>' +
-    '<div class="lib">' + rows + '</div></div>' +
-    '<div class="panel"><h2>Nuovo account</h2>' +
-    '<input class="field f" style="margin-bottom:.6rem" id="aname" data-key="aname" autocomplete="off" maxlength="32" placeholder="Nome utente (lettere, numeri, . - _)">' +
-    '<input class="field f" style="margin-bottom:.6rem" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '" placeholder="Password provvisoria">' +
-    '<button class="setting f" data-act="accadmin" data-key="accadmin">Amministratore (può gestire gli account)<small id="accadminv">No</small></button>' +
-    '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button>' +
-    '<button class="btn f" data-act="goback" data-key="cancel">Indietro</button></div></div></div>';
-}
 var device = devicePrefs();
 // Aspetto da TV: dentro l'app, oppure scelto a mano per il browser di una smart TV (o con ?tv=1)
 var TVLOOK = TV || device.tv === true || /[?&]tv=1/.test(location.search);
@@ -510,7 +446,8 @@ function markRail(h) {
   else if (h.indexOf('#/lib/') === 0) active = '#/lib/' + h.slice(6).split('?')[0];
   else if ((h.indexOf('#/item/') === 0 || h.indexOf('#/show/') === 0) && cache.navLib) active = '#/lib/' + cache.navLib;
   else if (h.indexOf('#/newlib') === 0) active = '#/newlib';
-  else if (/^#\/(settings|browse|rename|match|accounts|password)/.test(h)) active = '#/settings';
+  else if (h === '#/settings/account' || h === '#/password') active = '#/settings/account';
+  else if (/^#\/(settings|browse|rename|match|accounts)/.test(h)) active = '#/settings';
   var links = rail.querySelectorAll('.railitem');
   for (var i = 0; i < links.length; i++) links[i].classList.toggle('on', links[i].getAttribute('href') === active);
 }
@@ -1227,8 +1164,24 @@ async function matchSearch() {
 
 // ---------------------------------------------------------------- Impostazioni
 
+// "Scarico locandine e schede dei film... 12 di 340" -> 4 (per cento); null se non si sa
+function scanProgress(msg) {
+  var m = /(\d+) di (\d+)/.exec(msg || '');
+  return m && +m[2] ? Math.min(100, Math.round(+m[1] * 100 / +m[2])) : null;
+}
+function scanLabel(msg) {
+  return String(msg || 'Leggo le cartelle').replace(/\.\.\.\s*/, '… ').trim();
+}
+function progressLine(pct) {
+  return '<span class="actbar' + (pct === null ? ' indet' : '') + '"><i' + (pct === null ? '' : ' style="width:' + pct + '%"') + '></i></span>';
+}
+
 function scanStatus(i) {
-  if (i.scanning) return esc(i.message || 'Lettura delle cartelle in corso…');
+  if (i.scanning) {
+    var pct = scanProgress(i.message);
+    return '<span class="scanline"><span class="spin" aria-hidden="true"></span>' + esc(scanLabel(i.message)) +
+      (pct === null ? '' : ' · ' + pct + '%') + '</span>' + progressLine(pct);
+  }
   if (i.message) return '<span class="nodot">' + esc(i.message) + '</span>';
   if (!i.last_scan) return '';
   var d = new Date(i.last_scan * 1000);
@@ -1237,106 +1190,435 @@ function scanStatus(i) {
 
 function dot(ok) { return ok ? '<span class="okdot">●</span>' : '<span class="nodot">●</span>'; }
 
-async function settings() {
-  var res = await Promise.all([api('/info'), loadLibs(true), api('/update').catch(function () { return null; }),
-    api('/sharing').catch(function () { return null; })]);
-  var i = res[0];
+// ---------------------------------------------------------------- Persone e account
+// Ogni persona ha un volto fisso: la sua iniziale su una tinta tenue tutta sua
+// (dal nome), uguale nel menu, nelle impostazioni e nella scelta dalla TV.
 
-  var libsHtml = libs.map(function (l) {
-    var what = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ') || 'ancora vuota';
-    var k = 'lib-' + l.id;
-    if (l.mine === false) {       // raccolta di un altro account di questo PC, condivisa con te
-      return '<div class="lib"><div class="head">' + avatar(l.name) +
-        '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + ' · condivisa da un altro account di questo PC</small></div></div></div>';
-    }
-    var accounts = auth && auth.on && auth.user;
-    return '<div class="lib"><div class="head">' + avatar(l.name) +
-      '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + (accounts && l.shared ? ' · la vedono anche gli altri account di questo PC' : '') + '</small></div>' +
-      (accounts ? '<button class="btn f" data-act="libshare" data-arg="' + l.id + ':' + (l.shared ? 0 : 1) + '" data-key="' + k + '-share">' + (l.shared ? 'Non condividere' : 'Condividi') + '</button>' : '') +
-      '<a class="btn f" href="#/browse/' + l.id + '" data-key="' + k + '-add">+ Cartella</a>' +
-      '<button class="btn f" data-act="refreshmenu" data-arg="' + l.id + '" data-key="' + k + '-upd">Aggiorna</button>' +
-      '<a class="btn f" href="#/rename/' + l.id + '" data-key="' + k + '-ren">Rinomina</a>' +
-      '<button class="btn danger f" data-act="dellib" data-arg="' + l.id + '" data-key="' + k + '-del">Elimina</button></div>' +
-      (l.folders.length ? l.folders.map(function (f, n) {
-        return '<div class="folder"><div class="where"><b>' + esc(f.display) + '</b><small>' +
-          (f.online ? dot(true) + ' ' + f.count + ' video'
-            : dot(false) + (f.moved_to ? ' il percorso è cambiato: ora la cartella è in <b>' + esc(f.moved_display) + '</b>' : ' non raggiungibile (disco scollegato?)') +
-              ' · ' + f.count + ' video in catalogo') +
-          '</small></div>' +
-          (f.moved_to ? '<button class="btn primary f" style="margin-right:.5rem" data-act="relocate" data-arg="' + l.id + ':' + n + '" data-key="' + k + '-m' + n + '">Usa il nuovo percorso</button>' : '') +
-          '<button class="btn f" data-act="delfolder" data-arg="' + l.id + ':' + n + '" data-key="' + k + '-f' + n + '">Togli</button></div>';
-      }).join('') : '<div class="folder"><div class="where"><small>Nessuna cartella: premi «+ Cartella».</small></div></div>') +
-      '</div>';
+function personInitial(name) {
+  var s = String(name || '?').trim();
+  return (s.charAt(0) || '?').toUpperCase();
+}
+
+function face(name, cls) {
+  return '<i class="uface' + (cls ? ' ' + cls : '') + '" style="--h:' + hue(name) + '" aria-hidden="true">' + esc(personInitial(name)) + '</i>';
+}
+
+function ago(sec) {
+  if (!sec) return 'mai';
+  var s = Date.now() / 1000 - sec;
+  if (s < 60) return 'adesso';
+  if (s < 3600) { var m = Math.round(s / 60); return m + (m === 1 ? ' minuto fa' : ' minuti fa'); }
+  if (s < 86400) { var h = Math.round(s / 3600); return h + (h === 1 ? ' ora fa' : ' ore fa'); }
+  var d = Math.floor(s / 86400);
+  if (d === 1) return 'ieri';
+  if (d < 7) return d + ' giorni fa';
+  return new Date(sec * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+}
+
+// Come sta il collegamento con l'account: {state: ok | warn, text}
+function syncState() {
+  if (!auth || !auth.on) return null;
+  if (auth.guest) return { state: 'warn', text: 'Offline, senza account' };
+  var u = auth.user;
+  if (!u) return null;
+  if (auth.offline || u.offline_session) {
+    return { state: 'warn', text: 'Offline · copia locale' + (u.last_sync ? ' del ' + whenDate(u.last_sync) : '') };
+  }
+  if (u.offline_pending) return { state: 'warn', text: 'Modifiche offline da sincronizzare' };
+  return { state: 'ok', text: u.last_sync ? 'Sincronizzato ' + ago(u.last_sync) : 'Sincronizzazione in corso' };
+}
+
+// La voce dell'account nel menu laterale: il volto e il nome di chi sta guardando
+function markMe() {
+  var el = document.getElementById('navme');
+  if (!el) return;
+  var u = auth && auth.on && auth.user;
+  var show = !!(u || (auth && auth.on && auth.guest));
+  el.hidden = !show;
+  if (!show) return;
+  var name = u ? u.name : 'Offline';
+  var html = face(name) + '<span>' + esc(u ? u.name : 'Senza account') + '</span>';
+  if (el.getAttribute('data-sig') !== html) {
+    el.innerHTML = html;
+    el.setAttribute('data-sig', html);
+  }
+}
+
+// Password provvisoria facile da dettare: tre gruppi di lettere e numeri
+function tempPassword() {
+  var chars = 'abcdefghjkmnpqrstuvwxyz23456789', out = [];
+  var rnd = new Uint32Array(12);
+  (window.crypto || window.msCrypto).getRandomValues(rnd);
+  for (var i = 0; i < 12; i++) out.push(chars[rnd[i] % chars.length]);
+  return out.slice(0, 4).join('') + '-' + out.slice(4, 8).join('') + '-' + out.slice(8).join('');
+}
+
+// Copia negli appunti anche dove il browser non lo permette (indirizzo di casa senza https)
+function copyText(text) {
+  function fallback() {
+    var t = document.createElement('textarea');
+    t.value = text;
+    t.setAttribute('readonly', '');
+    t.style.position = 'fixed';
+    t.style.opacity = '0';
+    document.body.appendChild(t);
+    t.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { /* niente */ }
+    document.body.removeChild(t);
+    return ok;
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(function () { return true; }, fallback);
+  }
+  return Promise.resolve(fallback());
+}
+
+// Dopo aver creato un account (o dato una nuova password): nome e password da comunicare
+function showSecret(title, name, pass) {
+  cache.secret = 'Nome utente: ' + name + '\nPassword provvisoria: ' + pass;
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.innerHTML = '<div class="sheet secret"><h3>' + esc(title) + '</h3>' +
+    '<div class="secretbody">' + face(name, 'big') +
+      '<dl><dt>Nome utente</dt><dd>' + esc(name) + '</dd><dt>Password provvisoria</dt><dd class="pw num">' + esc(pass) + '</dd></dl></div>' +
+    '<p class="secretnote">Comunicala tu. Al primo accesso ' + esc(name) + ' sceglierà una password sua.</p>' +
+    '<div class="actions"><button class="btn primary f" data-act="copysecret" data-key="copysecret">Copia nome e password</button>' +
+    '<button class="btn f" data-act="closemodal" data-key="closesecret">Fatto</button></div></div>';
+  modal.hidden = false;
+  var first = modal.querySelector('.btn');
+  if (first) first.focus();
+}
+
+// ---------------------------------------------------------------- Impostazioni: aree
+// Ogni area ha la sua vista (#/settings/<area>) con il suo nome come titolo.
+// La panoramica (#/settings) dice com'e' messa ogni area e cosa va guardato.
+
+function settingsAreas() {
+  var out = [];
+  if (auth && auth.on && (auth.user || auth.guest)) out.push(['account', 'Account']);
+  if (auth && auth.on && auth.user && auth.user.admin && !TV) out.push(['people', 'Persone']);
+  out.push(['libraries', 'Raccolte'], ['catalog', 'Catalogo e schede'], ['subtitles', 'Sottotitoli'],
+    ['friends', 'Amici'], ['updates', 'Aggiornamenti'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
+  return out;
+}
+
+var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+
+function settingsShell(area, title, sub, body) {
+  var nav = settingsAreas().map(function (a) {
+    return '<a class="snav f' + (a[0] === area ? ' on' : '') + '" href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
+      (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : '') + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
+  return '<div class="page settings"><div class="sgrid">' +
+    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home"><span>Panoramica</span></a>' + nav + '</nav>' +
+    '<div class="smain"><a class="sup f" href="#/settings" data-key="sup">' + IC.back + 'Impostazioni</a>' +
+    '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
+}
 
+function settingsData() {
+  return Promise.all([api('/info'), loadLibs(true), api('/update').catch(function () { return null; }),
+    api('/sharing').catch(function () { return null; })]);
+}
+
+// Una riga della panoramica: area, nome, a cosa serve, com'e' adesso
+function settingsRows(i, u, sh) {
+  var rows = [];
+  var s = syncState();
+  if (auth && auth.on && auth.user) {
+    rows.push({ area: 'account', face: auth.user.name, label: auth.user.name,
+      desc: auth.user.admin ? 'Il tuo account · amministratore' : 'Il tuo account', value: s.text, state: s.state });
+  } else if (auth && auth.on && auth.guest) {
+    rows.push({ area: 'account', label: 'Account', desc: 'Stai usando BunkerPlex senza account', value: s.text, state: 'warn' });
+  }
+  if (auth && auth.on && auth.user && auth.user.admin && !TV) {
+    rows.push({ area: 'people', label: 'Persone', desc: 'Chi può entrare, password provvisorie', value: 'Gestisci', state: '' });
+  }
+  var off = 0, films = 0, series = 0, away = 0;
+  libs.forEach(function (l) {
+    films += l.movies || 0;
+    series += l.shows || 0;
+    (l.folders || []).forEach(function (f) { if (!f.online) off++; });
+    if (l.mine !== false) away += (l.missing || []).length;
+  });
+  rows.push({ area: 'libraries', label: 'Raccolte',
+    desc: away ? (away === 1 ? 'Una cartella sta su un altro PC' : away + ' cartelle stanno su altri PC') : 'Le cartelle dei video di questo PC',
+    value: off ? (off === 1 ? 'Una cartella non raggiungibile' : off + ' cartelle non raggiungibili')
+      : (libs.length ? libs.length + (libs.length === 1 ? ' raccolta' : ' raccolte') : 'Nessuna raccolta'),
+    state: off || !libs.length ? 'warn' : 'ok' });
+  rows.push({ area: 'catalog', label: 'Catalogo e schede',
+    desc: films + ' film · ' + series + ' serie · ' + i.episodes + ' episodi',
+    value: i.scanning ? 'Lettura in corso…' : (i.tmdb ? 'Schede attive' : 'Schede non attive'),
+    state: i.scanning ? '' : (i.tmdb ? 'ok' : 'warn') });
+  rows.push({ area: 'subtitles', label: 'Sottotitoli', desc: 'Da internet, con OpenSubtitles',
+    value: i.subs_online ? 'Attivi' : 'Non attivi', state: i.subs_online ? 'ok' : '' });
+  if (sh) {
+    var pending = sh.accounts.filter(function (a) { return !a.approved; }).length;
+    shareRequests = pending;
+    markRequests();
+    rows.push({ area: 'friends', label: 'Amici', desc: 'Raccolte condivise con altre case',
+      value: !sh.on ? 'Spenta' : (pending ? (pending === 1 ? 'Una richiesta da approvare' : pending + ' richieste da approvare')
+        : (friends.length ? friends.length + (friends.length === 1 ? ' amico collegato' : ' amici collegati') : 'Attiva')),
+      state: pending ? 'warn' : (sh.on ? 'ok' : '') });
+  }
+  if (u && u.enabled) {
+    rows.push({ area: 'updates', label: 'Aggiornamenti', desc: 'BunkerPlex ' + i.version,
+      value: u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
+      state: u.error || u.access === false || u.available || u.phase ? 'warn' : 'ok' });
+  }
+  var tvOld = TV && i.apk_version > (+tvCall('getVersion') || 0);
+  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo', desc: 'Animazioni, locandine, collegamento',
+    value: tvOld ? 'App da aggiornare' : 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: tvOld ? 'warn' : '' });
+  return rows;
+}
+
+// L'app per la TV (e per i telefoni Android): indirizzo e QR da inquadrare
+async function apkPanel(title) {
+  var link = await api('/apk-link').catch(function () { return null; });
+  if (!link || !link.apk) {
+    return '<div class="panel"><h2>' + title + '</h2><p>App non ancora compilata: avvia <b>Compila APK.bat</b> sul PC.</p></div>';
+  }
+  if (!link.url) {
+    return '<div class="panel"><h2>' + title + '</h2><p>Non conosco ancora l\'indirizzo di questo PC nella rete di casa: rilancia «Avvia BunkerPlex.bat», oppure apri questa pagina da un altro dispositivo di casa.</p></div>';
+  }
+  return '<div class="panel"><h2>' + title + '</h2><div class="apkqr">' +
+    (link.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per scaricare l\'app">' + link.svg + '</div>' : '') +
+    '<div class="apktext"><p>Inquadra il codice con la fotocamera del telefono: scarica l\'app da questo PC. Sulla TV invece apri lo stesso indirizzo con l\'app «Downloader».</p>' +
+    '<p class="apkurl num">' + esc(link.url) + '</p>' +
+    (TV ? '' : '<div class="actions" style="margin-top:.4rem"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>') +
+    '</div></div></div>';
+}
+
+function networkPanel(n) {
+  if (!n) return '';
+  return '<div class="panel"><h2>Indirizzi di questo PC</h2><dl class="kv">' +
+    '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
+      (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Avvia BunkerPlex.bat»</small>') + '</dd>' +
+    '<dt>IP pubblico<small>su Internet: lo usano solo gli amici</small></dt><dd class="num">' +
+      (n.public ? esc(n.public) + '<small>' + (n.public_source === 'router' ? 'dal router' : 'dal servizio account') + (n.friends_open ? ' · porta amici ' + n.friends_port + ' aperta' : '') + '</small>'
+        : '<span class="nodot">non raggiungibile</span><small>niente Internet?</small>') + '</dd>' +
+    '</dl><p class="kvnote">Da fuori casa si entra solo dalla porta degli amici: non aprire mai la ' + n.port + ' sul router.</p></div>';
+}
+
+async function settings() {
+  var res = await Promise.all([settingsData(), api('/network').catch(function () { return null; })]);
+  var net = res[1];
+  res = res[0];
+  var rows = settingsRows(res[0], res[2], res[3]);
+  var warn = rows.filter(function (r) { return r.state === 'warn'; });
+  var s = syncState();
+  var finding = warn.length
+    ? (warn.length === 1 ? 'Da guardare: ' : warn.length + ' cose da guardare · prima: ') + esc(warn[0].label) + ', ' + esc(warn[0].value.charAt(0).toLowerCase() + warn[0].value.slice(1))
+    : 'Tutto in ordine' + (s && s.state === 'ok' ? ' · ' + esc(s.text.charAt(0).toLowerCase() + s.text.slice(1)) : '');
+  return '<div class="page settings"><div class="soverview">' +
+    '<h1 class="stitle">Impostazioni</h1><p class="ssub' + (warn.length ? ' warn' : '') + '">' + finding + '</p>' +
+    '<div class="slist">' + rows.map(function (r, n) {
+      return '<a class="srow f"' + (n === 0 ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
+        (r.face ? face(r.face, 'mid') : '') +
+        '<span class="stext"><b>' + esc(r.label) + '</b><small>' + esc(r.desc) + '</small></span>' +
+        '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' + CHEVRON + '</a>';
+    }).join('') + '</div>' + networkPanel(net) + '</div></div>';
+}
+
+async function settingsArea(area) {
+  if (area === 'people') return peopleArea();
+  var res = await settingsData();
+  var i = res[0];
   var inAccount = auth && auth.on && auth.user;
-  return '<div class="page"><div class="toolbar"><h1>Impostazioni</h1></div>' +
-    accountPanel() +
-    '<div class="panel"><h2>Le tue raccolte</h2>' +
-    '<p>Ogni raccolta è una sezione del tuo cinema, con il nome che scegli tu e una o più cartelle del PC. ' +
-    'Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.</p>' +
-    libsHtml +
-    '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div>' +
-    '</div>' +
+  var known = settingsAreas().some(function (a) { return a[0] === area; });
+  if (!known) { location.replace('#/settings'); return ''; }
 
-    '<div class="panel"><h2>Catalogo</h2><div class="stats">' +
-      '<div class="stat"><b>' + i.movies + '</b><span>film</span></div>' +
-      '<div class="stat"><b>' + i.shows + '</b><span>serie TV</span></div>' +
-      '<div class="stat"><b>' + i.episodes + '</b><span>episodi</span></div>' +
-      (i.tmdb && i.unmatched ? '<div class="stat"><b>' + i.unmatched + '</b><span>film senza scheda</span></div>' : '') +
-    '</div>' +
-    '<p id="scanmsg">' + scanStatus(i) + '</p>' +
-    '<div class="actions" style="margin-top:0">' +
-      '<button class="btn f" data-act="scan" data-key="scan">Cerca file nuovi</button>' +
-      '<button class="btn f" data-act="refreshall" data-key="refreshall">Riscarica tutte le schede</button>' +
-    '</div></div>' +
+  if (area === 'account') return accountArea(i);
 
-    '<div class="panel"><h2>Locandine e schede automatiche</h2>' +
-    '<p>' + dot(i.tmdb) + (i.tmdb
-      ? ' Attive (chiave ' + esc(i.tmdb_hint) + '): locandine, trame, anno, regista, cast, generi e voti vengono scaricati da soli.'
-      : ' Non attive. Senza chiave i film compaiono con un fotogramma al posto della locandina e senza regista, generi e trama.') + '</p>' +
-    '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
-      (inAccount ? ' La chiave resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +
-      (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
-    '<div class="inline"><input class="field f" id="tmdbkey" data-key="tmdbkey" data-enter="savekey" autocomplete="off" placeholder="' +
-      (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
-    '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>' +
+  if (area === 'libraries') {
+    var libsHtml = libs.map(function (l) {
+      var what = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ') || 'ancora vuota';
+      var k = 'lib-' + l.id;
+      if (l.mine === false) {       // raccolta di un altro account di questo PC, condivisa con te
+        return '<div class="lib"><div class="head">' + avatar(l.name) +
+          '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + ' · condivisa da un altro account di questo PC</small></div></div></div>';
+      }
+      return '<div class="lib"><div class="head">' + avatar(l.name) +
+        '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + (inAccount && l.shared ? ' · la vedono anche gli altri account di questo PC' : '') + '</small></div>' +
+        (inAccount ? '<button class="btn f" data-act="libshare" data-arg="' + l.id + ':' + (l.shared ? 0 : 1) + '" data-key="' + k + '-share">' + (l.shared ? 'Non condividere' : 'Condividi') + '</button>' : '') +
+        '<a class="btn f" href="#/browse/' + l.id + '" data-key="' + k + '-add">+ Cartella</a>' +
+        '<button class="btn f" data-act="refreshmenu" data-arg="' + l.id + '" data-key="' + k + '-upd">Aggiorna</button>' +
+        '<a class="btn f" href="#/rename/' + l.id + '" data-key="' + k + '-ren">Rinomina</a>' +
+        '<button class="btn danger f" data-act="dellib" data-arg="' + l.id + '" data-key="' + k + '-del">Elimina</button></div>' +
+        (l.folders.length ? l.folders.map(function (f, n) {
+          return '<div class="folder"><div class="where"><b>' + esc(f.display) + '</b><small>' +
+            (f.online ? dot(true) + ' ' + f.count + ' video'
+              : dot(false) + (f.moved_to ? ' il percorso è cambiato: ora la cartella è in <b>' + esc(f.moved_display) + '</b>' : ' non raggiungibile (disco scollegato?)') +
+                ' · ' + f.count + ' video in catalogo') +
+            '</small></div>' +
+            (f.moved_to ? '<button class="btn primary f" style="margin-right:.5rem" data-act="relocate" data-arg="' + l.id + ':' + n + '" data-key="' + k + '-m' + n + '">Usa il nuovo percorso</button>' : '') +
+            '<button class="btn f" data-act="delfolder" data-arg="' + l.id + ':' + n + '" data-key="' + k + '-f' + n + '">Togli</button></div>';
+        }).join('') : (l.missing && l.missing.length ? '' : '<div class="folder"><div class="where"><small>Nessuna cartella: premi «+ Cartella».</small></div></div>')) +
+        // Cartelle della raccolta che stanno su un altro PC dell'account
+        (l.missing || []).map(function (m, n) {
+          return '<div class="folder elsewhere"><div class="where"><b>' + esc(m) + '</b><small>Su un altro PC del tuo account: qui non la trovo</small></div>' +
+            '<a class="btn f" style="margin-right:.5rem" href="#/browse/' + l.id + '?replace=' + encodeURIComponent(m) + '" data-key="' + k + '-x' + n + '">Scegli dove sta qui</a>' +
+            '<button class="btn f" data-act="dropmissing" data-arg="' + l.id + ':' + n + '" data-key="' + k + '-y' + n + '">Togli dall\'account</button></div>';
+        }).join('') +
+        '</div>';
+    }).join('');
+    var elsewhere = libs.reduce(function (sum, l) { return sum + (l.mine === false ? 0 : (l.missing || []).length); }, 0);
+    var accountPanelHtml = inAccount
+      ? '<div class="panel"><h2>Raccolte nel tuo account</h2>' +
+        '<p>Nomi e cartelle delle tue raccolte seguono il tuo account: sugli altri PC le ritrovi già create, e le cartelle con lo stesso percorso (anche su un disco con un\'altra lettera) si collegano da sole.' +
+        (elsewhere ? ' Qui ' + (elsewhere === 1 ? 'manca una cartella che sta' : 'mancano ' + elsewhere + ' cartelle che stanno') + ' su altri PC.' : '') + '</p>' +
+        '<p>Se l\'elenco online non ti torna, puoi rimetterlo uguale a quello di questo PC. Visti, punti di ripresa e La mia lista non cambiano.</p>' +
+        '<div class="actions" style="margin-top:.4rem"><button class="btn danger f" data-act="pushlocal" data-key="pushlocal">Sovrascrivi l\'account con le raccolte di questo PC</button></div></div>'
+      : '';
+    return settingsShell('libraries', 'Raccolte',
+      'Ogni raccolta è una sezione del tuo cinema, con una o più cartelle di questo PC. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.',
+      '<div class="panel">' + (libsHtml || '<p>Ancora nessuna raccolta su questo PC.</p>') +
+      '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div></div>' +
+      accountPanelHtml);
+  }
 
-    '<div class="panel"><h2>Sottotitoli da internet</h2>' +
-    '<p>' + dot(i.subs_online) + (i.subs_online
-      ? ' Attivi' + (i.subs_user ? ' (account ' + esc(i.subs_user) + ')' : ' (senza account: pochi download al giorno)') +
-        ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
-      : ' Non attivi. Con una chiave gratuita di OpenSubtitles, dalle Opzioni del film scarichi i sottotitoli in italiano o in altre lingue.') + '</p>' +
-    '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
-      'Nome utente e password dell\'account sono facoltativi ma alzano il limite di download giornaliero. ' +
-      (inAccount ? 'Restano nel tuo account: le ritrovi su ogni PC dove entri.' : 'Restano solo su questo PC.') +
-      (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
-    '<input class="field f" style="margin-bottom:.6rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
-      (i.subs_online ? 'Nuova chiave API (lascia vuoto per tenere quella di adesso)' : 'Chiave API OpenSubtitles') + '">' +
-    '<input class="field f" style="margin-bottom:.6rem" id="osuser" data-key="osuser" autocomplete="off" value="' + esc(i.subs_user || '') + '" placeholder="Nome utente OpenSubtitles (facoltativo)">' +
-    '<input class="field f" id="ospass" data-key="ospass" type="password" autocomplete="new-password" data-enter="saveos" placeholder="' +
-      (i.subs_user ? 'Password (lascia vuoto per tenere quella di adesso)' : 'Password OpenSubtitles (facoltativa)') + '">' +
-    '<div class="actions"><button class="btn primary f" data-act="saveos" data-key="saveos">Salva</button>' +
-      (i.subs_online ? '<button class="btn danger f" data-act="saveos" data-arg="remove" data-key="osremove">Disattiva</button>' : '') +
-    '</div></div>' +
+  if (area === 'catalog') {
+    return settingsShell('catalog', 'Catalogo e schede', i.tmdb
+      ? dot(true) + ' Locandine, trame, cast, generi e voti si scaricano da soli' + (i.tmdb_hint ? ' (chiave ' + esc(i.tmdb_hint) + ')' : '') + '.'
+      : dot(false) + ' Schede non attive: i film compaiono con un fotogramma, senza trama né cast.',
+      '<div class="panel"><div class="stats">' +
+        '<div class="stat"><b class="num">' + i.movies + '</b><span>film</span></div>' +
+        '<div class="stat"><b class="num">' + i.shows + '</b><span>serie TV</span></div>' +
+        '<div class="stat"><b class="num">' + i.episodes + '</b><span>episodi</span></div>' +
+        (i.tmdb && i.unmatched ? '<div class="stat"><b class="num">' + i.unmatched + '</b><span>film senza scheda</span></div>' : '') +
+      '</div>' +
+      '<p id="scanmsg">' + scanStatus(i) + '</p>' +
+      '<div class="actions" style="margin-top:0">' +
+        '<button class="btn f" data-act="scan" data-key="scan">Cerca file nuovi</button>' +
+        '<button class="btn f" data-act="refreshall" data-key="refreshall">Riscarica tutte le schede</button>' +
+      '</div></div>' +
+      '<div class="panel"><h2>Chiave TMDB</h2>' +
+      '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
+        (inAccount ? ' Resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +
+        (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+      '<div class="inline"><input class="field f" id="tmdbkey" data-key="tmdbkey" data-enter="savekey" autocomplete="off" placeholder="' +
+        (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
+      '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>');
+  }
 
-    friendsPanel(res[3]) +
+  if (area === 'subtitles') {
+    return settingsShell('subtitles', 'Sottotitoli', i.subs_online
+      ? dot(true) + ' Attivi' + (i.subs_user ? ' con l\'account ' + esc(i.subs_user) : ' senza account (pochi download al giorno)') + ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
+      : 'Non attivi. Con una chiave gratuita di OpenSubtitles scarichi i sottotitoli in italiano o in altre lingue dalle Opzioni del film.',
+      '<div class="panel"><h2>OpenSubtitles</h2>' +
+      '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
+        'Nome utente e password sono facoltativi ma alzano il limite di download giornaliero. ' +
+        (inAccount ? 'Restano nel tuo account: li ritrovi su ogni PC dove entri.' : 'Restano solo su questo PC.') +
+        (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+      '<label class="flabel" for="oskey">Chiave API</label>' +
+      '<input class="field f" style="margin-bottom:1rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
+        (i.subs_online ? 'Lascia vuoto per tenere quella di adesso' : 'Chiave API OpenSubtitles') + '">' +
+      '<label class="flabel" for="osuser">Nome utente (facoltativo)</label>' +
+      '<input class="field f" style="margin-bottom:1rem" id="osuser" data-key="osuser" autocomplete="off" value="' + esc(i.subs_user || '') + '">' +
+      '<label class="flabel" for="ospass">Password (facoltativa)</label>' +
+      '<input class="field f" id="ospass" data-key="ospass" type="password" autocomplete="new-password" data-enter="saveos" placeholder="' +
+        (i.subs_user ? 'Lascia vuoto per tenere quella di adesso' : '') + '">' +
+      '<div class="actions"><button class="btn primary f" data-act="saveos" data-key="saveos">Salva</button>' +
+        (i.subs_online ? '<button class="btn danger f" data-act="saveos" data-arg="remove" data-key="osremove">Disattiva</button>' : '') +
+      '</div></div>');
+  }
 
-    updatePanel(res[2]) +
+  if (area === 'friends') {
+    var sh = res[3];
+    if (!sh) return settingsShell('friends', 'Amici', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
+    return settingsShell('friends', 'Amici',
+      'Tu e un amico con BunkerPlex guardate ciascuno le raccolte dell\'altro, anche da case diverse. Si guarda soltanto.',
+      friendsPanel(sh).replace('<h2>Amici</h2>', '').replace(/<p>Tu e un amico con BunkerPlex[\s\S]*?<\/p>/, ''));
+  }
 
-    devicePanel() +
+  if (area === 'updates') {
+    var u = res[2];
+    return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.',
+      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>') +
+      (TV ? '' : await apkPanel('App per la TV e per il telefono')));
+  }
 
+  // Questo dispositivo: preferenze di visione e collegamento al server
+  return settingsShell('device', TV ? 'Questa TV' : 'Questo dispositivo', '',
+    devicePanel().replace(/<h2>Questo dispositivo<\/h2>/, '<h2>Preferenze di visione</h2>') +
     '<div class="panel"><h2>Collegamento</h2>' +
-    '<p>Indirizzo del server: <b>http://' + esc(location.host) + '</b> · ' + esc(i.name) + ' ' + esc(i.version) + '</p>' +
-    (TV ? '<p>App su questa TV: versione ' + esc(tvCall('getVersionName') || 'precedente') +
-            (i.apk_version > (+tvCall('getVersion') || 0) ? ' · ' + dot(false) + ' sul PC ce n\'è una più nuova' : (i.apk_version ? ' · ' + dot(true) + ' aggiornata' : '')) + '</p>' +
-          '<div class="actions" style="margin-top:0"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
-          '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>'
-        : (i.apk
-          ? '<p>App per la TV' + (i.apk_version_name ? ' (versione ' + esc(i.apk_version_name) + ')' : '') + ': la prima volta, sulla TV apri <b>http://' + esc(location.host) + '/BunkerPlex.apk</b> con l\'app «Downloader», oppure scaricala qui e mettila su una chiavetta USB. Poi si aggiorna da sola: quando ricompili l\'APK, la TV lo propone all\'avvio.</p>' +
-            '<div class="actions" style="margin-top:0"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>'
-          : '<p>App per la TV non ancora compilata: avvia <b>Compila APK.bat</b> sul PC.</p>')) +
-    '</div></div>';
+    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Programma</dt><dd>' + esc(i.name) + ' ' + esc(i.version) + '</dd>' +
+    (TV ? '<dt>App su questa TV</dt><dd>' + esc(tvCall('getVersionName') || 'precedente') +
+      (i.apk_version > (+tvCall('getVersion') || 0) ? ' · <span class="nodot">sul PC ce n\'è una più nuova</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd>' : '') +
+    '</dl>' +
+    (TV ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
+      '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
+    '</div>' + (TV ? await apkPanel('L\'app sul telefono') : ''));
+}
+
+function accountArea(i) {
+  if (auth && auth.guest) {
+    return settingsShell('account', 'Account', '<span class="nodot">Offline, senza account</span>',
+      '<div class="panel"><p>Stai usando BunkerPlex senza account: visti e impostazioni restano su questo PC. ' +
+      'Quando torna Internet entra con il tuo account: ti chiederò se portare nell\'account quello che hai fatto qui.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="logout" data-key="logout">Entra con un account</button></div></div>');
+  }
+  var u = auth.user, s = syncState();
+  var mine = sharedPrefs();
+  var prefs = prefsSummary(mine);
+  var offline = s.state === 'warn';
+  return settingsShell('account', 'Account', '',
+    '<div class="panel who">' + face(u.name, 'big') +
+      '<div class="whotext"><h2>' + esc(u.name) + '</h2>' +
+      '<p>' + (u.admin ? 'Amministratore' : 'Account') + ' · ' + esc(auth.server || 'BunkerPlex') + '</p>' +
+      '<p class="sync ' + s.state + '">' + esc(s.text) + '</p></div></div>' +
+    '<div class="panel"><h2>Ti segue su ogni PC</h2>' +
+      '<dl class="kv">' +
+        '<dt>Chiave TMDB</dt><dd>' + (i.tmdb ? 'Attiva · ' + esc(i.tmdb_hint) : '<a class="link f" href="#/settings/catalog" data-key="kv-tmdb">Non impostata</a>') + '</dd>' +
+        '<dt>Sottotitoli da internet</dt><dd>' + (i.subs_online ? 'Attivi' + (i.subs_user ? ' · ' + esc(i.subs_user) : '') : 'Non attivi') + '</dd>' +
+        '<dt>Preferenze di visione</dt><dd>' + esc(prefs.charAt(0).toUpperCase() + prefs.slice(1)) + '</dd>' +
+        '<dt>Visti, ripresa e La mia lista</dt><dd>' + (offline ? 'Copia locale, da sincronizzare' : 'Sincronizzati') + '</dd>' +
+      '</dl>' +
+      '<p class="kvnote">Le raccolte invece restano di ogni PC.</p></div>' +
+    '<div class="panel"><h2>Accesso</h2>' +
+      '<button class="setting f" data-act="tvquick" data-arg="' + (u.tv_quick ? 0 : 1) + '" data-key="tvquick">Dalle TV di casa si entra scegliendo il tuo nome<small>' +
+        (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
+      '<div class="actions">' +
+        (TV ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
+        '<button class="btn f" data-act="logout" data-key="logout">' + (TV ? 'Cambia persona' : 'Esci') + '</button>' +
+      '</div></div>');
+}
+
+async function peopleArea() {
+  if (!auth || !auth.user || !auth.user.admin) throw new Error('Solo l\'amministratore può gestire gli account.');
+  var list;
+  try { list = await api('/accounts'); } catch (e) {
+    return settingsShell('people', 'Persone', '', '<div class="panel"><p><span class="nodot">●</span> ' + esc(e.message) + '</p></div>');
+  }
+  cache.accounts = list;
+  var me = auth.user.name.toLowerCase();
+  var waiting = list.filter(function (a) { return a.must_change; }).length;
+  var rows = list.map(function (a) {
+    var isMe = a.username.toLowerCase() === me;
+    return '<div class="acct">' + face(a.username, 'mid') +
+      '<div class="ptext"><b>' + esc(a.username) + '</b>' +
+        (isMe ? '<span class="pill">Tu</span>' : '') +
+        (a.admin ? '<span class="pill">Amministratore</span>' : '') +
+        (a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
+        '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
+          a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
+      '<div class="pacts"><button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
+        (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">Elimina</button>') +
+      '</div></div>';
+  }).join('');
+  cache.newAdmin = false;
+  return settingsShell('people', 'Persone',
+    list.length + (list.length === 1 ? ' account' : ' account') + (waiting ? ' · ' + waiting + (waiting === 1 ? ' deve ancora scegliere la sua password' : ' devono ancora scegliere la loro password') : '') +
+      '. Ognuno ha le sue raccolte, impostazioni, visti e lista.',
+    '<div class="panel accts">' + rows + '</div>' +
+    '<div class="panel"><h2>Nuovo account</h2>' +
+      '<label class="flabel" for="aname">Nome utente</label>' +
+      '<input class="field f" style="margin-bottom:1rem" id="aname" data-key="aname" autocomplete="off" maxlength="32" placeholder="Lettere, numeri, punto, trattino">' +
+      '<label class="flabel" for="apass">Password provvisoria</label>' +
+      '<div class="joined"><input class="field f num" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '">' +
+        '<button class="btn f" data-act="regenpass" data-key="regenpass">Un\'altra</button></div>' +
+      '<p class="kvnote">Al primo accesso la cambierà con una sua.</p>' +
+      '<button class="setting f" data-act="accadmin" data-key="accadmin">Può gestire gli account (amministratore)<small id="accadminv">No</small></button>' +
+      '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button></div></div>');
 }
 
 // Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte.
@@ -1484,6 +1766,8 @@ async function browsePage(id) {
   if (!lib) throw new Error('Questa raccolta non esiste più.');
   var q = parseQuery(location.hash);
   var d = await api('/browse?path=' + encodeURIComponent(q.path || ''));
+  if (q.replace) cache.browseReplace = { lib: lib.id, display: q.replace };
+  else if (!cache.browseReplace || cache.browseReplace.lib !== lib.id) cache.browseReplace = null;
   cache.browse = { lib: lib.id, path: d.path };
 
   var list = d.dirs.map(function (x, n) {
@@ -1498,6 +1782,8 @@ async function browsePage(id) {
 
   return '<div class="page"><div class="toolbar"><h1>Cartelle di «' + esc(lib.name) + '»</h1></div>' +
     '<div class="panel">' +
+    (cache.browseReplace && cache.browseReplace.lib === lib.id
+      ? '<p>Sugli altri PC questa raccolta usa <b>' + esc(cache.browseReplace.display) + '</b>. Scegli dove stanno qui gli stessi video.</p>' : '') +
     '<p>Entra nella cartella che contiene i video (vanno bene anche le sottocartelle) e premi «Usa questa cartella». ' +
     'Puoi ripetere per aggiungerne altre.</p>' +
     '<p>Sei in: <b>' + esc(d.display) + '</b>' + (d.videos ? ' · ' + d.videos + ' video qui dentro' : '') + '</p>' +
@@ -2118,6 +2404,7 @@ function stopPlayer() {
 // ---------------------------------------------------------------- Finestra di scelta
 
 function openPicker(title, options, current, onPick) {
+  modal.classList.remove('corner');
   modalState = { options: options, onPick: onPick, returnFocus: document.activeElement };
   modal.innerHTML = '<div class="sheet"><h3>' + esc(title) + '</h3><div class="opts">' + options.map(function (o, i) {
     return '<button class="opt f' + (o.value === current ? ' sel' : '') + '" data-act="opt" data-arg="' + i + '">' +
@@ -2389,6 +2676,7 @@ function closeModal(silent) {
   var back = modalState && modalState.returnFocus;
   modal.hidden = true;
   modal.innerHTML = '';
+  modal.classList.remove('corner');
   modalState = null;
   if (!silent && back && document.body.contains(back)) back.focus();
   return true;
@@ -2434,13 +2722,15 @@ function warnPaths() {
   } else {
     openPicker(text + ' I titoli restano in catalogo, ma i video non partono finché non colleghi il disco e rilanci «Avvia BunkerPlex.bat».',
       [{ value: 'ok', label: 'Ho capito' }, { value: 'set', label: 'Apri Impostazioni' }], 'ok', function (answer) {
-        if (answer === 'set') location.hash = '#/settings';
+        if (answer === 'set') location.hash = '#/settings/libraries';
       });
   }
 }
 
 function addFolder(path) {
-  return post('/libraries/' + cache.browse.lib + '/folders', { path: path }).then(function (r) {
+  var rep = cache.browseReplace && cache.browseReplace.lib === cache.browse.lib ? cache.browseReplace.display : '';
+  cache.browseReplace = null;
+  return post('/libraries/' + cache.browse.lib + '/folders', { path: path, replace: rep }).then(function (r) {
     return libsChanged(r.added.length ? 'Aggiunta ' + r.added[0] + ': la sto leggendo' : 'Questa cartella c\'era già');
   });
 }
@@ -2537,6 +2827,48 @@ var actions = {
   tvquick: function (arg) {
     post('/auth/options', { tv_quick: arg === '1' }).then(function () { return loadAuth(); }).then(render, function (e) { toast(e.message); });
   },
+  dropmissing: function (arg) {
+    var parts = arg.split(':'), lib = libById(parts[0]);
+    var m = lib && lib.missing && lib.missing[+parts[1]];
+    if (!m) return;
+    confirmBox('Togliere ' + m + ' dalla raccolta «' + lib.name + '» su tutti i PC del tuo account? I file non si toccano.', 'Sì, toglila dall\'account', function () {
+      post('/libraries/' + lib.id + '/missing/remove', { display: m }).then(function () {
+        return libsChanged('Cartella tolta dall\'account').then(render);
+      }).catch(function (e) { toast(e.message); });
+    });
+  },
+  pushlocal: function () {
+    var away = 0, onlyAway = 0;
+    libs.forEach(function (l) {
+      if (l.mine === false) return;
+      var n = (l.missing || []).length;
+      if (n && !(l.folders || []).length) onlyAway++;
+      else away += n;
+    });
+    var what = away || onlyAway
+      ? ' Dall\'account (e dagli altri PC) ' + (away + onlyAway === 1 ? 'esce ' : 'escono ') + [away ? (away === 1 ? 'una cartella che qui non c\'è' : away + ' cartelle che qui non ci sono') : '',
+          onlyAway ? (onlyAway === 1 ? 'una raccolta che qui non ha cartelle' : onlyAway + ' raccolte che qui non hanno cartelle') : ''].filter(Boolean).join(' e ') + '.'
+      : ' Adesso l\'account e questo PC hanno già le stesse raccolte.';
+    confirmBox('Le raccolte del tuo account diventano quelle di questo PC.' + what + ' Visti, punti di ripresa e La mia lista non cambiano.',
+      'Sì, sovrascrivi l\'account', function () {
+        post('/libraries/push-local').then(function () {
+          return libsChanged('Fatto: l\'account ha le raccolte di questo PC').then(render);
+        }).catch(function (e) { toast(e.message); });
+      });
+  },
+  activity: function () { openActivity(); },
+  actgo: function (href) {
+    closeModal(true);
+    if (location.hash === href) render(); else location.hash = href;
+  },
+  copysecret: function () {
+    copyText(cache.secret || '').then(function (ok) { toast(ok ? 'Copiati negli appunti' : 'Non riesco a copiare: scrivili a mano'); });
+  },
+  closemodal: function () { closeModal(); },
+  regenpass: function () {
+    var input = document.getElementById('apass');
+    if (input) input.value = tempPassword();
+  },
   accadmin: function () {
     cache.newAdmin = !cache.newAdmin;
     var v = document.getElementById('accadminv');
@@ -2546,7 +2878,7 @@ var actions = {
     var name = fieldValue('aname').trim(), pass = fieldValue('apass').trim();
     if (!name || !pass) { toast('Scrivi nome utente e password provvisoria'); return; }
     post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin }).then(function () {
-      render().then(function () { showSecret('Account «' + name + '» creato. Password provvisoria', pass); });
+      render().then(function () { showSecret('Account creato', name, pass); });
     }, function (e) { toast(e.message); });
   },
   accreset: function (id) {
@@ -2555,7 +2887,7 @@ var actions = {
     confirmBox('Dare a «' + a.username + '» una nuova password provvisoria? Uscirà da tutti i PC.', 'Sì, nuova password', function () {
       var pass = tempPassword();
       post('/accounts/' + a.id + '/password', { username: a.username, password: pass }).then(function () {
-        render().then(function () { showSecret('Nuova password provvisoria di «' + a.username + '»', pass); });
+        render().then(function () { showSecret('Nuova password provvisoria', a.username, pass); });
       }, function (e) { toast(e.message); });
     });
   },
@@ -2599,7 +2931,7 @@ var actions = {
     st.onPick(o.value);
   },
   scan: function () {
-    post('/scan').then(function () { toast('Controllo le cartelle…'); scanWatch = true; });
+    post('/scan').then(function () { toast('Controllo le cartelle…'); scanWatch = true; setTimeout(pollActivity, 400); });
   },
   savekey: function () {
     var input = document.getElementById('tmdbkey');
@@ -2744,7 +3076,7 @@ var actions = {
   devtv: function () {
     device.tv = !device.tv;
     saveDevicePrefs(device);
-    location.replace(location.pathname + '#/settings');
+    location.replace(location.pathname + '#/settings/device');
     location.reload();
   },
   refreshall: function () {
@@ -3106,14 +3438,28 @@ var routes = [
   [/^#\/rename\/(\d+)$/, renamePage],
   [/^#\/browse\/(\d+)(?:\?.*)?$/, browsePage],
   [/^#\/match\/(movie|show)\/(\d+)$/, matchPage],
-  [/^#\/accounts$/, accountsPage],
-  [/^#\/password$/, function () { return passwordPage(false); }]
+  [/^#\/settings\/(\w+)$/, settingsArea],
+  [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
+  [/^#\/password$/, function () {
+    return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',
+      '<div class="panel">' +
+      '<label class="flabel" for="pold">Password attuale</label>' +
+      '<input class="field f" style="margin-bottom:1rem" id="pold" data-key="pold" data-autofocus type="password" autocomplete="current-password">' +
+      '<label class="flabel" for="pnew">Password nuova (almeno 8 caratteri)</label>' +
+      '<input class="field f" style="margin-bottom:1rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password">' +
+      '<label class="flabel" for="pnew2">Ripeti la password nuova</label>' +
+      '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="changepw">' +
+      '<div class="actions"><button class="btn primary f" data-act="changepw" data-arg="" data-key="changepw">Salva</button>' +
+      '<button class="btn f" data-act="goback" data-key="cancel">Annulla</button></div></div>');
+  }]
 ];
 
 // Prima di ogni pagina: serve l'accesso? (pagina di accesso o password provvisoria da cambiare)
 async function gate() {
   if (!auth) await loadAuth();
   markOffline();
+  markMe();
+  setTimeout(renderActivity, 0);
   if (!auth.on || auth.guest) { lockScreen(false); return null; }
   if (!auth.user) {
     // Sulla TV, con un solo account su questo PC, si entra da soli (non dopo aver premuto «Esci»)
@@ -3264,6 +3610,7 @@ setInterval(function () {
   var before = JSON.stringify([auth.offline, auth.user && auth.user.offline_pending, !!auth.user, auth.guest]);
   loadAuth().then(function () {
     markOffline();
+    markMe();
     var after = JSON.stringify([auth.offline, auth.user && auth.user.offline_pending, !!auth.user, auth.guest]);
     var typing = document.activeElement && document.activeElement.tagName === 'INPUT';
     if (after !== before && !typing && modal.hidden) render();
@@ -3281,8 +3628,140 @@ if (TV) {
 setTimeout(checkServerUpdate, 1500);
 setInterval(checkServerUpdate, 30 * 60 * 1000);
 
+// ---------------------------------------------------------------- Attivita' (in alto a destra)
+// Un solo posto per sapere cosa sta facendo il server e cosa va guardato: la
+// lettura dei titoli in corso (con la sua percentuale), un aggiornamento, e le
+// notifiche (richieste degli amici, cartelle non raggiungibili, account offline...).
+// Ogni notifica porta all'area delle impostazioni che la risolve.
+
+var act = { info: null, upd: null, lastUpd: 0, timer: 0, seen: {} };
+try { act.seen = JSON.parse(localStorage.getItem('fpSeen')) || {}; } catch (e) { act.seen = {}; }
+
+function activityState() {
+  var i = act.info, u = act.upd, ops = [], notes = [];
+  if (!i || i.login) return { ops: ops, notes: notes };
+  if (i.scanning) {
+    ops.push({ key: 'scan', title: 'Lettura dei titoli', text: scanLabel(i.message), pct: scanProgress(i.message), href: '#/settings/catalog' });
+  }
+  if (u && u.phase === 'pc') {
+    ops.push({ key: 'upd', title: 'Aggiornamento di BunkerPlex', text: 'Scarico le novità e riallineo Docker…', pct: null, href: '#/settings/updates' });
+  }
+  if (u && u.phase === 'host') {
+    notes.push({ key: 'updhost', title: 'Aggiornamento da completare', text: 'Rilancia «Avvia BunkerPlex.bat» sul PC', href: '#/settings/updates' });
+  } else if (i.update && !(u && u.phase)) {
+    notes.push({ key: 'upd', title: 'Aggiornamento disponibile', text: 'Installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+  }
+  if (i.share_requests) {
+    notes.push({ key: 'share' + i.share_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
+      title: i.share_requests === 1 ? 'Un amico chiede di condividere le raccolte' : i.share_requests + ' richieste di condivisione' });
+  }
+  libs.forEach(function (l) {
+    (l.folders || []).forEach(function (f) {
+      if (f.online) return;
+      notes.push({ key: 'off:' + f.path, href: '#/settings/libraries', text: f.moved_to ? 'Ora sta in ' + f.moved_display : f.display + ' · disco scollegato?',
+        title: f.moved_to ? 'Una cartella ha cambiato percorso' : 'Cartella non raggiungibile' });
+    });
+    if (l.mine !== false && (l.missing || []).length) {
+      notes.push({ key: 'away:' + l.id + ':' + l.missing.length, href: '#/settings/libraries', title: '«' + l.name + '»: cartelle su altri PC',
+        text: l.missing.length === 1 ? 'Scegli dove sta qui, o lasciala sull\'altro PC' : 'Scegli dove stanno qui, o lasciale sugli altri PC' });
+    }
+  });
+  if (!i.scanning && i.message) notes.push({ key: 'scanmsg:' + i.message, title: 'Lettura dei titoli', text: i.message, href: '#/settings/catalog' });
+  if (!i.tmdb && libs.length) notes.push({ key: 'tmdb', title: 'Locandine e schede non attive', text: 'Serve la chiave TMDB', href: '#/settings/catalog' });
+  var s = syncState();
+  if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
+  if (TV && i.apk_version > (+tvCall('getVersion') || 0)) {
+    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app per la TV', text: 'Aggiornala da Impostazioni → Questa TV', href: '#/settings/device' });
+  }
+  return { ops: ops, notes: notes };
+}
+
+function activityRows(st) {
+  var ops = st.ops.map(function (op) {
+    return '<button class="actrow f" data-act="actgo" data-arg="' + op.href + '" data-key="op-' + esc(op.key) + '">' +
+      '<span class="spin" aria-hidden="true"></span><span class="acttxt"><b>' + esc(op.title) + (op.pct === null ? '' : ' · ' + op.pct + '%') + '</b>' +
+      '<small>' + esc(op.text) + '</small>' + progressLine(op.pct) + '</span></button>';
+  }).join('');
+  var notes = st.notes.map(function (n) {
+    return '<button class="actrow f" data-act="actgo" data-arg="' + n.href + '" data-key="note-' + esc(n.key) + '">' +
+      '<span class="ndot" aria-hidden="true"></span><span class="acttxt"><b>' + esc(n.title) + '</b><small>' + esc(n.text) + '</small></span>' + CHEVRON + '</button>';
+  }).join('');
+  return '<div class="sheet actsheet" role="dialog" aria-label="Attività e notifiche"><h3>Attività</h3>' +
+    (ops ? '<div class="actgroup"><h4>In corso</h4>' + ops + '</div>' : '') +
+    '<div class="actgroup"><h4>Notifiche</h4>' + (notes || '<p class="actempty">Niente da segnalare: è tutto in ordine.</p>') + '</div></div>';
+}
+
+function activityOpen() { return !modal.hidden && modal.classList.contains('corner'); }
+
+function openActivity() {
+  if (activityOpen()) { closeModal(); return; }
+  closeModal(true);
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.classList.add('corner');
+  modal.innerHTML = activityRows(activityState());
+  modal.hidden = false;
+  var first = modal.querySelector('.f');
+  if (first) first.focus();
+  // Aprire il riquadro vuol dire averle viste: il numero sul pulsante si azzera
+  activityState().notes.forEach(function (n) { act.seen[n.key] = 1; });
+  try { localStorage.setItem('fpSeen', JSON.stringify(act.seen)); } catch (e) { /* niente */ }
+  renderActivity();
+  pollActivity();
+}
+
+function renderActivity() {
+  var box = document.getElementById('activity');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'activity';
+    box.innerHTML = '<button class="actbtn f" data-act="activity" data-key="actbtn" aria-label="Attività e notifiche"></button>';
+    document.body.appendChild(box);
+  }
+  var locked = document.body.classList.contains('locked') || (auth && auth.on && !auth.user && !auth.guest);
+  box.hidden = !act.info || !!act.info.login || locked;
+  if (box.hidden) return;
+  var st = activityState();
+  var op = st.ops[0];
+  var unseen = st.notes.filter(function (n) { return !act.seen[n.key]; }).length;
+  var html = op
+    ? '<span class="spin" aria-hidden="true"></span><span class="acttext">' + esc(op.title) + (op.pct === null ? '' : ' ' + op.pct + '%') + '</span>'
+    : IC.bell;
+  if (unseen) html += '<span class="actcount">' + unseen + '</span>';
+  var btn = box.firstChild;
+  btn.classList.toggle('busy', !!op);
+  if (btn.getAttribute('data-sig') !== html) {      // il pulsante resta lo stesso: chi ci sta sopra col telecomando non perde il posto
+    btn.innerHTML = html;
+    btn.setAttribute('data-sig', html);
+  }
+  if (activityOpen()) {
+    var key = document.activeElement && modal.contains(document.activeElement) ? document.activeElement.getAttribute('data-key') : '';
+    var fresh = activityRows(st);
+    if (modal.getAttribute('data-sig') !== fresh) {
+      modal.innerHTML = fresh;
+      modal.setAttribute('data-sig', fresh);
+      var el = key && byKey(key);
+      (el && modal.contains(el) ? el : modal.querySelector('.f') || modal).focus();
+    }
+  }
+}
+
+// Si chiede al server ogni 3 secondi mentre lavora (o il riquadro e' aperto), ogni 20 se no
+function pollActivity() {
+  clearTimeout(act.timer);
+  var busy = (act.info && act.info.scanning) || (act.upd && act.upd.phase) || activityOpen();
+  act.timer = setTimeout(pollActivity, busy ? 3000 : 20000);
+  if (player) return;
+  api('/info').then(function (i) {
+    var wasScanning = act.info && act.info.scanning;
+    act.info = i;
+    if (wasScanning && !i.scanning) libsLoadedAt = 0;      // finita la lettura: raccolte e menu da rileggere
+    var want = !i.login && (i.update || (act.upd && act.upd.phase)) && Date.now() - act.lastUpd > 15000;
+    return want ? api('/update').then(function (u) { act.upd = u; act.lastUpd = Date.now(); }, function () {}) : null;
+  }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });
+}
+
 loadAuth().then(function () {
   if (auth.on && auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();
-});
+}).then(function () { setTimeout(pollActivity, 600); });
 })();

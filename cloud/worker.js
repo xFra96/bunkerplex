@@ -146,6 +146,11 @@ async function route(request, env) {
     return json({ app: 'bunkerplex-account', version: 1, ready: n > 0 });
   }
 
+  // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
+  if (path === '/ip' && method === 'GET') {
+    return json({ ip: request.headers.get('CF-Connecting-IP') || '' });
+  }
+
   // Primo amministratore: solo se non c'e' ancora nessun account e con la chiave segreta
   if (path === '/setup' && method === 'POST') {
     const b = await body(request);

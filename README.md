@@ -43,7 +43,7 @@ Gli script per Mac sono nuovi e non ancora provati su molte macchine: se qualcos
 1. **Entra con il tuo account**: nome e password che ti ha dato l'amministratore (la prima volta è una password provvisoria da cambiare). Vedi [Account](#account).
 2. **Crea una raccolta**: nel menu a sinistra **Aggiungi raccolta**, dai un nome (Film, Serie TV, Cartoni…) e scegli la cartella dei video. Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.
 3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta nel tuo account: sugli altri PC non va rimessa.
-4. **Metti l'app sulla TV**: sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk`. Al primo avvio l'app trova il server da sola. Poi si aggiorna da sé.
+4. **Metti l'app sulla TV**: sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk` (l'indirizzo giusto è in *Impostazioni → Aggiornamenti*, con un QR da inquadrare col telefono per scaricarla lì). Al primo avvio l'app trova il server da sola. Poi si aggiorna da sé.
 
 Nomi dei file che funzionano meglio:
 
@@ -56,7 +56,9 @@ Nomi dei file che funzionano meglio:
 
 ## Account
 
-Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La mia lista», chiavi API (TMDB, OpenSubtitles) e preferenze di visione suoi. Tutto tranne le raccolte lo ritrovi su ogni PC dove entri, anche su installazioni nuove: le chiavi non vanno rimesse. Le raccolte (le cartelle dei video) restano di ogni PC.
+Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La mia lista», chiavi API (TMDB, OpenSubtitles) e preferenze di visione suoi, e li ritrovi su ogni PC dove entri, anche su installazioni nuove: le chiavi non vanno rimesse.
+
+- **Raccolte su ogni PC**: nomi e cartelle delle tue raccolte seguono l'account. Su un altro PC le raccolte compaiono già create; le cartelle che lì esistono con lo stesso percorso (anche su un disco con un'altra lettera) si collegano da sole. Le altre restano «su un altro PC»: in *Impostazioni → Raccolte* scegli dove stanno su quel PC, oppure le togli dall'account. Se l'elenco online non ti torna, *Sovrascrivi l'account con le raccolte di questo PC* (chiede conferma) lo rimette uguale a quello del PC dove sei: tocca solo l'elenco delle raccolte, non visti, punti di ripresa e lista.
 
 - **Primo avvio**: sul PC dove è stato preparato il servizio compare «Crea l'account amministratore». Quello è il tuo.
 - **Altri account**: *Impostazioni → Account → Gestisci gli account*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata. «Nuova password provvisoria» fa uscire l'account da tutti i PC.
@@ -77,6 +79,8 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio
 ## Cosa puoi fare
 
 - **Home**: continua a guardare, prossimi episodi, ultimi arrivi per raccolta.
+- **In alto a destra**: quando il server legge le cartelle o scarica le schede compare l'avanzamento («Lettura dei titoli 38%»); il resto del tempo una campanella con le notifiche (aggiornamento disponibile, richieste degli amici, cartelle non raggiungibili, account offline). Ogni notifica porta all'impostazione che la risolve.
+- **Impostazioni**: una panoramica con lo stato di ogni area e, in fondo, l'IP privato del PC (per TV e telefoni di casa) e quello pubblico (per gli amici). Il tuo account è anche in basso nel menu laterale.
 - **La mia lista**: i titoli da tenere da parte, uguale su TV, telefono e PC.
 - **Saghe**: i film della stessa serie riuniti da soli, in ordine di uscita.
 - **Cerca** per titolo, regista, attore, genere o anno; oppure sfoglia per genere senza scrivere.
