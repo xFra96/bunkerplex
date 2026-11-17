@@ -1,7 +1,7 @@
 # BunkerPlex - pubblicazione su GitHub. Lo lancia strumenti\sviluppo\"Pubblica aggiornamento.bat".
 # Serve solo sul PC dove modifichi BunkerPlex (con git e GitHub CLI installati):
 #   1. salva le modifiche (commit) e le manda al repository (push);
-#   2. se apk\FrenkPlex.apk e' cambiato, lo allega alla release "app-tv".
+#   2. se apk\BunkerPlex.apk e' cambiato, lo allega alla release "app-tv".
 #      Con .github\workflows\apk.yml l'APK lo compila e lo allega GitHub da solo:
 #      allora questo passo si salta e GitHub CLI non serve.
 # Gli altri PC li ricevono da soli (controllo ogni 12 ore) o dall'app.
@@ -39,7 +39,7 @@ $cfg = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'aggiornamenti.json') -
 $repo = "$($cfg.repo)".Trim()
 $branch = if ($cfg.branch) { "$($cfg.branch)".Trim() } else { 'main' }
 $apkTag = if ($cfg.apk_release) { "$($cfg.apk_release)".Trim() } else { 'app-tv' }
-$apkFile = Join-Path $root 'apk\FrenkPlex.apk'
+$apkFile = Join-Path $root 'apk\BunkerPlex.apk'
 
 # ------------------------------------------------------------ 1. programma
 
@@ -73,7 +73,7 @@ if ($ci) {
     $json = (& gh api "repos/$repo/releases/tags/$apkTag" 2>$null | Out-String)
     if ($LASTEXITCODE -eq 0 -and $json) { try { $release = $json | ConvertFrom-Json } catch { } }
     $asset = $null
-    if ($release) { $asset = $release.assets | Where-Object { $_.name -eq 'FrenkPlex.apk' } | Select-Object -First 1 }
+    if ($release) { $asset = $release.assets | Where-Object { $_.name -eq 'BunkerPlex.apk' } | Select-Object -First 1 }
 
     $same = $false
     if ($asset) {
@@ -94,7 +94,7 @@ if ($ci) {
         Say 'App per la TV pubblicata.' Green
     }
 } else {
-    Say 'Nessun APK da pubblicare (apk\FrenkPlex.apk non c''e'').'
+    Say 'Nessun APK da pubblicare (apk\BunkerPlex.apk non c''e'').'
 }
 
 Say ''

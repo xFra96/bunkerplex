@@ -1,4 +1,4 @@
-package it.francoplex.tv
+package it.bunkerplex.tv
 
 import android.graphics.Color
 import android.graphics.Typeface
@@ -58,7 +58,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var titleView: TextView
     private lateinit var osd: TextView
-    private val prefs by lazy { getSharedPreferences("francoplex", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("bunkerplex", MODE_PRIVATE) }
 
     private var player: ExoPlayer? = null
     private var data = JSONObject()

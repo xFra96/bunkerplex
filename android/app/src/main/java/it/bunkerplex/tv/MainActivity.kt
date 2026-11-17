@@ -1,4 +1,4 @@
-package it.francoplex.tv
+package it.bunkerplex.tv
 
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -28,7 +28,7 @@ import kotlin.concurrent.thread
 class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
-    private val prefs by lazy { getSharedPreferences("francoplex", MODE_PRIVATE) }
+    private val prefs by lazy { getSharedPreferences("bunkerplex", MODE_PRIVATE) }
     private var clearHistoryOnLoad = false
     private var cameFromPlayer = false
     private var onSetup = false
@@ -51,7 +51,7 @@ class MainActivity : AppCompatActivity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.mediaPlaybackRequiresUserGesture = false
-        web.addJavascriptInterface(Bridge(), "FrancoPlexTV")
+        web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
@@ -108,7 +108,7 @@ class MainActivity : AppCompatActivity() {
     // ---- Aggiornamento dell'app: l'APK nuovo arriva dal server sul PC
 
     private val updating = AtomicBoolean(false)
-    private val updateFile by lazy { File(cacheDir, "FrenkPlex-update.apk") }
+    private val updateFile by lazy { File(cacheDir, "BunkerPlex-update.apk") }
 
     private fun installIntent(): Intent {
         val uri = if (Build.VERSION.SDK_INT >= 24) {
@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
-    /** Funzioni che la pagina puo' chiamare: window.FrancoPlexTV.xxx() */
+    /** Funzioni che la pagina puo' chiamare: window.BunkerPlexTV.xxx() */
     inner class Bridge {
 
         @JavascriptInterface
@@ -181,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             thread {
                 try {
                     updateFile.delete()
-                    Net.download("$base/FrenkPlex.apk", updateFile) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
+                    Net.download("$base/BunkerPlex.apk", updateFile) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
                     val found = packageManager.getPackageArchiveInfo(updateFile.path, 0)
                     if (found?.packageName != packageName) throw IOException("il file scaricato non è l'app BunkerPlex")
                     runOnUiThread {

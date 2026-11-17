@@ -1,4 +1,4 @@
-package it.francoplex.tv
+package it.bunkerplex.tv
 
 import java.io.File
 import java.io.IOException
@@ -106,7 +106,7 @@ object Net {
 
     fun isBunkerPlex(baseUrl: String, timeoutMs: Int = 4000): Boolean =
         try {
-            get("$baseUrl/api/info", timeoutMs).contains("francoplex")
+            get("$baseUrl/api/info", timeoutMs).contains("bunkerplex")
         } catch (_: Exception) {
             false
         }

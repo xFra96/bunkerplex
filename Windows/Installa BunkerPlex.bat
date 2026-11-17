@@ -11,7 +11,7 @@ title BunkerPlex - installazione
 cd /d "%~dp0.."
 (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\strumenti\Installa.ps1"
-  if errorlevel 1 if not defined FRANCOPLEX_NO_PAUSE (
+  if errorlevel 1 if not defined BUNKERPLEX_NO_PAUSE (
     echo.
     echo Installazione non riuscita: leggi il messaggio qui sopra.
     pause

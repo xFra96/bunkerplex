@@ -37,14 +37,14 @@ COPY . .
 
 # Chiave di firma: creata la prima volta, poi riusata (cartella android/keystore)
 RUN mkdir -p keystore \
- && if [ ! -f keystore/francoplex.jks ]; then \
-      keytool -genkeypair -keystore keystore/francoplex.jks -alias francoplex \
+ && if [ ! -f keystore/bunkerplex.jks ]; then \
+      keytool -genkeypair -keystore keystore/bunkerplex.jks -alias bunkerplex \
         -keyalg RSA -keysize 2048 -validity 12000 \
-        -storepass francoplex -keypass francoplex -dname "CN=BunkerPlex"; \
+        -storepass bunkerplex -keypass bunkerplex -dname "CN=BunkerPlex"; \
     fi
 
 RUN gradle --no-daemon assembleRelease
 
 FROM scratch
-COPY --from=build /src/app/build/outputs/apk/release/app-release.apk /FrenkPlex.apk
-COPY --from=build /src/keystore/francoplex.jks /keystore/francoplex.jks
+COPY --from=build /src/app/build/outputs/apk/release/app-release.apk /BunkerPlex.apk
+COPY --from=build /src/keystore/bunkerplex.jks /keystore/bunkerplex.jks
