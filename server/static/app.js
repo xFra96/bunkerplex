@@ -753,19 +753,34 @@ function librarySort(list, sort) {
   return list.slice().sort(cmp);
 }
 
+// Intestazione della raccolta aperta: lo stesso quadratino del menu, il nome
+// e sotto un riassunto (di chi è, quanti titoli, quanti ancora da vedere)
+function libHeader(lib, parts, hint) {
+  return '<div class="toolbar libhead"><i class="avatar' + (lib.friend ? ' friend' : '') + '" aria-hidden="true">' +
+    esc(initials(lib.name)) + '</i><div class="libtitle"><h1>' + esc(lib.name) + '</h1>' +
+    (parts.length ? '<p class="libmeta">' + parts.join('<i class="sep">·</i>') + '</p>' : '') +
+    (hint ? '<p class="hint">' + HINT + '</p>' : '') + '</div></div>';
+}
+
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+
 async function libraryPage(id) {
   var lib = libById(id);
   if (!lib) { await loadLibs(true); lib = libById(id); }
   if (!lib) throw new Error('Questa raccolta non esiste più.');
   var q = parseQuery(location.hash);
   var all = await api('/libraries/' + lib.id + '/items');
-  var owner = lib.friend ? '<span class="count">di ' + esc(lib.friend) + (lib.offline ? ' · ' + dot(false) + ' non raggiungibile: vedi l\'ultimo elenco salvato' : '') + '</span>' : '';
+  var owner = [];
+  if (lib.friend) {
+    owner.push('di ' + esc(lib.friend));
+    if (lib.offline) owner.push('<span class="warn">' + dot(false) + ' non raggiungibile: vedi l\'ultimo elenco salvato</span>');
+  }
   if (!all.length && lib.friend) {
-    return '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1>' + owner + '</div><div class="empty">' +
+    return '<div class="page">' + libHeader(lib, owner) + '<div class="empty">' +
       '<p>Questa raccolta di ' + esc(lib.friend) + ' è vuota, oppure il suo elenco non è ancora arrivato.</p></div></div>';
   }
   if (!all.length) {
-    return '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1></div><div class="empty">' +
+    return '<div class="page">' + libHeader(lib, owner.concat(lib.folders.length ? [] : ['nessuna cartella'])) + '<div class="empty">' +
       (lib.folders.length
         ? '<p>In questa raccolta non c\'è ancora nessun titolo. Se hai appena aggiunto una cartella, aspetta che BunkerPlex finisca di leggerla.</p>'
         : '<p>Questa raccolta non ha ancora cartelle: aggiungine una per riempirla.</p>') +
@@ -785,9 +800,19 @@ async function libraryPage(id) {
   var hasFilters = q.type || q.genre || q.director || q.actor || q.year || q.state;
   var byTitle = !q.sort || q.sort === 'title';
   cache.libView = { id: lib.id, list: list };
-  var html = '<div class="page"><div class="toolbar"><h1>' + esc(lib.name) + '</h1>' + owner +
-    '<span class="count">' + list.length + (list.length !== all.length ? ' di ' + all.length : '') +
-      (list.length === 1 ? ' titolo' : ' titoli') + '</span><span class="hint">' + HINT + '</span></div>' +
+  // Riassunto: con i filtri attivi prima quanti ne restano, poi il totale diviso per tipo
+  var nMovies = 0, nShows = 0, nTodo = 0;
+  all.forEach(function (x) {
+    if (x.kind === 'show') nShows++; else nMovies++;
+    if (!x.watched) nTodo++;
+  });
+  var parts = owner.slice();
+  if (list.length !== all.length) parts.push('<b>' + plural(list.length, 'titolo', 'titoli') + ' coi filtri</b> su ' + all.length);
+  else if (!mixed) parts.push(nShows ? plural(nShows, 'serie TV', 'serie TV') : plural(nMovies, 'film', 'film'));
+  if (mixed && list.length === all.length) parts.push(plural(nMovies, 'film', 'film'), plural(nShows, 'serie TV', 'serie TV'));
+  if (nTodo && nTodo < all.length) parts.push(nTodo + ' da vedere');
+  else if (!nTodo) parts.push('tutto già visto');
+  var html = '<div class="page">' + libHeader(lib, parts, true) +
     '<div class="filters">' +
     fbtn('sort', 'Ordina', SORTS[q.sort || 'title'], !!q.sort && q.sort !== 'title') +
     (byTitle && list.length > 30 ? '<button class="filter f" data-act="letters" data-key="lib-letters"><b>Vai alla lettera</b></button>' : '') +
@@ -1309,13 +1334,30 @@ function settingsAreas() {
 
 var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
 
+// Un'icona per ogni area delle impostazioni: si riconoscono a colpo d'occhio
+var SICON = {
+  home: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.2"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.2"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.2"/>',
+  account: '<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c.8-3.8 3.8-6 7.5-6s6.7 2.2 7.5 6"/>',
+  people: '<circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5c.6-3.3 3-5.3 6-5.3s5.4 2 6 5.3M15.5 5.6a3.3 3.3 0 0 1 0 6.1M17.6 14.6c1.8.7 3 2.4 3.4 4.9"/>',
+  libraries: '<path d="M3.5 7v11h17V9h-8l-2-2z"/>',
+  catalog: '<rect x="4.5" y="3.5" width="15" height="17" rx="1.8"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  subtitles: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6.5 12.5h3M11.5 12.5h6M6.5 15.5h7M15.5 15.5h2"/>',
+  friends: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>',
+  updates: '<path d="M20 11a8 8 0 0 0-14.5-4.5M4 13a8 8 0 0 0 14.5 4.5M5.5 3v3.5H9M18.5 21v-3.5H15"/>',
+  device: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M12 16.5V20"/>'
+};
+function sicon(area) {
+  return SICON[area] ? '<svg class="sic" viewBox="0 0 24 24" aria-hidden="true">' + SICON[area] + '</svg>' : '';
+}
+
 function settingsShell(area, title, sub, body) {
   var nav = settingsAreas().map(function (a) {
-    return '<a class="snav f' + (a[0] === area ? ' on' : '') + '" href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
-      (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : '') + '<span>' + esc(a[1]) + '</span></a>';
+    var on = a[0] === area;
+    return '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
+      (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : sicon(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
   return '<div class="page settings"><div class="sgrid">' +
-    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home"><span>Panoramica</span></a>' + nav + '</nav>' +
+    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home">' + sicon('home') + '<span>Panoramica</span></a>' + nav + '</nav>' +
     '<div class="smain"><a class="sup f" href="#/settings" data-key="sup">' + IC.back + 'Impostazioni</a>' +
     '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
 }
@@ -3494,6 +3536,17 @@ async function gate() {
   return null;
 }
 
+// Sullo schermo stretto le aree delle impostazioni sono una fila di schede che
+// scorre: quella aperta va portata in vista (solo la fila, la pagina resta ferma)
+function showActiveTab() {
+  var on = view.querySelector('.scol .snav.on');
+  if (!on) return;
+  var row = on.parentNode;
+  if (row.scrollWidth <= row.clientWidth) return;
+  var gap = on.getBoundingClientRect().left - row.getBoundingClientRect().left;
+  row.scrollLeft += gap - (row.clientWidth - on.offsetWidth) / 2;
+}
+
 async function render() {
   var token = ++renderToken;
   var h = location.hash;
@@ -3547,6 +3600,7 @@ async function render() {
   }
   if (out.mount) out.mount();
   markRail(h);
+  showActiveTab();
   setTimeout(warnPaths, 0);
 
   var key = focusMemory[h];
