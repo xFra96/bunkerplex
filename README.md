@@ -6,7 +6,9 @@ Il tuo cinema di casa: il computer tiene i video, la TV li guarda.
 - **App per la TV**: Android TV, Google TV, Fire TV. Si usa col telecomando.
 - **Dal browser** di qualsiasi PC, tablet o telefono di casa: `http://INDIRIZZO-DEL-COMPUTER:32500`.
 
-Funziona senza Internet. La rete serve solo per scaricare le schede dei titoli, per gli aggiornamenti e, se vuoi, per condividere le raccolte con un amico.
+Ognuno entra con il suo account: impostazioni, chiavi, visti e lista lo seguono su ogni PC.
+
+Funziona anche senza Internet, con la copia dell'account salvata sul PC. La rete serve per sincronizzare gli account, per scaricare le schede dei titoli, per gli aggiornamenti e, se vuoi, per condividere le raccolte con un amico.
 
 ## Installazione
 
@@ -38,9 +40,10 @@ Gli script per Mac sono nuovi e non ancora provati su molte macchine: se qualcos
 
 ## Primi passi
 
-1. **Crea una raccolta**: nel menu a sinistra **Aggiungi raccolta**, dai un nome (Film, Serie TV, Cartoni…) e scegli la cartella dei video. Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.
-2. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex.
-3. **Metti l'app sulla TV**: sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk`. Al primo avvio l'app trova il server da sola. Poi si aggiorna da sé.
+1. **Entra con il tuo account**: nome e password che ti ha dato l'amministratore (la prima volta è una password provvisoria da cambiare). Vedi [Account](#account).
+2. **Crea una raccolta**: nel menu a sinistra **Aggiungi raccolta**, dai un nome (Film, Serie TV, Cartoni…) e scegli la cartella dei video. Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.
+3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta nel tuo account: sugli altri PC non va rimessa.
+4. **Metti l'app sulla TV**: sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk`. Al primo avvio l'app trova il server da sola. Poi si aggiorna da sé.
 
 Nomi dei file che funzionano meglio:
 
@@ -67,7 +70,9 @@ Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La
 - Il primo account che entra su un PC già in uso prende raccolte, visti, lista e chiavi che c'erano prima.
 - **Al primo accesso** su un PC (o da un browser o una TV), se le chiavi API o le preferenze di visione di lì sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di lì senza chiedere. Volume e audio muto restano di ogni dispositivo.
 
-Gli account stanno in un piccolo servizio gratuito su Cloudflare (cartella `cloud/`: `worker.js` + database D1 `bunkerplex`). L'indirizzo è in `server/cloud.json` e arriva a tutte le installazioni con gli aggiornamenti; senza quel file BunkerPlex funziona come prima, senza login. Le password non escono mai dal PC: al servizio arriva solo un'impronta (PBKDF2). Per ripubblicare il servizio dopo una modifica: Cloudflare → *Workers & Pages → bunkerplex-account → Edit code*, incolla `cloud/worker.js` e salva.
+- **Password dimenticata**: l'amministratore dà una *Nuova password provvisoria* da *Gestisci gli account*.
+
+Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio account](#servizio-account) più sotto). Le password non lasciano mai il PC: al servizio arriva solo un'impronta.
 
 ## Cosa puoi fare
 
@@ -78,7 +83,7 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (cartella `clou
 - **Nelle raccolte**: filtri, ordinamento, **Vai alla lettera** e **Scegli tu** (un titolo a caso tra i non visti).
 - **Cast con le foto** nella scheda: premi su un volto per vedere gli altri suoi titoli.
 - **Menu della locandina** (clic su ⋯ o tasto destro; sulla TV tieni premuto OK): riproduci, segna come visto, aggiungi alla lista, correggi scheda.
-- **Impostazioni → Questo dispositivo**: animazioni (si riducono da sole sui dispositivi lenti), locandine grandi, aspetto da TV per il browser di una smart TV.
+- **Impostazioni → Questo dispositivo**: animazioni (si riducono da sole sui dispositivi lenti), locandine grandi, aspetto da TV per il browser di una smart TV. Animazioni, locandine e regolazioni del player seguono il tuo account; aspetto da TV, riconoscimento dei dispositivi lenti e volume restano di ogni dispositivo.
 
 ### Telecomando
 
@@ -96,7 +101,7 @@ Dal browser: `Spazio` pausa, `← →` salti, `↓` comandi (poi `← →` per s
 
 ### Sottotitoli da internet
 
-Nel film: Opzioni → **Cerca sottotitoli su internet** → scegli la lingua e poi il sottotitolo (quelli con «✓ fatti per questo file» vanno a tempo di sicuro). Li prende il PC da **OpenSubtitles.com** e li salva in `data/subs`, quindi poi ci sono su tutti i dispositivi. Per attivarli serve una chiave gratuita: crea un account su opensubtitles.com, Profilo → «API consumers» → nuova chiave, e incollala in Impostazioni → *Sottotitoli da internet*. Nome utente e password dell'account sono facoltativi ma alzano il limite di download giornaliero. Restano solo su questo PC.
+Nel film: Opzioni → **Cerca sottotitoli su internet** → scegli la lingua e poi il sottotitolo (quelli con «✓ fatti per questo file» vanno a tempo di sicuro). Li prende il PC da **OpenSubtitles.com** e li salva in `data/subs`, quindi poi ci sono su tutti i dispositivi. Per attivarli serve una chiave gratuita: crea un account su opensubtitles.com, Profilo → «API consumers» → nuova chiave, e incollala in Impostazioni → *Sottotitoli da internet*. Nome utente e password dell'account sono facoltativi ma alzano il limite di download giornaliero. Restano nel tuo account BunkerPlex: li ritrovi su ogni PC dove entri.
 
 ### TV e chiavette adatte
 
@@ -105,6 +110,8 @@ Android TV, Google TV, Chromecast con Google TV, Fire TV Stick (Fire OS). Su Chr
 ## Amici: condividere le raccolte via Internet
 
 Due BunkerPlex in case diverse possono mostrarsi a vicenda le raccolte. **Si guarda soltanto**: nessuno tocca impostazioni, file o «visto» dell'altro. Tutto il resto continua a funzionare offline.
+
+La condivisione è del PC, non dell'account: l'amico vede tutte le raccolte di quel PC, anche quelle degli altri account, e le raccolte dell'amico le vedono tutti gli account del PC.
 
 1. Entrambi accendete **Impostazioni → Amici → Condivisione con gli amici**. BunkerPlex chiede da solo al router di casa di aprire la porta per gli amici (la `32501`, e solo quella) e ti mostra **il tuo indirizzo**: è quello da dare all'amico.
 2. Uno dei due apre **Manda una richiesta** (dal browser di un computer, non dalla TV) e scrive l'indirizzo dell'amico, un nome e una password a scelta.
@@ -138,7 +145,7 @@ Su Windows il lavoro sul PC lo fa un **aiutante** nascosto (`strumenti\Agente.ps
 
 Non vengono mai toccati il catalogo (cartella `data`), il file `.env` e la chiave di firma dell'app. Se copi la cartella sopra una copia esistente, **non sovrascrivere `data`**.
 
-Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerPlex sul disco esterno insieme ai video: su ogni computer basta lanciare «Avvia».
+Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerPlex sul disco esterno insieme ai video: su ogni computer basta lanciare «Avvia». Anche con installazioni separate, impostazioni, chiavi, visti e lista ti seguono comunque grazie all'account; restano diverse solo le raccolte.
 
 ## Se qualcosa non va
 
@@ -148,14 +155,33 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
-- **Chi è sulla tua rete di casa** può entrare dalla TV scegliendo un nome (se l'account lo permette): non esporre BunkerPlex su Internet.
+- **Chi è sulla tua rete di casa** può entrare dalla TV scegliendo un nome (se l'account lo permette), e senza Internet anche con «Continua offline»: non esporre BunkerPlex su Internet.
+- **«Nome utente o password sbagliati»** dopo un cambio di password fatto su un altro PC: usa la password nuova. Dopo 5 tentativi sbagliati l'account si blocca per 5 minuti.
+- **La pagina di accesso dice «Niente Internet»**: il PC non raggiunge il servizio account. Puoi continuare offline; quando la rete torna, BunkerPlex se ne accorge entro un minuto.
+- **Sulla TV il punto di ripresa non si salva**: aggiorna l'app della TV quando lo propone (serve la versione 1.4 o successiva).
 
 ## Per chi lo modifica
 
 - `Compila APK.bat` ricrea l'app per la TV dentro Docker (niente Java o Android Studio). L'APK finisce in `apk/FrenkPlex.apk`: il file tiene il nome di prima perché lo cercano le copie già installate.
-- `Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git).
+- `Pubblica aggiornamento.bat` manda le modifiche su GitHub (serve git, e la cartella deve essere una copia del repository con `.git`; una cartella scaricata come zip non lo è).
 - **Release compilata da GitHub**: a ogni push su `main` l'Action *Pubblica la release* (`.github/workflows/apk.yml`) aggiorna la release `app-tv`: sposta il tag sull'ultimo commit, allega `BunkerPlex.zip` (programma + APK + `strumenti/versione.json`) e, se da `apk-build` è cambiato qualcosa in `android/`, ricompila e allega `FrenkPlex.apk`. Da lì i server scaricano gli aggiornamenti e le TV li propongono da sole. Si può lanciare anche a mano: *Actions → Pubblica la release → Run workflow* (ricompila sempre l'APK). Va preparata una volta: su GitHub, *Settings → Secrets and variables → Actions → New repository secret*, nome `ANDROID_KEYSTORE_B64`, valore il contenuto di `android/keystore/SEGRETO-per-GitHub.txt` (è la chiave di firma in base64). Se manca, lo zip si pubblica lo stesso con l'APK di prima e il giro finisce in errore: mai una firma diversa, che le TV rifiuterebbero. Per rifare quel file: `base64 -w0 android/keystore/francoplex.jks`.
 - `Installa su TV.bat` installa l'APK via adb.
 - La cartella `android/keystore` contiene la chiave di firma dell'app: non finisce su GitHub, tienine una copia.
 - Frequenza del controllo aggiornamenti: `UPDATE_CHECK_HOURS` tra le voci `environment` di `docker-compose.yml`.
 - Se il repository diventa privato serve un token di sola lettura (*Contents: Read-only*) da incollare in *Impostazioni → Aggiornamenti*.
+
+### Servizio account
+
+Gli account stanno in un Worker di Cloudflare con un database D1, nel piano gratuito (niente carta di credito, non va in pausa). Il codice è nella cartella `cloud/`:
+
+- `cloud/worker.js`: il servizio (login, cambio password, gestione account, impostazioni, visti e lista).
+- `cloud/schema.sql`: le tabelle del database D1 `bunkerplex`.
+
+Sul Cloudflare dell'amministratore è pubblicato come `bunkerplex-account` all'indirizzo scritto in `server/cloud.json`. Quel file arriva a tutte le installazioni con gli aggiornamenti. Senza quel file (e senza la voce `BUNKERPLEX_CLOUD` in `.env`) BunkerPlex funziona come prima, senza login.
+
+- **Cambiare il servizio**: Cloudflare → *Workers & Pages → bunkerplex-account → Edit code*, incolla `cloud/worker.js` e salva. Se cambi le tabelle, esegui lo stesso SQL in *Storage & databases → D1 → bunkerplex → Console*.
+- **Primo amministratore**: il Worker ha il segreto `SETUP_KEY`. La stessa chiave sta in `data/cloud-setup.json` del PC dove è stato preparato il servizio: solo lì compare «Crea l'account amministratore», e solo finché nel database non c'è nessun account. Dopo la creazione il file viene cancellato.
+- **Un servizio tuo** (per esempio per provare): crea un altro Worker e un altro database con gli stessi file, poi scrivi il suo indirizzo in `.env` alla voce `BUNKERPLEX_CLOUD`.
+- **Password**: il PC calcola un'impronta lenta (PBKDF2-SHA256, 200.000 giri) e al servizio manda solo quella; il servizio ne conserva un'altra impronta con un sale casuale.
+- **Chiavi API**: sono salvate nel database del servizio, protette dalla cifratura di Cloudflare ma non cifrate con la password dell'account.
+- **Limiti del piano gratuito**: 100.000 righe scritte e 5 milioni lette al giorno, database fino a 500 MB, 10 ms di calcolo per richiesta. Per una famiglia sono molto più del necessario.
