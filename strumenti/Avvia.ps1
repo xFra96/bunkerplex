@@ -277,6 +277,11 @@ Say ''
 # il server acceso e' allineato a questi file (vedi Impronta.ps1).
 . (Join-Path $PSScriptRoot 'Impronta.ps1')
 $env:BUNKERPLEX_BUILD = Get-Impronta $root
+# Indirizzo del PC in casa: dentro Docker il server non lo vede (serve al QR dell'app per il telefono)
+try {
+    $env:BUNKERPLEX_LAN_IP = (Get-NetIPConfiguration -ErrorAction Stop | Where-Object { $_.IPv4DefaultGateway } |
+        Select-Object -First 1).IPv4Address.IPAddress | Select-Object -First 1
+} catch { }
 
 # Dopo un aggiornamento si scarica anche l'immagine di base piu' recente
 # (Python, ffmpeg): senza Internet si torna alla ricostruzione normale.
