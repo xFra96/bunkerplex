@@ -16,6 +16,8 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANG: ${TMDB_LANG:-it-IT}
       SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
+      # Servizio account: vuoto = l'indirizzo scritto in server/cloud.json (vedi «Account» in README.md)
+      BUNKERPLEX_CLOUD: ${BUNKERPLEX_CLOUD:-}
       # Impronta dei file con cui e' acceso il server: la scrive "Avvia BunkerPlex.bat"
       # e serve a capire se Docker va ricostruito (vedi strumenti/Impronta.ps1)
       BUNKERPLEX_BUILD: ${BUNKERPLEX_BUILD:-}
