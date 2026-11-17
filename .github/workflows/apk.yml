@@ -1,4 +1,5 @@
-# A ogni push su main tiene aggiornata la release "app-tv", da cui i server
+# A ogni push su main ripubblica la release "app-tv" (nuova, con la data di oggi e
+# l'elenco delle novita'), da cui i server
 # BunkerPlex prendono gli aggiornamenti e da cui si scarica la prima volta:
 #   - BunkerPlex.zip: il programma di quel commit, gia' con l'APK e con
 #     strumenti/versione.json (cosi' la copia scaricata sa di essere aggiornata);
@@ -125,28 +126,35 @@ jobs:
           (cd pkg && zip -q -r -X ../out/BunkerPlex.zip BunkerPlex)
           ls -l out
 
+      # Ogni push e' una release nuova: quella vecchia si cancella (il tag resta, e si
+      # sposta sull'ultimo commit) e si ricrea con data di oggi, elenco delle novita'
+      # e gli allegati. Il tag e' sempre app-tv: gli indirizzi di download non cambiano
+      # e i server e le TV gia' installati continuano a trovarla.
       - name: Aggiorna la release
         run: |
+          prev=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
           git tag -f "$TAG" HEAD
           git push -f origin "refs/tags/$TAG"
           short=$(git rev-parse --short HEAD)
-          notes="Ultima versione di BunkerPlex (commit $short).
-
-          Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella `Windows` (o `macOS`), lancia «Avvia BunkerPlex.bat» (o «.command»). Dentro c'è già l'app per la TV.
-          Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV.
-
-          FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."
-          if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --title "BunkerPlex" --notes "$notes" --target "$GITHUB_SHA"
-          fi
+          changes=$(git log --no-merges --format='- %s' "$prev..HEAD" 2>/dev/null | head -20 || true)
+          [ -n "$changes" ] || changes=$(git log -1 --format='- %s')
+          {
+            echo "Ultima versione di BunkerPlex (commit $short)."
+            echo
+            echo "**Novita'**"
+            echo "$changes"
+            echo
+            echo "Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella «Windows» (o «macOS»), lancia «Avvia BunkerPlex.bat» (o «.command»). Dentro c'è già l'app per la TV."
+            echo "Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV."
+            echo
+            echo "FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."
+          } > out/notes.md
+          gh release delete "$TAG" --yes || true
+          gh release create "$TAG" out/FrenkPlex.apk out/BunkerPlex.zip             --title "BunkerPlex $(date -u +%Y-%m-%d) ($short)"             --notes-file out/notes.md --target "$GITHUB_SHA" --latest
           if [ "${{ steps.key.outputs.ok }}" = 1 ]; then
-            gh release upload "$TAG" out/FrenkPlex.apk out/BunkerPlex.zip --clobber
             git tag -f apk-build HEAD
             git push -f origin refs/tags/apk-build
-          else
-            gh release upload "$TAG" out/BunkerPlex.zip --clobber
           fi
-          gh release edit "$TAG" --title "BunkerPlex" --notes "$notes"
 
       - name: L'app per la TV era da ricompilare?
         if: steps.what.outputs.build == '1' && steps.key.outputs.ok != '1'
