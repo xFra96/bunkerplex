@@ -132,7 +132,7 @@ jobs:
           short=$(git rev-parse --short HEAD)
           notes="Ultima versione di BunkerPlex (commit $short).
 
-          Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e lancia «Avvia BunkerPlex.bat». Dentro c'è già l'app per la TV.
+          Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella `Windows` (o `macOS`), lancia «Avvia BunkerPlex.bat» (o «.command»). Dentro c'è già l'app per la TV.
           Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV.
 
           FrenkPlex.apk: l'app per Android TV, Google TV e Fire TV."
