@@ -128,6 +128,21 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio
 
 Dal browser: `Spazio` pausa, `← →` salti, `↓` comandi (poi `← →` per scegliere un bottone), `M` muto, `S` sottotitoli, `N` episodio successivo, `F` schermo intero, `O` opzioni.
 
+### Schede sempre aggiornate
+
+Le schede (trama, locandina, cast, voti, episodi) non si scaricano una volta per sempre: il server le ricontrolla da solo, poche alla volta (al massimo 40 ogni mezz'ora) e mai mentre qualcuno guarda.
+
+| Cosa | Quando si ricontrolla |
+| --- | --- |
+| Titoli cambiati su TMDB | una volta al giorno il server legge l'elenco delle novità di TMDB; un titolo cambiato si aggiorna al massimo una volta a settimana |
+| Serie in corso | il giorno dopo l'uscita di ogni episodio, altrimenti ogni settimana |
+| Usciti da meno di 6 mesi | ogni settimana |
+| Usciti da meno di 2 anni | ogni mese |
+| Più vecchi, serie finite | ogni 6 mesi |
+| Titoli non riconosciuti, episodi che TMDB non ha ancora | si riprova dopo 1, 3 e 7 giorni, poi ogni mese |
+
+Le correzioni fatte con *Correggi scheda* restano (l'aggiornamento riusa la stessa scheda), le locandine tue (`poster.jpg`) non vengono toccate e un'immagine si riscarica solo se su TMDB è cambiata. Senza Internet resta tutto com'è. Se cambi la lingua delle schede (`TMDB_LANG`) si riscaricano tutte, un po' alla volta. Come procede: *Impostazioni → Catalogo e schede → Aggiornamento automatico*. **Riscarica tutte le schede** le rifà subito tutte.
+
 ### Sottotitoli da internet
 
 Nel film: Opzioni → **Cerca sottotitoli su internet** → scegli la lingua e poi il sottotitolo (quelli con «✓ fatti per questo file» vanno a tempo di sicuro). Li prende il PC da **OpenSubtitles.com** e li salva in `data/subs`, quindi poi ci sono su tutti i dispositivi. Per attivarli serve una chiave gratuita: crea un account su opensubtitles.com, Profilo → «API consumers» → nuova chiave, e incollala in Impostazioni → *Sottotitoli da internet*. Nome utente e password dell'account sono facoltativi ma alzano il limite di download giornaliero. Restano nel tuo account BunkerPlex: li ritrovi su ogni PC dove entri.

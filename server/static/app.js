@@ -1298,6 +1298,25 @@ function ago(sec) {
   return new Date(sec * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
 }
 
+// Impostazioni → Catalogo: le schede si aggiornano da sole, e qui si vede come procede
+function refreshPanel(i) {
+  var c = i.catalog || {};
+  var day = function (sec) { return sec ? new Date(sec * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }) : ''; };
+  var nomatch = (i.unmatched || 0) + (c.unmatched_shows || 0);
+  var ep = c.next_episode;
+  return '<div class="panel"><h2>Aggiornamento automatico</h2>' +
+    '<p>Le schede si ricontrollano da sole, poche alla volta e mai mentre qualcuno guarda: i titoli cambiati su TMDB, ' +
+    'le serie in corso il giorno dopo ogni nuovo episodio, i titoli recenti ogni settimana, quelli degli ultimi due anni ogni mese, gli altri ogni sei mesi. ' +
+    'Le correzioni fatte con «Correggi scheda» e le locandine tue (poster.jpg) restano.</p>' +
+    '<dl class="kv">' +
+      '<dt>Novità da TMDB</dt><dd>' + (c.changes_at ? 'Controllate ' + ago(c.changes_at) : 'Non ancora controllate') + '</dd>' +
+      '<dt>Schede scaricate o aggiornate</dt><dd>' + (c.refreshed || 0) + ' negli ultimi 7 giorni' + (c.waiting ? ' · ' + c.waiting + ' in attesa del loro turno' : '') + '</dd>' +
+      '<dt>Serie in corso</dt><dd>' + (c.ongoing ? c.ongoing + (ep ? ' · prossimo episodio: ' + esc(ep.title) + ' il ' + esc(day(Date.parse(ep.date) / 1000)) : '') : 'Nessuna') + '</dd>' +
+      '<dt>Titoli senza scheda</dt><dd>' + (nomatch ? nomatch + ' · riprovo da solo' + (c.next_retry ? ' (prossimo tentativo ' + (c.next_retry * 1000 <= Date.now() ? 'al prossimo giro' : 'il ' + day(c.next_retry)) + ')' : '') +
+        ' · se sono sbagliati, menu della locandina → «Correggi scheda»' : 'Nessuno') + '</dd>' +
+    '</dl></div>';
+}
+
 // Come sta il profilo rispetto all'account: {state: '' | ok | warn, text}
 function syncState() {
   var u = auth && auth.user;
@@ -1591,7 +1610,7 @@ async function settingsArea(area) {
       '<div class="actions" style="margin-top:0">' +
         '<button class="btn f" data-act="scan" data-key="scan">Cerca file nuovi</button>' +
         '<button class="btn f" data-act="refreshall" data-key="refreshall">Riscarica tutte le schede</button>' +
-      '</div></div>' +
+      '</div></div>' + (i.tmdb ? refreshPanel(i) : '') +
       '<div class="panel"><h2>Chiave TMDB</h2>' +
       '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
         (inAccount ? ' Resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +

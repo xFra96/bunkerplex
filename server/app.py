@@ -5,6 +5,7 @@ Scansiona le cartelle di Film e Serie TV, cataloga tutto in SQLite
 i video in streaming.
 """
 import asyncio
+import calendar
 import difflib
 import gzip
 import hashlib
@@ -413,7 +414,14 @@ def init_db():
                           # offline_since: modifiche fatte offline, da mandare o scartare al rientro
                           ("users", "offline_since REAL DEFAULT 0"), ("users", "last_sync REAL DEFAULT 0"),
                           # offline: entrato senza password perche' il servizio account non rispondeva
-                          ("user_sessions", "offline INT DEFAULT 0")):
+                          ("user_sessions", "offline INT DEFAULT 0"),
+                          # Aggiornamento delle schede (vedi plan_refresh): meta_at = ultima volta
+                          # che si e' chiesto a TMDB, meta_tries = tentativi andati a vuoto,
+                          # released / status / next_air / last_air = date per decidere quando ricontrollare
+                          ("items", "meta_at REAL"), ("items", "meta_tries INT DEFAULT 0"),
+                          ("items", "released TEXT"),
+                          ("shows", "meta_at REAL"), ("shows", "meta_tries INT DEFAULT 0"),
+                          ("shows", "status TEXT"), ("shows", "next_air TEXT"), ("shows", "last_air TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -785,13 +793,15 @@ def apply_movie(con, item_id, tmdb_id):
         else fetch_image(m.get("poster_path"), "w500")
     con.execute(
         "UPDATE items SET title=?, original_title=?, year=?, overview=?, tagline=?, poster=?, "
-        "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1 WHERE id=?",
+        "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
+        "meta_at=?, meta_tries=0, released=? WHERE id=?",
         (m.get("title") or row["title"], m.get("original_title"),
          _year(m.get("release_date"), row["year"]), overview, m.get("tagline") or "",
          poster, fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(directors), json.dumps(actors, ensure_ascii=False),
-         round(m.get("vote_average") or 0, 1), cast_people(credits), item_id))
+         round(m.get("vote_average") or 0, 1), cast_people(credits), time.time(),
+         m.get("release_date") or None, item_id))
     set_collection(con, item_id, m)
 
 
@@ -809,14 +819,17 @@ def apply_show(con, show_id, tmdb_id):
         else fetch_image(m.get("poster_path"), "w500")
     con.execute(
         "UPDATE shows SET title=?, original_title=?, year=?, overview=?, poster=?, backdrop=?, "
-        "tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1 WHERE id=?",
+        "tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
+        "meta_at=?, meta_tries=0, status=?, next_air=?, last_air=? WHERE id=?",
         (m.get("name") or row["title"], m.get("original_name"),
          _year(m.get("first_air_date"), row["year"]), overview, poster,
          fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(c["name"] for c in m.get("created_by", [])),
          json.dumps(actors, ensure_ascii=False),
-         round(m.get("vote_average") or 0, 1), cast_people(m.get("credits")), show_id))
+         round(m.get("vote_average") or 0, 1), cast_people(m.get("credits")), time.time(),
+         m.get("status") or None, (m.get("next_episode_to_air") or {}).get("air_date") or None,
+         m.get("last_air_date") or None, show_id))
     con.execute("UPDATE items SET meta_done=0 WHERE show_id=?", (show_id,))
 
 
@@ -1058,13 +1071,235 @@ def enrich_episodes(con, show):
                 if (not name or GENERIC_EP.match(name.strip())) and r["title"]:
                     name = r["title"]   # TMDB non ha il titolo italiano: si tiene quello del file
                 con.execute(
-                    "UPDATE items SET title=?, overview=?, poster=?, tmdb_id=?, rating=?, meta_done=1 WHERE id=?",
+                    "UPDATE items SET title=?, overview=?, poster=?, tmdb_id=?, rating=?, meta_done=1, "
+                    "meta_at=?, meta_tries=0, released=? WHERE id=?",
                     (name, e.get("overview"),
                      fetch_image(e.get("still_path"), "w300"), e.get("id"),
-                     round(e.get("vote_average") or 0, 1), r["id"]))
-            else:
-                con.execute("UPDATE items SET meta_done=1 WHERE id=?", (r["id"],))
+                     round(e.get("vote_average") or 0, 1), time.time(), e.get("air_date") or None, r["id"]))
+            else:                   # TMDB non ha ancora questo episodio: si riprova piu' avanti
+                not_found(con, "items", r["id"])
         con.commit()
+
+
+# --------------------------------------------------------------------------
+# Aggiornamento delle schede
+# --------------------------------------------------------------------------
+# Una scheda non si scarica una volta per sempre: TMDB corregge trame, aggiunge
+# traduzioni, locandine e voti, e le serie in corso hanno episodi nuovi. A ogni
+# giro della scansione (ogni SCAN_INTERVAL_MIN) si rimettono in coda, al massimo
+# REFRESH_BUDGET alla volta e mai mentre qualcuno guarda, le schede che:
+#  1. sono cambiate su TMDB (elenco «changes», chiesto una volta al giorno), ma
+#     non piu' di una volta ogni CHANGES_GAP;
+#  2. sono di serie in corso: il giorno dopo l'uscita di un episodio, altrimenti
+#     ogni settimana;
+#  3. sono «scadute» secondo l'eta' del titolo: uscito da meno di 6 mesi ogni
+#     settimana, da meno di 2 anni ogni mese, piu' vecchio ogni 6 mesi;
+#  4. non sono state riconosciute: si riprova dopo 1, 3, 7 giorni, poi ogni mese
+#     (TMDB aggiunge titoli di continuo). Lo stesso per gli episodi che TMDB non
+#     ha ancora.
+# Se cambia la lingua delle schede (TMDB_LANG) tutte tornano in coda, piano piano.
+# Un aggiornamento riusa lo stesso ID TMDB (le correzioni fatte con «Correggi
+# scheda» restano), non tocca le locandine locali (poster.jpg) e riscarica
+# un'immagine solo se su TMDB e' cambiata. Se TMDB non risponde resta tutto com'e'.
+
+DAY = 86400
+REFRESH_BUDGET = 40              # schede gia' riconosciute da ricontrollare per giro
+RETRY_BUDGET = 10                # titoli non riconosciuti da ricercare per giro (costano piu' chiamate)
+RETRY_DAYS = (1, 3, 7, 30)
+CHANGES_GAP = 7 * DAY              # i titoli famosi cambiano su TMDB quasi ogni giorno
+CHANGES_PAGES = 100              # pagine dell'elenco «changes» (100 titoli l'una) al giorno, per tipo
+ONGOING = {"Returning Series", "In Production", "Planned", "Pilot"}
+refresh_state = {"due": 0, "queued": 0, "at": 0.0}
+
+
+def day_ts(text):
+    try:
+        return calendar.timegm(time.strptime(str(text)[:10], "%Y-%m-%d"))
+    except (TypeError, ValueError):
+        return None
+
+
+def age_ttl(date, year, now):
+    """Ogni quanto ricontrollare un titolo uscito il giorno 'date' (o nell'anno 'year')."""
+    ts = day_ts(date) or (calendar.timegm((int(year), 1, 1, 0, 0, 0)) if year else None)
+    if ts is None:
+        return 90 * DAY
+    age = now - ts
+    if age < 183 * DAY:              # anche se non e' ancora uscito
+        return 7 * DAY
+    if age < 730 * DAY:
+        return 30 * DAY
+    return 180 * DAY
+
+
+def retry_after(tries):
+    return RETRY_DAYS[min(max(tries, 1), len(RETRY_DAYS)) - 1] * DAY
+
+
+def show_due(r, now):
+    """Quando ricontrollare una serie gia' riconosciuta (e i suoi episodi)."""
+    at = r["meta_at"] or 0
+    if r["status"] in ONGOING:
+        nxt = day_ts(r["next_air"])
+        if nxt and at < nxt + DAY:
+            return nxt + DAY             # il giorno dopo l'uscita del prossimo episodio
+        return at + 7 * DAY
+    if not r["status"]:                  # scheda di prima che si salvasse lo stato
+        return at + 30 * DAY
+    return at + age_ttl(r["last_air"], r["year"], now)
+
+
+def not_found(con, table, row_id):
+    """Nessuna scheda (o episodio non ancora su TMDB): si riprova piu' avanti."""
+    con.execute(f"UPDATE {table} SET meta_done=1, meta_at=?, meta_tries=COALESCE(meta_tries, 0)+1 WHERE id=?",
+                (time.time(), row_id))
+
+
+def kept_as_is(con, table, row_id):
+    """TMDB non ha piu' questo titolo: resta la scheda che c'era, si riguarda al prossimo giro lungo."""
+    con.execute(f"UPDATE {table} SET meta_done=1, meta_at=? WHERE id=?", (time.time(), row_id))
+
+
+def spread(row_id):
+    """Un numero tra 0 e 1 fisso per ogni titolo: serve a non riscaricare tutto lo stesso giorno."""
+    return (row_id * 2654435761 % 1000) / 1000
+
+
+def stamp_unknown(con, now):
+    """Schede scaricate prima di questo sistema (meta_at vuoto): ricevono una data
+    sparsa nel loro intervallo, cosi' tornano in coda un po' alla volta."""
+    for r in con.execute("SELECT id, tmdb_id, year, released FROM items WHERE kind='movie' "
+                         "AND meta_done=1 AND meta_at IS NULL").fetchall():
+        if r["tmdb_id"]:
+            con.execute("UPDATE items SET meta_at=? WHERE id=?",
+                        (now - spread(r["id"]) * age_ttl(r["released"], r["year"], now), r["id"]))
+        else:
+            con.execute("UPDATE items SET meta_at=?, meta_tries=1 WHERE id=?", (now - spread(r["id"]) * DAY, r["id"]))
+    for r in con.execute("SELECT id, tmdb_id FROM shows WHERE meta_done=1 AND meta_at IS NULL").fetchall():
+        if r["tmdb_id"]:
+            con.execute("UPDATE shows SET meta_at=? WHERE id=?", (now - spread(r["id"]) * 30 * DAY, r["id"]))
+        else:
+            con.execute("UPDATE shows SET meta_at=?, meta_tries=1 WHERE id=?", (now - spread(r["id"]) * DAY, r["id"]))
+    con.execute("UPDATE items SET meta_at=?-((id*2654435761)%1000)/1000.0*86400, meta_tries=1 "
+                "WHERE kind='episode' AND meta_done=1 AND meta_at IS NULL AND tmdb_id IS NULL", (now,))
+    con.commit()
+
+
+def lang_check(con):
+    """Cambiata la lingua delle schede: tutte tornano in coda (un po' alla volta)."""
+    with config_lock:
+        old = config.get("meta_lang")
+        if old == TMDB_LANG:
+            return
+        config["meta_lang"] = TMDB_LANG
+        save_config()
+    if old:
+        print("Lingua delle schede cambiata:", old, "->", TMDB_LANG, flush=True)
+        con.execute("UPDATE items SET meta_at=0 WHERE kind='movie' AND tmdb_id IS NOT NULL")
+        con.execute("UPDATE shows SET meta_at=0 WHERE tmdb_id IS NOT NULL")
+        con.commit()
+
+
+def tmdb_changes(con, now):
+    """Una volta al giorno: quali titoli del catalogo sono cambiati su TMDB.
+    Quelli non ricontrollati da almeno CHANGES_GAP vanno in testa alla coda."""
+    last = float(config.get("tmdb_changes_at") or 0)
+    if now - last < DAY:
+        return
+    start = time.strftime("%Y-%m-%d", time.gmtime(max(last, now - 13 * DAY) if last else now - DAY))
+    end = time.strftime("%Y-%m-%d", time.gmtime(now))
+    found = 0
+    for path, table, kind in (("/movie/changes", "items", "AND kind='movie'"), ("/tv/changes", "shows", "")):
+        mine = {r[0] for r in con.execute(f"SELECT tmdb_id FROM {table} WHERE tmdb_id IS NOT NULL {kind}")}
+        if not mine:
+            continue
+        changed, page, pages = set(), 1, 1
+        while page <= min(pages, CHANGES_PAGES):
+            res = tmdb(path, start_date=start, end_date=end, page=page)
+            pages = int(res.get("total_pages") or 1)
+            changed |= {r["id"] for r in res.get("results") or [] if r.get("id") in mine}
+            page += 1
+        for tid in changed:
+            found += con.execute(f"UPDATE {table} SET meta_at=0 WHERE tmdb_id=? {kind} AND meta_done=1 "
+                                 f"AND COALESCE(meta_at, 0) < ?", (tid, now - CHANGES_GAP)).rowcount
+    con.commit()
+    with config_lock:
+        config["tmdb_changes_at"] = now
+        save_config()
+    if found:
+        print(f"Schede cambiate su TMDB: {found}", flush=True)
+
+
+def plan_refresh(con):
+    """Rimette in coda (meta_done=0) le schede da ricontrollare: la scansione le scarica."""
+    if updater.busy():               # qualcuno sta guardando: niente lavoro in piu'
+        return
+    now = time.time()
+    lang_check(con)
+    stamp_unknown(con, now)
+    try:
+        tmdb_changes(con, now)
+    except Exception as ex:          # rete o TMDB giu': restano i controlli per eta'
+        print("Novita' da TMDB non lette:", repr(ex), flush=True)
+    fresh, retry, eps = [], [], []
+    for r in con.execute("SELECT id, tmdb_id, year, released, meta_at, meta_tries FROM items "
+                         "WHERE kind='movie' AND meta_done=1").fetchall():
+        at = r["meta_at"] or 0
+        if r["tmdb_id"]:
+            due = at + age_ttl(r["released"], r["year"], now)
+            if due <= now:
+                fresh.append((1, due, "items", r["id"]))
+        elif at + retry_after(r["meta_tries"]) <= now:
+            retry.append((at, "items", r["id"]))
+    for r in con.execute("SELECT id, tmdb_id, year, status, next_air, last_air, meta_at, meta_tries FROM shows "
+                         "WHERE meta_done=1").fetchall():
+        if r["tmdb_id"]:
+            due = show_due(r, now)
+            if due <= now:
+                airing = r["status"] in ONGOING and (r["meta_at"] or 0) > 0
+                fresh.append((0 if airing else 1, due, "shows", r["id"]))
+        elif (r["meta_at"] or 0) + retry_after(r["meta_tries"]) <= now:
+            retry.append((r["meta_at"] or 0, "shows", r["id"]))
+    for r in con.execute("SELECT i.id, i.meta_at, i.meta_tries FROM items i JOIN shows s ON s.id=i.show_id "
+                         "WHERE i.kind='episode' AND i.meta_done=1 AND i.tmdb_id IS NULL "
+                         "AND s.tmdb_id IS NOT NULL").fetchall():
+        if (r["meta_at"] or 0) + retry_after(r["meta_tries"]) <= now:
+            eps.append(r["id"])
+    fresh.sort()
+    retry.sort()
+    picked = [(t, i) for _, _, t, i in fresh[:REFRESH_BUDGET]] + [(t, i) for _, t, i in retry[:RETRY_BUDGET]]
+    for table, row_id in picked:
+        con.execute(f"UPDATE {table} SET meta_done=0 WHERE id=?", (row_id,))
+    con.executemany("UPDATE items SET meta_done=0 WHERE id=?", [(i,) for i in eps[:300]])
+    con.commit()
+    refresh_state.update(due=len(fresh) + len(retry) - len(picked), queued=len(picked), at=now)
+    if picked:
+        print(f"Schede da ricontrollare: {len(picked)} (in attesa: {refresh_state['due']})", flush=True)
+
+
+def catalog_status(con):
+    """Per Impostazioni → Catalogo: come procede l'aggiornamento delle schede."""
+    now = time.time()
+    week = now - 7 * DAY
+    retry = [(r["meta_at"] or 0) + retry_after(r["meta_tries"]) for r in con.execute(
+        "SELECT meta_at, meta_tries FROM items WHERE kind='movie' AND tmdb_id IS NULL AND meta_done=1 "
+        "UNION ALL SELECT meta_at, meta_tries FROM shows WHERE tmdb_id IS NULL AND meta_done=1")]
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
+    nxt = con.execute("SELECT title, next_air FROM shows WHERE status IN ({}) AND next_air >= ? "
+                      "ORDER BY next_air LIMIT 1".format(",".join("?" * len(ONGOING))),
+                      (*ONGOING, today)).fetchone()
+    return {
+        "changes_at": float(config.get("tmdb_changes_at") or 0),
+        "refreshed": con.execute("SELECT (SELECT COUNT(*) FROM items WHERE kind='movie' AND tmdb_id IS NOT NULL "
+                                 "AND meta_at > ?) + (SELECT COUNT(*) FROM shows WHERE tmdb_id IS NOT NULL "
+                                 "AND meta_at > ?)", (week, week)).fetchone()[0],
+        "waiting": refresh_state["due"],
+        "unmatched_shows": con.execute("SELECT COUNT(*) FROM shows WHERE tmdb_id IS NULL").fetchone()[0],
+        "next_retry": min(retry) if retry else 0,
+        "ongoing": con.execute("SELECT COUNT(*) FROM shows WHERE status IN ({})".format(
+            ",".join("?" * len(ONGOING))), tuple(ONGOING)).fetchone()[0],
+        "next_episode": {"title": nxt["title"], "date": nxt["next_air"]} if nxt else None,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1198,6 +1433,7 @@ def scan():
         if tmdb_key():
             state["message"] = "Scarico locandine e schede..."
             try:
+                plan_refresh(con)    # schede da ricontrollare: rimesse in coda (meta_done=0)
                 todo = con.execute("SELECT * FROM items WHERE kind='movie' AND meta_done=0").fetchall()
                 for n, r in enumerate(todo, 1):
                     state["message"] = f"Scarico locandine e schede dei film... {n} di {len(todo)}"
@@ -1206,9 +1442,14 @@ def scan():
                         res = find_movie(r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
-                        apply_movie(con, r["id"], tmdb_id)
+                        try:
+                            apply_movie(con, r["id"], tmdb_id)
+                        except urllib.error.HTTPError as ex:
+                            if ex.code != 404:
+                                raise
+                            kept_as_is(con, "items", r["id"])   # tolto da TMDB: resta la scheda che c'era
                     else:
-                        con.execute("UPDATE items SET meta_done=1 WHERE id=?", (r["id"],))
+                        not_found(con, "items", r["id"])
                     con.commit()
                 # Saghe: i film che avevano gia' la scheda prima che esistessero le saghe
                 todo = con.execute("SELECT id, tmdb_id FROM items WHERE kind='movie' "
@@ -1230,10 +1471,15 @@ def scan():
                         res = find_show(con, r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
-                        apply_show(con, r["id"], tmdb_id)
-                        merge_duplicate_show(con, r["id"])
+                        try:
+                            apply_show(con, r["id"], tmdb_id)
+                            merge_duplicate_show(con, r["id"])
+                        except urllib.error.HTTPError as ex:
+                            if ex.code != 404:
+                                raise
+                            kept_as_is(con, "shows", r["id"])
                     else:
-                        con.execute("UPDATE shows SET meta_done=1 WHERE id=?", (r["id"],))
+                        not_found(con, "shows", r["id"])
                     con.commit()
                 todo = con.execute("SELECT * FROM shows WHERE tmdb_id IS NOT NULL").fetchall()
                 for n, r in enumerate(todo, 1):
@@ -3218,6 +3464,8 @@ def info():
             # Richieste di condivisione degli amici ancora da approvare
             "share_requests": con.execute(
                 "SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] if share_on() else 0,
+            # Come procede l'aggiornamento delle schede (Impostazioni → Catalogo)
+            "catalog": catalog_status(con),
         }
     finally:
         con.close()
