@@ -6,9 +6,9 @@ Il tuo cinema di casa: il computer tiene i video, la TV li guarda.
 - **App per la TV**: Android TV, Google TV, Fire TV. Si usa col telecomando.
 - **Dal browser** di qualsiasi PC, tablet o telefono di casa: `http://INDIRIZZO-DEL-COMPUTER:32500`.
 
-Ognuno entra con il suo account: impostazioni, chiavi, visti e lista lo seguono su ogni PC.
+Funziona sempre, anche senza Internet e senza account: a casa, con il disco collegato, vedi tutto. Ognuno ha il suo profilo (visti, lista, raccolte).
 
-Funziona anche senza Internet, con la copia dell'account salvata sul PC. La rete serve per sincronizzare gli account, per scaricare le schede dei titoli, per gli aggiornamenti e, se vuoi, per condividere le raccolte con un amico.
+Il login è facoltativo: un account porta il tuo profilo su ogni PC e TV (impostazioni, chiavi, visti, lista, raccolte) e sblocca la condivisione con gli amici. La rete serve anche per scaricare le schede dei titoli e gli aggiornamenti, con o senza account.
 
 ## Installazione
 
@@ -55,10 +55,11 @@ L'app per la TV è nuova (versione 2.0, il nome interno è cambiato con BunkerPl
 
 ## Primi passi
 
-1. **Entra con il tuo account**: nome e password che ti ha dato l'amministratore (la prima volta è una password provvisoria da cambiare). Vedi [Account](#account).
+1. **Apri BunkerPlex**: al primo avvio c'è già il profilo «Casa» e si entra da soli, senza password e senza Internet. Altri profili si aggiungono da «Chi guarda?» (vedi [Profili e account](#profili-e-account)).
 2. **Crea una raccolta**: nel menu a sinistra **Aggiungi raccolta**, dai un nome (Film, Serie TV, Cartoni…) e scegli la cartella dei video. Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.
-3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta nel tuo account: sugli altri PC non va rimessa.
+3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta nel tuo profilo; se entri con un account, anche sugli altri PC non va rimessa.
 4. **Metti l'app sulla TV**: sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk` (l'indirizzo giusto è in *Impostazioni → Aggiornamenti*, con un QR da inquadrare col telefono per scaricarla lì). Al primo avvio l'app trova il server da sola. Poi si aggiorna da sé.
+5. **Se vuoi, entra con un account** (*Impostazioni → Account*): è facoltativo, vedi sotto.
 
 Nomi dei file che funzionano meglio:
 
@@ -69,25 +70,34 @@ Nomi dei file che funzionano meglio:
 | Sottotitoli | stesso nome del video: `Il Padrino (1972).it.srt` |
 | Locandina tua | `poster.jpg` nella cartella del film |
 
-## Account
+## Profili e account
 
-Si entra con un account. Ogni account ha raccolte, visti, punti di ripresa, «La mia lista», chiavi API (TMDB, OpenSubtitles) e preferenze di visione suoi, e li ritrovi su ogni PC dove entri, anche su installazioni nuove: le chiavi non vanno rimesse.
+Chi guarda entra in un **profilo** di questo PC: visti, punti di ripresa, «La mia lista», raccolte, chiavi API e preferenze di visione sono suoi. Un profilo funziona sempre, con o senza Internet, con o senza account.
 
-- **Raccolte su ogni PC**: nomi e cartelle delle tue raccolte seguono l'account. Su un altro PC le raccolte compaiono già create; le cartelle che lì esistono con lo stesso percorso (anche su un disco con un'altra lettera) si collegano da sole. Le altre restano «su un altro PC»: in *Impostazioni → Raccolte* scegli dove stanno su quel PC, oppure le togli dall'account. Se l'elenco online non ti torna, *Sovrascrivi l'account con le raccolte di questo PC* (chiede conferma) lo rimette uguale a quello del PC dove sei: tocca solo l'elenco delle raccolte, non visti, punti di ripresa e lista.
+- **Chi guarda?**: con un solo profilo si entra da soli; con più profili si sceglie il nome (su TV, telefono e browser). **Nuovo profilo** ne crea un altro, senza password. Da *Impostazioni → Account* si rinomina, si cambia (**Cambia profilo**) o si toglie da questo PC (le sue raccolte passano a un altro profilo, i video non si toccano).
+- **Raccolte condivise**: sullo stesso PC una raccolta si può condividere con gli altri profili (*Impostazioni → Raccolte → Condividi*). Ognuno conserva i suoi visti.
+- **Arrivando da una versione precedente** senza account, il profilo «Casa» prende raccolte, visti, lista e chiavi che c'erano prima. Chi aveva già un account ritrova il suo profilo.
 
-- **Primo avvio**: sul PC dove è stato preparato il servizio compare «Crea l'account amministratore». Quello è il tuo.
-- **Altri account**: *Impostazioni → Account → Gestisci gli account*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata. «Nuova password provvisoria» fa uscire l'account da tutti i PC.
-- **Cambio password**: *Impostazioni → Account → Cambia password*. Gli altri PC chiedono di rientrare con quella nuova.
-- **TV**: se su quel PC è entrato un solo account, la TV entra da sola; se sono di più, si sceglie il nome. Si può spegnere per il proprio account (*Impostazioni → Account*), e allora sulla TV servono nome e password.
-- **Raccolte condivise**: sullo stesso PC una raccolta si può condividere con gli altri account (*Impostazioni → Le tue raccolte → Condividi*). Ognuno conserva i suoi visti.
-- **Senza Internet** (o con il servizio account fermo) BunkerPlex usa la copia dell'account salvata su quel PC: impostazioni, chiavi, visti e lista dell'ultima sincronizzazione. In basso compare «Offline · copia locale».
-  - Si entra con l'ultima password usata su quel PC, oppure con **Continua offline** nella pagina di accesso, senza password, come uno degli account già entrati lì.
-  - Su un PC dove non è mai entrato nessun account c'è **Continua offline senza accesso**: BunkerPlex funziona come prima degli account.
-  - Le modifiche fatte offline restano sul PC. Quando torna Internet bisogna rientrare con la password, e BunkerPlex chiede come sincronizzare: **da questo PC all'account** (le modifiche fatte qui vincono) oppure **dall'account a questo PC** (le modifiche fatte qui si scartano). Se offline non è cambiato nulla, o se l'account è ancora vuoto, non chiede niente.
-- Il primo account che entra su un PC già in uso prende raccolte, visti, lista e chiavi che c'erano prima.
-- **Al primo accesso** su un PC (o da un browser o una TV), se le chiavi API o le preferenze di visione di lì sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di lì senza chiedere. Volume e audio muto restano di ogni dispositivo.
+### Entrare con un account (facoltativo)
 
-- **Password dimenticata**: l'amministratore dà una *Nuova password provvisoria* da *Gestisci gli account*.
+*Impostazioni → Account → Entra con un account*, oppure da «Chi guarda?». Il profilo in cui sei diventa il tuo account: quello che avevi già si unisce a quello dell'account, voce per voce, e vince la modifica più recente. Se l'account ha già un suo profilo su questo PC, entri in quello. Con l'account:
+
+- **Ti segue ovunque**: impostazioni, chiavi (TMDB, OpenSubtitles), preferenze di visione, visti, punti di ripresa e lista li ritrovi su ogni PC e TV dove entri, anche su un'installazione nuova, e riprendi esattamente da dove eri.
+- **Raccolte su ogni PC**: nomi e cartelle delle tue raccolte seguono l'account. Su un altro PC le raccolte compaiono già create; le cartelle che lì esistono con lo stesso percorso (anche su un disco con un'altra lettera) si collegano da sole, e una raccolta di quel PC con le stesse cartelle diventa la stessa (niente doppioni). Le altre restano «su un altro PC»: in *Impostazioni → Raccolte* scegli dove stanno su quel PC, oppure le togli dall'account. Se l'elenco online non ti torna, *Sovrascrivi l'account con le raccolte di questo PC* (chiede conferma) lo rimette uguale a quello del PC dove sei.
+- **Amici**: la condivisione delle raccolte con gli amici si accende solo da un profilo con account.
+- **Senza Internet** (o con il servizio account fermo) non cambia niente: si continua con il profilo, e in basso compare «Offline · si sincronizza quando torna la rete». Le modifiche fatte intanto partono da sole appena il servizio risponde e si uniscono a quelle fatte sugli altri PC: per ogni titolo e ogni impostazione vince la modifica più recente. Non c'è niente da scegliere.
+- **Chiavi API diverse**: al primo accesso, se le chiavi o le preferenze di visione del profilo sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di qui senza chiedere. Volume e audio muto restano di ogni dispositivo.
+- **Scollega l'account** (*Impostazioni → Account*): il profilo resta qui con tutto quello che ha e smette di sincronizzarsi; l'account resta online.
+- **Password dalla TV**: in «Chi guarda?» (o *Impostazioni → Account*) scegli **Entra con un account dal telefono**. La TV mostra un QR e un codice: inquadralo col telefono di casa, scrivi lì nome e password e la TV entra da sola. Se l'account ha una password provvisoria, il telefono chiede subito quella nuova. Serve solo per gli account che su quel PC non ci sono ancora: quelli già entrati dal PC si scelgono in «Chi guarda?».
+- **Senza password in «Chi guarda?»**: un profilo con account si apre scegliendo il nome; si può spegnere per il proprio account (*Impostazioni → Account → Accesso*), e allora serve la password.
+
+### Gli account
+
+- **Primo account**: sul PC dove è stato preparato il servizio, *Impostazioni → Account* propone «Crea l'account amministratore». Quello è il tuo.
+- **Altri account**: *Impostazioni → Persone*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata (finché non lo fai il profilo funziona, ma non si sincronizza). «Nuova password provvisoria» scollega l'account da tutti i PC.
+- **Cambio password**: *Impostazioni → Account → Cambia password*. Sugli altri PC il profilo continua a funzionare; per riprendere la sincronizzazione chiede la password nuova.
+- **Password dimenticata**: l'amministratore dà una *Nuova password provvisoria* da *Impostazioni → Persone*.
+- **Senza Internet** si può aprire un profilo con account anche scrivendo l'ultima password usata su quel PC.
 
 Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio account](#servizio-account) più sotto). Le password non lasciano mai il PC: al servizio arriva solo un'impronta.
 
@@ -174,9 +184,9 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
-- **Chi è sulla tua rete di casa** può entrare dalla TV scegliendo un nome (se l'account lo permette), e senza Internet anche con «Continua offline»: non esporre BunkerPlex su Internet.
+- **Chi è sulla tua rete di casa** può entrare in un profilo scegliendo il nome (per un profilo con account si può chiedere la password: *Impostazioni → Account*): non esporre BunkerPlex su Internet.
 - **«Nome utente o password sbagliati»** dopo un cambio di password fatto su un altro PC: usa la password nuova. Dopo 5 tentativi sbagliati l'account si blocca per 5 minuti.
-- **La pagina di accesso dice «Niente Internet»**: il PC non raggiunge il servizio account. Puoi continuare offline; quando la rete torna, BunkerPlex se ne accorge entro un minuto.
+- **«Offline · si sincronizza quando torna la rete»**: il PC non raggiunge il servizio account. Non serve fare niente: si continua con il profilo e, quando la rete torna, BunkerPlex se ne accorge entro un minuto e sincronizza da solo.
 - **Sulla TV il punto di ripresa non si salva**: aggiorna l'app della TV quando lo propone (serve la versione 1.4 o successiva).
 
 ## Per chi lo modifica
