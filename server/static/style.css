@@ -642,6 +642,7 @@ body:not(.kb) .snav.on:focus::before { background: var(--accent); }
 .panel .whotext p.sync { display: flex; align-items: center; gap: .5rem; margin: .3rem 0 0; font-weight: 600; color: var(--ok); }
 .sync::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; }
 .panel .whotext p.sync.warn { color: var(--warn); }
+.panel .whotext p.sync.local { color: var(--ink2); }
 .kv { display: grid; grid-template-columns: minmax(10rem, 18rem) 1fr; margin: 0; }
 .kv dt, .kv dd { margin: 0; padding: .8rem 0; border-top: 1px solid #ffffff0f; }
 .kv dt:first-of-type, .kv dt:first-of-type + dd { border-top: 0; }
@@ -755,6 +756,7 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .qrtile svg { display: block; width: 100%; height: 100%; }
 .apktext { min-width: 0; }
 .panel p.apkurl { color: var(--ink); font-weight: 600; word-break: break-all; }
+.panel p.paircode { color: var(--ink); font-size: 2.4rem; font-weight: 700; letter-spacing: .18em; margin: .4rem 0 .6rem; }
 
 /* Indirizzi e cartelle su altri PC */
 .kv dt small, .kv dd small { display: block; margin-top: .15rem; color: var(--ink2); font-size: .85rem; font-weight: 400; }
