@@ -1317,6 +1317,53 @@ function refreshPanel(i) {
     '</dl></div>';
 }
 
+// Impostazioni → Catalogo: la copia del catalogo nell'account
+function copyPanel(c) {
+  if (!c) return '';
+  var head = '<div class="panel"><h2>Copia nel tuo account</h2>';
+  if (!c.linked) {
+    return head + '<p>Con un account l\'elenco dei tuoi file, con la scheda di ognuno, resta salvato online: su un PC nuovo o dopo una reinstallazione ' +
+      'i titoli si riconoscono subito (anche quelli corretti a mano) e sai sempre cosa c\'è sugli altri PC e sui dischi che non hai collegati. I video restano dove sono.</p>' +
+      '<div class="actions"><a class="btn f" href="#/settings/account" data-key="copy-login">Entra con un account</a></div></div>';
+  }
+  var state = !c.enabled ? 'Spenta: l\'elenco online resta com\'era, ma non si aggiorna'
+    : c.supported === false ? 'Il servizio account va aggiornato per salvarla (vedi README → Servizio account)'
+    : c.last ? 'Aggiornata ' + ago(c.last) : 'In preparazione: la prima copia parte entro qualche minuto';
+  return head +
+    '<p>L\'elenco dei file delle tue raccolte, con la scheda di ognuno, resta salvato nel tuo account. Su un PC nuovo o dopo una reinstallazione i titoli si riconoscono subito, ' +
+    'comprese le correzioni fatte con «Correggi scheda», che valgono anche sugli altri PC con lo stesso file. I video non escono mai da qui.</p>' +
+    '<dl class="kv">' +
+      '<dt>Stato</dt><dd>' + esc(state) + '</dd>' +
+      '<dt>Da questo PC</dt><dd>' + c.here + ' file' + (c.restored ? ' · ' + c.restored + ' riconosciuti dalla copia' : '') + (c.fixed ? ' · ' + c.fixed + ' correzioni arrivate dagli altri PC' : '') + '</dd>' +
+      '<dt>In tutto l\'account</dt><dd>' + c.account + ' file' +
+        (c.elsewhere ? ' · <a class="link f" href="#/elsewhere" data-key="copy-elsewhere">' + c.elsewhere + ' che qui non ci sono</a>' : '') + '</dd>' +
+    '</dl>' +
+    '<label class="flabel" for="pcname">Nome di questo PC (lo vedi negli elenchi degli altri PC)</label>' +
+    '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(c.pc) + '">' +
+    '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' +
+    '<button class="setting f" data-act="catcopy" data-arg="' + (c.enabled ? 0 : 1) + '" data-key="catcopy">Copia del catalogo nell\'account<small>' +
+      (c.enabled ? 'Attiva' : 'Spenta') + '</small></button></div>';
+}
+
+// I titoli della copia del catalogo che su questo PC non ci sono
+async function elsewherePage() {
+  var r = await api('/catalog-copy/elsewhere');
+  var q = function (h) { return h >= 2000 ? '4K' : h >= 1000 ? '1080p' : h >= 700 ? '720p' : h ? 'SD' : ''; };
+  var body = r.groups.map(function (g) {
+    return '<div class="lib"><div class="head"><div class="name"><b>' + esc(g.folder || 'Cartella sconosciuta') + '</b><small>' + esc(g.pc) + '</small></div></div>' +
+      g.items.map(function (e) {
+        var what = e.kind === 'show'
+          ? e.count + (e.count === 1 ? ' episodio' : ' episodi') + (e.seasons.length ? ' · ' + (e.seasons.length === 1 ? 'stagione ' + e.seasons[0] : 'stagioni ' + e.seasons[0] + '–' + e.seasons[e.seasons.length - 1]) : '')
+          : 'film';
+        return '<div class="folder"><div class="where"><b>' + esc(e.title) + (e.year ? ' (' + e.year + ')' : '') + '</b><small>' + what + (q(e.q) ? ' · ' + q(e.q) : '') + '</small></div></div>';
+      }).join('') + '</div>';
+  }).join('');
+  return '<div class="page"><div class="toolbar"><h1>Titoli che qui non ci sono</h1></div><div class="panel">' +
+    '<p>Dalla copia del catalogo nel tuo account: file che stanno sugli altri PC o su dischi che a questo PC non sono collegati (o che non ci sono più). ' +
+    'Per guardarli collega il disco o apri BunkerPlex su quel PC.</p>' +
+    (body || '<p>Niente: tutto quello che c\'è nella copia si trova anche qui.</p>') + '</div></div>';
+}
+
 // Come sta il profilo rispetto all'account: {state: '' | ok | warn, text}
 function syncState() {
   var u = auth && auth.user;
@@ -1610,7 +1657,7 @@ async function settingsArea(area) {
       '<div class="actions" style="margin-top:0">' +
         '<button class="btn f" data-act="scan" data-key="scan">Cerca file nuovi</button>' +
         '<button class="btn f" data-act="refreshall" data-key="refreshall">Riscarica tutte le schede</button>' +
-      '</div></div>' + (i.tmdb ? refreshPanel(i) : '') +
+      '</div></div>' + (i.tmdb ? refreshPanel(i) : '') + (auth.cloud ? copyPanel(await api('/catalog-copy').catch(function () { return null; })) : '') +
       '<div class="panel"><h2>Chiave TMDB</h2>' +
       '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
         (inAccount ? ' Resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +
@@ -1652,7 +1699,8 @@ async function settingsArea(area) {
 
   if (area === 'updates') {
     var u = res[2];
-    return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.',
+    return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.' +
+        (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
       (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>') +
       (TV ? '' : await apkPanel('App per la TV e per il telefono')));
   }
@@ -1714,6 +1762,7 @@ function accountArea(i) {
         '<dt>Preferenze di visione</dt><dd>' + esc(prefs.charAt(0).toUpperCase() + prefs.slice(1)) + '</dd>' +
         '<dt>Visti, ripresa e La mia lista</dt><dd>' + (s.state === 'warn' ? 'Su questo PC, partono appena si può' : 'Sincronizzati') + '</dd>' +
         '<dt>Raccolte</dt><dd>Nomi e cartelle</dd>' +
+        '<dt>Catalogo</dt><dd><a class="link f" href="#/settings/catalog" data-key="kv-copy">Copia dei file con le loro schede</a></dd>' +
       '</dl>' +
       '<p class="kvnote">Senza Internet si continua come sempre: le modifiche si uniscono da sole al ritorno della rete.</p></div>' +
     '<div class="panel"><h2>Accesso</h2>' +
@@ -2969,6 +3018,15 @@ var actions = {
         }, function (e) { toast(e.message); });
       });
   },
+  catcopy: function (arg) {
+    post('/catalog-copy', { enabled: arg === '1' }).then(render, function (e) { toast(e.message); });
+  },
+  pcname: function () {
+    post('/catalog-copy', { pc_name: fieldValue('pcname') }).then(function (r) {
+      toast('Questo PC ora si chiama «' + r.pc + '»');
+      render();
+    }, function (e) { toast(e.message); });
+  },
   pwlater: function () {
     try { sessionStorage.setItem('fpPwLater', '1'); } catch (e) { /* niente */ }
     render();
@@ -3643,6 +3701,8 @@ var routes = [
   [/^#\/settings\/(\w+)$/, settingsArea],
   [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],
+  [/^#\/news$/, newsPage],
+  [/^#\/elsewhere$/, elsewherePage],
   [/^#\/tvlogin$/, function () {
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
@@ -3881,6 +3941,11 @@ function activityState() {
   } else if (i.update && !(u && u.phase)) {
     notes.push({ key: 'upd', title: 'Aggiornamento disponibile', text: 'Installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
+  if (i.updated) {
+    var ch = i.updated.changes || [];
+    notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
+      text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
+  }
   if (i.share_requests) {
     notes.push({ key: 'share' + i.share_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
       title: i.share_requests === 1 ? 'Un amico chiede di condividere le raccolte' : i.share_requests + ' richieste di condivisione' });
@@ -3922,6 +3987,33 @@ function activityRows(st) {
 }
 
 function activityOpen() { return !modal.hidden && modal.classList.contains('corner'); }
+
+// Appena aggiornato: un avviso una volta per dispositivo (poi resta nella campanella)
+function announceUpdate(u) {
+  if (!u || !u.to || player) return;
+  var seen = '';
+  try { seen = localStorage.getItem('fpNews') || ''; } catch (e) { /* niente */ }
+  if (seen === u.to) return;
+  try { localStorage.setItem('fpNews', u.to); } catch (e) { /* niente */ }
+  toast('BunkerPlex è stato aggiornato: le novità sono nella campanella in alto');
+}
+
+// La pagina delle novita' dell'ultimo aggiornamento
+async function newsPage() {
+  var i = await api('/info');
+  var u = i.updated;
+  if (!u) {
+    return '<div class="page"><div class="panel"><h1>Novità</h1><p>Nessun aggiornamento negli ultimi giorni. ' +
+      'La versione installata e gli aggiornamenti sono in Impostazioni → Aggiornamenti.</p>' +
+      '<div class="actions"><a class="btn f" href="#/settings/updates" data-key="news-upd">Impostazioni → Aggiornamenti</a></div></div></div>';
+  }
+  var when = new Date(u.at * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
+  var list = (u.changes || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
+  return '<div class="page"><div class="panel"><h1>BunkerPlex è stato aggiornato</h1>' +
+    '<p>Il ' + esc(when) + ' (versione ' + esc(u.to) + ').</p>' +
+    (list ? '<h2>Novità</h2><ul class="news">' + list + '</ul>' : '<p>L\'elenco delle novità non è ancora arrivato da GitHub: riprova tra qualche minuto.</p>') +
+    '<div class="actions"><a class="btn primary f" data-autofocus href="#/home" data-key="news-home">Torna alla Home</a></div></div></div>';
+}
 
 function openActivity() {
   if (activityOpen()) { closeModal(); return; }
@@ -3985,6 +4077,7 @@ function pollActivity() {
     var wasScanning = act.info && act.info.scanning;
     act.info = i;
     if (wasScanning && !i.scanning) libsLoadedAt = 0;      // finita la lettura: raccolte e menu da rileggere
+    announceUpdate(i.updated);
     var want = !i.login && (i.update || (act.upd && act.upd.phase)) && Date.now() - act.lastUpd > 15000;
     return want ? api('/update').then(function (u) { act.upd = u; act.lastUpd = Date.now(); }, function () {}) : null;
   }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });

@@ -399,6 +399,11 @@ def init_db():
         user_id INT, k TEXT, kind TEXT, a INT, b INT, c INT, pos REAL, w INT, fav REAL, lp REAL, t REAL,
         PRIMARY KEY(user_id, k));
     CREATE INDEX IF NOT EXISTS cloud_state_a ON cloud_state(user_id, kind, a);
+    -- Copia del catalogo nell'account: le righe di tutti i PC dell'account
+    -- (k = impronta@PC; v = JSON, NULL se il file non c'e' piu')
+    CREATE TABLE IF NOT EXISTS cloud_catalog(
+        user_id INT, k TEXT, fp TEXT, v TEXT, t REAL, PRIMARY KEY(user_id, k));
+    CREATE INDEX IF NOT EXISTS cloud_catalog_fp ON cloud_catalog(fp);
     """)
     # library_id: la raccolta a cui appartiene il titolo (aggiunta in un secondo momento)
     # collection_id: la saga TMDB di cui il film fa parte (id della tabella collections);
@@ -421,11 +426,18 @@ def init_db():
                           ("items", "meta_at REAL"), ("items", "meta_tries INT DEFAULT 0"),
                           ("items", "released TEXT"),
                           ("shows", "meta_at REAL"), ("shows", "meta_tries INT DEFAULT 0"),
-                          ("shows", "status TEXT"), ("shows", "next_air TEXT"), ("shows", "last_air TEXT")):
+                          ("shows", "status TEXT"), ("shows", "next_air TEXT"), ("shows", "last_air TEXT"),
+                          # Copia del catalogo (vedi push_catalog): fp = impronta del file
+                          # ('-' se non si puo' calcolare); manual = quando la scheda e' stata
+                          # scelta a mano con «Correggi scheda» (0: trovata da sola)
+                          ("items", "fp TEXT"), ("items", "manual REAL DEFAULT 0"),
+                          ("shows", "manual REAL DEFAULT 0"),
+                          ("users", "catalog_rev INT DEFAULT 0"), ("users", "catalog_at REAL DEFAULT 0")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
     con.execute("CREATE INDEX IF NOT EXISTS items_tmdb ON items(tmdb_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS items_fp ON items(fp)")
     con.execute("CREATE INDEX IF NOT EXISTS shows_tmdb ON shows(tmdb_id)")
     con.commit()
     con.close()
@@ -802,6 +814,7 @@ def apply_movie(con, item_id, tmdb_id):
          ", ".join(directors), json.dumps(actors, ensure_ascii=False),
          round(m.get("vote_average") or 0, 1), cast_people(credits), time.time(),
          m.get("release_date") or None, item_id))
+    con.commit()                  # la saga puo' voler scaricare: il database non resta bloccato intanto
     set_collection(con, item_id, m)
 
 
@@ -1430,6 +1443,19 @@ def scan():
                 (i["duration"], i["vcodec"], i["acodec"], i["pix"], i["width"], i["height"], r["id"]))
             con.commit()
 
+        # Impronta di ogni file (dimensione + primi e ultimi 64 KB): riconosce lo stesso
+        # video su un altro PC o dopo una reinstallazione (copia del catalogo)
+        todo = con.execute("SELECT id, path FROM items WHERE fp IS NULL").fetchall()
+        for n, r in enumerate(todo, 1):
+            if n % 50 == 1:
+                state["message"] = f"Calcolo le impronte dei file... {n} di {len(todo)}"
+            if not os.path.isfile(r["path"]):
+                continue              # disco scollegato: si calcola quando torna
+            con.execute("UPDATE items SET fp=? WHERE id=?", (os_hash(r["path"]) or "-", r["id"]))
+            if n % 50 == 0:
+                con.commit()
+        con.commit()
+
         if tmdb_key():
             state["message"] = "Scarico locandine e schede..."
             try:
@@ -1438,12 +1464,18 @@ def scan():
                 for n, r in enumerate(todo, 1):
                     state["message"] = f"Scarico locandine e schede dei film... {n} di {len(todo)}"
                     tmdb_id = r["tmdb_id"]   # gia' abbinato: si riscarica la stessa scheda
-                    if not tmdb_id:
+                    hint = None if tmdb_id else catalog_hint(con, [r["fp"]], "movie")
+                    if hint:                 # lo stesso file e' nella copia del catalogo: niente ricerca
+                        tmdb_id = hint[0]
+                    elif not tmdb_id:
                         res = find_movie(r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
                         try:
+                            # (nessuna scrittura prima: il database resta libero mentre si scarica)
                             apply_movie(con, r["id"], tmdb_id)
+                            if hint and hint[1]:
+                                con.execute("UPDATE items SET manual=? WHERE id=?", (hint[1], r["id"]))
                         except urllib.error.HTTPError as ex:
                             if ex.code != 404:
                                 raise
@@ -1467,12 +1499,18 @@ def scan():
                 state["message"] = "Scarico le schede delle serie..."
                 for r in con.execute("SELECT * FROM shows WHERE meta_done=0").fetchall():
                     tmdb_id = r["tmdb_id"]
-                    if not tmdb_id:
+                    hint = None if tmdb_id else catalog_hint(con, [x[0] for x in con.execute(
+                        "SELECT fp FROM items WHERE show_id=? LIMIT 30", (r["id"],))], "episode")
+                    if hint:                 # episodi gia' nella copia del catalogo: si sa che serie e'
+                        tmdb_id = hint[0]
+                    elif not tmdb_id:
                         res = find_show(con, r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
                         try:
                             apply_show(con, r["id"], tmdb_id)
+                            if hint and hint[1]:
+                                con.execute("UPDATE shows SET manual=? WHERE id=?", (hint[1], r["id"]))
                             merge_duplicate_show(con, r["id"])
                         except urllib.error.HTTPError as ex:
                             if ex.code != 404:
@@ -1512,6 +1550,8 @@ def scan():
     finally:
         con.close()
         state["last_scan"] = time.time()
+        catalog_wake.set()          # catalogo cambiato: la copia nell'account si rifa' subito
+        sync_soon()
         again = state.pop("again", False)
         state["scanning"] = again
         scan_lock.release()
@@ -1974,6 +2014,7 @@ def startup():
     init_db()
     migrate_catalog()
     ensure_profile()
+    threading.Thread(target=note_update, daemon=True).start()
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=drives_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
@@ -2295,6 +2336,8 @@ def link_local(con, uid, cloud_id):
     invece, se l'account ne ha gia' di diverse, si chiede quali tenere."""
     con.execute("UPDATE users SET cloud_id=?, state_rev=0 WHERE id=?", (cloud_id, uid))
     con.execute("DELETE FROM cloud_state WHERE user_id=?", (uid,))
+    con.execute("DELETE FROM cloud_catalog WHERE user_id=?", (uid,))
+    con.execute("UPDATE users SET catalog_rev=0 WHERE id=?", (uid,))
     # L'elenco delle raccolte arriva dall'account; quelle di qui ci si aggiungono (sync_libraries)
     con.execute("DELETE FROM user_settings WHERE user_id=? AND k='libraries'", (uid,))
     con.execute("UPDATE user_items SET dirty=1 WHERE user_id=?", (uid,))
@@ -2317,6 +2360,8 @@ def unlink_profile(con, uid):
     con.execute("UPDATE users SET cloud_id=NULL, token=NULL, vsalt=NULL, vcheck=NULL, admin=0, must_change=0, "
                 "state_rev=0, last_sync=0 WHERE id=?", (uid,))
     con.execute("DELETE FROM cloud_state WHERE user_id=?", (uid,))
+    con.execute("DELETE FROM cloud_catalog WHERE user_id=?", (uid,))
+    con.execute("UPDATE users SET catalog_rev=0 WHERE id=?", (uid,))
     con.execute("DELETE FROM user_settings WHERE user_id=? AND k='libraries'", (uid,))
     # Le chiavi in attesa di scelta tornano del profilo
     for r in con.execute("SELECT k, v FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (uid,)).fetchall():
@@ -2751,7 +2796,7 @@ async def auth_profile_delete(request: Request):
         if not heir:
             raise HTTPException(400, "È l'unico profilo di questo PC: puoi rinominarlo, non toglierlo")
         token = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()["token"]
-        for table in ("user_items", "user_shows", "user_settings", "cloud_state", "user_sessions"):
+        for table in ("user_items", "user_shows", "user_settings", "cloud_state", "cloud_catalog", "user_sessions"):
             con.execute(f"DELETE FROM {table} WHERE user_id=?", (u["id"],))
         con.execute("DELETE FROM users WHERE id=?", (u["id"],))
         con.commit()
@@ -3147,6 +3192,8 @@ def sync_loop():
                     print("Sincronizzazione account:", ex.detail, flush=True)
             except Exception as ex:
                 print("Sincronizzazione account:", repr(ex), flush=True)
+        else:
+            catalog_wake.clear()      # copia del catalogo fatta per tutti gli account
 
 
 def sync_user(uid, token):
@@ -3157,6 +3204,10 @@ def sync_user(uid, token):
     push_state(uid, token)
     pull_state(uid, token)
     apply_cloud_state(uid)
+    try:
+        sync_catalog(uid, token)
+    except accounts.CloudError as ex:     # la copia del catalogo non ferma il resto
+        print("Copia del catalogo:", ex.detail, flush=True)
     con = db(raw=True)
     try:
         con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
@@ -3312,12 +3363,356 @@ def apply_cloud_state(uid):
         con.close()
 
 
+# ---- Copia del catalogo nell'account ---------------------------------------------
+# Per ogni file video delle raccolte dell'account, una riga nel servizio account:
+# l'impronta del file (riconosce lo stesso video su un altro PC o dopo una
+# reinstallazione) con la scheda abbinata, il titolo, la qualita' e dove sta. Serve a:
+#  - non rifare il riconoscimento: un file gia' nella copia prende subito la sua
+#    scheda, comprese le correzioni fatte a mano con «Correggi scheda»;
+#  - portare quelle correzioni sugli altri PC che hanno lo stesso file;
+#  - sapere cosa c'e' sugli altri PC e sui dischi che qui non ci sono (o non ci
+#    sono piu'): Impostazioni → Catalogo → «Titoli che qui non ci sono».
+# I video non passano mai di qui. Si spegne da Impostazioni (catalog_copy = false).
+
+CATALOG_EVERY = 30 * 60          # senza novita', la copia si ricontrolla ogni mezz'ora
+CATALOG_PUSH = 400               # righe mandate per giro di sincronizzazione (10 chiamate)
+catalog_wake = threading.Event() # scansione finita o scheda corretta: la copia va rifatta subito
+catalog_state = {"supported": None, "checked": 0.0, "restored": 0, "fixed": 0, "last": {}}
+
+
+def pc_id():
+    """Un nome breve e fisso per questa installazione (la parte dopo @ nelle righe della copia)."""
+    with config_lock:
+        if not config.get("pc_id"):
+            config["pc_id"] = secrets.token_hex(4)
+            save_config()
+        return config["pc_id"]
+
+
+def pc_name():
+    """Come si chiama questo PC nella copia del catalogo (si cambia da Impostazioni → Catalogo)."""
+    if config.get("pc_name"):
+        return config["pc_name"]
+    return SERVER_NAME if SERVER_NAME != "BunkerPlex" else "PC " + pc_id()[:4].upper()
+
+
+def catalog_on(uid):
+    return user_setting(uid, "catalog_copy") is not False
+
+
+def catalog_hint(con, fps, kind):
+    """La scheda di un file secondo la copia del catalogo (di qualsiasi account di
+    questo PC): (id TMDB, quando e' stata scelta a mano o 0). Vince la correzione a mano piu' recente."""
+    fps = [f for f in fps if f and f != "-"]
+    if not fps:
+        return None
+    best = None
+    for r in con.execute(f"SELECT v, t FROM cloud_catalog WHERE fp IN ({','.join('?' * len(fps))}) "
+                         "AND v IS NOT NULL", fps).fetchall():
+        try:
+            v = json.loads(r["v"])
+        except ValueError:
+            continue
+        if not isinstance(v, dict) or v.get("m") != kind or not v.get("tmdb"):
+            continue
+        key = (float(v.get("fix") or 0), r["t"])
+        if best is None or key > best[0]:
+            best = (key, int(v["tmdb"]), float(v.get("fix") or 0))
+    if best:
+        catalog_state["restored"] += 1
+        return best[1], best[2]
+    return None
+
+
+def catalog_rows(con, uid):
+    """Le righe della copia per i file delle raccolte dell'account, su questo PC: {chiave: valore}."""
+    with config_lock:
+        libs = {l["id"]: l["name"] for l in config.get("libraries") or [] if l.get("owner") == uid}
+    if not libs:
+        return {}
+    me, where = pc_id(), pc_name()
+    out = {}
+    for r in con.execute(
+            "SELECT i.kind, i.fp, i.tmdb_id, i.manual, i.title, i.year, i.height, i.size, i.path, i.library_id, "
+            "i.season, i.episode, s.tmdb_id AS show_tmdb, s.manual AS show_manual, s.title AS show_title, "
+            "s.year AS show_year FROM items i LEFT JOIN shows s ON s.id=i.show_id "
+            f"WHERE i.library_id IN ({','.join('?' * len(libs))}) AND i.fp IS NOT NULL AND i.fp<>'-'",
+            tuple(libs)).fetchall():
+        ep = r["kind"] == "episode"
+        v = {"m": "episode" if ep else "movie",
+             "tmdb": r["show_tmdb"] if ep else r["tmdb_id"],
+             "fix": round(float((r["show_manual"] if ep else r["manual"]) or 0), 1),
+             "ti": (r["show_title"] if ep else r["title"]) or "",
+             "y": (r["show_year"] if ep else r["year"]) or None,
+             "q": r["height"] or 0, "sz": r["size"] or 0,
+             "lib": libs.get(r["library_id"], ""), "at": display_path(r["path"]), "pc": where}
+        if ep:
+            v.update(s=r["season"], e=r["episode"], et=r["title"] or "")
+        out[f"{r['fp']}@{me}"] = v
+    return out
+
+
+def remember_catalog(con, uid, rows):
+    con.executemany("INSERT INTO cloud_catalog(user_id, k, fp, v, t) VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(user_id, k) DO UPDATE SET v=excluded.v, t=excluded.t WHERE excluded.t >= cloud_catalog.t",
+                    [(uid, r["k"], r["k"].split("@", 1)[0], None if r.get("v") is None else json.dumps(r["v"]),
+                      float(r["t"])) for r in rows])
+
+
+def push_catalog(con, uid, token):
+    """Manda le righe di questo PC cambiate da quelle che ha l'account (e toglie i file spariti)."""
+    me = "@" + pc_id()
+    mine = catalog_rows(con, uid)
+    sent = {r["k"]: r["v"] for r in con.execute(
+        "SELECT k, v FROM cloud_catalog WHERE user_id=? AND k LIKE ?", (uid, "%" + me))}
+    now = time.time()
+    todo = [{"k": k, "v": v, "t": now} for k, v in mine.items() if sent.get(k) != json.dumps(v)]
+    todo += [{"k": k, "v": None, "t": now} for k, v in sent.items() if k not in mine and v is not None]
+    for part in chunks(todo[:CATALOG_PUSH]):
+        accounts.call("POST", "/catalog", {"rows": part}, token)
+        remember_catalog(con, uid, part)
+        con.commit()
+    return len(todo) > CATALOG_PUSH          # ne restano: al prossimo giro
+
+
+def pull_catalog(con, uid, token):
+    """Le righe cambiate dall'ultima volta (anche quelle degli altri PC). Torna quante."""
+    since = con.execute("SELECT catalog_rev FROM users WHERE id=?", (uid,)).fetchone()[0] or 0
+    top, got = since, 0
+    while True:
+        res = accounts.call("GET", f"/catalog?since={since}", token=token)
+        rows = res.get("rows") or []
+        if rows:
+            remember_catalog(con, uid, rows)
+            top = max(top, max(int(r["rev"]) for r in rows))
+            got += len(rows)
+            con.commit()
+        if not res.get("more") or not rows:
+            break
+        since = max(int(r["rev"]) for r in rows)
+    con.execute("UPDATE users SET catalog_rev=? WHERE id=?", (top, uid))
+    con.commit()
+    return got
+
+
+def apply_cloud_catalog(con):
+    """Le correzioni fatte a mano su un altro PC valgono anche per lo stesso file qui
+    (se qui non ce n'e' una piu' recente). La scheda si riscarica alla prossima scansione."""
+    me = "@" + pc_id()
+    changed = 0
+    for r in con.execute("SELECT c.k, c.v, i.id, i.kind, i.tmdb_id, i.manual, i.show_id, s.tmdb_id AS show_tmdb, "
+                         "s.manual AS show_manual FROM cloud_catalog c JOIN items i ON i.fp=c.fp "
+                         "LEFT JOIN shows s ON s.id=i.show_id WHERE c.v IS NOT NULL AND c.k NOT LIKE ?",
+                         ("%" + me,)).fetchall():
+        try:
+            v = json.loads(r["v"])
+        except ValueError:
+            continue
+        fix, tid = float(v.get("fix") or 0), v.get("tmdb")
+        if not fix or not tid:
+            continue
+        if r["kind"] == "movie" and v.get("m") == "movie" and fix > (r["manual"] or 0) and tid != r["tmdb_id"]:
+            con.execute("UPDATE items SET tmdb_id=?, manual=?, meta_done=0 WHERE id=?", (tid, fix, r["id"]))
+            changed += 1
+        elif r["kind"] == "episode" and v.get("m") == "episode" and r["show_id"] \
+                and fix > (r["show_manual"] or 0) and tid != r["show_tmdb"]:
+            con.execute("UPDATE shows SET tmdb_id=?, manual=?, meta_done=0 WHERE id=?", (tid, fix, r["show_id"]))
+            changed += 1
+    con.commit()
+    if changed:
+        catalog_state["fixed"] += changed
+        print(f"Correzioni arrivate dalla copia del catalogo: {changed}", flush=True)
+        scan_async()
+
+
+def sync_catalog(uid, token):
+    """Dentro la sincronizzazione dell'account: copia del catalogo (se l'account la vuole
+    e il servizio la conosce: uno vecchio risponde 404 e si riprova dopo 6 ore).
+    Le novita' degli altri PC si leggono a ogni giro (una chiamata); le righe di
+    questo PC si mandano subito dopo un cambiamento, altrimenti ogni mezz'ora."""
+    if not catalog_on(uid):
+        return
+    now = time.time()
+    if catalog_state["supported"] is False and now - catalog_state["checked"] < 6 * 3600:
+        return
+    more = False
+    con = db(raw=True)
+    try:
+        try:
+            got = pull_catalog(con, uid, token)
+        except accounts.CloudError as ex:
+            if ex.status != 404:
+                raise
+            catalog_state.update(supported=False, checked=now)
+            print("Copia del catalogo: il servizio account va aggiornato (vedi README)", flush=True)
+            return
+        catalog_state.update(supported=True, checked=now)
+        if got:
+            apply_cloud_catalog(con)
+        if catalog_wake.is_set() or now - catalog_state["last"].get(uid, 0) >= CATALOG_EVERY:
+            more = push_catalog(con, uid, token)
+            con.execute("UPDATE users SET catalog_at=? WHERE id=?", (time.time(), uid))
+            con.commit()
+            catalog_state["last"][uid] = 0 if more else time.time()
+    finally:
+        con.close()
+    if more:                       # ne restano (prima copia): si continua subito, a blocchi
+        sync_soon()
+
+
+# Le righe degli altri PC (quelle di questo PC per file che qui non ci sono piu' stanno per
+# essere tolte dalla copia) per file che su questo PC non ci sono
+ELSEWHERE_SQL = ("FROM cloud_catalog c WHERE c.user_id=? AND c.v IS NOT NULL AND c.k NOT LIKE ? "
+                 "AND NOT EXISTS (SELECT 1 FROM items i WHERE i.fp=c.fp)")
+
+
+@app.get("/api/catalog-copy")
+def catalog_copy_status():
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        return {"linked": False}
+    con = db(raw=True)
+    try:
+        me = "@" + pc_id()
+        row = con.execute("SELECT catalog_at FROM users WHERE id=?", (u["id"],)).fetchone()
+        return {
+            "linked": True, "enabled": catalog_on(u["id"]), "supported": catalog_state["supported"],
+            "pc": pc_name(), "last": row["catalog_at"] if row else 0,
+            "here": con.execute("SELECT COUNT(*) FROM cloud_catalog WHERE user_id=? AND v IS NOT NULL AND k LIKE ?",
+                                (u["id"], "%" + me)).fetchone()[0],
+            "account": con.execute("SELECT COUNT(DISTINCT fp) FROM cloud_catalog WHERE user_id=? AND v IS NOT NULL",
+                                   (u["id"],)).fetchone()[0],
+            "elsewhere": con.execute("SELECT COUNT(DISTINCT c.fp) " + ELSEWHERE_SQL, (u["id"], "%" + me)).fetchone()[0],
+            "restored": catalog_state["restored"], "fixed": catalog_state["fixed"],
+        }
+    finally:
+        con.close()
+
+
+@app.post("/api/catalog-copy")
+async def catalog_copy_set(request: Request):
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        raise HTTPException(400, "Serve un account per la copia del catalogo")
+    body = await read_json(request)
+    if "enabled" in body:
+        put_user_setting(u["id"], "catalog_copy", bool(body["enabled"]))
+    if "pc_name" in body:
+        name = re.sub(r"\s+", " ", str(body["pc_name"] or "")).strip()[:30]
+        with config_lock:
+            config["pc_name"] = name
+            save_config()
+    catalog_wake.set()
+    sync_soon()
+    return {"ok": True, "pc": pc_name()}
+
+
+@app.get("/api/catalog-copy/elsewhere")
+def catalog_elsewhere():
+    """I titoli della copia che su questo PC non ci sono: sugli altri PC dell'account,
+    o su dischi che qui non sono mai stati collegati (o che non ci sono piu')."""
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        return {"groups": [], "total": 0}
+    con = db(raw=True)
+    try:
+        rows = con.execute("SELECT c.v " + ELSEWHERE_SQL, (u["id"], "%@" + pc_id())).fetchall()
+    finally:
+        con.close()
+    def parent(path):
+        return re.split(r"[\\/](?=[^\\/]*$)", path)[0] if re.search(r"[\\/]", path) else path
+
+    def common(dirs):
+        """La cartella che contiene tutte quelle date (es. quella della serie sopra le stagioni)."""
+        parts = [re.split(r"[\\/]", d) for d in dirs]
+        same = []
+        for bits in zip(*parts):
+            if any(b.lower() != bits[0].lower() for b in bits):
+                break
+            same.append(bits[0])
+        sep = "\\" if "\\" in dirs[0] else "/"
+        return sep.join(same) or dirs[0]
+
+    # Prima ogni titolo (una serie e' una voce sola, con tutti i suoi episodi), poi per PC e cartella
+    titles = {}
+    for (raw,) in rows:
+        try:
+            v = json.loads(raw)
+        except ValueError:
+            continue
+        at = str(v.get("at") or "")
+        pc = str(v.get("pc") or "")
+        key = (pc, "show", v.get("tmdb") or v.get("ti")) if v.get("m") == "episode" else (pc, "movie", at)
+        e = titles.setdefault(key, {"kind": key[1], "title": v.get("ti") or "", "year": v.get("y"),
+                                    "q": 0, "count": 0, "seasons": set(), "dirs": set()})
+        e["q"] = max(e["q"], int(v.get("q") or 0))
+        e["count"] += 1
+        e["dirs"].add(parent(at))
+        if v.get("s") is not None:
+            e["seasons"].add(v["s"])
+    groups = {}
+    for (pc, kind, _), e in titles.items():
+        dirs = sorted(e.pop("dirs"))
+        folder = common(dirs) if kind == "show" and len(dirs) > 1 else dirs[0]
+        if kind == "show" and len(dirs) == 1 and re.search(r"(?:season|stagione|staffel|serie|\bs)\s*\d+", folder, re.I):
+            folder = parent(folder)          # un'unica cartella di stagione: si mostra quella della serie
+        e["seasons"] = sorted(e["seasons"])
+        groups.setdefault((pc, folder if kind == "movie" else parent(folder)), []).append(e)
+    out = [{"pc": pc, "folder": folder, "items": sorted(items, key=lambda e: norm_title(e["title"]))}
+           for (pc, folder), items in sorted(groups.items())]
+    return {"groups": out, "total": len(titles)}
+
+
 # ---- Aggiornamenti da GitHub ----------------------------------------------
 # Il lavoro lo fa updater.py: controllo ogni 12 ore, installazione automatica
 # quando nessuno sta guardando (si puo' spegnere) oppure a richiesta, da PC o TV.
 
 def auto_update():
     return config.get("auto_update", True) is not False
+
+
+# Dopo un aggiornamento: la notifica «BunkerPlex aggiornato», con le novita',
+# resta nella campanella per una settimana (ogni dispositivo la vede una volta).
+NOTICE_DAYS = 7
+
+
+def note_update():
+    """All'avvio: se il programma non e' piu' quello dell'ultima volta, e' stato
+    aggiornato. Le novita' sono i messaggi dei commit nel mezzo (da GitHub)."""
+    now = updater.current_commit()
+    if not now:
+        return
+    with config_lock:
+        before = config.get("seen_commit")
+        if before == now:
+            return
+        config["seen_commit"] = now
+        if before:
+            config["update_notice"] = {"from": before, "to": now, "at": time.time(), "changes": None}
+        save_config()
+    if not before:
+        return                     # prima installazione: niente da annunciare
+    print("BunkerPlex aggiornato:", before[:7], "->", now[:7], flush=True)
+    for wait in (0, 60, 600):      # la rete puo' non essere ancora pronta
+        time.sleep(wait)
+        try:
+            found = updater.changes(before, now)
+        except Exception as ex:
+            print("Novita' dell'aggiornamento non lette:", repr(ex), flush=True)
+            continue
+        with config_lock:
+            n = config.get("update_notice") or {}
+            if n.get("to") == now:
+                n["changes"] = found
+                save_config()
+        return
+
+
+def update_notice():
+    n = config.get("update_notice")
+    if not n or time.time() - float(n.get("at") or 0) > NOTICE_DAYS * DAY:
+        return None
+    return {"to": str(n.get("to") or "")[:7], "at": n.get("at"), "changes": n.get("changes") or []}
 
 
 def update_json():
@@ -3461,6 +3856,7 @@ def info():
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
             "apk_version": apk_code, "apk_version_name": apk_name,
             "update": updater.available(),
+            "updated": update_notice(),      # appena aggiornato: le novita'
             # Richieste di condivisione degli amici ancora da approvare
             "share_requests": con.execute(
                 "SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] if share_on() else 0,
@@ -3815,14 +4211,18 @@ async def match(request: Request):
         check.close()
     con = db(raw=True)
     try:
+        # manual: scelta a mano, da riprendere su un'installazione nuova o sugli altri PC (copia del catalogo)
         if body.get("kind") == "movie":
             apply_movie(con, int(body["id"]), int(body["tmdb_id"]))
+            con.execute("UPDATE items SET manual=? WHERE id=?", (time.time(), int(body["id"])))
         else:
             apply_show(con, int(body["id"]), int(body["tmdb_id"]))
             kept = merge_duplicate_show(con, int(body["id"]))
+            con.execute("UPDATE shows SET manual=? WHERE id=?", (time.time(), kept))
             con.commit()
             enrich_episodes(con, get_show(con, kept))
         con.commit()
+        catalog_wake.set()
         return {"ok": True}
     except (urllib.error.URLError, TimeoutError):
         raise HTTPException(502, "Non riesco a contattare TMDB")

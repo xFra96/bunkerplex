@@ -1,8 +1,8 @@
 // BunkerPlex - account e impostazioni sincronizzate (Cloudflare Worker + D1).
 //
 // I server BunkerPlex di casa parlano con questo servizio: login, cambio
-// password, impostazioni dell'account, visti / punti di ripresa / La mia lista.
-// Le cartelle dei video NON passano di qui: restano su ogni PC.
+// password, impostazioni dell'account, visti / punti di ripresa / La mia lista,
+// copia del catalogo (l'elenco dei file con la loro scheda: i video non passano mai di qui).
 //
 // La password non arriva mai in chiaro: il server di casa manda una "verifica"
 // (PBKDF2-SHA256, 200.000 giri, sale = "bunkerplex:" + nome utente). Qui se ne
@@ -247,6 +247,33 @@ async function route(request, env) {
     return json({ ok: true, saved: stmts.length, rev });
   }
 
+  // ---- Copia del catalogo: un file per riga, chiave "<impronta>@<PC>"; vince t piu' recente.
+  //      v = null: il file non c'e' piu' (resta come riga vuota, cosi' lo sanno anche gli altri PC)
+  if (path === '/catalog' && method === 'GET') {
+    const since = Number(url.searchParams.get('since') || 0);
+    const rows = await env.DB.prepare(
+      'SELECT k, v, t, rev FROM catalog WHERE user_id = ? AND rev > ? ORDER BY rev LIMIT 2000'
+    ).bind(user.id, since).all();
+    return json({ rows: rows.results.map((r) => ({ ...r, v: JSON.parse(r.v) })), more: rows.results.length === 2000 });
+  }
+  if (path === '/catalog' && method === 'POST') {
+    const b = await body(request);
+    const rows = Array.isArray(b.rows) ? b.rows.slice(0, MAX_ROWS) : [];
+    const rev = Date.now();
+    const stmts = [];
+    for (const r of rows) {
+      if (!r || !/^[0-9a-f]{16}@[0-9a-z]{4,16}$/.test(String(r.k)) || typeof r.t !== 'number') continue;
+      const v = JSON.stringify(r.v === undefined ? null : r.v);
+      if (v.length > 2000) continue;
+      stmts.push(env.DB.prepare(
+        'INSERT INTO catalog(user_id, k, v, t, rev) VALUES(?,?,?,?,?) ' +
+        'ON CONFLICT(user_id, k) DO UPDATE SET v = excluded.v, t = excluded.t, rev = excluded.rev WHERE excluded.t > catalog.t'
+      ).bind(user.id, r.k, v, Math.min(r.t, now() + 60), rev));
+    }
+    if (stmts.length) await env.DB.batch(stmts);
+    return json({ ok: true, saved: stmts.length, rev });
+  }
+
   // ---- Gestione account (solo amministratori)
   if (path.startsWith('/admin/')) {
     if (!user.admin) fail(403, "Solo l'amministratore può gestire gli account");
@@ -292,6 +319,7 @@ async function route(request, env) {
           env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM settings WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM state WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM catalog WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id)
         ]);
         return json({ ok: true });
