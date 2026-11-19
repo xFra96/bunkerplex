@@ -46,3 +46,16 @@ CREATE TABLE IF NOT EXISTS state(
   PRIMARY KEY(user_id, k)
 );
 CREATE INDEX IF NOT EXISTS state_rev ON state(user_id, rev);
+
+-- Copia del catalogo: un file video per riga, riconosciuto dall'impronta del file
+-- (k = "<impronta>@<PC>"). v: JSON con la scheda abbinata (ID TMDB, correzione
+-- fatta a mano o no), titolo, qualita', dove sta. v = 'null': il file non c'e' piu'.
+CREATE TABLE IF NOT EXISTS catalog(
+  user_id INTEGER NOT NULL,
+  k TEXT NOT NULL,
+  v TEXT,
+  t REAL NOT NULL,
+  rev INTEGER NOT NULL,
+  PRIMARY KEY(user_id, k)
+);
+CREATE INDEX IF NOT EXISTS catalog_rev ON catalog(user_id, rev);

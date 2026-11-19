@@ -228,6 +228,45 @@ def token():
     return ""
 
 
+def current_commit():
+    """Il commit con cui sta girando il programma: quello della copia di sviluppo
+    (git) oppure quello installato dall'ultimo aggiornamento."""
+    g = PROGRAM / ".git"
+    if g.is_dir():
+        try:
+            head = (g / "HEAD").read_text("ascii").strip()
+            if not head.startswith("ref: "):
+                return head
+            ref = head[5:].strip()
+            try:
+                return (g / ref).read_text("ascii").strip()
+            except OSError:
+                for line in (g / "packed-refs").read_text("ascii").splitlines():
+                    parts = line.split()
+                    if len(parts) == 2 and parts[1] == ref:
+                        return parts[0]
+        except OSError:
+            pass
+        return ""
+    return str(_state().get("commit") or "")
+
+
+def changes(old, new, limit=20):
+    """Le novita' tra due commit, come elenco di frasi (dai messaggi dei commit)."""
+    cfg = _config()
+    if not cfg or not old or not new:
+        return []
+    data = json.loads(_api(cfg, f"compare/{old}...{new}", token(), timeout=20))
+    out = []
+    for c in reversed(data.get("commits") or []):         # dalla piu' recente
+        if len(c.get("parents") or []) > 1:
+            continue
+        line = str((c.get("commit") or {}).get("message") or "").split("\n", 1)[0].strip()
+        if line and line not in out:
+            out.append(line)
+    return out[:limit]
+
+
 def _fetch(url, accept, tok, timeout=30, dest=None):
     """Scarica da GitHub. I rimandi verso altri server (pacchetti, allegati) si
     seguono a mano e senza token: il loro indirizzo e' gia' firmato."""
