@@ -7,6 +7,19 @@
 # Si puo' rilanciare quando si vuole: rimette a posto quello che manca.
 cd "$(dirname "$0")/.." || exit 1
 
+# Aperto dal Finder il Terminale non sempre trova il comando docker: con
+# l'installazione "per l'utente" Docker Desktop lo mette in ~/.docker/bin, che
+# non e' nel PATH. Si aggiungono a mano i posti dove puo' stare.
+PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.docker/bin:/Applications/Docker.app/Contents/Resources/bin:$HOME/Applications/Docker.app/Contents/Resources/bin"
+export PATH
+
+# Lo zip scaricato da Internet marca ogni file come "da Internet" (quarantena) e
+# macOS blocca il doppio clic. Dopo il primo via libera si toglie a tutta la
+# cartella, e questo file torna eseguibile se un aggiornamento lo ha rimesso
+# senza permessi.
+xattr -dr com.apple.quarantine . 2>/dev/null
+chmod +x macOS/*.command 2>/dev/null
+
 fine() {
   echo
   read -r -p "Premi INVIO per chiudere questa finestra. " _
@@ -14,6 +27,12 @@ fine() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
+  if [ -d /Applications/Docker.app ] || [ -d "$HOME/Applications/Docker.app" ]; then
+    echo "Docker Desktop c'e' ma non e' ancora pronto: aprilo una volta dalla"
+    echo "cartella Applicazioni, accetta le condizioni, aspetta che dica"
+    echo "\"Engine running\" e poi rilancia questo file."
+    fine 1
+  fi
   echo "Su questo Mac manca Docker Desktop."
   echo "Scaricalo da https://www.docker.com/products/docker-desktop/ , installalo,"
   echo "aprilo una volta (accetta le condizioni) e poi rilancia questo file."

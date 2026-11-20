@@ -33,12 +33,21 @@ L'installazione fa partire Docker Desktop a ogni accesso a Windows e lascia acce
 
 ### Mac
 
-1. Installa [Docker Desktop](https://www.docker.com/products/docker-desktop/) e aprilo una volta.
+Serve macOS 13 o più recente (lo chiede Docker Desktop), va bene sia Apple Silicon (M1, M2…) sia Intel.
+
+1. Installa [Docker Desktop](https://www.docker.com/products/docker-desktop/) scegliendo la versione giusta (**Apple Silicon** o **Intel**: menu Mela → *Informazioni su questo Mac* → *Chip*). Aprilo una volta, accetta le condizioni e aspetta che in basso dica *Engine running*.
 2. Scarica **[BunkerPlex.zip](https://github.com/xFra96/bunkerplex/releases/download/app-tv/BunkerPlex.zip)**, poi scompatta la cartella dove vuoi.
-3. Apri la cartella **`macOS`** e fai doppio clic su **`Installa BunkerPlex.command`**. La prima volta macOS può bloccarlo: clic destro sul file → **Apri** → **Apri**. Se chiede di lasciar controllare «System Events», consenti: serve a far partire Docker all'accesso.
+3. Apri la cartella **`macOS`** e fai doppio clic su **`Installa BunkerPlex.command`**. Se chiede di lasciar controllare «System Events», consenti: serve a far partire Docker all'accesso. Se Docker chiede di accedere a una cartella (Download, Documenti, Scrivania, dischi esterni), consenti.
 4. Si apre il browser; la finestra mostra l'indirizzo da usare su TV e telefono.
 
-Se un disco esterno non compare nella scelta delle cartelle: Docker Desktop → Settings → Resources → File sharing, aggiungi `/Volumes` e rilancia il file. Sul Mac gli aggiornamenti che toccano Docker (rari) chiedono di rilanciare «Installa».
+**Se macOS blocca il file** («non può essere aperto», «Apple non può verificare…», «sviluppatore non identificato»): succede perché il file arriva da Internet e non è firmato. Clic su **Fine** (non *Sposta nel Cestino*), poi:
+
+- **macOS 15 Sequoia e successivi**: Impostazioni di Sistema → **Privacy e sicurezza** → scorri in fondo → accanto a «Installa BunkerPlex.command» clic su **Apri comunque**, inserisci la password e conferma **Apri comunque**.
+- **macOS 13–14**: clic destro (o Ctrl+clic) sul file → **Apri** → **Apri**.
+
+**Se ancora non parte** (anche «non hai i permessi necessari»): apri il **Terminale** (Applicazioni → Utility), scrivi `bash ` (con lo spazio dopo), trascina dentro la finestra il file `Installa BunkerPlex.command` e premi INVIO. Così parte sempre, senza passare dai controlli del Finder; dalla volta dopo funziona anche il doppio clic.
+
+Se un disco esterno non compare nella scelta delle cartelle: Docker Desktop → Settings → Resources → File sharing, aggiungi `/Volumes` e rilancia il file; e in Impostazioni di Sistema → Privacy e sicurezza → *Accesso completo al disco* attiva Docker. Sul Mac gli aggiornamenti che toccano Docker (rari) chiedono di rilanciare «Installa».
 
 Va bene anche **Code → Download ZIP** o lo zip «Source code» della release: BunkerPlex si porta da solo all'ultima versione e scarica l'app per la TV.
 
