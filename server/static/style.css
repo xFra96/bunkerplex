@@ -340,47 +340,166 @@ html.tv .art .more { display: none; }
 .folder .where small { display: block; color: var(--ink2); margin-top: .15rem; font-size: .88rem; }
 .folder .btn { margin: 0; flex: none; padding: .45rem .95rem; font-size: .9rem; }
 
-/* ---------- Player (browser) ---------- */
-.player { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 40; background: #000; }
+/* ---------- Player (browser) ----------
+   Il protagonista e' la barra del tempo: spessa, con la parte gia' caricata, le
+   tacche di sigla e titoli di coda e l'anteprima del minuto sotto il puntatore.
+   Tutto il resto e' icone bianche su un velo scuro, che spariscono mentre si guarda. */
+.player {
+  --p-ink: #ffffff; --p-ink2: #c9d2cc; --p-track: #ffffff2e; --p-buf: #ffffff47; --p-fill: var(--accent-text);
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 40; background: #000; color: var(--p-ink); overflow: hidden;
+}
 .player video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-.player .top, .player .bottom { position: absolute; left: 0; right: 0; padding: 1.4rem 2.4rem; transition: opacity .2s; }
-.player .top { top: 0; display: flex; align-items: center; background: linear-gradient(#000c, #0000); }
-.player .top b { font-size: 1.35rem; margin-right: 1rem; }
-.player .top span { color: #d5d9e2; }
-.player .bottom { bottom: 0; background: linear-gradient(0deg, #000d, #0000); padding-top: 3rem; }
-.player.idle .top, .player.idle .bottom { opacity: 0; pointer-events: none; }
+.player .top, .player .bottom { position: absolute; left: 0; right: 0; padding: 1.5rem 2.4rem; transition: opacity .25s, transform .25s; }
+.player .top { top: 0; display: flex; align-items: flex-start; padding-bottom: 4.5rem; background: linear-gradient(#000b, #0000); }
+.player .bottom { bottom: 0; padding-top: 5.5rem; padding-bottom: 1.1rem; background: linear-gradient(0deg, #000e, #0008 55%, #0000); }
+.player.idle .top, .player.idle .bottom, .player.idle .pmid { opacity: 0; pointer-events: none; }
+.player.idle .top { transform: translateY(-.6rem); }
+.player.idle .bottom { transform: translateY(.6rem); }
 .player.idle { cursor: none; }
-.pbtn { width: 3rem; height: 3rem; border-radius: 50%; font-size: 1.2rem; margin-right: .6rem; background: #ffffff24; display: inline-flex; align-items: center; justify-content: center; flex: none; }
-.pbtn:hover, .pbtn:focus { background: var(--ink); color: #000; outline: none; }
-.pbtn.wide { width: auto; padding: 0 1.1rem; border-radius: var(--r); font-size: .95rem; font-weight: 700; }
-.pbtn.on { background: var(--accent); color: var(--accent-ink); }
-.player .ctl { display: flex; align-items: center; flex-wrap: wrap; margin-top: .8rem; }
-.player .ctl > * { margin-bottom: .5rem; }
-.player .time { margin-left: auto; font-variant-numeric: tabular-nums; color: #e3e6ed; }
+
+.ptitle { min-width: 0; margin-left: .7rem; padding-top: .25rem; }
+.ptitle b { display: block; font-size: 1.5rem; font-weight: 700; letter-spacing: -.015em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ptitle span { display: block; margin-top: .15rem; color: var(--p-ink2); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pends { margin-left: auto; padding: .7rem 0 0 1.5rem; color: var(--p-ink2); font-size: .95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Bottoni: icone senza fondo, il fondo compare sotto il puntatore */
+.pbtn {
+  position: relative; flex: none; width: 3rem; height: 3rem; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; color: var(--p-ink); background: none;
+  transition: background .12s, transform .12s, box-shadow .12s;
+}
+.pbtn:hover { background: #ffffff1f; }
+.pbtn:active { transform: scale(.9); }
+.pbtn:focus { outline: none; }
+.pbtn:focus-visible { box-shadow: 0 0 0 .16rem #fff; }
+.pbtn.main { width: 3.3rem; height: 3.3rem; margin-right: .35rem; background: #fff; color: #000; font-size: 1.35rem; }
+.pbtn.main:hover { background: #fff; transform: scale(1.06); }
+.pbtn.wide { width: auto; padding: 0 1.1rem 0 .85rem; border-radius: 99rem; font-size: .95rem; font-weight: 700; }
+.pbtn.wide .ic { font-size: 1.15rem; margin-right: .5rem; }
+.pbtn.on { color: var(--p-fill); }
+.pbtn.on::after { content: ""; position: absolute; left: 32%; right: 32%; bottom: .42rem; height: .16rem; border-radius: 1rem; background: var(--p-fill); }
+/* Salti: il numero dei secondi dentro la freccia */
+.sk { position: relative; display: inline-flex; }
+.sk b { position: absolute; left: 0; right: 0; top: 57%; transform: translateY(-50%); font-size: .4em; font-weight: 800; line-height: 1; text-align: center; letter-spacing: -.02em; }
+
+/* Etichetta con nome e tasto, sopra il bottone (sotto, nella barra in alto) */
+.player [data-tip]::before {
+  content: attr(data-tip); position: absolute; z-index: 3; bottom: calc(100% + .55rem); left: 50%;
+  padding: .38rem .65rem; border-radius: .35rem; background: var(--ink); color: #000;
+  font-size: .8rem; font-weight: 600; line-height: 1.2; white-space: nowrap;
+  opacity: 0; transform: translate(var(--tx, -50%), var(--ty, .25rem)); transition: opacity .12s, transform .12s; pointer-events: none;
+}
+.player [data-tip]:hover::before, .player [data-tip]:focus-visible::before, .player.nav [data-tip]:focus::before { opacity: 1; --ty: 0; }
+.player .ctl > [data-tip]:first-child::before, .player .top [data-tip]::before { left: 0; --tx: 0; }
+.player .ctl > [data-tip]:last-child::before { left: auto; right: 0; --tx: 0; }
+.player .top [data-tip]::before { bottom: auto; top: calc(100% + .55rem); --ty: -.25rem; }
+.player .top [data-tip]:hover::before, .player .top [data-tip]:focus-visible::before { --ty: 0; }
+
+/* Barra del tempo */
+.pbar { display: flex; align-items: center; }
+.ptime { flex: none; min-width: 3.6rem; font-size: .95rem; font-variant-numeric: tabular-nums; color: var(--p-ink); }
+.ptime.end { text-align: right; color: var(--p-ink2); border-radius: .3rem; }
+.ptime.end:hover { color: var(--p-ink); }
+.ptime.end:focus-visible { outline: .14rem solid #fff; outline-offset: .2rem; }
+.ptrack { position: relative; flex: 1; height: 2.4rem; margin: 0 1rem; cursor: pointer; touch-action: none; }
+.ptrack .seek { position: absolute; top: 0; left: 0; z-index: 2; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; -webkit-appearance: none; appearance: none; background: none; }
+.ptrack .seek::-webkit-slider-thumb { -webkit-appearance: none; width: 2px; height: 2.4rem; }
+.ptrack .seek::-moz-range-thumb { width: 2px; height: 2.4rem; border: 0; }
+.ptrack .rail { position: absolute; left: 0; right: 0; top: 50%; height: .34rem; margin-top: -.17rem; border-radius: 99rem; background: var(--p-track); overflow: hidden; transition: transform .15s; }
+.ptrack .rail i { position: absolute; top: 0; bottom: 0; left: 0; }
+.ptrack .buf { background: var(--p-buf); }
+.ptrack .fill { background: var(--p-fill); }
+.ptrack .rail .cut { width: .22rem; margin-left: -.11rem; background: #000; }
+.ptrack .knob { position: absolute; top: 50%; width: 1.1rem; height: 1.1rem; margin: -.55rem 0 0 -.55rem; border-radius: 50%; background: #fff; transform: scale(.55); transition: transform .15s; pointer-events: none; }
+.ptrack:hover .rail, .ptrack.hover .rail, .player.drag .rail { transform: scaleY(1.65); }
+.ptrack:hover .knob, .ptrack.hover .knob, .player.drag .knob, .seek:focus-visible ~ .knob { transform: none; }
+.seek:focus-visible ~ .rail { box-shadow: 0 0 0 .14rem #fff; }
+.ptip {
+  position: absolute; bottom: 100%; margin-bottom: .15rem; transform: translateX(-50%);
+  padding: .3rem .6rem; border-radius: .35rem; background: var(--ink); color: #000;
+  font-size: .88rem; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; text-align: center;
+  opacity: 0; transition: opacity .1s; pointer-events: none;
+}
+.ptip small { display: block; font-size: .72rem; font-weight: 600; color: #35503f; }
+.ptrack.hover .ptip { opacity: 1; }
+
+.player .ctl { display: flex; align-items: center; margin-top: .3rem; }
+.player .ctl > * + * { margin-left: .2rem; }
+.player .grow { flex: 1; }
+.pvol { display: flex; align-items: center; }
+.vol {
+  --v: 100%; -webkit-appearance: none; appearance: none; width: 0; height: .28rem; margin: 0; border-radius: 99rem; opacity: 0;
+  background: linear-gradient(90deg, #fff var(--v), #ffffff40 var(--v)); cursor: pointer; outline: none;
+  transition: width .18s, opacity .18s, margin .18s;
+}
+.pvol:hover .vol, .pvol:focus-within .vol { width: 5.5rem; margin: 0 .6rem 0 .2rem; opacity: 1; }
+.vol::-webkit-slider-thumb { -webkit-appearance: none; width: .85rem; height: .85rem; border-radius: 50%; background: #fff; }
+.vol::-moz-range-thumb { width: .85rem; height: .85rem; border: 0; border-radius: 50%; background: #fff; }
+.vol:focus-visible { box-shadow: 0 0 0 .14rem #fff; }
+.prate { padding: .2rem .5rem; border: 1px solid #ffffff66; border-radius: .3rem; font-size: .8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.prate[hidden] { display: none; }
+
 /* TV: salti e volume col telecomando, quindi niente bottoni per quelli */
 html.tv .player .pc { display: none; }
-.player .phint { display: none; margin-left: 1rem; color: #b9bfcc; font-size: .9rem; }
+.player .phint { display: none; margin-left: 1rem; color: var(--p-ink2); font-size: .9rem; }
 html.tv .player .phint { display: inline; }
 /* Bottone scelto col telecomando: ben visibile anche da lontano */
-.player.nav .pbtn:focus { background: var(--ink); color: #000; box-shadow: 0 0 0 .25rem var(--accent); transform: scale(1.08); }
-.pbtn { transition: transform .12s, box-shadow .12s; }
-/* Indicatore dei salti, a sinistra (indietro) o a destra (avanti) */
-.skipfx { position: absolute; top: 50%; transform: translateY(-50%); padding: .7rem 1.4rem; border-radius: 99rem;
-  background: #000a; color: #fff; font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums;
-  opacity: 0; transition: opacity .15s; pointer-events: none; }
-.skipfx.left { left: 8%; }
-.skipfx.right { right: 8%; }
+.player.nav .pbtn:focus { background: var(--ink); color: #000; box-shadow: 0 0 0 .25rem var(--accent); transform: scale(1.1); }
+
+/* Al centro: rotella di caricamento, segnale dei comandi, salti */
+.pspin { position: absolute; top: 50%; left: 50%; width: 3.6rem; height: 3.6rem; margin: -1.8rem 0 0 -1.8rem; border-radius: 50%; border: .26rem solid #ffffff2b; border-top-color: var(--p-fill); opacity: 0; pointer-events: none; transition: opacity .2s; }
+.player.busy .pspin { opacity: 1; animation: spin .8s linear infinite; }
+.player .note { position: absolute; top: calc(50% + 3rem); left: 0; right: 0; padding: 0 2rem; text-align: center; color: #fff; font-size: 1.1rem; text-shadow: 0 1px 6px #000; pointer-events: none; }
+.pflash { position: absolute; top: 50%; left: 50%; width: 5.2rem; height: 5.2rem; margin: -2.6rem 0 0 -2.6rem; border-radius: 50%; background: #0009; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 2rem; opacity: 0; pointer-events: none; }
+.pflash b { margin-top: .15rem; font-size: .8rem; font-variant-numeric: tabular-nums; }
+.pflash.show { animation: pflash .6s ease-out; }
+@keyframes pflash { 0% { opacity: 1; transform: scale(.8); } 35% { opacity: 1; } 100% { opacity: 0; transform: scale(1.3); } }
+.skipfx { position: absolute; top: 50%; display: flex; align-items: center; padding: .7rem 1.3rem; border-radius: 99rem;
+  background: #000a; color: #fff; font-size: 1.5rem; opacity: 0; transform: translateY(-50%); transition: opacity .15s; pointer-events: none; }
+.skipfx b { margin: 0 .55rem; font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.skipfx.left { left: 9%; }
+.skipfx.right { right: 9%; }
 .skipfx.show { opacity: 1; }
-.seek { -webkit-appearance: none; appearance: none; width: 100%; height: .4rem; border-radius: 99rem; background: #ffffff40; cursor: pointer; outline: none; }
-.seek::-webkit-slider-thumb { -webkit-appearance: none; width: 1.1rem; height: 1.1rem; border-radius: 50%; background: var(--accent); }
-.seek::-moz-range-thumb { width: 1.1rem; height: 1.1rem; border: 0; border-radius: 50%; background: var(--accent); }
-.player .note { position: absolute; top: 45%; left: 0; right: 0; padding: 0 2rem; text-align: center; color: #fff; font-size: 1.1rem; text-shadow: 0 1px 6px #000; pointer-events: none; }
-.vol { -webkit-appearance: none; appearance: none; width: 5.5rem; height: .3rem; margin-right: .8rem; border-radius: 99rem; background: #ffffff40; cursor: pointer; outline: none; }
-.vol::-webkit-slider-thumb { -webkit-appearance: none; width: .9rem; height: .9rem; border-radius: 50%; background: var(--ink); }
-.vol::-moz-range-thumb { width: .9rem; height: .9rem; border: 0; border-radius: 50%; background: var(--ink); }
+/* Sul telefono Play e salti stanno al centro dello schermo */
+.pmid { position: absolute; top: 50%; left: 50%; display: none; align-items: center; transform: translate(-50%, -50%); transition: opacity .25s; }
+.pmid .pbtn { width: 3.8rem; height: 3.8rem; margin: 0 1.4rem; font-size: 2rem; background: #0007; }
+.pmid .pbtn.main { width: 5rem; height: 5rem; font-size: 2rem; background: #0007; color: #fff; }
+.player.busy .pmid .main { visibility: hidden; }
+
+/* «Salta intro» e la scheda dei titoli di coda: restano anche a comandi nascosti */
+.pskip, .pcard { position: absolute; right: 2.4rem; bottom: 9.6rem; z-index: 2; transition: transform .25s; animation: rise .3s cubic-bezier(.2, .8, .2, 1); }
+.player.idle .pskip, .player.idle .pcard { transform: translateY(7rem); }
+.pskip { padding: .85rem 1.6rem; border-radius: 99rem; background: #fff; color: #000; font-size: 1.05rem; font-weight: 700; }
+.pskip:hover { background: var(--ink); }
+.pskip:focus { outline: none; }
+.pskip:focus-visible { box-shadow: 0 0 0 .25rem var(--accent); }
+.pskip[hidden], .pcard[hidden] { display: none; }
+.pcard { width: 28rem; max-width: calc(100vw - 2rem); padding: 1.1rem 1.1rem 1rem; border-radius: .8rem; background: var(--surface); border: 1px solid #ffffff17; }
+.pcard small { display: block; color: var(--ink2); font-size: .85rem; }
+.pcard > b { display: block; margin: .2rem 0 .9rem; font-size: 1.1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcard-b { display: flex; }
+.pcb { position: relative; flex: 1; overflow: hidden; padding: .75rem .8rem; border-radius: .5rem; background: var(--surface2); font-size: .92rem; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.pcb + .pcb { margin-left: .6rem; }
+.pcb.go { background: #fff; color: #000; }
+.pcb.go i { position: absolute; top: 0; bottom: 0; left: 0; right: 0; background: var(--p-fill); transform: scaleX(0); transform-origin: 0 50%; }
+.pcard.auto .pcb.go i { transition: transform 1s linear; }
+.pcb span { position: relative; }
+.pcb:focus { outline: none; box-shadow: 0 0 0 .2rem #fff; }
+.pcb:not(.go):focus { background: var(--ink); color: #000; }
+
 .player.subs-s video::cue { font-size: 3.2vh; }
 .player.subs-l video::cue { font-size: 6.5vh; }
 .player.subs-xl video::cue { font-size: 8.5vh; }
+
+/* Col dito: niente etichette al passaggio, comandi principali al centro */
+@media (hover: none) and (pointer: coarse) {
+  html:not(.tv) .player .pmid { display: flex; }
+  html:not(.tv) .player .ctl [data-p=toggle], html:not(.tv) .player .ctl [data-p=back],
+  html:not(.tv) .player .ctl [data-p=fwd], html:not(.tv) .player .pvol { display: none; }
+  html:not(.tv) .player [data-tip]::before { display: none; }
+  html:not(.tv) .player .ptrack .knob { transform: none; }
+}
 
 #toast { position: fixed; left: 50%; bottom: 2.5rem; transform: translate(-50%, 2rem); z-index: 60; max-width: 90vw; padding: .8rem 1.4rem; border-radius: var(--r); background: var(--ink); color: var(--bg); font-weight: 700; opacity: 0; transition: opacity .16s, transform .16s; pointer-events: none; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -455,8 +574,20 @@ body:not(.kb) .letter:focus { background: var(--surface2); color: inherit; }
   .panel { padding: 1.2rem; }
   .inline { flex-wrap: wrap; }
   .inline .field { flex: 1 1 100%; margin: 0 0 .6rem; }
-  .player .top, .player .bottom { padding: 1rem; }
-  .vol { display: none; }
+  .player .top { padding: 1rem 1rem 3.5rem; }
+  .player .bottom { padding: 4rem 1rem .6rem; }
+  .ptitle b { font-size: 1.15rem; }
+  .ptitle span { font-size: .9rem; }
+  .pends { padding-top: .5rem; font-size: .85rem; }
+  .ptime { min-width: 0; font-size: .85rem; }
+  .ptrack { margin: 0 .8rem; }
+  .pbtn.wide { width: 3rem; padding: 0; border-radius: 50%; }
+  .pbtn.wide .ic { margin: 0; }
+  .pbtn.wide span { display: none; }
+  .pvol { display: none; }
+  .pskip, .pcard { right: 1rem; bottom: 7.6rem; }
+  .pcard { width: calc(100vw - 2rem); }
+  .pmid .pbtn { margin: 0 .9rem; }
   .intro-word { font-size: 3rem; }
   #toast { bottom: 5rem; }
 }

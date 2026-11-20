@@ -2018,25 +2018,60 @@ var SUB_SIZES = [['s', 'Piccoli'], ['', 'Normali'], ['l', 'Grandi'], ['xl', 'Mol
 var FITS = [['contain', 'Adatta (tutto il video)'], ['cover', 'Riempi lo schermo (ritaglia i bordi)'], ['fill', 'Allarga (deforma)']];
 var SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
+// Icone del player: a linee come quelle del menu; piene solo Play, Pausa e Successivo
+var PIC = {
+  rew: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5a7.5 7.5 0 1 1-7.5 7.5M14.5 3 12 5.5 14.5 8"/></svg>',
+  fwd: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.5a7.5 7.5 0 1 0 7.5 7.5M9.5 3 12 5.5 9.5 8"/></svg>',
+  subs: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7 12h2.5M12.5 12H17M7 15.5h6M15.5 15.5H17"/></svg>',
+  opts: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h8M16 8h4M4 16h3M11 16h9"/><circle cx="14" cy="8" r="2"/><circle cx="9" cy="16" r="2"/></svg>',
+  fsOn: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>',
+  fsOff: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M15 20v-5h5M9 20v-5H4"/></svg>',
+  pip: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12.5 12H18v4h-5.5z"/></svg>'
+};
+var SUBS_BTN = '<button class="pbtn" data-p="subs" data-tip="Sottotitoli (S)" aria-label="Sottotitoli">' + PIC.subs + '</button>';
+function skipIcon(kind) { return '<span class="sk">' + PIC[kind] + '<b></b></span>'; }
+
 async function playRoute(id) {
   var p = cache.pendingPlay && String(cache.pendingPlay.id) === String(id) ? cache.pendingPlay : await api('/play/' + id);
   cache.pendingPlay = null;
+  var pip = !!(document.pictureInPictureEnabled && HTMLVideoElement.prototype.requestPictureInPicture);
   return {
     // Sulla TV i salti si fanno con ← → del telecomando e il volume con i suoi tasti:
-    // quei bottoni ('pc') restano solo su PC e telefono.
-    html: '<div class="player" id="player"><video playsinline></video><div class="note"></div>' +
-      '<div class="skipfx" aria-hidden="true"></div>' +
-      '<div class="top"><button class="pbtn" data-p="exit" title="Indietro (Esc)" aria-label="Indietro">' + IC.back + '</button><b>' + esc(p.title) + '</b><span>' + esc(p.subtitle) + '</span></div>' +
-      '<div class="bottom"><input class="seek" type="range" min="0" max="' + Math.max(1, Math.floor(p.duration)) + '" step="1" value="0" aria-label="Posizione nel video">' +
-      '<div class="ctl"><button class="pbtn" data-p="toggle" title="Play / Pausa (Spazio)" aria-label="Play o pausa">' + IC.pause + '</button>' +
-      '<button class="pbtn wide pc" data-p="back" title="Indietro (←)"></button><button class="pbtn wide pc" data-p="fwd" title="Avanti (→)"></button>' +
-      (p.next ? '<button class="pbtn wide" data-p="next" title="Episodio successivo (N)">Successivo</button>' : '') +
-      '<button class="pbtn pc" data-p="mute" title="Audio sì / no (M)" aria-label="Audio sì o no">' + IC.vol + '</button>' +
-      '<input class="vol pc" type="range" min="0" max="100" step="5" value="100" title="Volume" aria-label="Volume">' +
-      (p.subs.length ? '<button class="pbtn wide" data-p="subs" title="Sottotitoli (S)">Sottotitoli</button>' : '') +
-      '<button class="pbtn wide" data-p="menu" title="Opzioni (O)">Opzioni</button>' +
-      '<button class="pbtn wide pc" data-p="fs" title="Schermo intero (F)">Schermo intero</button>' +
-      '<span class="phint">← → salta · ↓ comandi</span><span class="time"></span></div></div></div>',
+    // quei bottoni ('pc') restano solo su PC e telefono. Sul telefono Play e salti
+    // stanno al centro, a portata di pollice (.pmid).
+    html: '<div class="player" id="player"><video playsinline></video>' +
+      '<div class="pspin" aria-hidden="true"></div><div class="note" role="status"></div>' +
+      '<div class="skipfx" aria-hidden="true"></div><div class="pflash" aria-hidden="true"></div>' +
+      '<div class="top"><button class="pbtn" data-p="exit" data-tip="Indietro (Esc)" aria-label="Indietro">' + IC.back + '</button>' +
+        '<div class="ptitle"><b>' + esc(p.title) + '</b>' + (p.subtitle ? '<span>' + esc(p.subtitle) + '</span>' : '') + '</div>' +
+        '<span class="pends"></span></div>' +
+      '<div class="pmid">' +
+        '<button class="pbtn" data-p="back">' + skipIcon('rew') + '</button>' +
+        '<button class="pbtn main" data-p="toggle" aria-label="Play o pausa">' + IC.pause + '</button>' +
+        '<button class="pbtn" data-p="fwd">' + skipIcon('fwd') + '</button></div>' +
+      '<button class="pskip" data-p="intro" hidden>Salta intro</button>' +
+      (p.next ? '<div class="pcard" hidden><small>Prossimo episodio</small><b>' + esc(p.next_label || '') + '</b>' +
+        '<div class="pcard-b"><button class="pcb" data-p="credits">Guarda i titoli di coda</button>' +
+        '<button class="pcb go" data-p="next"><i></i><span>Episodio successivo</span></button></div></div>' : '') +
+      '<div class="bottom">' +
+        '<div class="pbar"><span class="ptime cur">0:00</span>' +
+          '<div class="ptrack"><input class="seek" type="range" min="0" max="' + Math.max(1, Math.floor(p.duration)) + '" step="1" value="0" aria-label="Posizione nel video">' +
+            '<div class="rail"><i class="buf"></i><i class="fill"></i></div><i class="knob"></i><span class="ptip"></span></div>' +
+          '<button class="ptime end" data-p="remain" title="Durata o tempo che manca"></button></div>' +
+        '<div class="ctl">' +
+          '<button class="pbtn main" data-p="toggle" data-tip="Play / Pausa (Spazio)" aria-label="Play o pausa">' + IC.pause + '</button>' +
+          '<button class="pbtn pc" data-p="back">' + skipIcon('rew') + '</button>' +
+          '<button class="pbtn pc" data-p="fwd">' + skipIcon('fwd') + '</button>' +
+          '<div class="pvol pc"><button class="pbtn" data-p="mute" data-tip="Audio sì / no (M)" aria-label="Audio sì o no">' + IC.vol + '</button>' +
+            '<input class="vol" type="range" min="0" max="100" step="5" value="100" aria-label="Volume"></div>' +
+          '<span class="prate" hidden></span>' +
+          '<span class="phint">← → salta · ↓ comandi</span><span class="grow"></span>' +
+          (p.next ? '<button class="pbtn wide" data-p="next" data-tip="Episodio successivo (N)" aria-label="Episodio successivo">' + IC.next + '<span>Successivo</span></button>' : '') +
+          (p.subs.length ? SUBS_BTN : '') +
+          '<button class="pbtn" data-p="menu" data-tip="Opzioni (O)" aria-label="Opzioni">' + PIC.opts + '</button>' +
+          (pip ? '<button class="pbtn pc" data-p="pip" data-tip="Finestra sopra le altre" aria-label="Finestra sopra le altre">' + PIC.pip + '</button>' : '') +
+          '<button class="pbtn pc" data-p="fs" data-tip="Schermo intero (F)" aria-label="Schermo intero">' + PIC.fsOn + '</button>' +
+        '</div></div></div>',
     mount: function () { startPlayer(p); }
   };
 }
@@ -2054,16 +2089,25 @@ function canDecode(v, codec, bits) {
 function startPlayer(p) {
   var root = document.getElementById('player');
   var v = root.querySelector('video'), seek = root.querySelector('.seek'), vol = root.querySelector('.vol');
-  var timeEl = root.querySelector('.time'), note = root.querySelector('.note');
-  var toggleBtn = root.querySelector('[data-p=toggle]'), subsBtn = root.querySelector('[data-p=subs]');
-  var muteBtn = root.querySelector('[data-p=mute]');
+  var note = root.querySelector('.note'), track = root.querySelector('.ptrack');
+  var fillEl = track.querySelector('.fill'), bufEl = track.querySelector('.buf'), railEl = track.querySelector('.rail');
+  var knob = track.querySelector('.knob'), tipEl = track.querySelector('.ptip');
+  var curEl = root.querySelector('.ptime.cur'), endEl = root.querySelector('.ptime.end'), endsEl = root.querySelector('.pends');
+  var rateEl = root.querySelector('.prate'), flashEl = root.querySelector('.pflash');
+  var introBtn = root.querySelector('.pskip'), card = root.querySelector('.pcard');
+  var cardFill = card && card.querySelector('.go i');
+  var subsBtn = root.querySelector('.ctl [data-p=subs]'), muteBtn = root.querySelector('[data-p=mute]');
+  var fsBtn = root.querySelector('[data-p=fs]');
+  var all = function (sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); };
   var prefs = playerPrefs();
-  var LOADING = 'Caricamento…', CONVERTING = 'Conversione in corso…';
+  var LOADING = 'Caricamento…', CONVERTING = 'Conversione in corso…', RECONNECT = 'Riprendo il collegamento…';
   var st = {
     id: p.id, v: v, offset: 0, transcoding: !p.browser_direct, loaded: false, dragging: false, sub: -1, done: false,
     audio: 0, audios: [], rate: 1, at: p.start || 0, pending: null, loadId: 0,
-    lastT: -1, lastMove: Date.now(), recov: 0, recovAt: 0, fatal: false, endAt: null, sleepAt: 0, sleepEnd: false
+    lastT: -1, lastMove: Date.now(), recov: 0, recovAt: 0, fatal: false, endAt: null, sleepAt: 0, sleepEnd: false,
+    introOn: false, introOff: false, card: false, cardOff: false, cardLeft: 10
   };
+  p.intro_start = p.intro_start || 0; p.intro_end = p.intro_end || 0; p.credits = p.credits || 0;
   // Se questo dispositivo sa decodificare il video originale (es. H.265), il PC lo
   // copia cosi' com'e' invece di ricodificarlo: quasi nessun lavoro per il processore.
   st.vcopy = canDecode(v, p.vcodec, p.bits);
@@ -2073,19 +2117,93 @@ function startPlayer(p) {
   function dur() { return p.duration || (isFinite(v.duration) ? v.duration : 0); }
   function shown() { return st.dragging ? +seek.value : (st.pending !== null ? st.pending : pos()); }
   function steps() { return SEEK_STEPS[prefs.step] || SEEK_STEPS.normal; }
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+
   function showTime() {
-    timeEl.textContent = fmtTime(shown()) + ' / ' + fmtTime(dur()) + (st.rate !== 1 ? '  ·  ' + st.rate + '×' : '');
+    var t = shown(), d = dur();
+    var pct = d ? Math.max(0, Math.min(100, t / d * 100)) : 0;
+    curEl.textContent = fmtTime(t);
+    endEl.textContent = prefs.remain && d ? '−' + fmtTime(d - t) : fmtTime(d);
+    fillEl.style.width = pct + '%';
+    knob.style.left = pct + '%';
+    if (d) {   // a che ora finisce, alla velocita' scelta
+      var end = new Date(Date.now() + Math.max(0, d - t) / st.rate * 1000);
+      var h = end.getHours();
+      endsEl.textContent = (h === 1 ? 'Finisce all\'' : 'Finisce alle ') + h + ':' + two(end.getMinutes());
+    }
+  }
+
+  // Quanto video e' gia' arrivato: la parte piu' chiara della barra
+  function showBuffer() {
+    var b = v.buffered, ct = v.currentTime, end = 0, d = dur();
+    if (!d) return;
+    for (var i = 0; i < b.length; i++) if (b.start(i) <= ct + 1 && b.end(i) > end) end = b.end(i);
+    bufEl.style.width = Math.min(100, ((st.transcoding ? st.offset : 0) + end) / d * 100) + '%';
+  }
+
+  // Tacche sulla barra: inizio e fine della sigla, inizio dei titoli di coda
+  function drawMarks() {
+    all('.rail .cut').forEach(function (c) { c.parentNode.removeChild(c); });
+    var d = dur();
+    if (!d) return;
+    [p.intro_end > 0 && p.intro_start > 1 ? p.intro_start : 0, p.intro_end, p.credits].forEach(function (t) {
+      if (t > 0 && t < d) railEl.insertAdjacentHTML('beforeend', '<i class="cut" style="left:' + (t / d * 100) + '%"></i>');
+    });
+  }
+  function partName(t) {
+    if (p.intro_end > 0 && t >= p.intro_start && t < p.intro_end) return 'Sigla';
+    if (p.credits > 0 && t >= p.credits) return 'Titoli di coda';
+    return '';
+  }
+  function showTip(f) {
+    var w = track.clientWidth, t = f * dur(), name = partName(t);
+    tipEl.innerHTML = esc(fmtTime(t)) + (name ? '<small>' + name + '</small>' : '');
+    var half = tipEl.offsetWidth / 2;
+    tipEl.style.left = Math.max(half, Math.min(w - half, f * w)) + 'px';
+    track.classList.add('hover');
   }
 
   function applyLook() {
-    root.querySelector('[data-p=back]').textContent = '−' + steps()[0] + ' s';
-    root.querySelector('[data-p=fwd]').textContent = '+' + steps()[1] + ' s';
+    var s = steps();
+    all('[data-p=back]').forEach(function (b) {
+      b.querySelector('b').textContent = s[0];
+      b.setAttribute('aria-label', 'Indietro di ' + s[0] + ' secondi');
+      b.setAttribute('data-tip', 'Indietro ' + s[0] + ' s (←)');
+    });
+    all('[data-p=fwd]').forEach(function (b) {
+      b.querySelector('b').textContent = s[1];
+      b.setAttribute('aria-label', 'Avanti di ' + s[1] + ' secondi');
+      b.setAttribute('data-tip', 'Avanti ' + s[1] + ' s (→)');
+    });
+    all('.pmid [data-tip]').forEach(function (b) { b.removeAttribute('data-tip'); });
     v.style.objectFit = prefs.fit || 'contain';
     root.className = root.className.replace(/\s*subs-\w+/g, '') + (prefs.subsize ? ' subs-' + prefs.subsize : '');
     v.volume = prefs.volume === undefined ? 1 : prefs.volume;
     v.muted = !!prefs.muted;
-    vol.value = Math.round(v.volume * 100);
+    vol.value = v.muted ? 0 : Math.round(v.volume * 100);
+    vol.style.setProperty('--v', vol.value + '%');
     muteBtn.innerHTML = v.muted || !v.volume ? IC.mute : IC.vol;
+    showTime();
+  }
+
+  function setToggle(paused) {
+    all('[data-p=toggle]').forEach(function (b) { b.innerHTML = paused ? IC.play : IC.pause; });
+    root.classList.toggle('paused', paused);
+  }
+
+  // Segnale al centro dopo un comando (Play, Pausa, volume): compare e svanisce
+  function flash(html) {
+    flashEl.innerHTML = html;
+    flashEl.classList.remove('show');
+    void flashEl.offsetWidth;
+    flashEl.classList.add('show');
+  }
+
+  // La rotella gira mentre il video si carica o si converte
+  function setNote(text) { note.textContent = text; busy(); }
+  function busy() {
+    var t = note.textContent;
+    root.classList.toggle('busy', !st.fatal && (st.waiting || t === LOADING || t === CONVERTING || t === RECONNECT));
   }
 
   function showSubs() {
@@ -2118,7 +2236,7 @@ function startPlayer(p) {
       st.offset = at;
       v.src = p.transcode + '?start=' + at.toFixed(1) + (st.vcopy ? '&vcopy=1' : '') + (st.audio ? '&audio=' + st.audio : '');
       tracks();
-      note.textContent = CONVERTING;
+      setNote(CONVERTING);
     } else if (!st.loaded) {
       v.src = p.url;
       tracks();
@@ -2133,7 +2251,7 @@ function startPlayer(p) {
     v.defaultPlaybackRate = st.rate;
     v.playbackRate = st.rate;
     var pr = v.play();
-    if (pr && pr.catch) pr.catch(function () { if (id === st.loadId && v.paused) note.textContent = 'Premi Play per avviare'; });
+    if (pr && pr.catch) pr.catch(function () { if (id === st.loadId && v.paused) setNote('Premi Play per avviare'); });
   }
 
   // Salto: nel file originale subito; in conversione si aspetta che si smetta di
@@ -2141,10 +2259,11 @@ function startPlayer(p) {
   function seekTo(t) {
     t = Math.max(0, Math.min(t, Math.max(0, dur() - 3)));
     clearTimeout(st.seekTimer);
-    if (!st.transcoding) { load(t); showTime(); return; }
+    if (!st.transcoding) { load(t); showTime(); checkMarks(t); return; }
     st.pending = t;
     seek.value = t;
     showTime();
+    checkMarks(t);
     st.seekTimer = setTimeout(function () { load(t); }, 450);
   }
 
@@ -2153,14 +2272,14 @@ function startPlayer(p) {
     if (st.recov >= 3) {
       st.fatal = true;
       v.pause();
-      note.textContent = 'Il video non riparte. Controlla che il PC sia acceso e il disco collegato, poi premi Play.';
+      setNote('Il video non riparte. Controlla che il PC sia acceso e il disco collegato, poi premi Play.');
       return;
     }
     st.recov++;
     st.recovAt = Date.now();
     st.loaded = false;
     load(st.at);
-    note.textContent = message || 'Riprendo il collegamento…';
+    setNote(message || RECONNECT);
   }
 
   function report(ended) {
@@ -2171,8 +2290,66 @@ function startPlayer(p) {
   function wake() {
     root.classList.remove('idle');
     clearTimeout(st.idle);
-    // Mentre si sceglie un bottone col telecomando i comandi restano visibili
-    st.idle = setTimeout(function () { if (!v.paused && modal.hidden && !st.nav) root.classList.add('idle'); }, 3200);
+    // Mentre si sceglie un bottone col telecomando, o il mouse e' sopra i comandi, restano visibili
+    st.idle = setTimeout(function () { if (!v.paused && modal.hidden && !st.nav && !st.over) root.classList.add('idle'); }, 3200);
+  }
+
+  // ---- Sigla e titoli di coda (le trova il PC; vedi /api/marks)
+  // «Salta intro» dall'inizio della sigla fino a poco prima della fine; chiuso con
+  // Indietro torna solo se si esce dalla sigla e ci si rientra.
+  function setIntro(on) {
+    if (on === st.introOn) return;
+    st.introOn = on;
+    introBtn.hidden = !on;
+    if (!on && document.activeElement === introBtn) introBtn.blur();
+  }
+  function closeIntro() { st.introOff = true; setIntro(false); wake(); }
+
+  // Scheda dei titoli di coda: «Guarda i titoli» o «Episodio successivo», che parte
+  // da solo dopo 10 s di video (solo con l'autoplay acceso)
+  function showCard() {
+    st.card = true;
+    st.cardLeft = 10;
+    card.hidden = false;
+    card.classList.toggle('auto', prefs.autoplay !== false && !st.sleepEnd);
+    cardFill.style.transform = 'scaleX(0)';
+    if (st.nav) leaveRow();
+    card.querySelector('.go').focus();
+  }
+  function hideCard() {
+    st.card = false;
+    card.hidden = true;
+    if (card.contains(document.activeElement)) document.activeElement.blur();
+  }
+  function watchCredits() { st.cardOff = true; hideCard(); wake(); }
+  function moveCard(step) {
+    var b = card.querySelectorAll('.pcb'), i = Array.prototype.indexOf.call(b, document.activeElement);
+    b[Math.max(0, Math.min(b.length - 1, (i < 0 ? 1 : i) + step))].focus();
+  }
+
+  function checkMarks(t) {
+    if (t === undefined) t = pos();
+    var inIntro = p.intro_end > 0 && t >= p.intro_start && t < p.intro_end - 1.5;
+    if (!inIntro) st.introOff = false;
+    setIntro(inIntro && !st.introOff && !st.done);
+    if (card && p.credits > 0 && !st.done) {
+      if (t < p.credits - 2) { st.cardOff = false; if (st.card) hideCard(); }
+      else if (t >= p.credits && !st.card && !st.cardOff) showCard();
+    }
+  }
+
+  // Sigle non ancora trovate: il PC le cerca adesso, si richiedono ogni 10 s
+  function fetchMarks(n) {
+    st.marksTimer = setTimeout(function () {
+      if (player !== st) return;
+      api('/marks/' + p.id).then(function (m) {
+        if (player !== st) return;
+        p.intro_start = m.intro_start || 0; p.intro_end = m.intro_end || 0; p.credits = m.credits || 0;
+        drawMarks();
+        checkMarks();
+        if (m.marks_pending && n < 6) fetchMarks(n + 1);
+      }, function () { if (n < 6) fetchMarks(n + 1); });
+    }, 10000);
   }
 
   // ---- Fila dei bottoni col telecomando: ↓ ci entra, ← → si sposta, OK sceglie,
@@ -2214,7 +2391,13 @@ function startPlayer(p) {
     wake();
     return true;
   }
-  st.leaveRow = leaveRow;
+  // Indietro del telecomando: esce dalla fila, poi chiude la scheda o «Salta intro»
+  st.leaveRow = function () {
+    if (leaveRow()) return true;
+    if (st.card) { watchCredits(); return true; }
+    if (st.introOn) { closeIntro(); return true; }
+    return false;
+  };
 
   // Salto con indicatore a schermo: pressioni ravvicinate si sommano ("+90 s")
   var skipEl = root.querySelector('.skipfx');
@@ -2224,7 +2407,7 @@ function startPlayer(p) {
     st.skipDir = dir;
     st.skipSum = (st.skipSum || 0) + size;
     seekTo(shown() + dir * size);
-    skipEl.textContent = (dir < 0 ? '« −' : '+') + fmtSkip(st.skipSum) + (dir < 0 ? '' : ' »');
+    skipEl.innerHTML = (dir < 0 ? PIC.rew : '') + '<b>' + (dir < 0 ? '−' : '+') + fmtSkip(st.skipSum) + '</b>' + (dir < 0 ? '' : PIC.fwd);
     skipEl.className = 'skipfx show ' + (dir < 0 ? 'left' : 'right');
     clearTimeout(st.skipTimer);
     st.skipTimer = setTimeout(function () { skipEl.className = 'skipfx'; st.skipSum = 0; st.skipDir = 0; }, 900);
@@ -2235,13 +2418,18 @@ function startPlayer(p) {
     return m + ' min' + (r ? ' ' + r + ' s' : '');
   }
 
+  function openNext(id) {
+    return api('/play/' + id).then(function (n) {
+      n.start = 0; cache.pendingPlay = n; location.replace('#/play/' + n.id);
+    });
+  }
   function goTo(id) {
     if (!id) return;
     report();
     st.done = true;
-    api('/play/' + id).then(function (n) {
-      n.start = 0; cache.pendingPlay = n; location.replace('#/play/' + n.id);
-    }).catch(function (e) { st.done = false; toast(e.message); });
+    if (st.card) hideCard();
+    setIntro(false);
+    openNext(id).catch(function (e) { st.done = false; toast(e.message); });
   }
   function goNext() { goTo(p.next || (p.saga && p.saga.id)); }
   function sagaLabel() { return '«' + p.saga.title + '»' + (p.saga.year ? ' (' + p.saga.year + ')' : ''); }
@@ -2250,6 +2438,8 @@ function startPlayer(p) {
     st.rate = r;
     v.defaultPlaybackRate = r;
     v.playbackRate = r;
+    rateEl.hidden = r === 1;
+    rateEl.textContent = r + '×';
     showTime();
     toast('Velocità ' + r + '×');
   }
@@ -2268,6 +2458,11 @@ function startPlayer(p) {
     st.transcoding = index > 0 || !p.browser_direct || st.forced;
     st.loaded = false;
     load(st.at);
+  }
+
+  function togglePip() {
+    (document.pictureInPictureElement ? document.exitPictureInPicture() : v.requestPictureInPicture())
+      .catch(function () { toast('Non disponibile in questo browser'); });
   }
 
   function choose(title, list, current, fn) {
@@ -2315,9 +2510,8 @@ function startPlayer(p) {
       p.subs = r.subs;
       st.sub = r.index;
       if (!subsBtn) {   // prima non c'erano sottotitoli: compare il bottone
-        root.querySelector('[data-p=menu]').insertAdjacentHTML('beforebegin',
-          '<button class="pbtn wide" data-p="subs" title="Sottotitoli (S)">Sottotitoli</button>');
-        subsBtn = root.querySelector('[data-p=subs]');
+        root.querySelector('.ctl [data-p=menu]').insertAdjacentHTML('beforebegin', SUBS_BTN);
+        subsBtn = root.querySelector('.ctl [data-p=subs]');
       }
       tracks();
       toast('Sottotitoli: ' + p.subs[st.sub].label +
@@ -2367,6 +2561,7 @@ function startPlayer(p) {
       add('Episodio successivo da solo', prefs.autoplay === false ? 'No' : 'Sì', function () {
         prefs.autoplay = prefs.autoplay === false;
         savePlayerPrefs(prefs);
+        if (card) card.classList.toggle('auto', prefs.autoplay && !st.sleepEnd);
         toast(prefs.autoplay ? 'A fine episodio parte il successivo' : 'A fine episodio si torna alla scheda');
       });
     }
@@ -2377,18 +2572,15 @@ function startPlayer(p) {
       })).concat([{ value: -1, label: 'Alla fine di questo video' }]), st.sleepEnd ? -1 : 0, function (m) {
         st.sleepEnd = m === -1;
         st.sleepAt = m > 0 ? Date.now() + m * 60000 : 0;
+        if (card) card.classList.toggle('auto', prefs.autoplay !== false && !st.sleepEnd);
         toast(m > 0 ? 'Pausa automatica tra ' + m + ' minuti' : (m ? 'Mi fermo alla fine di questo video' : 'Spegnimento automatico disattivato'));
       });
     });
+    add('Tempo a destra della barra', prefs.remain ? 'Quanto manca' : 'Durata', function () { action('remain'); });
     add('Ricomincia dall\'inizio', undefined, function () { seekTo(0); });
     if (p.next) add('Vai all\'episodio successivo', undefined, goNext);
     else if (p.saga) add('Film successivo della saga', esc(p.saga.title), goNext);
-    if (document.pictureInPictureEnabled && v.requestPictureInPicture) {
-      add('Finestra sopra le altre (PiP)', undefined, function () {
-        (document.pictureInPictureElement ? document.exitPictureInPicture() : v.requestPictureInPicture())
-          .catch(function () { toast('Non disponibile in questo browser'); });
-      });
-    }
+    if (document.pictureInPictureEnabled && v.requestPictureInPicture) add('Finestra sopra le altre (PiP)', undefined, togglePip);
     add('Informazioni sul video', undefined, info);
     openPicker('Opzioni', o, null, function (value) { o[+value].fn(); wake(); });
   }
@@ -2397,14 +2589,22 @@ function startPlayer(p) {
     wake();
     if (name === 'exit') history.back();
     else if (name === 'toggle') {
-      if (st.fatal) { st.fatal = false; st.recov = 0; st.loaded = false; load(st.at); }
-      else if (v.paused) { st.lastMove = Date.now(); v.play(); } else v.pause();
+      if (st.fatal) { st.fatal = false; st.recov = 0; st.loaded = false; load(st.at); flash(IC.play); }
+      else if (v.paused) { st.lastMove = Date.now(); v.play(); flash(IC.play); } else { v.pause(); flash(IC.pause); }
     }
     else if (name === 'back') skip(-1);
     else if (name === 'fwd') skip(1);
     else if (name === 'next') goNext();
     else if (name === 'menu') menu();
     else if (name === 'mute') { prefs.muted = !v.muted; savePlayerPrefs(prefs); applyLook(); }
+    else if (name === 'pip') togglePip();
+    else if (name === 'intro') { if (st.introOn) { setIntro(false); seekTo(p.intro_end); } }
+    else if (name === 'credits') watchCredits();
+    else if (name === 'remain') {
+      prefs.remain = !prefs.remain;
+      savePlayerPrefs(prefs);
+      showTime();
+    }
     else if (name === 'fs') {
       // Schermo intero su tutta la pagina: cosi' restano visibili menu e avvisi
       if (document.fullscreenElement) document.exitFullscreen();
@@ -2432,19 +2632,26 @@ function startPlayer(p) {
       load(st.at);
     } else {
       st.fatal = true;
-      note.textContent = 'Impossibile riprodurre questo video.';
+      setNote('Impossibile riprodurre questo video.');
     }
   });
-  v.addEventListener('playing', function () { note.textContent = ''; toggleBtn.innerHTML = IC.pause; wake(); });
+  v.addEventListener('playing', function () { st.waiting = false; setNote(''); setToggle(false); wake(); });
+  v.addEventListener('waiting', function () { st.waiting = true; busy(); });
   v.addEventListener('canplay', function () {
-    if (note.textContent === LOADING || note.textContent === CONVERTING) note.textContent = '';
+    st.waiting = false;
+    var t = note.textContent;
+    if (t === LOADING || t === CONVERTING) setNote(''); else busy();
   });
-  v.addEventListener('pause', function () { toggleBtn.innerHTML = IC.play; root.classList.remove('idle'); report(); });
+  v.addEventListener('pause', function () { setToggle(true); root.classList.remove('idle'); report(); });
+  v.addEventListener('progress', showBuffer);
+  v.addEventListener('loadedmetadata', drawMarks);
   v.addEventListener('timeupdate', function () {
     if (v.currentTime > 0 && !v.seeking && st.pending === null) st.at = pos();
     if (!st.dragging && st.pending === null) seek.value = pos();
     if (dur() && +seek.max !== Math.floor(dur())) seek.max = Math.floor(dur());
     showTime();
+    showBuffer();
+    if (st.pending === null && !st.dragging) checkMarks();
   });
   v.addEventListener('ended', function () {
     // Un flusso convertito che si interrompe a meta' non e' la fine del film:
@@ -2456,15 +2663,22 @@ function startPlayer(p) {
       return;
     }
     report(true);
+    // Scheda dei titoli di coda ancora aperta: si va dritti al prossimo episodio
+    if (st.card && p.next && !st.sleepEnd) {
+      st.done = true;
+      hideCard();
+      openNext(p.next).catch(function () { history.back(); });
+      return;
+    }
     st.done = true;
+    setIntro(false);
+    if (st.card) hideCard();
     if (p.next && prefs.autoplay !== false && !st.sleepEnd) {
       // Conto alla rovescia: il prossimo episodio parte da solo, ma si puo' fermare
       var left = 10;
       var startNext = function () {
         clearInterval(st.countdown);
-        api('/play/' + p.next).then(function (n) {
-          n.start = 0; cache.pendingPlay = n; location.replace('#/play/' + n.id);
-        }).catch(function () { history.back(); });
+        openNext(p.next).catch(function () { history.back(); });
       };
       var heading = function () {
         return 'Prossimo episodio tra ' + left + ' s' + (p.next_label ? ' — ' + p.next_label : '');
@@ -2492,18 +2706,63 @@ function startPlayer(p) {
         { value: 'no', label: 'Torna alla scheda' }
       ], null, function (answer) {
         if (answer !== 'go') { history.back(); return; }
-        api('/play/' + p.saga.id).then(function (n) {
-          n.start = 0; cache.pendingPlay = n; location.replace('#/play/' + n.id);
-        }).catch(function () { history.back(); });
+        openNext(p.saga.id).catch(function () { history.back(); });
       });
     } else history.back();
   });
-  v.addEventListener('click', function () { action('toggle'); });
-  v.addEventListener('dblclick', function () { action('fs'); });
-  seek.addEventListener('input', function () { st.dragging = true; showTime(); wake(); });
-  seek.addEventListener('change', function () { st.dragging = false; seekTo(+seek.value); });
+
+  // Col mouse un clic mette in pausa e il doppio clic va a schermo intero. Col dito
+  // un tocco mostra o nasconde i comandi e due tocchi ai lati saltano.
+  var tap = { at: 0, timer: 0 };
+  v.addEventListener('pointerdown', function (e) { st.touch = e.pointerType === 'touch'; });
+  v.addEventListener('click', function (e) {
+    if (!st.touch) { action('toggle'); return; }
+    var now = Date.now(), x = e.clientX / (root.clientWidth || 1);
+    var side = x < 0.38 ? -1 : (x > 0.62 ? 1 : 0);
+    clearTimeout(tap.timer);
+    if (side && now - tap.at < 320) { tap.at = now; action(side < 0 ? 'back' : 'fwd'); return; }
+    tap.at = now;
+    tap.timer = setTimeout(function () {
+      if (root.classList.contains('idle') || v.paused) wake();
+      else { clearTimeout(st.idle); root.classList.add('idle'); }
+    }, side ? 300 : 0);
+  });
+  v.addEventListener('dblclick', function () { if (!st.touch) action('fs'); });
+
+  seek.addEventListener('input', function () {
+    st.dragging = true;
+    root.classList.add('drag');
+    showTime();
+    if (dur()) showTip(+seek.value / dur());
+    wake();
+  });
+  seek.addEventListener('change', function () {
+    st.dragging = false;
+    root.classList.remove('drag');
+    track.classList.remove('hover');
+    seekTo(+seek.value);
+  });
+  track.addEventListener('pointermove', function (e) {
+    if (e.pointerType !== 'mouse' || !dur()) return;
+    var r = track.getBoundingClientRect();
+    showTip(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)));
+  });
+  track.addEventListener('pointerleave', function () { if (!st.dragging) track.classList.remove('hover'); });
+
   vol.addEventListener('input', function () { setVolume(vol.value / 100); wake(); });
-  root.addEventListener('mousemove', wake);
+  root.querySelector('.pvol').addEventListener('wheel', function (e) {
+    e.preventDefault();
+    setVolume((v.muted ? 0 : v.volume) + (e.deltaY < 0 ? 0.05 : -0.05));
+    flash((v.volume ? IC.vol : IC.mute) + '<b>' + Math.round(v.volume * 100) + '%</b>');
+    wake();
+  }, { passive: false });
+
+  if (window.PointerEvent) root.addEventListener('pointermove', function (e) { if (e.pointerType === 'mouse') wake(); });
+  else root.addEventListener('mousemove', wake);
+  all('.top, .bottom').forEach(function (el) {
+    el.addEventListener('mouseenter', function () { st.over = true; });
+    el.addEventListener('mouseleave', function () { st.over = false; wake(); });
+  });
   root.addEventListener('click', function (e) {
     var b = e.target.closest('[data-p]');
     if (!b) return;
@@ -2511,6 +2770,14 @@ function startPlayer(p) {
     // Col mouse il bottone non resta acceso; col telecomando si resta nella fila
     if (!st.nav) b.blur();
   });
+
+  st.onfs = function () {
+    if (!fsBtn) return;
+    var on = !!document.fullscreenElement;
+    fsBtn.innerHTML = on ? PIC.fsOff : PIC.fsOn;
+    fsBtn.setAttribute('data-tip', on ? 'Esci dallo schermo intero (F)' : 'Schermo intero (F)');
+  };
+  document.addEventListener('fullscreenchange', st.onfs);
 
   // Controllo ogni secondo: se il video dovrebbe andare ma e' fermo da troppo
   // (collegamento caduto dopo una pausa lunga, salto rimasto appeso…) lo si riapre.
@@ -2521,7 +2788,14 @@ function startPlayer(p) {
       v.pause();
       toast('Spegnimento automatico: video in pausa');
     }
+    // Scheda dei titoli di coda: il riempimento conta solo mentre il video va
+    if (st.card && !st.done && !v.paused && modal.hidden && prefs.autoplay !== false && !st.sleepEnd) {
+      st.cardLeft--;
+      cardFill.style.transform = 'scaleX(' + (10 - st.cardLeft) / 10 + ')';
+      if (st.cardLeft <= 0) goNext();
+    }
     if (v.paused || v.ended || st.done || st.fatal || st.pending !== null || st.dragging) {
+      if (v.paused && !st.dragging) showTime();    // in pausa l'ora di fine si sposta in avanti
       st.lastMove = now; st.lastT = v.currentTime;
       return;
     }
@@ -2530,7 +2804,7 @@ function startPlayer(p) {
       if (st.recov && now - st.recovAt > 30000) st.recov = 0;
       return;
     }
-    if (now - st.lastMove > 3000 && !note.textContent) note.textContent = LOADING;
+    if (now - st.lastMove > 3000 && !note.textContent) setNote(LOADING);
     if (now - st.lastMove > (st.transcoding ? 25000 : 15000)) recover();
   }, 1000);
 
@@ -2549,6 +2823,17 @@ function startPlayer(p) {
       else return false;     // OK e Spazio: li riceve il bottone acceso
       return true;
     }
+    if (st.card) {
+      // Scheda dei titoli di coda: ← → tra i due bottoni, Indietro guarda i titoli
+      if (k === 'ArrowLeft' || k === 'ArrowRight') { moveCard(k === 'ArrowLeft' ? -1 : 1); wake(); return true; }
+      if (k === 'Escape' || k === 'Backspace') { watchCredits(); return true; }
+      if (k === 'Enter' && !card.contains(document.activeElement)) { card.querySelector('.go').focus(); return true; }
+    }
+    if (st.introOn) {
+      // «Salta intro» a schermo: OK lo preme, Indietro lo chiude
+      if (k === 'Enter') { action('intro'); return true; }
+      if (k === 'Escape' || k === 'Backspace') { closeIntro(); return true; }
+    }
     if (k === ' ' || k === 'k' || k === 'Enter' || k === 'MediaPlayPause') action('toggle');
     else if (k === 'MediaPlay') { if (v.paused) action('toggle'); else wake(); }
     else if (k === 'MediaPause') { if (!v.paused) action('toggle'); else wake(); }
@@ -2562,6 +2847,7 @@ function startPlayer(p) {
     else if (k === 's') action('subs');
     else if (k === 'o') action('menu');
     else if (k === 'n') action('next');
+    else if (k === 'i' && p.intro_end > 0) { seekTo(p.intro_end); wake(); }
     else if (k === '>' || k === '.') { setRate(SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(st.rate) + 1)]); wake(); }
     else if (k === '<' || k === ',') { setRate(SPEEDS[Math.max(0, SPEEDS.indexOf(st.rate) - 1)]); wake(); }
     else if (k >= '0' && k <= '9' && k.length === 1 && dur()) { seekTo(dur() * +k / 10); wake(); }
@@ -2572,8 +2858,11 @@ function startPlayer(p) {
   };
   player = st;
   applyLook();
+  setToggle(false);
+  drawMarks();
   load(p.start || 0);
   wake();
+  if (p.marks_pending && !p.friend) fetchMarks(1);
   // Le lingue disponibili: servono solo al menu, quindi si chiedono senza far aspettare il video
   api('/tracks/' + p.id).then(function (t) { if (player === st) st.audios = t.audio || []; }).catch(function () {});
 }
@@ -2588,6 +2877,8 @@ function stopPlayer() {
   clearInterval(st.countdown);
   clearTimeout(st.idle);
   clearTimeout(st.seekTimer);
+  clearTimeout(st.marksTimer);
+  document.removeEventListener('fullscreenchange', st.onfs);
   try { st.v.pause(); st.v.removeAttribute('src'); st.v.load(); } catch (e) { /* niente */ }
   if (document.pictureInPictureElement && document.exitPictureInPicture) document.exitPictureInPicture().catch(function () {});
   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
