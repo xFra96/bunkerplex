@@ -1852,7 +1852,7 @@ def play_info(con, r):
         title = show["title"] if show else title
     subs = []
     for i, (_, tag) in enumerate(subtitle_files(r["path"], r["id"])):
-        code = (tag.split(".")[0] or "").lower()
+        code = (re.split(r"[._\- ]", tag)[0] or "").lower()     # it.forced, ita_forced, ITA-sdh
         online = tag.endswith(".online")
         label = LANGS.get(code, code.upper() if online else (tag or "Sottotitoli"))
         # Forzati (Film.it.forced.srt): traducono solo cartelli e frasi in un'altra
