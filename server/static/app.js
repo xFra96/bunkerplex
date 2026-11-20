@@ -2011,6 +2011,18 @@ async function play(id, fromStart) {
   location.hash = '#/play/' + id;
 }
 
+// I sottotitoli partono spenti; solo quelli forzati (cartelli e frasi in un'altra
+// lingua) si accendono da soli: prima gli italiani, poi quelli senza lingua.
+function forcedSub(subs) {
+  var best = -1;
+  (subs || []).forEach(function (s, i) {
+    if (!s.forced) return;
+    if (s.lang === 'it' && (best < 0 || subs[best].lang !== 'it')) best = i;
+    else if (!s.lang && best < 0) best = i;
+  });
+  return best;
+}
+
 // Preferenze del player, ricordate su questo dispositivo (volume, sottotitoli, salti…)
 function playerPrefs() {
   try { return JSON.parse(localStorage.getItem('fpPlayer')) || {}; } catch (e) { return {}; }
@@ -2109,7 +2121,7 @@ function startPlayer(p) {
   var prefs = playerPrefs();
   var LOADING = 'Caricamento…', CONVERTING = 'Conversione in corso…', RECONNECT = 'Riprendo il collegamento…';
   var st = {
-    id: p.id, v: v, offset: 0, transcoding: !p.browser_direct, loaded: false, dragging: false, sub: -1, done: false,
+    id: p.id, v: v, offset: 0, transcoding: !p.browser_direct, loaded: false, dragging: false, sub: forcedSub(p.subs), done: false,
     audio: 0, audios: [], rate: 1, at: p.start || 0, pending: null, loadId: 0,
     lastT: -1, lastMove: Date.now(), recov: 0, recovAt: 0, fatal: false, endAt: null, sleepAt: 0, sleepEnd: false,
     introOn: false, introOff: false, card: false, cardOff: false, cardLeft: 10
