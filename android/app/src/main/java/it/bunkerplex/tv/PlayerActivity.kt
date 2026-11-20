@@ -321,9 +321,12 @@ class PlayerActivity : AppCompatActivity() {
         // I salti partono dal fotogramma chiave precedente: niente attese a decodificare
         // secondi di video (pesante con i 4K) solo per arrivare al punto esatto.
         p.setSeekParameters(SeekParameters.PREVIOUS_SYNC)
-        // Se il file ha piu' lingue, parte con quella della TV
+        // Se il file ha piu' lingue, parte con quella della TV. I sottotitoli partono
+        // sempre spenti, anche se il file ne segna una traccia come predefinita:
+        // si accendono dal menu.
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setPreferredAudioLanguage(Locale.getDefault().language)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
         p.addListener(listener)
         playerView.player = Front(p)
@@ -1103,6 +1106,13 @@ class PlayerActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (!isFinishing && player != null) {
                         Toast.makeText(this, "Avvio il successivo", Toast.LENGTH_SHORT).show()
+                        // Ogni nuovo episodio riparte senza sottotitoli, come la prima volta
+                        player?.let { p ->
+                            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                                .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                .build()
+                        }
                         open(info, 0L, false)
                     }
                 }
