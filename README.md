@@ -121,11 +121,13 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio
 | --- | --- |
 | Frecce | si muovono tra le locandine; a sinistra del bordo si apre il menu |
 | OK | apre · tenuto premuto: menu delle azioni |
-| Nel film: OK | pausa / riprendi |
-| Nel film: ◀ ▶ | indietro 10 s / avanti 30 s |
-| Nel film: ▲ ▼ | mostrano i comandi; con le frecce si sceglie un bottone, l'ingranaggio apre le opzioni (audio, sottotitoli, velocità, formato, spegnimento automatico) |
+| Nel film: OK | pausa / riprendi (e mostra i comandi) |
+| Nel film: ◀ ▶ | indietro 10 s / avanti 30 s; tenuti premuti scorrono il video, sempre più veloce |
+| Nel film: ▲ ▼ | mostrano i comandi: la barra del video e sotto i bottoni (Audio e sottotitoli, Velocità, Prossimo episodio, Ricomincia, Altre opzioni). ▼ scende ai bottoni, ▲ torna alla barra |
 | Nel film: Menu / Info | opzioni, se il telecomando ha il tasto |
-| Indietro | torna indietro; nel film esce salvando il punto; nella Home chiede se uscire dall'app |
+| Indietro | torna indietro; nel film nasconde i comandi, poi esce salvando il punto; nella Home chiede se uscire dall'app |
+
+Negli episodi delle serie compare **Salta intro** durante la sigla iniziale e, appena partono i titoli di coda, la scheda **Prossimo episodio** (parte da sola dopo 10 secondi, oppure **Guarda i titoli di coda**): basta OK. Le sigle le trova il server da solo, dai capitoli del file o confrontando l'audio degli episodi della stessa stagione; lo fa in sottofondo quando nessuno guarda, e subito per l'episodio che fai partire. Se in una serie i titoli di coda cambiano ogni volta, la scheda compare alla fine dell'episodio.
 
 Dal browser: `Spazio` pausa, `← →` salti, `↓` comandi (poi `← →` per scegliere un bottone), `M` muto, `S` sottotitoli, `N` episodio successivo, `F` schermo intero, `O` opzioni.
 

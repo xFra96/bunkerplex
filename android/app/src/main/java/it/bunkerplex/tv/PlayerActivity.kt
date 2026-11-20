@@ -1,7 +1,11 @@
 package it.bunkerplex.tv
 
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -13,6 +17,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -92,7 +97,47 @@ class PlayerActivity : AppCompatActivity() {
     private var sleepAtEnd = false
     private var visible = false
 
+    // Comandi a schermo (vedi "Comandi a schermo" piu' sotto)
+    private enum class Zone { BAR, ROW, FLOAT }
+    private var zone = Zone.BAR
+    private var shown = false
+    private var lastKeyAt = 0L
+    private var rowAt = 0
+    private var floatAt = 0
+    private var holdSeekAt = 0L
+    private lateinit var controls: LinearLayout
+    private lateinit var shade: View
+    private lateinit var bar: Bar
+    private lateinit var stateIcon: TextView
+    private lateinit var remainView: TextView
+    private lateinit var scrubLabel: TextView
+    private lateinit var episodeView: TextView
+    private lateinit var row: LinearLayout
+    private val rowActions = mutableListOf<() -> Unit>()
+    private lateinit var floatWrap: LinearLayout
+    private lateinit var nextInfo: TextView
+    private lateinit var skipBtn: Pill
+    private lateinit var creditsBtn: Pill
+    private lateinit var nextBtn: Pill
+
+    // Sigle dell'episodio (secondi; 0 = non c'e' o non si sa)
+    private var introS = 0.0
+    private var introE = 0.0
+    private var creditsS = 0.0
+    private var introDismissed = false
+    private var card = 0                // scheda del prossimo episodio: 0 no, 1 titoli di coda, 2 fine video
+    private var cardDismissed = false
+    private var cardElapsed = 0L
+    private var cardTickAt = 0L
+    private var marksTries = 0
+
     private val handler = Handler(Looper.getMainLooper())
+    private val uiTick = object : Runnable {
+        override fun run() {
+            handler.postDelayed(this, 250)
+            refresh()
+        }
+    }
     private val ticker = object : Runnable {
         override fun run() {
             report(false)
@@ -119,7 +164,7 @@ class PlayerActivity : AppCompatActivity() {
             if (sleepAt in 1..now) {
                 sleepAt = 0
                 p.pause()
-                playerView.showController()
+                showControls(Zone.BAR)
                 Toast.makeText(this@PlayerActivity, "Spegnimento automatico: video in pausa", Toast.LENGTH_LONG).show()
             }
             val pos = p.currentPosition
@@ -144,7 +189,7 @@ class PlayerActivity : AppCompatActivity() {
             lastMoveAt = now
             if (recoveries >= 3) {
                 p.pause()
-                playerView.showController()
+                showControls(Zone.BAR)
                 showOsd("Il video non riparte: premi OK per riprovare", 6000)
                 recoveries = 0
                 return
@@ -222,15 +267,11 @@ class PlayerActivity : AppCompatActivity() {
         buildPlayer()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                // Con i comandi a schermo: Indietro li nasconde. Altrimenti esce.
-                val playing = player?.playWhenReady == true
-                if (playerView.isControllerFullyVisible && playing) playerView.hideController() else finish()
-            }
+            override fun handleOnBackPressed() = onBack()
         })
 
         open(JSONObject(intent.getStringExtra("data") ?: "{}"), null, false)
-        showOsd("OK: pausa   ◀ ▶: salta   ▲: opzioni", 4500)
+        showControls(Zone.BAR)        // all'avvio titolo ed episodio, poi si nascondono da soli
     }
 
     private fun buildPlayer() {
@@ -312,28 +353,82 @@ class PlayerActivity : AppCompatActivity() {
         val root = FrameLayout(this)
         root.setBackgroundColor(Color.BLACK)
 
+        // I comandi di Media3 non servono: quelli a schermo sono nostri (vedi "Comandi a schermo")
         playerView = PlayerView(this)
-        playerView.setShowSubtitleButton(true)
-        playerView.setShowNextButton(false)
-        playerView.setShowPreviousButton(false)
-        playerView.controllerShowTimeoutMs = 4000
+        playerView.useController = false
         playerView.keepScreenOn = true
+        playerView.isFocusable = false
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
-        // L'ingranaggio della barra apre le nostre Opzioni (audio, sottotitoli, velocita',
-        // formato, spegnimento...) invece del menu ridotto di Media3.
-        playerView.findViewById<View>(androidx.media3.ui.R.id.exo_settings)?.let { gear ->
-            gear.setOnClickListener { showOptions() }
-            gear.contentDescription = "Opzioni"
-        }
 
-        titleView = TextView(this)
-        titleView.setTextColor(Color.WHITE)
-        titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-        titleView.typeface = Typeface.DEFAULT_BOLD
-        titleView.setShadowLayer(8f, 0f, 2f, Color.BLACK)
-        titleView.setPadding(dp(40), dp(28), dp(40), 0)
-        titleView.visibility = View.GONE
-        root.addView(titleView, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        // Il fondo scuro sotto i comandi
+        shade = View(this)
+        shade.background = GradientDrawable(
+            GradientDrawable.Orientation.BOTTOM_TOP,
+            intArrayOf(Color.argb(235, 0, 0, 0), Color.argb(140, 0, 0, 0), Color.TRANSPARENT)
+        )
+        shade.alpha = 0f
+        root.addView(shade, FrameLayout.LayoutParams(-1, dp(320), Gravity.BOTTOM))
+
+        controls = LinearLayout(this)
+        controls.orientation = LinearLayout.VERTICAL
+        controls.setPadding(dp(48), 0, dp(48), dp(28))
+        controls.alpha = 0f
+        controls.visibility = View.INVISIBLE       // invisibile ma misurato: serve la sua altezza
+
+        titleView = label(24f, true)
+        controls.addView(titleView)
+        episodeView = label(17f, false)
+        episodeView.setTextColor(Color.rgb(205, 209, 218))
+        controls.addView(episodeView)
+
+        val barRow = LinearLayout(this)
+        barRow.orientation = LinearLayout.HORIZONTAL
+        barRow.gravity = Gravity.BOTTOM
+        stateIcon = label(20f, true)
+        stateIcon.gravity = Gravity.CENTER
+        stateIcon.setPadding(0, 0, 0, dp(2))
+        barRow.addView(stateIcon, LinearLayout.LayoutParams(dp(34), dp(26)))
+        val barFrame = FrameLayout(this)
+        bar = Bar()
+        barFrame.addView(bar, FrameLayout.LayoutParams(-1, dp(26), Gravity.BOTTOM))
+        scrubLabel = label(17f, true)
+        scrubLabel.visibility = View.INVISIBLE
+        barFrame.addView(scrubLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        barRow.addView(barFrame, LinearLayout.LayoutParams(0, dp(54), 1f))
+        remainView = label(17f, false)
+        remainView.gravity = Gravity.CENTER_VERTICAL
+        remainView.setPadding(dp(14), 0, 0, 0)
+        barRow.addView(remainView, LinearLayout.LayoutParams(-2, dp(26)))
+        controls.addView(barRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+
+        row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        controls.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12); leftMargin = dp(34) })
+        root.addView(controls, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
+
+        // In basso a destra, sopra i comandi quando ci sono: «Salta intro» e la scheda
+        // del prossimo episodio (titoli di coda o fine video)
+        floatWrap = LinearLayout(this)
+        floatWrap.orientation = LinearLayout.VERTICAL
+        floatWrap.gravity = Gravity.END
+        nextInfo = label(16f, false)
+        nextInfo.setTextColor(Color.rgb(225, 228, 235))
+        nextInfo.visibility = View.GONE
+        floatWrap.addView(nextInfo, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
+        val floatRow = LinearLayout(this)
+        floatRow.orientation = LinearLayout.HORIZONTAL
+        creditsBtn = Pill("Guarda i titoli di coda", 18f)
+        nextBtn = Pill("Prossimo episodio", 18f)
+        skipBtn = Pill("Salta intro", 18f)
+        for (b in listOf(creditsBtn, nextBtn, skipBtn)) {
+            b.visibility = View.GONE
+            floatRow.addView(b, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12) })
+        }
+        floatWrap.addView(floatRow)
+        root.addView(floatWrap, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+            rightMargin = dp(48)
+            bottomMargin = dp(44)
+        })
 
         osd = TextView(this)
         osd.setTextColor(Color.WHITE)
@@ -345,13 +440,18 @@ class PlayerActivity : AppCompatActivity() {
         val osdParams = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
         osdParams.bottomMargin = dp(70)
         root.addView(osd, osdParams)
-
-        playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
-            titleView.visibility = visibility
-            if (visibility == View.VISIBLE) osd.visibility = View.GONE
-        })
         setContentView(root)
-        playerView.requestFocus()
+    }
+
+    private fun label(sp: Float, bold: Boolean): TextView {
+        val t = TextView(this)
+        t.setTextColor(Color.WHITE)
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+        if (bold) t.typeface = Typeface.DEFAULT_BOLD
+        t.setShadowLayer(6f, 0f, 1f, Color.argb(160, 0, 0, 0))
+        t.maxLines = 1
+        t.ellipsize = android.text.TextUtils.TruncateAt.END
+        return t
     }
 
     private fun showOsd(text: String, ms: Long = 1800) {
@@ -372,8 +472,14 @@ class PlayerActivity : AppCompatActivity() {
             endedAt = -1
             recoveries = 0
             softRetried = false
+            introDismissed = false
+            cardDismissed = false
+            marksTries = 0
+            hideCard()
+            if (d.optBoolean("marks_pending")) fetchMarks(d.optInt("id"))
         }
         data = d
+        readMarks(d)
         d.optString("session").let { if (it.isNotEmpty() && it != Net.session) Net.session = it }
         finished = false
         transcoding = useTranscode
@@ -384,7 +490,10 @@ class PlayerActivity : AppCompatActivity() {
 
         val title = d.optString("title")
         val subtitle = d.optString("subtitle")
-        titleView.text = if (subtitle.isBlank()) title else "$title\n$subtitle"
+        titleView.text = title
+        episodeView.text = subtitle
+        episodeView.visibility = if (subtitle.isBlank()) View.GONE else View.VISIBLE
+        buildRow()
 
         val uri: String
         if (useTranscode) {
@@ -590,59 +699,394 @@ class PlayerActivity : AppCompatActivity() {
             finish()
             return
         }
-        countdownToNext(next)
+        showCard(2)
     }
 
-    /** Fine episodio: il successivo parte da solo dopo 10 secondi, ma si puo' fermare. */
-    private fun countdownToNext(next: Int) {
+    // ---- Comandi a schermo, col telecomando come su Netflix
+    //
+    // Comandi nascosti: OK mette in pausa (e li mostra), ◀ ▶ saltano indietro e avanti
+    // (tenendo premuto si scorre sempre piu' veloce), ▲ mostra i comandi, ▼ li mostra
+    // con la fila dei bottoni gia' scelta, Indietro esce.
+    // Comandi visibili: sulla barra ◀ ▶ scorrono e OK fa pausa/play; ▼ scende alla fila
+    // dei bottoni (◀ ▶ per scegliere, OK per aprire, ▲ per tornare alla barra);
+    // Indietro li nasconde.
+    // «Salta intro» e la scheda del prossimo episodio stanno in basso a destra: quando
+    // compaiono hanno loro il tasto OK (dalla barra ci si torna con ▲), Indietro li chiude.
+
+    private val accent = Color.rgb(46, 178, 104)
+    private val playGlyph = "▶︎"
+    private val pauseGlyph = "❚❚"
+
+    /** Bottone arrotondato: bianco quando e' quello scelto. 'fill' = riempimento del conto alla rovescia. */
+    private inner class Pill(text: String, sp: Float) : TextView(this@PlayerActivity) {
+        var lit = false
+            set(v) {
+                if (field == v) return
+                field = v
+                setTextColor(if (v) Color.BLACK else Color.WHITE)
+                invalidate()
+            }
+        var fill = 0f
+            set(v) {
+                if (field == v) return
+                field = v
+                invalidate()
+            }
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val box = RectF()
+
+        init {
+            this.text = text
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+            maxLines = 1
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val r = dp(6).toFloat()
+            box.set(0f, 0f, width.toFloat(), height.toFloat())
+            paint.color = if (lit) Color.WHITE else Color.argb(165, 38, 42, 50)
+            canvas.drawRoundRect(box, r, r, paint)
+            if (fill > 0f) {
+                canvas.save()
+                canvas.clipRect(0f, 0f, width * fill, height.toFloat())
+                paint.color = if (lit) Color.rgb(185, 188, 194) else Color.argb(120, 255, 255, 255)
+                canvas.drawRoundRect(box, r, r, paint)
+                canvas.restore()
+            }
+            super.onDraw(canvas)
+        }
+    }
+
+    /** La barra del video: visto, gia' scaricato e il cursore (piu' grande quando e' scelta). */
+    private inner class Bar : View(this@PlayerActivity) {
+        var lit = false
+            set(v) {
+                if (field == v) return
+                field = v
+                invalidate()
+            }
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val pad get() = dp(10).toFloat()
+
+        fun thumbX(): Float {
+            val d = durationMs().toFloat()
+            val w = width - 2 * pad
+            return pad + if (d > 0) (realPosition() / d).coerceIn(0f, 1f) * w else 0f
+        }
+
+        override fun onDraw(c: Canvas) {
+            val d = durationMs().toFloat()
+            val w = width - 2 * pad
+            fun x(v: Float) = pad + if (d > 0) (v / d).coerceIn(0f, 1f) * w else 0f
+            val h = dp(if (lit) 6 else 4).toFloat()
+            val cy = height / 2f
+            val top = cy - h / 2
+            val bottom = cy + h / 2
+            paint.color = Color.argb(80, 255, 255, 255)
+            c.drawRoundRect(pad, top, pad + w, bottom, h / 2, h / 2, paint)
+            val p = player
+            if (p != null && pendingSeek < 0) {
+                val buffered = (if (transcoding) offsetMs else 0L) + p.bufferedPosition
+                paint.color = Color.argb(130, 255, 255, 255)
+                c.drawRoundRect(pad, top, x(buffered.toFloat()), bottom, h / 2, h / 2, paint)
+            }
+            paint.color = accent
+            val at = thumbX()
+            c.drawRoundRect(pad, top, at, bottom, h / 2, h / 2, paint)
+            c.drawCircle(at, cy, dp(if (lit) 10 else 6).toFloat(), paint)
+        }
+    }
+
+    private fun showControls(z: Zone? = null) {
+        if (z != null) zone = z
+        if (zone == Zone.FLOAT && floats().isEmpty()) zone = Zone.BAR
+        lastKeyAt = SystemClock.elapsedRealtime()
+        if (!shown) {
+            shown = true
+            controls.visibility = View.VISIBLE
+            controls.animate().alpha(1f).setDuration(160).start()
+            shade.animate().alpha(1f).setDuration(160).start()
+            osd.visibility = View.GONE
+        }
+        placeFloats()
+        refresh()
+    }
+
+    private fun hideControls() {
+        if (!shown) return
+        shown = false
+        controls.animate().alpha(0f).setDuration(220).withEndAction {
+            if (!shown) controls.visibility = View.INVISIBLE
+        }.start()
+        shade.animate().alpha(if (card > 0) 0.6f else 0f).setDuration(220).start()
+        zone = if (floats().isNotEmpty()) Zone.FLOAT else Zone.BAR
+        placeFloats()
+        paintFocus()
+    }
+
+    /** Sopra i comandi quando si vedono, altrimenti nell'angolo. */
+    private fun placeFloats() {
+        val lift = if (shown) -(controls.height + dp(10) - dp(44)).toFloat().coerceAtLeast(0f) else 0f
+        floatWrap.animate().translationY(lift).setDuration(160).start()
+    }
+
+    private fun floats(): List<Pill> = listOf(creditsBtn, nextBtn, skipBtn).filter { it.visibility == View.VISIBLE }
+
+    private fun paintFocus() {
+        bar.lit = shown && zone == Zone.BAR
+        stateIcon.setTextColor(if (bar.lit) Color.WHITE else Color.rgb(200, 204, 212))
+        rowButtons().forEachIndexed { i, b -> b.lit = shown && zone == Zone.ROW && i == rowAt }
+        floats().forEachIndexed { i, b -> b.lit = zone == Zone.FLOAT && i == floatAt }
+    }
+
+    private fun rowButtons(): List<Pill> = (0 until row.childCount).map { row.getChildAt(it) as Pill }
+
+    /** La fila dei bottoni sotto la barra (cambia se c'e' un episodio o un film dopo). */
+    private fun buildRow() {
+        row.removeAllViews()
+        rowActions.clear()
+        fun add(text: String, action: () -> Unit) {
+            val b = Pill(text, 16f)
+            b.setPadding(dp(18), dp(8), dp(18), dp(8))
+            row.addView(b, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(12) })
+            rowActions.add(action)
+        }
+        add("Audio e sottotitoli") { showAudioSubs() }
+        add("Velocità") { showSpeed() }
+        val next = data.optInt("next", 0)
+        val saga = data.optJSONObject("saga")
+        if (next > 0) add("Prossimo episodio") { goNext(next, false) }
+        else if (saga != null) add("Film successivo") { goNext(saga.optInt("id"), false) }
+        add("Ricomincia") { seekAbs(0, null) }
+        add("Altre opzioni") { showOptions() }
+        rowAt = rowAt.coerceIn(0, rowActions.size - 1)
+        paintFocus()
+    }
+
+    /** Ogni 250 ms: barra, tempo che manca, «Salta intro» e la scheda dei titoli di coda. */
+    private fun refresh() {
+        val p = player ?: return
+        val now = SystemClock.elapsedRealtime()
+        val posMs = realPosition()
+        val pos = posMs / 1000.0
+        if (shown) {
+            bar.invalidate()
+            val d = durationMs()
+            remainView.text = if (d > 0) format((d - posMs).coerceAtLeast(0)) else format(posMs)
+            stateIcon.text = if (p.playWhenReady && !finished) pauseGlyph else playGlyph
+            if (pendingSeek >= 0) {
+                scrubLabel.text = format(posMs)
+                val half = scrubLabel.width / 2f
+                scrubLabel.translationX = (bar.thumbX() - half).coerceIn(0f, (bar.width - scrubLabel.width).toFloat().coerceAtLeast(0f))
+                scrubLabel.visibility = View.VISIBLE
+            } else {
+                scrubLabel.visibility = View.INVISIBLE
+            }
+            // Si nascondono da soli dopo 5 secondi senza tasti, se il video va
+            if (p.playWhenReady && pendingSeek < 0 && !finished && now - lastKeyAt > 5000) hideControls()
+        }
+
+        // Titoli di coda: la scheda del prossimo episodio (quella di fine video resta fino alla scelta)
+        val next = data.optInt("next", 0)
+        if (card != 2) {
+            val inCredits = next > 0 && creditsS > 0 && pos >= creditsS && !finished && pendingSeek < 0
+            if (inCredits && card == 0 && !cardDismissed && !sleepAtEnd) showCard(1)
+            else if (card == 1 && (pos < creditsS - 1 || next <= 0)) hideCard()
+            if (pos < creditsS - 2) cardDismissed = false
+        }
+        if (card > 0 && autoplay()) {
+            if (card == 2 || p.isPlaying) cardElapsed += now - cardTickAt
+            cardTickAt = now
+            nextBtn.fill = (cardElapsed / COUNTDOWN.toFloat()).coerceIn(0f, 1f)
+            if (cardElapsed >= COUNTDOWN && next > 0) {
+                goNext(next, true)
+                return
+            }
+        } else {
+            cardTickAt = now
+        }
+
+        // Sigla iniziale
+        val inIntro = introE > introS && pos >= introS && pos < introE - 1.5 && !finished && card == 0
+        if (!inIntro && (pos < introS - 1 || pos >= introE)) introDismissed = false
+        setVisible(skipBtn, inIntro && !introDismissed)
+    }
+
+    private val COUNTDOWN = 10_000L
+
+    private fun autoplay() = prefs.getBoolean("p_autoplay", true) && !sleepAtEnd
+
+    private fun setVisible(b: Pill, on: Boolean) {
+        val want = if (on) View.VISIBLE else View.GONE
+        if (b.visibility == want) return
+        val before = floats().isNotEmpty()
+        b.visibility = want
+        val list = floats()
+        if (on && !before && !(shown && zone == Zone.ROW)) {
+            zone = Zone.FLOAT
+            floatAt = list.size - 1
+        }
+        if (list.isEmpty() && zone == Zone.FLOAT) zone = Zone.BAR
+        floatAt = floatAt.coerceIn(0, (list.size - 1).coerceAtLeast(0))
+        paintFocus()
+    }
+
+    /** kind 1: sono partiti i titoli di coda; kind 2: il video e' finito. */
+    private fun showCard(kind: Int) {
+        card = kind
+        cardElapsed = 0
+        cardTickAt = SystemClock.elapsedRealtime()
+        nextBtn.fill = 0f
+        creditsBtn.text = if (kind == 1) "Guarda i titoli di coda" else "Esci"
         val label = data.optString("next_label")
-        var left = 10
-        var done = false
-        fun text() = (if (label.isBlank()) "" else "$label\n\n") + "Parte tra $left secondi"
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("Prossimo episodio")
-            .setMessage(text())
-            .setPositiveButton("Guarda subito", null)
-            .setNegativeButton("Esci", null)
-            .create()
-        val tick = object : Runnable {
-            override fun run() {
-                if (done || isFinishing || player == null) return
-                if (!visible) {          // TV spenta o app in secondo piano: niente partenze al buio
-                    done = true
-                    dialog.dismiss()
-                    finish()
-                    return
-                }
-                left--
-                if (left <= 0) {
-                    done = true
-                    dialog.dismiss()
-                    playNext(next)
-                } else {
-                    dialog.setMessage(text())
-                    handler.postDelayed(this, 1000)
-                }
+        nextInfo.text = if (label.isBlank()) "" else "Prossimo episodio · $label"
+        nextInfo.visibility = if (label.isBlank()) View.GONE else View.VISIBLE
+        setVisible(skipBtn, false)
+        setVisible(creditsBtn, true)
+        setVisible(nextBtn, true)
+        if (!(shown && zone == Zone.ROW)) {
+            zone = Zone.FLOAT
+            floatAt = floats().indexOf(nextBtn)
+        }
+        if (kind == 2) hideControls()
+        shade.animate().alpha(if (shown) 1f else 0.6f).setDuration(200).start()
+        paintFocus()
+    }
+
+    private fun hideCard() {
+        if (card == 0) return
+        card = 0
+        nextBtn.fill = 0f
+        nextInfo.visibility = View.GONE
+        setVisible(creditsBtn, false)
+        setVisible(nextBtn, false)
+        if (!shown) shade.animate().alpha(0f).setDuration(200).start()
+    }
+
+    private fun pressFloat() {
+        val b = floats().getOrNull(floatAt) ?: return
+        when (b) {
+            skipBtn -> {
+                introDismissed = true
+                setVisible(skipBtn, false)
+                jumpTo((introE * 1000).toLong())
+            }
+            creditsBtn -> if (card == 2) finish() else {
+                cardDismissed = true
+                hideCard()
+            }
+            nextBtn -> goNext(data.optInt("next", 0), true)
+        }
+    }
+
+    /** Indietro: chiude i comandi, poi «Salta intro» o la scheda, poi esce. */
+    private fun onBack() {
+        val playing = player?.playWhenReady == true && !finished
+        when {
+            shown && playing -> hideControls()
+            card == 2 -> finish()
+            card == 1 -> {
+                cardDismissed = true
+                hideCard()
+            }
+            skipBtn.visibility == View.VISIBLE -> {
+                introDismissed = true
+                setVisible(skipBtn, false)
+            }
+            else -> finish()
+        }
+    }
+
+    /** Al prossimo episodio (o film). fromCard: dalla scheda dei titoli di coda, quindi questo e' visto. */
+    private fun goNext(next: Int, fromCard: Boolean) {
+        if (next <= 0) return
+        report(fromCard)
+        finished = true
+        hideCard()
+        player?.pause()
+        playNext(next)
+    }
+
+    /** Salto immediato (senza aspettare altri tasti): «Salta intro». */
+    private fun jumpTo(ms: Long) {
+        seekAbs(ms, null)
+        handler.removeCallbacks(applySeek)
+        handler.post(applySeek)
+    }
+
+    private fun togglePlay() {
+        val p = player ?: return
+        when {
+            p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED ->
+                if (!finished) open(data, realPosition(), transcoding)
+            // Si guarda cosa e' stato chiesto (play o pausa), non se il video sta scorrendo
+            // in questo istante: mentre caricava, OK non faceva nulla.
+            p.playWhenReady -> p.pause()
+            else -> {
+                lastMoveAt = SystemClock.elapsedRealtime()
+                p.play()
             }
         }
-        // Indietro (o Esci) ferma il conto e torna alla scheda
-        dialog.setOnCancelListener {
-            done = true
-            finish()
+    }
+
+    // ---- Sigle: le manda il server con il video; se non le aveva ancora pronte
+    // (le sta cercando in quel momento) le si richiede poco dopo.
+
+    private fun readMarks(d: JSONObject) {
+        introS = d.optDouble("intro_start", 0.0).takeIf { it.isFinite() } ?: 0.0
+        introE = d.optDouble("intro_end", 0.0).takeIf { it.isFinite() } ?: 0.0
+        creditsS = d.optDouble("credits", 0.0).takeIf { it.isFinite() } ?: 0.0
+    }
+
+    private fun fetchMarks(id: Int) {
+        if (marksTries >= 8 || id <= 0) return
+        marksTries++
+        handler.postDelayed({
+            if (data.optInt("id") == id && !isFinishing) {
+                thread {
+                    val m = try {
+                        JSONObject(Net.get("$server/api/marks/$id"))
+                    } catch (_: Exception) {
+                        null
+                    }
+                    runOnUiThread {
+                        if (data.optInt("id") != id || isFinishing) return@runOnUiThread
+                        if (m != null && !m.optBoolean("marks_pending")) {
+                            for (k in listOf("intro_start", "intro_end", "credits")) data.put(k, m.optDouble(k, 0.0))
+                            readMarks(data)
+                        } else {
+                            fetchMarks(id)
+                        }
+                    }
+                }
+            }
+        }, if (marksTries == 1) 6_000L else 10_000L)
+    }
+
+    // ---- Finestre di scelta aperte dalla fila dei bottoni
+
+    private fun showAudioSubs() {
+        hideControls()
+        val items = mutableListOf<Pair<String, () -> Unit>>()
+        audioSubItems(items)
+        if (items.isEmpty()) {
+            showOsd("Nessuna altra lingua o sottotitolo per questo video", 3000)
+            return
         }
-        dialog.show()
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            done = true
-            dialog.dismiss()
-            playNext(next)
-        }
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
-            done = true
-            dialog.dismiss()
-            finish()
-        }
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus()
-        handler.postDelayed(tick, 1000)
+        AlertDialog.Builder(this).setTitle("Audio e sottotitoli")
+            .setItems(items.map { it.first }.toTypedArray()) { _, i -> items[i].second() }
+            .show()
+    }
+
+    private fun showSpeed() {
+        val p = player ?: return
+        hideControls()
+        val speed = p.playbackParameters.speed
+        pick("Velocità", speeds.map { speedLabel(it) }, speeds.indexOf(speed)) { i -> player?.setPlaybackSpeed(speeds[i]) }
     }
 
     private fun sagaLabel(saga: JSONObject): String =
@@ -695,7 +1139,7 @@ class PlayerActivity : AppCompatActivity() {
         pendingSeek = target
         handler.removeCallbacks(applySeek)
         handler.postDelayed(applySeek, if (transcoding) 600 else 300)
-        if (arrow != null && !playerView.isControllerFullyVisible) {
+        if (arrow != null && !shown) {
             showOsd(arrow + format(target) + (if (duration > 0) " / " + format(duration) else ""))
         }
     }
@@ -874,11 +1318,8 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun showOptions() {
-        val p = player ?: return
-        playerView.hideController()
-        val items = mutableListOf<Pair<String, () -> Unit>>()
-
+    /** Lingua audio e sottotitoli: nelle Opzioni e nel bottone «Audio e sottotitoli». */
+    private fun audioSubItems(items: MutableList<Pair<String, () -> Unit>>) {
         if (transcoding) {
             if (serverAudios.size > 1) {
                 items.add("Lingua audio:  " + serverAudios.getOrElse(serverAudio) { "" } to {
@@ -920,6 +1361,13 @@ class PlayerActivity : AppCompatActivity() {
         if (data.optBoolean("subs_online") && data.optString("friend").isBlank()) {
             items.add("Cerca sottotitoli su internet" to { findSubs() })
         }
+    }
+
+    private fun showOptions() {
+        val p = player ?: return
+        hideControls()
+        val items = mutableListOf<Pair<String, () -> Unit>>()
+        audioSubItems(items)
 
         val speed = p.playbackParameters.speed
         items.add("Velocità:  " + speedLabel(speed) to {
@@ -1037,7 +1485,7 @@ class PlayerActivity : AppCompatActivity() {
             }
         )
         lines.add("Posizione: ${format(realPosition())} / ${format(durationMs())}")
-        AlertDialog.Builder(this).setTitle(titleView.text.toString().replace("\n", " — "))
+        AlertDialog.Builder(this).setTitle(listOf(titleView.text, episodeView.text).filter { it.isNotBlank() }.joinToString(" — "))
             .setMessage(lines.joinToString("\n"))
             .setPositiveButton("Chiudi", null)
             .show()
@@ -1045,62 +1493,90 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val p = player
-        if (p != null && event.action == KeyEvent.ACTION_DOWN) {
-            val hidden = !playerView.isControllerFullyVisible
-            when (event.keyCode) {
-                KeyEvent.KEYCODE_MEDIA_REWIND -> {
-                    seekBy(-stepBack())
-                    return true
+        if (p == null || event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
+        val now = SystemClock.elapsedRealtime()
+        lastKeyAt = now
+        val first = event.repeatCount == 0
+        val floating = floats()
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_MEDIA_REWIND -> scrub(-1, event, now)
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> scrub(1, event, now)
+            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> if (first) {
+                togglePlay()
+                showControls()
+            }
+            KeyEvent.KEYCODE_MEDIA_PLAY -> if (first) {
+                if (!p.playWhenReady) togglePlay()
+                showControls()
+            }
+            KeyEvent.KEYCODE_MEDIA_PAUSE -> if (first) {
+                if (p.playWhenReady) p.pause()
+                showControls()
+            }
+            KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS, KeyEvent.KEYCODE_INFO,
+            KeyEvent.KEYCODE_CAPTIONS, KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> if (first) showOptions()
+            KeyEvent.KEYCODE_MEDIA_NEXT -> if (first && !finished) goNext(data.optInt("next", 0), false)
+            KeyEvent.KEYCODE_DPAD_UP -> when {
+                !shown -> showControls(Zone.BAR)
+                zone == Zone.ROW -> showControls(Zone.BAR)
+                zone == Zone.BAR && floating.isNotEmpty() -> {
+                    floatAt = floating.size - 1
+                    showControls(Zone.FLOAT)
                 }
-                KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
-                    seekBy(stepForward())
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_LEFT -> if (hidden) {
-                    seekBy(-stepBack())
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> if (hidden) {
-                    seekBy(stepForward())
-                    return true
-                }
-                // Su e giu' non hanno scorciatoie: mostrano i comandi (lo fa PlayerView),
-                // e le Opzioni si aprono dall'ingranaggio nella barra.
-                KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_SETTINGS, KeyEvent.KEYCODE_INFO,
-                KeyEvent.KEYCODE_CAPTIONS, KeyEvent.KEYCODE_MEDIA_AUDIO_TRACK -> {
-                    if (event.repeatCount == 0) showOptions()
-                    return true
-                }
-                KeyEvent.KEYCODE_MEDIA_NEXT -> {
-                    val next = data.optInt("next", 0)
-                    if (next > 0 && event.repeatCount == 0 && !finished) {
-                        report(false)
-                        finished = true
-                        p.pause()
-                        playNext(next)
+                else -> showControls()
+            }
+            KeyEvent.KEYCODE_DPAD_DOWN -> when {
+                !shown -> showControls(Zone.ROW)
+                zone == Zone.FLOAT -> showControls(Zone.BAR)
+                else -> showControls(Zone.ROW)
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                val dir = if (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1
+                when {
+                    zone == Zone.FLOAT && floating.size > 1 -> {
+                        if (first) floatAt = (floatAt + dir).coerceIn(0, floating.size - 1)
+                        paintFocus()
                     }
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> if (hidden) {
-                    if (event.repeatCount == 0) {
-                        // Si guarda cosa e' stato chiesto (play o pausa), non se il video sta
-                        // scorrendo in questo istante: mentre caricava, OK non faceva nulla.
-                        when {
-                            p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED ->
-                                open(data, realPosition(), transcoding)
-                            p.playWhenReady -> p.pause()
-                            else -> {
-                                lastMoveAt = SystemClock.elapsedRealtime()
-                                p.play()
-                            }
-                        }
-                        playerView.showController()
+                    zone == Zone.ROW && shown -> {
+                        if (first) rowAt = (rowAt + dir).coerceIn(0, rowActions.size - 1)
+                        showControls()
                     }
-                    return true
+                    card == 2 -> Unit                 // video finito: non c'e' piu' niente da scorrere
+                    else -> scrub(dir, event, now)
                 }
             }
+            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> if (first) {
+                when {
+                    zone == Zone.FLOAT && floating.isNotEmpty() -> pressFloat()
+                    zone == Zone.ROW && shown -> rowActions.getOrNull(rowAt)?.invoke()
+                    else -> {
+                        togglePlay()
+                        showControls(Zone.BAR)
+                    }
+                }
+            }
+            else -> return super.dispatchKeyEvent(event)
         }
-        return super.dispatchKeyEvent(event)
+        return true
+    }
+
+    /** ◀ ▶ sulla barra. Una pressione: un salto; tenendo premuto si scorre, sempre piu' veloce
+     *  (i salti si sommano e il video si sposta quando si lascia il tasto). */
+    private fun scrub(dir: Int, event: KeyEvent, now: Long) {
+        if (event.repeatCount == 0) {
+            seekBy(if (dir < 0) -stepBack() else stepForward())
+        } else {
+            if (now - holdSeekAt < 120) return
+            val held = now - event.downTime
+            val step = when {
+                held > 6000 -> 60_000L
+                held > 3000 -> 30_000L
+                else -> 10_000L
+            }
+            seekBy(dir * step)
+        }
+        holdSeekAt = now
+        showControls(Zone.BAR)
     }
 
     override fun onStart() {
@@ -1109,6 +1585,7 @@ class PlayerActivity : AppCompatActivity() {
         handler.postDelayed(ticker, 10_000)
         lastMoveAt = SystemClock.elapsedRealtime()
         handler.postDelayed(watchdog, 1000)
+        handler.post(uiTick)
         if (pendingSeek >= 0) handler.post(applySeek)
     }
 
@@ -1116,6 +1593,8 @@ class PlayerActivity : AppCompatActivity() {
         visible = false
         handler.removeCallbacks(ticker)
         handler.removeCallbacks(watchdog)
+        handler.removeCallbacks(uiTick)
+        if (card == 2) finish()        // TV spenta a fine episodio: niente partenze al buio
         report(false)
         handler.removeCallbacks(applySeek)   // un salto ancora in attesa riparte in onStart
         player?.pause()
