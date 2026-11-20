@@ -12,7 +12,10 @@ var toastEl = document.getElementById('toast');
 // non puo' aggiornarsi da sola alla nuova e le si chiede di sostituirla.
 var tvApp = window.BunkerPlexTV || window.FrancoPlexTV || null;
 var OLD_TV_APP = !!tvApp && !window.BunkerPlexTV;
-var TV = !!tvApp;                    // true dentro l'app Android TV
+var APP = !!tvApp;                   // dentro l'app Android (TV o telefono): video col player nativo
+// L'app sa dire se gira su un televisore. Una versione vecchia non lo sa: allora vale come TV.
+var PHONE_APP = APP && typeof tvApp.isTv === 'function' && !callSafe(function () { return tvApp.isTv(); });
+var TV = APP && !PHONE_APP;          // true dentro l'app su Android TV
 var kb = TV;                         // l'ultimo comando e' arrivato da tasti/telecomando
 var focusMemory = {};                // pagina -> ultimo elemento selezionato
 var scrollMemory = {};
@@ -54,6 +57,7 @@ var IC = {
   folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>',
   bell: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5zM10 20.5h4"/></svg>'
 };
+function callSafe(fn) { try { return fn(); } catch (e) { return true; } }
 var MORE = '<span class="more" data-menu title="Azioni">' + IC.dots + '</span>';
 var HINT = 'OK apre · tieni premuto OK per le altre azioni · freccia sinistra per il menu';
 
@@ -182,7 +186,7 @@ function conflictsPage() {
   return '<div class="page"><div class="panel login wide"><h1>Impostazioni diverse</h1>' +
     '<p>Qui ci sono impostazioni diverse da quelle salvate nel tuo account. Quali vuoi tenere?</p>' +
     '<div class="lib">' + conflicts.map(function (c) {
-      return '<div class="folder"><div class="where"><b>' + esc(c.label) + '</b><small>Questo ' + (TV ? 'dispositivo' : 'PC') + ': ' + esc(c.local) +
+      return '<div class="folder"><div class="where"><b>' + esc(c.label) + '</b><small>Questo ' + (APP ? 'dispositivo' : 'PC') + ': ' + esc(c.local) +
         '<br>Account: ' + esc(c.cloud) + '</small></div></div>';
     }).join('') + '</div>' +
     '<div class="actions"><button class="btn primary f" data-autofocus data-act="resolve" data-arg="cloud" data-key="keepcloud">Usa quelle dell\'account</button>' +
@@ -194,7 +198,7 @@ function lockScreen(on) {
   document.body.classList.toggle('locked', on);
 }
 
-function devName() { return TV ? 'tv' : 'browser'; }
+function devName() { return TV ? 'tv' : PHONE_APP ? 'phone' : 'browser'; }
 
 // Il modulo per entrare con un account (o per creare l'amministratore, la prima volta)
 function accountForm(name, fixed) {
@@ -237,7 +241,7 @@ function profilesPage() {
     '<button class="btn f" data-act="whomode" data-arg="new" data-key="who-new">Nuovo profilo</button>' +
     (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>' : '') +
       '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' : '') +
-    (TV ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
+    (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
   return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
     '<div class="profiles">' + list + '</div>' + (body ? '<div style="margin-top:1.4rem">' + body + '</div>' : '') + more + '</div></div>';
 }
@@ -1484,7 +1488,7 @@ function settingsRows(i, u, sh) {
       value: u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
       state: u.error || u.access === false || u.available || u.phase ? 'warn' : 'ok' });
   }
-  var tvOld = TV && i.apk_version > (+tvCall('getVersion') || 0);
+  var tvOld = APP && i.apk_version > (+tvCall('getVersion') || 0);
   rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo', desc: 'Animazioni, locandine, collegamento',
     value: tvOld ? 'App da aggiornare' : 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: tvOld ? 'warn' : '' });
   return rows;
@@ -1503,7 +1507,7 @@ async function apkPanel(title) {
     (link.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per scaricare l\'app">' + link.svg + '</div>' : '') +
     '<div class="apktext"><p>Inquadra il codice con la fotocamera del telefono: scarica l\'app da questo PC. Sulla TV invece apri lo stesso indirizzo con l\'app «Downloader».</p>' +
     '<p class="apkurl num">' + esc(link.url) + '</p>' +
-    (TV ? '' : '<div class="actions" style="margin-top:.4rem"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>') +
+    (APP ? '' : '<div class="actions" style="margin-top:.4rem"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>') +
     '</div></div></div>';
 }
 
@@ -1661,7 +1665,7 @@ async function settingsArea(area) {
     return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
       (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>') +
-      (TV ? '' : await apkPanel('App per la TV e per il telefono')));
+      (APP ? '' : await apkPanel('App per la TV e per il telefono')));
   }
 
   // Questo dispositivo: preferenze di visione e collegamento al server
@@ -1669,12 +1673,54 @@ async function settingsArea(area) {
     devicePanel().replace(/<h2>Questo dispositivo<\/h2>/, '<h2>Preferenze di visione</h2>') +
     '<div class="panel"><h2>Collegamento</h2>' +
     '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Programma</dt><dd>' + esc(i.name) + ' ' + esc(i.version) + '</dd>' +
-    (TV ? '<dt>App su questa TV</dt><dd>' + esc(tvCall('getVersionName') || 'precedente') +
+    (APP ? '<dt>' + (TV ? 'App su questa TV' : 'App BunkerPlex') + '</dt><dd>' + esc(tvCall('getVersionName') || 'precedente') +
       (i.apk_version > (+tvCall('getVersion') || 0) ? ' · <span class="nodot">sul PC ce n\'è una più nuova</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd>' : '') +
     '</dl>' +
-    (TV ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
+    (APP ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
       '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
-    '</div>' + (TV ? await apkPanel('L\'app sul telefono') : ''));
+    '</div>' + installPanel() + (TV ? await apkPanel('L\'app sul telefono') : ''));
+}
+
+// ---------------------------------------------------------------- App sul telefono (PWA)
+// Dal browser del telefono BunkerPlex si mette sulla schermata Home e si apre a
+// tutto schermo, con tutte le funzioni del PC. Il browser lo permette solo da una
+// pagina sicura (https, o un indirizzo http segnato a mano come sicuro in Chrome).
+var installEvt = null;
+var STANDALONE = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+var IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+window.addEventListener('beforeinstallprompt', function (e) {
+  e.preventDefault();
+  installEvt = e;
+  if (/^#\/settings\/device/.test(location.hash)) render();
+});
+window.addEventListener('appinstalled', function () {
+  installEvt = null;
+  toast('BunkerPlex è sulla schermata Home');
+  if (/^#\/settings\/device/.test(location.hash)) render();
+});
+if (!APP && window.isSecureContext && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(function () {});
+}
+
+function installPanel() {
+  if (APP || TVLOOK || STANDALONE) return '';
+  var body;
+  if (installEvt) {
+    body = '<p>Mettila sulla schermata Home: si apre a tutto schermo, come un\'app, con tutte le funzioni.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="pwainstall" data-key="pwainstall">Installa l\'app</button></div>';
+  } else if (IOS) {
+    body = '<p>In Safari tocca <b>Condividi</b> e poi <b>Aggiungi alla schermata Home</b>: si apre a tutto schermo, come un\'app.</p>';
+  } else if (!window.isSecureContext) {
+    body = '<p>Questa pagina arriva in http dalla rete di casa: Chrome la mette sulla schermata Home solo come collegamento, che si apre nel browser.</p>' +
+      '<p>Per l\'app vera, a tutto schermo, sul telefono Android (una volta sola):</p>' +
+      '<ol class="steps"><li>apri <b class="num">chrome://flags</b> in Chrome</li>' +
+      '<li>cerca <b>Insecure origins treated as secure</b>, scrivi <b class="num">' + esc(location.origin) + '</b> e scegli <b>Enabled</b></li>' +
+      '<li>tocca <b>Relaunch</b>, torna qui e premi <b>Installa l\'app</b></li></ol>' +
+      '<p><small>Con Tailscale (indirizzo https) l\'app funziona anche fuori casa, senza cambiare nulla in Chrome.</small></p>';
+  } else {
+    body = '<p>Nel menu del browser scegli <b>Installa app</b> o <b>Aggiungi a schermata Home</b>: si apre a tutto schermo, come un\'app.</p>';
+  }
+  return '<div class="panel"><h2>App sulla schermata Home</h2>' + body + '</div>';
 }
 
 function accountArea(i) {
@@ -2006,7 +2052,7 @@ async function play(id, fromStart) {
   var p;
   try { p = await api('/play/' + id); } catch (e) { toast(e.message); return; }
   if (fromStart) p.start = 0;
-  if (TV) { tvApp.play(JSON.stringify(p)); return; }
+  if (APP) { tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
   location.hash = '#/play/' + id;
 }
@@ -2999,7 +3045,7 @@ function startUpdate() {
 }
 
 function checkUpdate(manual) {
-  if (!TV) return;
+  if (!APP) return;
   api('/info').then(function (i) {
     if (!i.apk_version) { if (manual) toast('Sul PC non c\'è un APK: avvia strumenti/sviluppo/«Compila APK.bat»'); return; }
     var mine = +tvCall('getVersion') || 0;
@@ -3143,7 +3189,7 @@ function watchServerUpdate() {
       } else {
         toast('BunkerPlex è aggiornato');
         if (/^#\/settings/.test(location.hash)) render();
-        if (TV) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
+        if (APP) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
       }
     }).catch(function () {
       down = true;
@@ -3548,7 +3594,7 @@ var actions = {
       render();
     }, function (e) { toast(e.message); });
   },
-  resetserver: function () { if (TV) tvApp.resetServer(); },
+  resetserver: function () { if (APP) tvApp.resetServer(); },
 
   // --- amici
   friendadd: function (arg) {
@@ -3610,6 +3656,13 @@ var actions = {
     });
   },
   checkupdate: function () { checkUpdate(true); },
+  pwainstall: function () {
+    if (!installEvt) return;
+    var e = installEvt;
+    installEvt = null;
+    e.prompt();
+    (e.userChoice || Promise.resolve()).then(function () { render(); });
+  },
   updcheck: function () {
     toast('Controllo su GitHub…');
     post('/update/check').then(function (u) {
@@ -4182,7 +4235,7 @@ window.fpBack = function () {
   if (player && player.leaveRow && player.leaveRow()) return true;   // Indietro esce dai comandi del video
   // Dalla Home Indietro chiude l'app: prima si chiede conferma (serve un'app che
   // sappia chiudersi su richiesta; con una versione vecchia si esce come prima)
-  if (!player && currentHash === '#/home' && TV && typeof tvApp.exit === 'function') {
+  if (!player && currentHash === '#/home' && APP && typeof tvApp.exit === 'function') {
     confirmBox('Vuoi uscire da BunkerPlex?', 'Esci', function () { tvApp.exit(); });
     return true;
   }
@@ -4243,7 +4296,7 @@ setInterval(function () {
 
 // Sulla TV: all'avvio (cioe' appena collegata al server) e poi ogni mezz'ora,
 // perche' l'app puo' restare aperta per giorni.
-if (TV) {
+if (APP) {
   setTimeout(checkUpdate, 2500);
   setInterval(checkUpdate, 30 * 60 * 1000);
 }
@@ -4303,8 +4356,8 @@ function activityState() {
   if (!i.tmdb && libs.length) notes.push({ key: 'tmdb', title: 'Locandine e schede non attive', text: 'Serve la chiave TMDB', href: '#/settings/catalog' });
   var s = syncState();
   if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
-  if (TV && i.apk_version > (+tvCall('getVersion') || 0)) {
-    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app per la TV', text: 'Aggiornala da Impostazioni → Questa TV', href: '#/settings/device' });
+  if (APP && i.apk_version > (+tvCall('getVersion') || 0)) {
+    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → ' + (TV ? 'Questa TV' : 'Questo dispositivo'), href: '#/settings/device' });
   }
   return { ops: ops, notes: notes };
 }
