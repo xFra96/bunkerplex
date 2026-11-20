@@ -4432,7 +4432,7 @@ def collection_detail(coll_id: int):
     try:
         rows = collection_rows(con, coll_id)
         if not rows:
-            raise HTTPException(404, "Saga non trovata")
+            raise HTTPException(404, "Collezione non trovata")
         d = collection_json(con, rows[0])
         parts = jlist(rows[0]["parts"])
         order = {p["id"]: n for n, p in enumerate(parts)}
