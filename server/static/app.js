@@ -669,7 +669,7 @@ async function home() {
       return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id, true); }), note);
     }).join('') +
     section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
-=======
+    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top', true); }));
 
   return {
     html: '<div class="home"><div class="stage" id="stage"><div class="bg"></div><div class="bg"></div>' +
