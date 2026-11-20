@@ -1082,6 +1082,15 @@ async function show(id) {
     '</div>';
   }).join('') : '';
 
+  // Segna come vista solo la stagione aperta (con una stagione sola basta il pulsante della serie)
+  var seasonSeen = season && season.episodes.length && season.episodes.every(function (e) { return e.watched; });
+  var seasonBar = season && s.seasons.length > 1 ? '<div class="seasonbar">' +
+    '<button class="btn f" data-act="seasonwatched" data-arg="' + s.id + ':' + season.season + ':' + (seasonSeen ? 0 : 1) +
+      '" data-key="seasonseen">' + IC.check + ' ' +
+      (seasonSeen ? 'Segna ' + (season.season === 0 ? 'gli speciali' : 'la stagione ' + season.season) + ' come da vedere'
+                  : 'Segna ' + (season.season === 0 ? 'gli speciali come visti' : 'la stagione ' + season.season + ' come vista')) +
+    '</button></div>' : '';
+
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
       metaLine([
@@ -1104,7 +1113,7 @@ async function show(id) {
         (s.director ? '<div><b>Creata da</b>' + chips(directorsOf(s), base, 'director') + '</div>' : '') +
         (s.actors.length && !faces ? '<div><b>Cast</b>' + chips(s.actors, base, 'actor') + '</div>' : '') +
       '</div>' : '') +
-    '</div></div></header>' + tabs + '<div class="eps">' + eps + '</div>' + faces;
+    '</div></div></header>' + tabs + seasonBar + '<div class="eps">' + eps + '</div>' + faces;
 }
 
 // ---------------------------------------------------------------- Saghe
@@ -3641,6 +3650,11 @@ var actions = {
   showwatched: function (arg) {
     var parts = arg.split(':');
     post('/shows/' + parts[0] + '/watched', { watched: parts[1] === '1' }).then(render, function (e) { toast(e.message); });
+  },
+  seasonwatched: function (arg) {
+    var parts = arg.split(':');
+    post('/shows/' + parts[0] + '/watched', { season: +parts[1], watched: parts[2] === '1' })
+      .then(render, function (e) { toast(e.message); });
   },
   letters: openLetters,
   letter: function (arg) { closeModal(true); goToCard(+arg); },

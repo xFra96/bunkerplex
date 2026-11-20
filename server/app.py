@@ -4247,14 +4247,19 @@ async def refresh(request: Request):
 
 @app.post("/api/shows/{show_id}/watched")
 async def show_watched(show_id: int, request: Request):
-    if show_id >= FRIEND_BASE:
-        body = await read_json(request)
-        return await in_thread(friend_show_watched, show_id, bool(body.get("watched")))
-    """Segna tutta la serie come vista / da vedere."""
+    """Segna tutta la serie (o, con 'season', una sola stagione) come vista / da vedere."""
     body = await read_json(request)
+    season = body.get("season")
+    season = season if isinstance(season, int) and not isinstance(season, bool) else None
+    if show_id >= FRIEND_BASE:
+        return await in_thread(friend_show_watched, show_id, bool(body.get("watched")), season)
     con = db()
     try:
-        ids = [r[0] for r in con.execute("SELECT id FROM items WHERE show_id=?", (show_id,))]
+        if season is None:
+            ids = [r[0] for r in con.execute("SELECT id FROM items WHERE show_id=?", (show_id,))]
+        else:
+            ids = [r[0] for r in con.execute("SELECT id FROM items WHERE show_id=? AND season=?",
+                                             (show_id, season))]
         set_state(con, ids, watched=1 if body.get("watched") else 0, position=0)
         con.commit()
         return {"ok": True}
@@ -6550,11 +6555,13 @@ def friend_set_watched(vid, on):
     return {"ok": True}
 
 
-def friend_show_watched(vid, on):
+def friend_show_watched(vid, on, season=None):
     f, rid = friend_of(vid)
     d = friend_data(f, f"show_{rid}.json", f"/shows/{rid}")
     for s in (d.get("seasons") or []) if isinstance(d, dict) else []:
-        for e in (s.get("episodes") or []) if isinstance(s, dict) else []:
+        if not isinstance(s, dict) or (season is not None and s.get("season") != season):
+            continue
+        for e in s.get("episodes") or []:
             if isinstance(e, dict) and _is_id(e.get("id")):
                 friend_put_state(f["n"], e["id"], rid, 0, on, 0)
     return {"ok": True}
