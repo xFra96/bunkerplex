@@ -35,6 +35,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.util.Util
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -322,8 +323,8 @@ class PlayerActivity : AppCompatActivity() {
         // secondi di video (pesante con i 4K) solo per arrivare al punto esatto.
         p.setSeekParameters(SeekParameters.PREVIOUS_SYNC)
         // Se il file ha piu' lingue, parte con quella della TV. I sottotitoli partono
-        // sempre spenti, anche se il file ne segna una traccia come predefinita:
-        // si accendono dal menu.
+        // spenti, anche se il file ne segna una traccia come predefinita: si accendono
+        // dal menu. Solo quelli forzati si accendono da soli (applyAutoSubs).
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
             .setPreferredAudioLanguage(Locale.getDefault().language)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -346,6 +347,7 @@ class PlayerActivity : AppCompatActivity() {
         old.release()
         player = null
         buildPlayer()
+        autoSubs = true      // il lettore nuovo parte coi sottotitoli spenti: si rimettono i forzati
         player?.setPlaybackSpeed(speed)
         open(data, at, transcoding)
     }
@@ -522,6 +524,7 @@ class PlayerActivity : AppCompatActivity() {
                         .setMimeType(MimeTypes.TEXT_VTT)
                         .setLabel(s.optString("label", "Sottotitoli"))
                         .setLanguage(s.optString("lang").ifBlank { null })
+                        .setSelectionFlags(if (s.optBoolean("forced")) C.SELECTION_FLAG_FORCED else 0)
                         .build()
                 )
             }
@@ -604,6 +607,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onTracksChanged(tracks: Tracks) {
             applyPendingSub()
+            applyAutoSubs(tracks)
             if (transcoding && !videoCopy) return
             var hasVideo = false
             var videoOk = false
@@ -1106,7 +1110,9 @@ class PlayerActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (!isFinishing && player != null) {
                         Toast.makeText(this, "Avvio il successivo", Toast.LENGTH_SHORT).show()
-                        // Ogni nuovo episodio riparte senza sottotitoli, come la prima volta
+                        // Ogni nuovo episodio riparte come la prima volta: sottotitoli spenti,
+                        // salvo quelli forzati
+                        autoSubs = true
                         player?.let { p ->
                             p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                                 .clearOverridesOfType(C.TRACK_TYPE_TEXT)
@@ -1317,6 +1323,52 @@ class PlayerActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    // ---- Sottotitoli forzati: quelli che traducono solo i cartelli o le frasi in
+    // un'altra lingua. Si accendono da soli a ogni nuovo video, se sono nella lingua
+    // dell'audio (o se una delle due lingue non e' indicata); gli altri restano spenti.
+    private var autoSubs = true
+
+    private fun isForced(f: Format): Boolean {
+        val label = (f.label ?: "").lowercase(Locale.ROOT)
+        return (f.selectionFlags and C.SELECTION_FLAG_FORCED) != 0 ||"forced" in label || "forzat" in label
+    }
+
+    private fun lang(code: String?): String =
+        (code ?: "").lowercase(Locale.ROOT).let { if (it == "und") "" else Util.normalizeLanguageCode(it) ?: it }
+
+    private fun applyAutoSubs(tracks: Tracks) {
+        if (!autoSubs || pendingSubLabel != null || tracks.groups.isEmpty()) return
+        val p = player ?: return
+        autoSubs = false
+        var audio = ""
+        for (g in tracks.groups) {
+            if (g.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until g.length) if (g.isTrackSelected(i)) audio = lang(g.getTrackFormat(i).language)
+        }
+        var best: Pair<Tracks.Group, Int>? = null
+        var bestScore = 0
+        for (g in tracks.groups) {
+            if (g.type != C.TRACK_TYPE_TEXT) continue
+            for (i in 0 until g.length) {
+                val f = g.getTrackFormat(i)
+                if (!g.isTrackSupported(i) || !isForced(f)) continue
+                val l = lang(f.language)
+                val score = when {
+                    l.isNotEmpty() && l == audio -> 3
+                    l.isEmpty() || audio.isEmpty() -> 2
+                    else -> 0      // forzati per un'altra lingua dell'audio: non servono
+                }
+                if (score > bestScore) { best = g to i; bestScore = score }
+            }
+        }
+        val (group, index) = best ?: return
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
+            .build()
     }
 
     private fun applyPendingSub() {

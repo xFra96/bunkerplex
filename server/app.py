@@ -1855,9 +1855,13 @@ def play_info(con, r):
         code = (tag.split(".")[0] or "").lower()
         online = tag.endswith(".online")
         label = LANGS.get(code, code.upper() if online else (tag or "Sottotitoli"))
+        # Forzati (Film.it.forced.srt): traducono solo cartelli e frasi in un'altra
+        # lingua, e i player li accendono da soli
+        forced = any(w in tag.lower() for w in ("forced", "forzat"))
         subs.append({"url": f"/api/subs/{r['id']}/{i}",
-                     "label": label + (" · da internet" if online else ""),
-                     "lang": code[:2] if code in LANGS else "", "online": online})
+                     "label": label + (" · forzati" if forced and code in LANGS else "")
+                              + (" · da internet" if online else ""),
+                     "lang": code[:2] if code in LANGS else "", "online": online, "forced": forced})
     nxt = next_episode(con, r)
     saga = saga_next(con, r)
     vcodec, pix = r["vcodec"] or "", r["pix"] or ""
