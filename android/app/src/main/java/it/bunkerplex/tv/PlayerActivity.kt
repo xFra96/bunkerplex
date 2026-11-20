@@ -83,6 +83,17 @@ class PlayerActivity : AppCompatActivity() {
     // In conversione la lingua la sceglie il PC: elenco delle tracce e quella in uso
     private var serverAudio = 0
     private var serverAudios = listOf<String>()
+    private var serverTracks = listOf<JSONObject>()
+
+    // La traccia audio scelta in un episodio vale per tutta la serie (per esempio
+    // «Italiano 2.0» quando il 5.1 del file e' fatto male): si rimette da sola una
+    // volta per episodio.
+    private var audioRestored = false
+
+    // In conversione: che audio chiedere al PC. "tv" = l'audio Dolby si copia, DTS e
+    // TrueHD diventano AC3 5.1 (alla soundbar arrivano surround e bassi, non stereo);
+    // "ac3" = l'audio originale questa TV non lo legge; "aac" = nemmeno l'AC3.
+    private var audioOut = "tv"
 
     // Controllo anti-blocco
     private var lastPos = -1L
@@ -475,6 +486,9 @@ class PlayerActivity : AppCompatActivity() {
         if (d.optInt("id") != data.optInt("id")) {      // un altro video: si riparte puliti
             serverAudio = 0
             serverAudios = listOf()
+            serverTracks = listOf()
+            audioRestored = false
+            audioOut = "tv"
             endedAt = -1
             recoveries = 0
             softRetried = false
@@ -505,7 +519,8 @@ class PlayerActivity : AppCompatActivity() {
         if (useTranscode) {
             offsetMs = start
             uri = abs(d.optString("transcode")) + "?start=" + String.format(Locale.US, "%.1f", start / 1000.0) +
-                (if (videoCopy) "&vcopy=1" else "") + (if (serverAudio > 0) "&audio=$serverAudio" else "")
+                (if (videoCopy) "&vcopy=1" else "") + (if (serverAudio > 0) "&audio=$serverAudio" else "") +
+                "&aout=$audioOut"
             if (serverAudios.isEmpty()) loadServerAudios(d.optInt("id"))
         } else {
             offsetMs = 0
@@ -541,8 +556,24 @@ class PlayerActivity : AppCompatActivity() {
         thread {
             try {
                 val list = JSONObject(Net.get("$server/api/tracks/$id")).optJSONArray("audio") ?: return@thread
-                val labels = (0 until list.length()).map { list.getJSONObject(it).optString("label", "Traccia ${it + 1}") }
-                runOnUiThread { if (data.optInt("id") == id) serverAudios = labels }
+                val found = (0 until list.length()).map { list.getJSONObject(it) }
+                val labels = found.mapIndexed { i, t -> t.optString("label", "Traccia ${i + 1}") }
+                runOnUiThread {
+                    if (data.optInt("id") != id) return@runOnUiThread
+                    serverAudios = labels
+                    serverTracks = found
+                    // La traccia scelta per la serie, se non e' gia' quella che arriva
+                    val saved = savedAudio()
+                    if (saved != null && serverAudio == 0 && transcoding) {
+                        val k = found.indexOfFirst {
+                            matchesAudio(saved, it.optString("title"), it.optString("lang"), it.optInt("channels"))
+                        }
+                        if (k > 0) {
+                            serverAudio = k
+                            open(data, realPosition(), true)
+                        }
+                    }
+                }
             } catch (_: Exception) {
             }
         }
@@ -592,6 +623,11 @@ class PlayerActivity : AppCompatActivity() {
                         open(data, at, transcoding)
                     }
                 }
+                // In conversione l'uscita audio rifiuta l'AC3: si chiede l'AAC, che legge ogni TV
+                transcoding && code in 5000..5999 && audioOut != "aac" -> {
+                    audioOut = "aac"
+                    open(data, at, true)
+                }
                 !transcoding -> fallbackToTranscode(true)
                 videoCopy -> {
                     // Nemmeno con il video copiato: conversione completa
@@ -608,7 +644,7 @@ class PlayerActivity : AppCompatActivity() {
         override fun onTracksChanged(tracks: Tracks) {
             applyPendingSub()
             applyAutoSubs(tracks)
-            if (transcoding && !videoCopy) return
+            restoreAudio(tracks)
             var hasVideo = false
             var videoOk = false
             var hasAudio = false
@@ -627,14 +663,21 @@ class PlayerActivity : AppCompatActivity() {
             }
             // Video o audio in un formato che questa TV non sa decodificare
             if (transcoding) {
-                if (hasVideo && !videoOk) {
+                if (videoCopy && hasVideo && !videoOk) {
                     videoCopy = false
+                    open(data, realPosition(), true)
+                } else if (hasAudio && !audioOk && audioOut != "aac") {
+                    // Nemmeno l'audio convertito va: si ripiega sull'AAC
+                    audioOut = "aac"
                     open(data, realPosition(), true)
                 }
                 return
             }
             // Se la TV decodifica il video e le manca solo l'audio, il PC converte solo quello
-            if ((hasVideo && !videoOk) || (hasAudio && !audioOk)) fallbackToTranscode(!hasVideo || videoOk)
+            if ((hasVideo && !videoOk) || (hasAudio && !audioOk)) {
+                if (hasAudio && !audioOk) audioOut = "ac3"      // l'originale qui non va: non copiarlo
+                fallbackToTranscode(!hasVideo || videoOk)
+            }
         }
     }
 
@@ -1371,6 +1414,51 @@ class PlayerActivity : AppCompatActivity() {
             .build()
     }
 
+    // ---- Traccia audio ricordata per la serie
+
+    /** Chiave della serie (il nome: vale anche per le serie degli amici). Null per i film. */
+    private fun seriesKey(): String? =
+        if (data.optInt("show_id") > 0 && data.optString("title").isNotBlank()) "audio_show:" + data.optString("title") else null
+
+    private fun rememberAudio(label: String?, language: String?, channels: Int) {
+        val key = seriesKey() ?: return
+        val v = JSONObject().put("label", label ?: "").put("lang", lang(language)).put("ch", channels)
+        prefs.edit().putString(key, v.toString()).apply()
+    }
+
+    private fun savedAudio(): JSONObject? {
+        val raw = seriesKey()?.let { prefs.getString(it, null) } ?: return null
+        return try { JSONObject(raw) } catch (_: Exception) { null }
+    }
+
+    /** Stessa traccia: per nome («Italiano 2.0») se ce l'ha, se no per lingua e canali. */
+    private fun matchesAudio(saved: JSONObject, label: String?, language: String?, channels: Int): Boolean {
+        val name = saved.optString("label")
+        if (name.isNotEmpty() && !label.isNullOrEmpty()) return name == label
+        return lang(language) == saved.optString("lang") && channels == saved.optInt("ch")
+    }
+
+    private fun restoreAudio(tracks: Tracks) {
+        if (audioRestored || transcoding || tracks.groups.none { it.type == C.TRACK_TYPE_AUDIO }) return
+        audioRestored = true
+        val saved = savedAudio() ?: return
+        val p = player ?: return
+        for (g in tracks.groups) {
+            if (g.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until g.length) {
+                val f = g.getTrackFormat(i)
+                if (!g.isTrackSupported(i) || !matchesAudio(saved, f.label, f.language, f.channelCount)) continue
+                if (!g.isTrackSelected(i)) {
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+                        .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
+                        .build()
+                }
+                return
+            }
+        }
+    }
+
     private fun applyPendingSub() {
         val want = pendingSubLabel ?: return
         val p = player ?: return
@@ -1396,6 +1484,9 @@ class PlayerActivity : AppCompatActivity() {
             if (serverAudios.size > 1) {
                 items.add("Lingua audio:  " + serverAudios.getOrElse(serverAudio) { "" } to {
                     pick("Lingua audio", serverAudios, serverAudio) { i ->
+                        serverTracks.getOrNull(i)?.let {
+                            rememberAudio(it.optString("title"), it.optString("lang"), it.optInt("channels"))
+                        }
                         if (i != serverAudio) {
                             serverAudio = i
                             open(data, realPosition(), true)
@@ -1408,7 +1499,11 @@ class PlayerActivity : AppCompatActivity() {
             if (audios.size > 1) {
                 val current = audios.indexOfFirst { it.selected }
                 items.add("Lingua audio:  " + (audios.getOrNull(current)?.label ?: "") to {
-                    pick("Lingua audio", audios.map { it.label }, current) { i -> selectTrack(C.TRACK_TYPE_AUDIO, audios[i]) }
+                    pick("Lingua audio", audios.map { it.label }, current) { i ->
+                        val f = audios[i].group.getTrackFormat(audios[i].index)
+                        rememberAudio(f.label, f.language, f.channelCount)
+                        selectTrack(C.TRACK_TYPE_AUDIO, audios[i])
+                    }
                 })
             }
         }
