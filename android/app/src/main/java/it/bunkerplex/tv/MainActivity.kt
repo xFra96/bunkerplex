@@ -1,6 +1,9 @@
 package it.bunkerplex.tv
 
 import android.annotation.SuppressLint
+import android.app.UiModeManager
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -89,6 +92,11 @@ class MainActivity : AppCompatActivity() {
 
         updateFile.delete()   // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         if (server == null) showSetup(false) else openServer()
+    }
+
+    private val isTelevision by lazy {
+        (getSystemService(UI_MODE_SERVICE) as? UiModeManager)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
     private fun openServer() {
@@ -203,6 +211,10 @@ class MainActivity : AppCompatActivity() {
         /** Chiude l'app: la pagina lo chiede dopo la conferma di uscita dalla Home. */
         @JavascriptInterface
         fun exit() = runOnUiThread { finish() }
+
+        /** true su Android TV / Google TV: sul telefono la pagina mostra tutte le funzioni del PC. */
+        @JavascriptInterface
+        fun isTv(): Boolean = isTelevision
 
         @JavascriptInterface
         fun getServer(): String = server ?: ""
