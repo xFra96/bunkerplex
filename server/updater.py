@@ -400,6 +400,15 @@ def _same(a, b):
         return False
 
 
+def _keep_exec(path, mode):
+    """Rende eseguibile il file se lo e' nello zip (su Windows non cambia niente)."""
+    if mode & 0o111:
+        try:
+            os.chmod(path, path.stat().st_mode | 0o755)
+        except OSError:
+            pass
+
+
 def _install_files(cfg, tok, sha):
     """Scarica il pacchetto del programma e copia i file cambiati. Restituisce
     l'elenco (alla Windows) dei file nuovi, cambiati o tolti."""
@@ -425,12 +434,17 @@ def _install_files(cfg, tok, sha):
                 with z.open(name) as src, open(fresh, "wb") as out:
                     shutil.copyfileobj(src, out, 1 << 20)
                 dest = PROGRAM / rel.replace("\\", "/")
+                # I permessi di esecuzione (es. "Installa BunkerPlex.command" sul
+                # Mac) viaggiano nello zip: senza, il doppio clic non lo apre piu'
+                mode = (z.getinfo(name).external_attr >> 16) & 0o777
                 if dest.is_file() and _same(fresh, dest):
+                    _keep_exec(dest, mode)
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 # Prima accanto, poi lo scambio: niente file a meta' se il disco si stacca
                 part = dest.with_name(dest.name + ".nuovo")
                 shutil.copyfile(fresh, part)
+                _keep_exec(part, mode)
                 os.replace(part, dest)
                 touched.append(rel)
     for gone in old.get("files") or []:
