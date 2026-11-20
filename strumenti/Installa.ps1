@@ -315,6 +315,12 @@ try {
     $env:BUNKERPLEX_LAN_IP = (Get-NetIPConfiguration -ErrorAction Stop | Where-Object { $_.IPv4DefaultGateway } |
         Select-Object -First 1).IPv4Address.IPAddress | Select-Object -First 1
 } catch { }
+# Indirizzo Tailscale (100.64.0.0/10), se c'e': gli amici entrano da li' e sul router non si apre nulla
+try {
+    $env:BUNKERPLEX_TAILSCALE_IP = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object { $_.IPAddress -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.' } |
+        Select-Object -First 1 -ExpandProperty IPAddress
+} catch { }
 
 # Dopo un aggiornamento si scarica anche l'immagine di base piu' recente
 # (Python, ffmpeg): senza Internet si torna alla ricostruzione normale.

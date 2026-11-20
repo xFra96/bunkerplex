@@ -117,7 +117,7 @@ Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio
 - **In alto a destra**: quando il server legge le cartelle o scarica le schede compare l'avanzamento («Lettura dei titoli 38%»); il resto del tempo una campanella con le notifiche (aggiornamento disponibile, richieste degli amici, cartelle non raggiungibili, account offline). Ogni notifica porta all'impostazione che la risolve.
 - **Impostazioni**: una panoramica con lo stato di ogni area e, in fondo, l'IP privato del PC (per TV e telefoni di casa) e quello pubblico (per gli amici). Il tuo account è anche in basso nel menu laterale.
 - **La mia lista**: i titoli da tenere da parte, uguale su TV, telefono e PC.
-- **Saghe**: i film della stessa serie riuniti da soli, in ordine di uscita.
+- **Collezioni**: i film della stessa serie riuniti da soli, in ordine di uscita.
 - **Cerca** per titolo, regista, attore, genere o anno; oppure sfoglia per genere senza scrivere.
 - **Nelle raccolte**: filtri, ordinamento, **Vai alla lettera** e **Scegli tu** (un titolo a caso tra i non visti).
 - **Cast con le foto** nella scheda: premi su un volto per vedere gli altri suoi titoli.
@@ -188,6 +188,8 @@ Il sistema di prima, per chi non ha un account sul tuo servizio o se usate Tails
 3. L'amico preme **Accetta** in *Impostazioni → Amici*.
 
 Da lì è automatico: il collegamento è cifrato, la porta sul router viene tenuta aperta finché la condivisione è accesa, e se il tuo indirizzo di casa cambia BunkerPlex lo comunica da solo agli amici (se cambiano entrambi nello stesso momento, uno dei due rimanda la richiesta).
+
+**Con Tailscale** — se sul PC c'è [Tailscale](https://tailscale.com), BunkerPlex lo trova da solo (lo legge «Installa BunkerPlex», oppure lo impara la prima volta che apri l'app dall'indirizzo `100.…`) e agli amici dà quell'indirizzo, mai quello pubblico di casa: sul router non apre nessuna porta. All'amico serve Tailscale e il tuo computer condiviso con lui dal sito di Tailscale (*Machines → Share*). Su Windows il firewall deve lasciar passare Docker anche sulle reti private (Tailscale lo è).
 
 **Se la porta non si apre da sola** — in *Impostazioni → Amici* lo leggi chiaramente. Capita quando nel router UPnP (o NAT-PMP) è spento: accendilo. Oppure quando l'operatore non ti dà un indirizzo pubblico (frequente con le linee radio e mobili): in quel caso installate [Tailscale](https://tailscale.com) (gratuito) su entrambi i computer, uno condivide il suo computer con l'altro dal sito di Tailscale (*Machines → Share*), e nella richiesta scrivete gli indirizzi Tailscale (quelli che cominciano per `100.`), il proprio compreso. Se preferisci Tailscale comunque, spegni **Apri da solo la porta sul router**.
 
