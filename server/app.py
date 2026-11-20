@@ -1813,6 +1813,26 @@ def next_episode(con, r):
         (r["show_id"], r["season"], r["season"], r["episode"])).fetchone()
 
 
+SUB_TAGS = {"forced", "forzati", "forzato", "sdh", "hi", "cc", "full", "default"}
+
+
+def _sub_words(name):
+    """Parole di un nome file, senza punteggiatura: 'Toro.Scatenato_1980' -> ['toro', 'scatenato', '1980']."""
+    return [w for w in re.split(r"[^0-9a-z]+", name.lower()) if w]
+
+
+def _sub_split(stem):
+    """Separa il nome del film dalla coda di lingua e tipo:
+    'Toro.Scatenato_ita_forced' -> ('Toro.Scatenato', 'ita_forced')."""
+    parts = re.split(r"([._\- ]+)", stem)
+    cut = len(parts)
+    while cut >= 1 and (parts[cut - 1].lower() in LANGS or parts[cut - 1].lower() in SUB_TAGS):
+        cut -= 2
+    cut = max(cut, 0)
+    base = "".join(parts[:cut])
+    return base, "".join(parts[cut:]).strip(" .-_")
+
+
 def subtitle_files(path, item_id=None):
     """I sottotitoli accanto al video e, dopo, quelli scaricati da internet
     (in data/subs/<id>/, perche' i dischi dei video sono in sola lettura).
@@ -1820,11 +1840,25 @@ def subtitle_files(path, item_id=None):
     p = Path(path)
     out = []
     try:
-        for f in sorted(p.parent.iterdir()):
-            if f.suffix.lower() in SUB_EXT and f.stem.lower().startswith(p.stem.lower()):
-                out.append((f, f.stem[len(p.stem):].strip(" .-_")))
+        files = sorted(p.parent.iterdir())
     except OSError:
-        pass
+        files = []
+    subs = [f for f in files if f.suffix.lower() in SUB_EXT]
+    # Un solo video nella cartella: i sottotitoli sono suoi anche se hanno un altro nome
+    alone = sum(1 for f in files if f.suffix.lower() in VIDEO_EXT) == 1
+    video = _sub_words(p.stem)
+    for f in subs:
+        if f.stem.lower().startswith(p.stem.lower()):
+            out.append((f, f.stem[len(p.stem):].strip(" .-_")))
+            continue
+        # Nome diverso (Toro.Scatenato_ita_forced.srt per Toro Scatenato (1980).mkv):
+        # tolti lingua e "forced" in coda, il resto deve stare all'inizio del video
+        # (o viceversa), ignorando punti, trattini, maiuscole e simili
+        base, tag = _sub_split(f.stem)
+        words = _sub_words(base)
+        if alone or (words and video and (video[:len(words)] == words
+                                          or words[:len(video)] == video)):
+            out.append((f, tag))
     if item_id is not None:
         try:
             for f in sorted((SUBS_DIR / str(int(item_id))).iterdir()):
