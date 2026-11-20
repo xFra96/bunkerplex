@@ -37,6 +37,7 @@ var stageTimer = 0;
 var stageFlip = false;
 var lastAutoRefresh = Date.now();
 var cardData = {};                   // scheda -> dati del titolo (per il menu delle azioni)
+var okRelease = false;               // OK appena rilasciato dopo una pressione lunga
 var press = null;                    // OK tenuto premuto su una scheda
 var chunk = null;                    // griglia lunga: le locandine si aggiungono un po' alla volta
 var lastHtml = '';                   // l'ultima pagina disegnata
@@ -4210,6 +4211,8 @@ document.addEventListener('keydown', function (e) {
     return;
   }
   if (key === 'Enter') {
+    // OK ancora tenuto dopo l'apertura del menu: i tasti ripetuti non devono scegliere niente
+    if (press) { e.preventDefault(); return; }
     if (typing) {
       var fn = actions[t.getAttribute('data-enter')];
       if (fn) fn();
@@ -4252,7 +4255,12 @@ document.addEventListener('keyup', function (e) {
   press = null;
   clearTimeout(p.timer);
   if (!p.done && document.activeElement === p.el) p.el.click();
+  // Il rilascio di OK dopo una pressione lunga non deve attivare la voce del menu appena aperto
+  if (p.done) { okRelease = true; setTimeout(function () { okRelease = false; }, 300); }
 });
+document.addEventListener('click', function (e) {
+  if (okRelease && e.isTrusted) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 
 document.addEventListener('mousedown', function () { setKb(false); });
 document.addEventListener('touchstart', function () { setKb(false); }, { passive: true });

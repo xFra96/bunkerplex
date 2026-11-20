@@ -414,6 +414,7 @@ class PlayerActivity : AppCompatActivity() {
         barRow.addView(barFrame, LinearLayout.LayoutParams(0, dp(54), 1f))
         remainView = label(17f, false)
         remainView.gravity = Gravity.CENTER_VERTICAL
+        remainView.fontFeatureSettings = "tnum"
         remainView.setPadding(dp(14), 0, 0, 0)
         barRow.addView(remainView, LinearLayout.LayoutParams(-2, dp(26)))
         controls.addView(barRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
@@ -930,7 +931,7 @@ class PlayerActivity : AppCompatActivity() {
         if (shown) {
             bar.invalidate()
             val d = durationMs()
-            remainView.text = if (d > 0) format((d - posMs).coerceAtLeast(0)) else format(posMs)
+            remainView.text = if (d > 0) format(posMs) + " / \u2212" + format((d - posMs).coerceAtLeast(0)) else format(posMs)
             stateIcon.text = if (p.playWhenReady && !finished) pauseGlyph else playGlyph
             if (pendingSeek >= 0) {
                 scrubLabel.text = seekArrow + format(posMs)
