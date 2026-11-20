@@ -105,6 +105,7 @@ class PlayerActivity : AppCompatActivity() {
     private var rowAt = 0
     private var floatAt = 0
     private var holdSeekAt = 0L
+    private var seekArrow = ""
     private lateinit var controls: LinearLayout
     private lateinit var shade: View
     private lateinit var bar: Bar
@@ -813,6 +814,9 @@ class PlayerActivity : AppCompatActivity() {
             osd.visibility = View.GONE
         }
         placeFloats()
+        // Accende cio' che e' scelto (barra o bottone della fila): senza, il telecomando
+        // spostava la scelta ma a schermo non si vedeva dove si era.
+        paintFocus()
         refresh()
     }
 
@@ -879,7 +883,7 @@ class PlayerActivity : AppCompatActivity() {
             remainView.text = if (d > 0) format((d - posMs).coerceAtLeast(0)) else format(posMs)
             stateIcon.text = if (p.playWhenReady && !finished) pauseGlyph else playGlyph
             if (pendingSeek >= 0) {
-                scrubLabel.text = format(posMs)
+                scrubLabel.text = seekArrow + format(posMs)
                 val half = scrubLabel.width / 2f
                 scrubLabel.translationX = (bar.thumbX() - half).coerceIn(0f, (bar.width - scrubLabel.width).toFloat().coerceAtLeast(0f))
                 scrubLabel.visibility = View.VISIBLE
@@ -1136,6 +1140,12 @@ class PlayerActivity : AppCompatActivity() {
         val duration = durationMs()
         var target = positionMs.coerceAtLeast(0)
         if (duration > 0) target = target.coerceAtMost((duration - 3000).coerceAtLeast(0))
+        // La freccia accanto all'ora sopra la barra: da che parte si sta andando
+        seekArrow = when {
+            arrow == null -> ""
+            target < realPosition() -> "◀◀ "
+            else -> "▶▶ "
+        }
         pendingSeek = target
         handler.removeCallbacks(applySeek)
         handler.postDelayed(applySeek, if (transcoding) 600 else 300)
