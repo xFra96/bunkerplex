@@ -42,6 +42,7 @@ import contextvars
 
 import accounts
 import sigle
+import tvinstall
 import updater
 from accounts import CURRENT
 
@@ -7281,6 +7282,11 @@ def apk_link(request: Request):
     except Exception as ex:          # pacchetto non ancora installato (immagine vecchia)
         print("QR non disponibile:", repr(ex), flush=True)
     return {"url": url, "svg": svg, "apk": APK_PATH.is_file()}
+
+
+# Installare l'app sulle TV di casa dal PC, con il debug di rete (server/tvinstall.py)
+tvinstall.setup(private_ip, apk_version, APK_PATH)
+app.include_router(tvinstall.router)
 
 
 class UIFiles(StaticFiles):
