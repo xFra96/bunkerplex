@@ -3861,6 +3861,10 @@ function move(dir) {
     return;
   }
   var inRail = rail.contains(cur);
+  // La campanella in alto sta fuori dalla pagina ma si raggiunge come un suo elemento
+  var bell = document.querySelector('#activity:not([hidden]) .actbtn');
+  if (bell && !bell.getBoundingClientRect().width) bell = null;
+  if (cur.closest('#activity') && !bell) { focusView(); return; }
   if (inRail && dir === 'right') { focusView(); return; }
   if (inRail && dir === 'left') return;
   // Ogni zona si naviga per conto suo: finestra di scelta, barra laterale, pagina
@@ -3868,7 +3872,8 @@ function move(dir) {
   var a = cur.getBoundingClientRect();
   var horizontal = dir === 'left' || dir === 'right';
   var cands = [];
-  var list = scope.querySelectorAll('.f');
+  var list = Array.prototype.slice.call(scope.querySelectorAll('.f'));
+  if (scope === view && bell) list.push(bell);
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -3891,6 +3896,7 @@ function move(dir) {
     cands.push({ el: el, main: Math.max(0, main), cross: cross });
   }
   if (!cands.length) {
+    if (dir === 'up' && scope === view && bell && cur !== bell) { bell.focus(); return; }
     if (dir === 'left' && !inRail && !inModal) focusRail();   // dal bordo sinistro si entra nel menu
     return;
   }
@@ -3922,6 +3928,7 @@ function scrollBox(box, pos) {
 }
 
 function scrollToEl(el) {
+  if (el.closest('#activity')) return;
   if (rail.contains(el) || modal.contains(el)) {
     if (modal.contains(el)) el.scrollIntoView({ behavior: smooth, block: 'center' });
     return;
@@ -4052,7 +4059,7 @@ document.addEventListener('keydown', function (e) {
   if (key === 'Escape' || (key === 'Backspace' && !typing)) {
     e.preventDefault();
     if (closeModal()) return;
-    if (rail.contains(document.activeElement)) { focusView(); return; }
+    if (rail.contains(document.activeElement) || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#activity'))) { focusView(); return; }
     if (currentHash !== '#/home') history.back();
   }
 });
