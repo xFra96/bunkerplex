@@ -84,8 +84,7 @@ Chi guarda entra in un **profilo** di questo PC: visti, punti di ripresa, «La m
 
 - **Ti segue ovunque**: impostazioni, chiavi (TMDB, OpenSubtitles), preferenze di visione, visti, punti di ripresa e lista li ritrovi su ogni PC e TV dove entri, anche su un'installazione nuova, e riprendi esattamente da dove eri.
 - **Raccolte su ogni PC**: nomi e cartelle delle tue raccolte seguono l'account. Su un altro PC le raccolte compaiono già create; le cartelle che lì esistono con lo stesso percorso (anche su un disco con un'altra lettera) si collegano da sole, e una raccolta di quel PC con le stesse cartelle diventa la stessa (niente doppioni). Le altre restano «su un altro PC»: in *Impostazioni → Raccolte* scegli dove stanno su quel PC, oppure le togli dall'account. Se l'elenco online non ti torna, *Sovrascrivi l'account con le raccolte di questo PC* (chiede conferma) lo rimette uguale a quello del PC dove sei.
-- **Amici**: la condivisione delle raccolte con gli amici si accende solo da un profilo con account.
-- **Copia del catalogo**: l'elenco dei file delle tue raccolte, con la scheda di ognuno (comprese le correzioni fatte con *Correggi scheda*), resta salvato nell'account. Su un PC nuovo o dopo una reinstallazione i file si riconoscono subito, senza rifare le ricerche su TMDB, e una correzione fatta a mano vale anche sugli altri PC che hanno lo stesso file. In *Impostazioni → Catalogo e schede → Copia nel tuo account* vedi quanti file ci sono, dai un nome a questo PC e apri **Titoli che qui non ci sono**: cosa sta sugli altri PC o su dischi che qui non sono collegati (o che non ci sono più). Ogni file è riconosciuto da un'impronta (dimensione e pezzetti di inizio e fine), quindi anche se lo rinomini o lo sposti. Al servizio vanno nomi, percorsi e schede, mai i video. Si può spegnere dallo stesso pannello.
+- **Amici**: gli amici sono quelli dell'account (si aggiungono col nome del loro account) e vedono solo le raccolte del tuo profilo: vedi [Amici](#amici-condividere-le-raccolte-via-internet).
 - **Senza Internet** (o con il servizio account fermo) non cambia niente: si continua con il profilo, e in basso compare «Offline · si sincronizza quando torna la rete». Le modifiche fatte intanto partono da sole appena il servizio risponde e si uniscono a quelle fatte sugli altri PC: per ogni titolo e ogni impostazione vince la modifica più recente. Non c'è niente da scegliere.
 - **Chiavi API diverse**: al primo accesso, se le chiavi o le preferenze di visione del profilo sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di qui senza chiedere. Volume e audio muto restano di ogni dispositivo.
 - **Scollega l'account** (*Impostazioni → Account*): il profilo resta qui con tutto quello che ha e smette di sincronizzarsi; l'account resta online.
@@ -158,9 +157,21 @@ Android TV, Google TV, Chromecast con Google TV, Fire TV Stick (Fire OS). Su Chr
 
 Due BunkerPlex in case diverse possono mostrarsi a vicenda le raccolte. **Si guarda soltanto**: nessuno tocca impostazioni, file o «visto» dell'altro. Tutto il resto continua a funzionare offline.
 
-La condivisione è del PC, non dell'account: l'amico vede tutte le raccolte di quel PC, anche quelle degli altri account, e le raccolte dell'amico le vedono tutti gli account del PC.
+### Con l'account (consigliato)
 
-1. Entrambi accendete **Impostazioni → Amici → Condivisione con gli amici**. BunkerPlex chiede da solo al router di casa di aprire la porta per gli amici (la `32501`, e solo quella) e ti mostra **il tuo indirizzo**: è quello da dare all'amico.
+Se il tuo profilo è collegato a un account, gli amici sono quelli dell'account: niente indirizzi né password da scambiarsi.
+
+1. In *Impostazioni → Amici → I tuoi amici* scrivi il nome dell'account BunkerPlex dell'amico e premi **Manda la richiesta**.
+2. L'amico la trova nella campanella e in *Impostazioni → Amici*, su qualsiasi suo PC (anche dalla TV), e preme **Accetta**.
+3. Chi vuole far vedere le sue raccolte accende **Condividi le tue raccolte con i tuoi amici**: BunkerPlex apre da solo la porta sul router (la `32501`) e pubblica il suo indirizzo nel servizio account.
+
+Da lì le raccolte dell'amico compaiono da sole nel menu e nella Home, di ogni suo PC che condivide (se sono più di uno, col nome che gli ha dato). Se cambia l'indirizzo di casa non devi fare niente: il servizio account fa da rubrica. L'amico vede **solo le raccolte del tuo profilo**, non quelle degli altri profili del PC, e solo quando lo hai tra gli amici: se lo togli, sparisce da entrambe le parti. Ogni volta che il suo server entra dal tuo usa un «biglietto» del servizio account, valido pochi minuti e una volta sola; l'impronta del certificato del tuo server arriva dal servizio, quindi anche il primo collegamento è sicuro.
+
+### Con indirizzo e password
+
+Il sistema di prima, per chi non ha un account sul tuo servizio o se usate Tailscale. Qui la condivisione è del PC: l'amico vede tutte le raccolte di quel PC, e le sue le vedono tutti i profili del PC.
+
+1. Entrambi accendete **Impostazioni → Amici → Porta per gli amici su questo PC**. BunkerPlex chiede da solo al router di casa di aprire la porta per gli amici (la `32501`, e solo quella) e ti mostra **il tuo indirizzo**: è quello da dare all'amico.
 2. Uno dei due apre **Manda una richiesta** (dal browser di un computer, non dalla TV) e scrive l'indirizzo dell'amico, un nome e una password a scelta.
 3. L'amico preme **Accetta** in *Impostazioni → Amici*.
 
@@ -222,13 +233,13 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 Gli account stanno in un Worker di Cloudflare con un database D1, nel piano gratuito (niente carta di credito, non va in pausa). Il codice è nella cartella `cloud/`:
 
-- `cloud/worker.js`: il servizio (login, cambio password, gestione account, impostazioni, visti e lista, copia del catalogo).
+- `cloud/worker.js`: il servizio (login, cambio password, gestione account, impostazioni, visti e lista, amici).
 - `cloud/schema.sql`: le tabelle del database D1 `bunkerplex`.
 
 Sul Cloudflare dell'amministratore è pubblicato come `bunkerplex-account` all'indirizzo scritto in `server/cloud.json`. Quel file arriva a tutte le installazioni con gli aggiornamenti. Senza quel file (e senza la voce `BUNKERPLEX_CLOUD` in `.env`) BunkerPlex funziona come prima, senza login.
 
 - **Cambiare il servizio**: Cloudflare → *Workers & Pages → bunkerplex-account → Edit code*, incolla `cloud/worker.js` e salva. Se cambi le tabelle, esegui lo stesso SQL in *Storage & databases → D1 → bunkerplex → Console*.
-- **Copia del catalogo** (novità): richiede il servizio aggiornato. Una volta sola: incolla il nuovo `cloud/worker.js` come sopra, poi in *D1 → bunkerplex → Console* esegui la parte di `cloud/schema.sql` che crea la tabella `catalog` (le righe da `CREATE TABLE IF NOT EXISTS catalog` in giù; rieseguire tutto il file va bene lo stesso). Finché non lo fai BunkerPlex funziona come prima e in *Impostazioni → Catalogo* dice che il servizio va aggiornato. La prima copia di un catalogo da 2.000 file sono circa 2.000 righe scritte, ben dentro i limiti qui sotto.
+- **Amici dell'account**: richiedono il servizio aggiornato (`cloud/worker.js` di questa versione e le tabelle `friends`, `servers`, `tickets` di `cloud/schema.sql`). Finché non lo è, *Impostazioni → Amici* lo dice e resta solo il collegamento con indirizzo e password.
 - **Primo amministratore**: il Worker ha il segreto `SETUP_KEY`. La stessa chiave sta in `data/cloud-setup.json` del PC dove è stato preparato il servizio: solo lì compare «Crea l'account amministratore», e solo finché nel database non c'è nessun account. Dopo la creazione il file viene cancellato.
 - **Un servizio tuo** (per esempio per provare): crea un altro Worker e un altro database con gli stessi file, poi scrivi il suo indirizzo in `.env` alla voce `BUNKERPLEX_CLOUD`.
 - **Password**: il PC calcola un'impronta lenta (PBKDF2-SHA256, 200.000 giri) e al servizio manda solo quella; il servizio ne conserva un'altra impronta con un sale casuale.

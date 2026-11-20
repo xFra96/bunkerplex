@@ -1317,53 +1317,6 @@ function refreshPanel(i) {
     '</dl></div>';
 }
 
-// Impostazioni → Catalogo: la copia del catalogo nell'account
-function copyPanel(c) {
-  if (!c) return '';
-  var head = '<div class="panel"><h2>Copia nel tuo account</h2>';
-  if (!c.linked) {
-    return head + '<p>Con un account l\'elenco dei tuoi file, con la scheda di ognuno, resta salvato online: su un PC nuovo o dopo una reinstallazione ' +
-      'i titoli si riconoscono subito (anche quelli corretti a mano) e sai sempre cosa c\'è sugli altri PC e sui dischi che non hai collegati. I video restano dove sono.</p>' +
-      '<div class="actions"><a class="btn f" href="#/settings/account" data-key="copy-login">Entra con un account</a></div></div>';
-  }
-  var state = !c.enabled ? 'Spenta: l\'elenco online resta com\'era, ma non si aggiorna'
-    : c.supported === false ? 'Il servizio account va aggiornato per salvarla (vedi README → Servizio account)'
-    : c.last ? 'Aggiornata ' + ago(c.last) : 'In preparazione: la prima copia parte entro qualche minuto';
-  return head +
-    '<p>L\'elenco dei file delle tue raccolte, con la scheda di ognuno, resta salvato nel tuo account. Su un PC nuovo o dopo una reinstallazione i titoli si riconoscono subito, ' +
-    'comprese le correzioni fatte con «Correggi scheda», che valgono anche sugli altri PC con lo stesso file. I video non escono mai da qui.</p>' +
-    '<dl class="kv">' +
-      '<dt>Stato</dt><dd>' + esc(state) + '</dd>' +
-      '<dt>Da questo PC</dt><dd>' + c.here + ' file' + (c.restored ? ' · ' + c.restored + ' riconosciuti dalla copia' : '') + (c.fixed ? ' · ' + c.fixed + ' correzioni arrivate dagli altri PC' : '') + '</dd>' +
-      '<dt>In tutto l\'account</dt><dd>' + c.account + ' file' +
-        (c.elsewhere ? ' · <a class="link f" href="#/elsewhere" data-key="copy-elsewhere">' + c.elsewhere + ' che qui non ci sono</a>' : '') + '</dd>' +
-    '</dl>' +
-    '<label class="flabel" for="pcname">Nome di questo PC (lo vedi negli elenchi degli altri PC)</label>' +
-    '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(c.pc) + '">' +
-    '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' +
-    '<button class="setting f" data-act="catcopy" data-arg="' + (c.enabled ? 0 : 1) + '" data-key="catcopy">Copia del catalogo nell\'account<small>' +
-      (c.enabled ? 'Attiva' : 'Spenta') + '</small></button></div>';
-}
-
-// I titoli della copia del catalogo che su questo PC non ci sono
-async function elsewherePage() {
-  var r = await api('/catalog-copy/elsewhere');
-  var q = function (h) { return h >= 2000 ? '4K' : h >= 1000 ? '1080p' : h >= 700 ? '720p' : h ? 'SD' : ''; };
-  var body = r.groups.map(function (g) {
-    return '<div class="lib"><div class="head"><div class="name"><b>' + esc(g.folder || 'Cartella sconosciuta') + '</b><small>' + esc(g.pc) + '</small></div></div>' +
-      g.items.map(function (e) {
-        var what = e.kind === 'show'
-          ? e.count + (e.count === 1 ? ' episodio' : ' episodi') + (e.seasons.length ? ' · ' + (e.seasons.length === 1 ? 'stagione ' + e.seasons[0] : 'stagioni ' + e.seasons[0] + '–' + e.seasons[e.seasons.length - 1]) : '')
-          : 'film';
-        return '<div class="folder"><div class="where"><b>' + esc(e.title) + (e.year ? ' (' + e.year + ')' : '') + '</b><small>' + what + (q(e.q) ? ' · ' + q(e.q) : '') + '</small></div></div>';
-      }).join('') + '</div>';
-  }).join('');
-  return '<div class="page"><div class="toolbar"><h1>Titoli che qui non ci sono</h1></div><div class="panel">' +
-    '<p>Dalla copia del catalogo nel tuo account: file che stanno sugli altri PC o su dischi che a questo PC non sono collegati (o che non ci sono più). ' +
-    'Per guardarli collega il disco o apri BunkerPlex su quel PC.</p>' +
-    (body || '<p>Niente: tutto quello che c\'è nella copia si trova anche qui.</p>') + '</div></div>';
-}
-
 // Come sta il profilo rispetto all'account: {state: '' | ok | warn, text}
 function syncState() {
   var u = auth && auth.user;
@@ -1657,7 +1610,7 @@ async function settingsArea(area) {
       '<div class="actions" style="margin-top:0">' +
         '<button class="btn f" data-act="scan" data-key="scan">Cerca file nuovi</button>' +
         '<button class="btn f" data-act="refreshall" data-key="refreshall">Riscarica tutte le schede</button>' +
-      '</div></div>' + (i.tmdb ? refreshPanel(i) : '') + (auth.cloud ? copyPanel(await api('/catalog-copy').catch(function () { return null; })) : '') +
+      '</div></div>' + (i.tmdb ? refreshPanel(i) : '') +
       '<div class="panel"><h2>Chiave TMDB</h2>' +
       '<p>Serve una chiave gratuita di <b>themoviedb.org</b>: crea un account, poi Impostazioni → API → copia la «Chiave API» e incollala qui.' +
         (inAccount ? ' Resta nel tuo account: sugli altri PC dove entri non va rimessa.' : '') +
@@ -1692,9 +1645,15 @@ async function settingsArea(area) {
   if (area === 'friends') {
     var sh = res[3];
     if (!sh) return settingsShell('friends', 'Amici', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
+    var af = auth.cloud ? await api('/account-friends').catch(function () { return null; }) : null;
+    var legacy = friendsPanel(sh)
+      .replace('<h2>Amici</h2>', '<h2>' + (af && af.linked ? 'Collegamenti con indirizzo e password' : 'Amici') + '</h2>')
+      .replace(/<p>Tu e un amico con BunkerPlex[\s\S]*?<\/p>/, af && af.linked
+        ? '<p>Il sistema di prima, per chi non ha un account sul tuo servizio o se usate Tailscale: si scrive l\'indirizzo dell\'amico e ci si registra da lui. ' +
+          'L\'interruttore qui sotto apre o chiude la porta per gli amici di tutto il PC.</p>' : '');
     return settingsShell('friends', 'Amici',
       'Tu e un amico con BunkerPlex guardate ciascuno le raccolte dell\'altro, anche da case diverse. Si guarda soltanto.',
-      friendsPanel(sh).replace('<h2>Amici</h2>', '').replace(/<p>Tu e un amico con BunkerPlex[\s\S]*?<\/p>/, ''));
+      accountFriendsPanel(af, sh) + legacy);
   }
 
   if (area === 'updates') {
@@ -1762,7 +1721,6 @@ function accountArea(i) {
         '<dt>Preferenze di visione</dt><dd>' + esc(prefs.charAt(0).toUpperCase() + prefs.slice(1)) + '</dd>' +
         '<dt>Visti, ripresa e La mia lista</dt><dd>' + (s.state === 'warn' ? 'Su questo PC, partono appena si può' : 'Sincronizzati') + '</dd>' +
         '<dt>Raccolte</dt><dd>Nomi e cartelle</dd>' +
-        '<dt>Catalogo</dt><dd><a class="link f" href="#/settings/catalog" data-key="kv-copy">Copia dei file con le loro schede</a></dd>' +
       '</dl>' +
       '<p class="kvnote">Senza Internet si continua come sempre: le modifiche si uniscono da sole al ritorno della rete.</p></div>' +
     '<div class="panel"><h2>Accesso</h2>' +
@@ -1836,6 +1794,55 @@ function reachState(sh) {
   return 'Sto chiedendo al router di aprire la porta…';
 }
 
+// Gli amici dell'account: si aggiungono col nome del loro account, accettano da un
+// loro PC, e da li' in poi le loro raccolte compaiono da sole (anche se cambia l'indirizzo)
+function accountFriendsPanel(af, sh) {
+  if (!af) return '';
+  var head = '<div class="panel"><h2>I tuoi amici</h2>';
+  if (!af.linked) {
+    return head + '<p>Con un account aggiungi gli amici scrivendo il nome del loro account: niente indirizzi né password da scambiarsi, ' +
+      'e le loro raccolte si ritrovano da sole anche quando cambia l\'indirizzo di casa.</p>' +
+      '<div class="actions"><a class="btn f" href="#/settings/account" data-key="af-login">Entra con un account</a></div></div>';
+  }
+  if (af.supported === false) {
+    return head + '<p><span class="nodot">●</span> Il servizio account va aggiornato per gli amici dell\'account (vedi README → Servizio account).</p></div>';
+  }
+  var list = af.friends || [];
+  var row = function (f, right, small) {
+    return '<div class="folder"><div class="where"><b>' + esc(f.username) + '</b><small>' + small + '</small></div>' + right + '</div>';
+  };
+  var received = list.filter(function (f) { return f.status === 'received'; }).map(function (f) {
+    return row(f, '<button class="btn primary f" style="margin-right:.5rem" data-act="afaccept" data-arg="' + f.id + '" data-key="af-ok-' + f.id + '">Accetta</button>' +
+      '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-no-' + f.id + '">Rifiuta</button>', 'vuole essere tuo amico');
+  }).join('');
+  var friends = list.filter(function (f) { return f.status === 'ok'; }).map(function (f) {
+    var s = f.servers.length ? f.servers.map(function (x) {
+      var where = x.name || 'il suo PC';
+      return x.online === false ? dot(false) + ' ' + esc(where) + ': ' + esc(x.error || 'non raggiungibile')
+        : x.online ? dot(true) + ' ' + esc(where) + ': collegato' : esc(where) + ': collegamento in corso…';
+    }).join(' · ') : 'non condivide le sue raccolte';
+    return row(f, '<button class="btn danger f" data-act="afremove" data-arg="' + f.id + ':' + esc(f.username) + '" data-key="af-del-' + f.id + '">Togli</button>', s);
+  }).join('');
+  var sent = list.filter(function (f) { return f.status === 'sent'; }).map(function (f) {
+    return row(f, '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-undo-' + f.id + '">Annulla</button>', 'richiesta mandata: aspetta che accetti');
+  }).join('');
+  var sharing = af.sharing
+    ? (af.published ? 'Attiva: i tuoi amici vedono le raccolte del tuo profilo' : 'Attiva, ma il tuo indirizzo non è ancora pubblicato: ' + reachState(sh).replace(/<[^>]+>/g, ''))
+    : 'Spenta: i tuoi amici non vedono le tue raccolte (tu vedi le loro)';
+  return head +
+    (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
+    (friends ? '<div class="lib">' + friends + '</div>' : '<p>Ancora nessun amico.</p>') +
+    (sent ? '<div class="lib"><div class="head"><div class="name"><b>In attesa</b></div></div>' + sent + '</div>' : '') +
+    '<label class="flabel" for="afname">Aggiungi un amico: il nome del suo account BunkerPlex</label>' +
+    '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
+    '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>' +
+    '<button class="setting f" data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare">Condividi le tue raccolte con i tuoi amici<small>' + esc(sharing) + '</small></button>' +
+    (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
+      '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
+      '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' : '') +
+    '<p class="kvnote">Gli amici vedono solo le raccolte del tuo profilo e possono soltanto guardare. Il collegamento è cifrato e il servizio account garantisce che dall\'altra parte ci sia davvero il loro server.</p></div>';
+}
+
 function friendsPanel(sh) {
   if (!sh) return '';
   var pending = sh.accounts.filter(function (a) { return !a.approved; });
@@ -1876,8 +1883,8 @@ function friendsPanel(sh) {
     (seen ? '<div class="lib"><div class="head"><div class="name"><b>Chi vede le tue</b></div></div>' + seen + '</div>' : '') +
     (!sh.on && auth.cloud && !auth.user.linked
       ? '<p><b>Per condividere serve un account.</b> Tutto il resto funziona senza. <a class="link f" href="#/settings/account" data-key="share-login">Entra con un account</a></p>'
-      : '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Condivisione con gli amici<small>' +
-        (sh.on ? 'Attiva' : 'Spenta: nessuno può entrare né mandare richieste') + '</small></button>') +
+      : '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Porta per gli amici su questo PC<small>' +
+        (sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') + '</small></button>') +
     '<button class="setting f" data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport">Apri da solo la porta sul router<small>' +
       (sh.auto_port ? 'Sì' : 'No') + '</small></button>' +
     '<p>' + reachState(sh) + '</p>' +
@@ -3309,14 +3316,39 @@ var actions = {
         }, function (e) { toast(e.message); });
       });
   },
-  catcopy: function (arg) {
-    post('/catalog-copy', { enabled: arg === '1' }).then(render, function (e) { toast(e.message); });
-  },
   pcname: function () {
-    post('/catalog-copy', { pc_name: fieldValue('pcname') }).then(function (r) {
+    post('/pc-name', { name: fieldValue('pcname') }).then(function (r) {
       toast('Questo PC ora si chiama «' + r.pc + '»');
       render();
     }, function (e) { toast(e.message); });
+  },
+  // --- amici dell'account
+  afadd: function () {
+    var name = fieldValue('afname').trim();
+    if (!name) { toast('Scrivi il nome dell\'account del tuo amico'); return; }
+    post('/account-friends', { username: name }).then(function (r) {
+      toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username + ': aspetta che accetti');
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  afaccept: function (id) {
+    post('/account-friends/' + id + '/accept').then(function () {
+      toast('Ora siete amici: le sue raccolte compaiono tra poco');
+      libsLoadedAt = 0;
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  afremove: function (arg) {
+    var parts = arg.split(':'), id = parts[0], name = parts.slice(1).join(':');
+    var go = function () {
+      send('DELETE', '/account-friends/' + id).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
+    };
+    if (name === 'no') { go(); return; }
+    confirmBox('Togliere ' + name + ' dai tuoi amici? Non vedrete più le raccolte l\'uno dell\'altro.', 'Sì, togli', go);
+  },
+  afshare: function (arg) {
+    toast(arg === '1' ? 'Apro la porta per gli amici…' : 'Spengo la condivisione…');
+    post('/account-friends/share', { on: arg === '1' }).then(function () { render(); }, function (e) { toast(e.message); });
   },
   pwlater: function () {
     try { sessionStorage.setItem('fpPwLater', '1'); } catch (e) { /* niente */ }
@@ -3993,7 +4025,6 @@ var routes = [
   [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],
   [/^#\/news$/, newsPage],
-  [/^#\/elsewhere$/, elsewherePage],
   [/^#\/tvlogin$/, function () {
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
@@ -4236,6 +4267,10 @@ function activityState() {
     var ch = i.updated.changes || [];
     notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
+  }
+  if (i.friend_requests) {
+    notes.push({ key: 'freq' + i.friend_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
+      title: i.friend_requests === 1 ? 'Qualcuno vuole essere tuo amico' : i.friend_requests + ' richieste di amicizia' });
   }
   if (i.share_requests) {
     notes.push({ key: 'share' + i.share_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
