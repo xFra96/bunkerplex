@@ -56,6 +56,24 @@ jobs:
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Ricompilo l'APK: $build"
 
+      # Numero di versione: la data in Italia, piu' un contatore se serve.
+      # Un nuovo giro sullo stesso commit (Run workflow) riusa il suo numero.
+      # Calcolato prima della compilazione: e' anche il nome di versione dell'APK,
+      # quello che la TV mostra quando propone l'aggiornamento.
+      - name: Numero di versione
+        id: ver
+        run: |
+          ver=$(git tag --points-at HEAD -l 'v2*' | sort -V | tail -1)
+          if [ -z "$ver" ]; then
+            day=$(TZ=Europe/Rome date +%Y.%m.%d)
+            ver="v$day"; n=1
+            while git rev-parse -q --verify "refs/tags/$ver" > /dev/null; do
+              n=$((n+1)); ver="v$day.$n"
+            done
+          fi
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Versione: $ver"
+
       # Senza segreto non si firma con una chiave diversa: lo zip si pubblica lo
       # stesso con l'APK gia' in release, e alla fine il giro risulta fallito.
       - name: Chiave di firma
@@ -94,6 +112,8 @@ jobs:
       - name: Compila l'APK
         if: steps.key.outputs.ok == '1'
         working-directory: android
+        env:
+          BUNKERPLEX_VERSION: ${{ steps.ver.outputs.ver }}
         run: |
           gradle --no-daemon assembleRelease
           mkdir -p ../out
@@ -143,16 +163,10 @@ jobs:
         env:
           APK_BUILT: ${{ steps.key.outputs.ok }}
           REPO: ${{ github.repository }}
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
-          # Numero di versione: la data in Italia, piu' un contatore se serve.
-          # Un nuovo giro sullo stesso commit (Run workflow) riusa il suo numero.
-          ver=$(git tag --points-at HEAD -l 'v2*' | sort -V | tail -1)
-          if [ -z "$ver" ]; then
-            day=$(TZ=Europe/Rome date +%Y.%m.%d)
-            ver="v$day"; n=1
-            while git rev-parse -q --verify "refs/tags/$ver" > /dev/null; do
-              n=$((n+1)); ver="v$day.$n"
-            done
+          ver=$VER
+          if ! git rev-parse -q --verify "refs/tags/$ver" > /dev/null; then
             git tag "$ver" HEAD
             git push origin "refs/tags/$ver"
           fi
