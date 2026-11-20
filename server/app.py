@@ -5484,7 +5484,8 @@ def sharing_status():
     sh = config.get("share") or {}
     return {"on": share_on(), "port": SHARE_PORT, "accounts": accounts,
             "address": my_address(), "manual": bool(sh.get("manual") and sh.get("address")),
-            "tls": share_tls["on"], "auto_port": auto_port(), "lan": lan["ip"],
+            "tls": share_tls["on"], "auto_port": sh.get("auto_port", True) is not False,
+            "tailscale": tailscale_ip(), "lan": lan["ip"],
             "portmap": {k: portmap[k] for k in ("ok", "method", "ip", "port", "public", "error", "at")}}
 
 
@@ -5788,6 +5789,8 @@ portmap = {"ok": False, "method": "", "router": "", "ip": "", "port": 0, "public
            "error": "", "at": 0.0}
 portmap_wake = threading.Event()
 LAN_NET = re.compile(r"^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)\d")
+# Gli indirizzi di Tailscale (100.64.0.0/10)
+TS_NET = re.compile(r"^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$")
 TLS_ANY = ssl.create_default_context()
 TLS_ANY.check_hostname = False
 TLS_ANY.verify_mode = ssl.CERT_NONE      # non ci si fida di un ente: si confronta l'impronta ricordata
@@ -5819,19 +5822,43 @@ def learn_lan(scope):
             if LAN_NET.match(host) and re.fullmatch(r"[\d.]{7,15}", host) and host != lan["ip"]:
                 lan["ip"] = host
                 portmap_wake.set()
+            elif TS_NET.match(host) and host != tailscale_ip():
+                learn_tailscale(host)
             return
 
 
+def tailscale_ip():
+    """L'indirizzo Tailscale di questo PC: lo passa "Installa BunkerPlex" oppure
+    lo si impara da chi apre l'app passando da Tailscale. Vuoto = niente Tailscale."""
+    env = os.environ.get("BUNKERPLEX_TAILSCALE_IP", "").strip()
+    if TS_NET.match(env):
+        return env
+    return (config.get("share") or {}).get("tailscale", "")
+
+
+def learn_tailscale(ip):
+    with config_lock:
+        config.setdefault("share", {})["tailscale"] = ip
+        save_config()
+    portmap_wake.set()                   # con Tailscale la porta sul router si richiude
+    for f in get_friends():              # indirizzo nuovo: lo si dice subito agli amici
+        threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+
+
 def auto_port():
-    return (config.get("share") or {}).get("auto_port", True) is not False
+    """Si apre la porta sul router solo se non c'e' Tailscale: con Tailscale gli
+    amici entrano da li' e l'indirizzo pubblico di casa non si da' a nessuno."""
+    return (config.get("share") or {}).get("auto_port", True) is not False and not tailscale_ip()
 
 
 def my_address():
     """L'indirizzo con cui un amico raggiunge questo server: quello scritto a
-    mano (Tailscale) oppure quello pubblico trovato aprendo la porta sul router."""
+    mano, poi quello di Tailscale, poi quello pubblico trovato aprendo la porta sul router."""
     sh = config.get("share") or {}
     if sh.get("manual") and sh.get("address"):
         return sh["address"]
+    if tailscale_ip() and SHARE_PORT:
+        return f"{'https' if share_tls['on'] else 'http'}://{tailscale_ip()}:{SHARE_PORT}"
     if portmap["ok"] and portmap["public"]:
         return f"{'https' if share_tls['on'] else 'http'}://{portmap['ip']}:{portmap['port']}"
     return sh.get("address") or ""
