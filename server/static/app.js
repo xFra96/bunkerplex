@@ -1631,7 +1631,7 @@ function networkPanel(n) {
     '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
       (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Installa BunkerPlex»</small>') + '</dd>' +
     '<dt>IP pubblico<small>su Internet: lo usano solo gli amici</small></dt><dd class="num">' +
-      (n.public ? esc(n.public) + '<small>' + (n.public_source === 'router' ? 'dal router' : 'dal servizio account') + (n.friends_open ? ' · porta amici ' + n.friends_port + ' aperta' : '') + '</small>'
+      (n.public ? esc(n.public) + '<small>' + (n.public_source === 'router' ? 'dal router' : 'dal servizio account') + (n.tailnet ? ' · amici via Tailscale (' + esc(n.tailnet) + ')' : n.friends_open ? ' · porta amici ' + n.friends_port + ' aperta' : '') + '</small>'
         : '<span class="nodot">non raggiungibile</span><small>niente Internet?</small>') + '</dd>' +
     '</dl><p class="kvnote">Da fuori casa si entra solo dalla porta degli amici: non aprire mai la ' + n.port + ' sul router.</p></div>';
 }
@@ -1945,6 +1945,9 @@ function reachState(sh) {
   var pm = sh.portmap || {};
   if (!sh.on) return 'La condivisione è spenta: da fuori non entra nessuno.';
   if (sh.manual) return dot(true) + ' Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b> (indirizzo scritto da te).';
+  var tn = sh.tailnet || {};
+  if (tn.on) return dot(true) + ' Gli amici ti raggiungono attraverso Tailscale, già dentro BunkerPlex: niente porte da aprire sul router (<b>' + esc(sh.address) + '</b>).';
+  if (tn.running && !tn.error && !(pm.ok && pm.public)) return 'Collego BunkerPlex alla rete degli amici…';
   if (sh.tailscale) return dot(true) + ' Tailscale trovato: gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
     (sh.tls ? ', con collegamento cifrato' : '') + '. Sul router non si apre nessuna porta; l\'amico deve avere Tailscale e il tuo computer condiviso con lui.';
   if (!sh.auto_port) return 'Apertura automatica spenta: scrivi tu il tuo indirizzo (per esempio quello di Tailscale) quando mandi una richiesta.';
@@ -1952,6 +1955,7 @@ function reachState(sh) {
     return dot(true) + ' Porta aperta sul router (' + esc(pm.method) + '). Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
       (sh.tls ? ', con collegamento cifrato.' : '. Attenzione: collegamento non cifrato.');
   }
+  if (tn.error && tn.supported !== false) return dot(false) + ' Non riesco a collegarmi alla rete degli amici (Tailscale): ' + esc(tn.error) + '. Riprovo da solo.';
   if (pm.error) return dot(false) + ' Non riesco ad aprire la porta da solo: ' + esc(pm.error) + '.';
   return 'Sto chiedendo al router di aprire la porta…';
 }

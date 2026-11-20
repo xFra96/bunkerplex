@@ -11,11 +11,13 @@ import gzip
 import hashlib
 import hmac
 import http.client
+import io
 import ipaddress
 import json
 import math
 import mimetypes
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -24,6 +26,7 @@ import sqlite3
 import ssl
 import struct
 import subprocess
+import tarfile
 import threading
 import time
 import unicodedata
@@ -2200,6 +2203,7 @@ def startup():
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
         threading.Thread(target=portmap_loop, daemon=True).start()
+        threading.Thread(target=tailnet_loop, daemon=True).start()
 
 
 # ---- Profili e account ----------------------------------------------------------
@@ -2441,6 +2445,11 @@ class AuthGate:
                 await self.inner(scope, receive, send)
             finally:
                 CURRENT.reset(ctx)
+            return
+        if tailnet_proc["p"] and (scope.get("client") or ("",))[0] in ("127.0.0.1", "::1"):
+            # Dentro il contenitore nessuno apre la 32500 da 127.0.0.1: chi arriva cosi'
+            # viene dalla rete Tailscale, dove agli amici spetta solo la 32501
+            await self._reply(send, 403, "Non disponibile")
             return
         user = session_user(session_token(scope))
         ctx = CURRENT.set(user)
@@ -5487,7 +5496,9 @@ def sharing_status():
             "address": my_address(), "manual": bool(sh.get("manual") and sh.get("address")),
             "tls": share_tls["on"], "auto_port": sh.get("auto_port", True) is not False,
             "tailscale": tailscale_ip(), "lan": lan["ip"],
-            "portmap": {k: portmap[k] for k in ("ok", "method", "ip", "port", "public", "error", "at")}}
+            "portmap": {k: portmap[k] for k in ("ok", "method", "ip", "port", "public", "error", "at")},
+            "tailnet": {"on": tailnet_on(), "ip": tailnet["ip"], "error": tailnet["error"],
+                        "running": bool(tailnet_proc["p"]), "supported": tailnet["supported"]}}
 
 
 @app.post("/api/sharing")
@@ -5509,6 +5520,7 @@ async def sharing_set(request: Request):
             sh["manual"] = False
         save_config()
     portmap_wake.set()                   # apre o richiude subito la porta sul router
+    tailnet_wake.set()
     return {"ok": True, "on": share_on()}
 
 
@@ -5823,7 +5835,7 @@ def learn_lan(scope):
             if LAN_NET.match(host) and re.fullmatch(r"[\d.]{7,15}", host) and host != lan["ip"]:
                 lan["ip"] = host
                 portmap_wake.set()
-            elif TS_NET.match(host) and host != tailscale_ip():
+            elif TS_NET.match(host) and host not in (tailscale_ip(), tailnet["ip"]):
                 learn_tailscale(host)
             return
 
@@ -5854,10 +5866,13 @@ def auto_port():
 
 def my_address():
     """L'indirizzo con cui un amico raggiunge questo server: quello scritto a
-    mano, poi quello di Tailscale, poi quello pubblico trovato aprendo la porta sul router."""
+    mano, poi quello del Tailscale dentro BunkerPlex, poi quello di un Tailscale
+    installato sul computer, poi quello pubblico trovato aprendo la porta sul router."""
     sh = config.get("share") or {}
     if sh.get("manual") and sh.get("address"):
         return sh["address"]
+    if tailnet_on() and SHARE_PORT:
+        return f"{'https' if share_tls['on'] else 'http'}://{tailnet['ip']}:{SHARE_PORT}"
     if tailscale_ip() and SHARE_PORT:
         return f"{'https' if share_tls['on'] else 'http'}://{tailscale_ip()}:{SHARE_PORT}"
     if portmap["ok"] and portmap["public"]:
@@ -6101,7 +6116,7 @@ def portmap_loop():
     minuti, nuovo tentativo ogni 5 se il router non ha risposto."""
     while True:
         try:
-            if SHARE_PORT and share_on() and auto_port():
+            if SHARE_PORT and share_on() and auto_port() and not tailnet_on():
                 portmap_open()
             elif portmap["ok"]:
                 portmap_close()
@@ -6112,6 +6127,220 @@ def portmap_loop():
         portmap_wake.wait(1500 if portmap["ok"] else 300)
         portmap_wake.clear()
         time.sleep(1)
+
+
+# ---- Tailscale dentro BunkerPlex --------------------------------------------
+# Per far arrivare un amico senza toccare router, firewall o porte, BunkerPlex
+# porta con se' Tailscale: il server scarica da solo il programma ufficiale
+# (pkgs.tailscale.com, impronta controllata), lo fa girare dentro Docker in modalita'
+# "userspace" (niente driver, niente permessi speciali) ed entra nella rete
+# Tailscale di BunkerPlex con una chiave monouso che gli da' il servizio account.
+# Il collegamento parte da qui verso l'esterno: va bene anche dietro il firewall
+# di Windows, il doppio router o l'operatore senza indirizzo pubblico. Tra due PC
+# il traffico e' diretto quando si puo' (altrimenti passa dai relay di Tailscale),
+# sempre cifrato; sopra resta la porta 32501 in HTTPS con l'impronta ricordata.
+# Nella rete di BunkerPlex le regole (vedi README) lasciano passare solo la 32501.
+# Gira solo se serve: quando questo PC condivide o ha amici dell'account.
+
+TS_DIR = DATA / "tailscale"
+TS_RUN = Path(os.environ.get("TS_RUN_DIR", "/tmp/bunkerplex-tailscale"))
+TS_SOCK = TS_RUN / "tailscaled.sock"
+TS_PROXY = int(os.environ.get("TS_PROXY_PORT", "32510"))
+TS_PKGS = "https://pkgs.tailscale.com/stable/"
+TS_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64",
+           "armv7l": "arm", "armv6l": "arm", "i686": "386", "i386": "386"}
+tailnet = {"state": "", "ip": "", "error": "", "at": 0.0, "supported": None, "version": ""}
+tailnet_wake = threading.Event()
+tailnet_proc = {"p": None}
+
+
+def tailnet_on():
+    """Tailscale e' acceso e questo PC ha il suo indirizzo 100.x."""
+    return tailnet["state"] == "Running" and bool(tailnet["ip"])
+
+
+def tailnet_wanted():
+    if os.environ.get("BUNKERPLEX_TAILSCALE", "1") == "0" or not auth_on():
+        return False
+    if tailnet["supported"] is False and time.time() - tailnet["at"] < 6 * 3600:
+        return False                 # il servizio account non da' chiavi: si riprova piu' tardi
+    sh = config.get("share") or {}
+    if share_on() and not (sh.get("manual") and sh.get("address")):
+        return True
+    with config_lock:
+        return any(f.get("via") == "account" for f in config.get("friends") or [])
+
+
+def tailnet_binaries():
+    """tailscale e tailscaled nella cartella del catalogo: scaricati una volta e
+    rinnovati ogni mese (Tailscale smette di accettare le versioni molto vecchie)."""
+    arch = TS_ARCH.get(platform.machine().lower())
+    if not arch:
+        raise OSError("processore non supportato: " + platform.machine())
+    bindir = TS_DIR / "bin"
+    have = all((bindir / n).is_file() for n in ("tailscale", "tailscaled"))
+    if have and time.time() - (bindir / "tailscaled").stat().st_mtime < 30 * 86400:
+        return bindir
+    try:
+        with urllib.request.urlopen(TS_PKGS + "?mode=json", timeout=20) as r:
+            name = str(json.load(r)["Tarballs"][arch])
+        if not re.fullmatch(r"tailscale_[\d.]+_[\w]+\.tgz", name):
+            raise OSError("risposta inattesa da pkgs.tailscale.com")
+        with urllib.request.urlopen(TS_PKGS + name + ".sha256", timeout=20) as r:
+            want = r.read(200).decode("ascii", "replace").split()[0].lower()
+        with urllib.request.urlopen(TS_PKGS + name, timeout=600) as r:
+            blob = r.read(300 << 20)
+        if not re.fullmatch(r"[0-9a-f]{64}", want) or hashlib.sha256(blob).hexdigest() != want:
+            raise OSError("il file scaricato non corrisponde all'impronta pubblicata")
+        tmp = TS_DIR / "bin.nuovo"
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+            for m in tar.getmembers():
+                base = m.name.rsplit("/", 1)[-1]
+                if m.isfile() and base in ("tailscale", "tailscaled"):
+                    (tmp / base).write_bytes(tar.extractfile(m).read())
+                    os.chmod(tmp / base, 0o755)
+        if not all((tmp / n).is_file() for n in ("tailscale", "tailscaled")):
+            raise OSError("pacchetto di Tailscale incompleto")
+        shutil.rmtree(bindir, ignore_errors=True)
+        tmp.rename(bindir)
+        tailnet["version"] = name.split("_")[1]
+        return bindir
+    except Exception:
+        if have:                     # niente Internet o sito fermo: va bene la copia di prima
+            return bindir
+        raise
+
+
+def tailnet_cli(*args, timeout=30):
+    exe = TS_RUN / "tailscale"
+    return subprocess.run([str(exe), "--socket", str(TS_SOCK), *args],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def tailnet_start():
+    """Accende tailscaled. I programmi girano da una copia dentro il contenitore
+    (dalla cartella del catalogo, su un disco di Windows, non sempre si possono avviare)."""
+    bindir = tailnet_binaries()
+    TS_RUN.mkdir(parents=True, exist_ok=True)
+    for n in ("tailscale", "tailscaled"):
+        shutil.copy2(bindir / n, TS_RUN / n)
+        os.chmod(TS_RUN / n, 0o755)
+    (TS_DIR / "stato").mkdir(parents=True, exist_ok=True)
+    log = open(TS_RUN / "tailscaled.log", "ab")
+    tailnet_proc["p"] = subprocess.Popen(
+        [str(TS_RUN / "tailscaled"), "--tun=userspace-networking", "--statedir", str(TS_DIR / "stato"),
+         "--socket", str(TS_SOCK), "--port", "0", "--no-logs-no-support",
+         "--outbound-http-proxy-listen", f"127.0.0.1:{TS_PROXY}"],
+        stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+    log.close()
+    for _ in range(40):
+        if TS_SOCK.exists():
+            break
+        time.sleep(0.25)
+
+
+def tailnet_stop():
+    p = tailnet_proc["p"]
+    if p and p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(10)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    tailnet_proc["p"] = None
+    tailnet.update(state="", ip="")
+
+
+def tailnet_key():
+    """Una chiave monouso per entrare nella rete di BunkerPlex, dal servizio
+    account (con il gettone di un profilo collegato di questo PC)."""
+    con = db(raw=True)
+    try:
+        rows = con.execute("SELECT id, token FROM users WHERE cloud_id IS NOT NULL AND token IS NOT NULL "
+                           "AND must_change=0").fetchall()
+    finally:
+        con.close()
+    if not rows:
+        raise FriendDown("serve un profilo collegato a un account")
+    rows = sorted(rows, key=lambda r: not friends_shared(r["id"]))
+    try:
+        got = accounts.call("POST", "/tailscale/key", {"sid": pc_id()}, rows[0]["token"])
+    except accounts.CloudError as ex:
+        if ex.status == 404:
+            tailnet.update(supported=False)
+        raise FriendDown(ex.detail, ex.status)
+    except accounts.CloudOffline:
+        raise FriendDown("niente Internet")
+    key = str(got.get("key") or "")
+    if not key.startswith("tskey-"):
+        raise FriendDown("risposta non valida dal servizio account")
+    tailnet["supported"] = True
+    return key
+
+
+def tailnet_check():
+    """Legge lo stato di tailscaled; se va fatto l'ingresso nella rete, lo fa."""
+    out = tailnet_cli("status", "--json", "--peers=false", timeout=15)
+    st = json.loads(out.stdout or "{}")
+    state = str(st.get("BackendState") or "")
+    if state in ("NeedsLogin", "Stopped", "NoState"):
+        key = tailnet_key()
+        up = tailnet_cli("up", "--authkey", key, "--hostname", "bunkerplex-" + pc_id(),
+                         "--accept-dns=false", "--accept-routes=false", "--reset", timeout=90)
+        if up.returncode:
+            raise FriendDown((up.stderr or up.stdout or "ingresso non riuscito").strip()[:200])
+        st = json.loads(tailnet_cli("status", "--json", "--peers=false", timeout=15).stdout or "{}")
+        state = str(st.get("BackendState") or "")
+    ips = [ip for ip in (st.get("Self") or {}).get("TailscaleIPs") or [] if TS_NET.match(str(ip))]
+    return state, (ips[0] if ips else "")
+
+
+def tailnet_loop():
+    """Tiene acceso Tailscale finche' serve. Quando cambia l'indirizzo 100.x lo
+    si pubblica subito nella rubrica degli amici."""
+    wait = 20
+    while True:
+        before = my_address()
+        try:
+            if tailnet_wanted():
+                p = tailnet_proc["p"]
+                if p is None or p.poll() is not None:
+                    tailnet_start()
+                state, ip = tailnet_check()
+                tailnet.update(state=state, ip=ip if state == "Running" else "", error="", at=time.time())
+                wait = 60 if tailnet_on() else 20
+            elif tailnet_proc["p"]:
+                tailnet_stop()
+        except Exception as ex:
+            msg = str(ex) if isinstance(ex, (FriendDown, OSError)) else repr(ex)
+            tailnet.update(state="", ip="", error=msg[:200], at=time.time())
+            print("Tailscale:", msg[:300], flush=True)
+            wait = min(max(wait * 2, 60), 1800)
+        if my_address() != before:
+            portmap_wake.set()           # con Tailscale la porta sul router non serve piu'
+            sync_soon()                  # indirizzo nuovo nella rubrica degli amici
+            for f in get_friends():
+                if f.get("via") != "account":
+                    threading.Thread(target=friend_sync, args=(f,), daemon=True).start()
+        tailnet_wake.wait(wait)
+        tailnet_wake.clear()
+
+
+def via_tailnet(url):
+    """Un indirizzo della rete di BunkerPlex: ci si arriva solo passando da Tailscale."""
+    try:
+        return bool(TS_NET.match(urllib.parse.urlsplit(url).hostname or ""))
+    except ValueError:
+        return False
+
+
+def tailnet_proxy():
+    if not tailnet_on():
+        raise FriendDown("collegamento con gli amici in preparazione")
+    return urllib.request.ProxyHandler({"http": f"http://127.0.0.1:{TS_PROXY}",
+                                        "https": f"http://127.0.0.1:{TS_PROXY}"})
 
 
 def get_friends():
@@ -6166,7 +6395,12 @@ def friend_open(f, path, timeout=5, headers=None, method="GET", data=None):
     h = {"X-Share-Token": f.get("token") or "", "User-Agent": "BunkerPlex/" + VERSION}
     h.update(headers or {})
     req = urllib.request.Request(f["url"] + "/api/share" + path, data=data, headers=h, method=method)
+    # Verso un 100.x si passa dal Tailscale dentro BunkerPlex, se e' acceso
+    # (altrimenti, come prima, dal Tailscale eventualmente installato sul computer)
+    extra = [tailnet_proxy()] if via_tailnet(f["url"]) and tailnet_on() else []
     if not f["url"].startswith("https://"):
+        if extra:
+            return urllib.request.build_opener(_NoRedirect, *extra).open(req, timeout=timeout)
         return friend_opener.open(req, timeout=timeout)
     pin = f.get("pin")
 
@@ -6186,7 +6420,7 @@ def friend_open(f, path, timeout=5, headers=None, method="GET", data=None):
         def https_open(self, r):
             return self.do_open(Pinned, r, context=TLS_ANY)
 
-    return urllib.request.build_opener(_NoRedirect, Handler).open(req, timeout=timeout)
+    return urllib.request.build_opener(_NoRedirect, Handler, *extra).open(req, timeout=timeout)
 
 
 def friend_set(n, **fields):
@@ -6867,9 +7101,10 @@ async def friends_add(request: Request):
                 save_config()
             asked = time.time()
             portmap_wake.set()
+            tailnet_wake.set()
             if not typed:
                 for _ in range(40):
-                    if portmap["at"] >= asked:
+                    if portmap["at"] >= asked or tailnet_on():
                         break
                     await asyncio.sleep(0.25)
         if typed and typed != my_address():
@@ -7066,6 +7301,7 @@ def sync_friends(uid, token):
             break
         friend_store(w["name"], w["url"], "", "", None, w["pin"],
                      extra={"via": "account", "owner": uid, "fid": fid, "sid": sid})
+        tailnet_wake.set()               # per arrivare da lui serve Tailscale anche qui
     # 2. Chi entra qui con l'account: solo gli amici di adesso
     ids = {f["id"] for f in ok}
     con = db(raw=True)
@@ -7187,8 +7423,9 @@ async def account_friends_share(request: Request):
             save_config()
         asked = time.time()
         portmap_wake.set()
-        for _ in range(40):          # si aspetta un attimo il router: l'indirizzo va pubblicato
-            if portmap["at"] >= asked or (config.get("share") or {}).get("manual"):
+        tailnet_wake.set()
+        for _ in range(40):          # si aspetta un attimo il router o Tailscale: l'indirizzo va pubblicato
+            if portmap["at"] >= asked or tailnet_on() or (config.get("share") or {}).get("manual"):
                 break
             await asyncio.sleep(0.25)
     try:
@@ -7259,7 +7496,8 @@ async def network(request: Request):
     pub = await asyncio.to_thread(find_public_ip)
     return {"private": private_ip(request.headers.get("host", "")), "port": 32500,
             "public": pub["ip"], "public_source": pub["source"],
-            "friends_port": SHARE_PORT, "friends_open": bool(portmap.get("ok") and portmap.get("public"))}
+            "friends_port": SHARE_PORT, "friends_open": bool(portmap.get("ok") and portmap.get("public")),
+            "tailnet": tailnet["ip"] if tailnet_on() else ""}
 
 
 @app.get("/api/apk-link")
