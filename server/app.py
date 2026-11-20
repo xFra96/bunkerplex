@@ -1756,12 +1756,14 @@ def show_json(con, r):
     d["matched"] = bool(r["tmdb_id"])
     c = con.execute(
         "SELECT COUNT(*) n, SUM(watched) w, MIN(id) first, MAX(added_at) latest, "
-        "COUNT(DISTINCT season) s FROM items WHERE show_id=?", (r["id"],)).fetchone()
+        "COUNT(DISTINCT season) s, MAX(width) width, MAX(height) height "
+        "FROM items WHERE show_id=?", (r["id"],)).fetchone()
     d["episodes"] = c["n"]
     d["seasons_count"] = c["s"]
     d["unwatched"] = c["n"] - (c["w"] or 0)
     d["watched"] = c["n"] > 0 and d["unwatched"] == 0
     d["latest"] = c["latest"]
+    d["quality"] = quality(c)  # la migliore tra gli episodi
     d["thumb"] = f"/api/thumb/{c['first']}" if c["first"] else None
     return d
 
