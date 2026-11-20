@@ -1,10 +1,13 @@
-# A ogni push su main ripubblica la release "app-tv" (nuova, con la data di oggi e
-# l'elenco delle novita'), da cui i server
-# BunkerPlex prendono gli aggiornamenti e da cui si scarica la prima volta:
+# A ogni push su main pubblica una versione nuova di BunkerPlex:
+#   - la release vAAAA.MM.GG (.2, .3... se nello stesso giorno ce n'e' piu' d'una),
+#     che resta per sempre: lo storico di tutti gli aggiornamenti, con le novita'
+#     divise per parte (TV, server, account...) e gli allegati di quella versione;
+#   - la release "app-tv", ricreata sull'ultima versione: da li' i server BunkerPlex
+#     prendono gli aggiornamenti e da li' si scarica la prima volta (indirizzi fissi).
+# Allegati di entrambe:
 #   - BunkerPlex.zip: il programma di quel commit, gia' con l'APK e con
 #     strumenti/versione.json (cosi' la copia scaricata sa di essere aggiornata);
-#   - BunkerPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/;
-#   - il tag app-tv spostato sull'ultimo commit (anche lo zip «Source code» e' quello nuovo).
+#   - BunkerPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/.
 #
 # Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/bunkerplex.jks
 # in base64 (vedi README, «App per la TV compilata da GitHub»). Deve essere la stessa
@@ -23,7 +26,7 @@ permissions:
 
 concurrency:
   group: release
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   TAG: app-tv
@@ -129,32 +132,93 @@ jobs:
           (cd pkg && zip -q -r -X ../out/BunkerPlex.zip BunkerPlex)
           ls -l out
 
-      # Ogni push e' una release nuova: quella vecchia si cancella (il tag resta, e si
-      # sposta sull'ultimo commit) e si ricrea con data di oggi, elenco delle novita'
-      # e gli allegati. Il tag e' sempre app-tv: gli indirizzi di download non cambiano
-      # e i server e le TV gia' installati continuano a trovarla.
-      - name: Aggiorna la release
+      # Ogni push e' una versione nuova, con un numero che resta per sempre:
+      #   - release vAAAA.MM.GG (vAAAA.MM.GG.2, .3... se nello stesso giorno ce n'e'
+      #     piu' d'una), con le novita' divise per parte del programma e i suoi
+      #     allegati: e' lo storico, da li' si riscarica anche una versione vecchia;
+      #   - release app-tv, ricreata ogni volta sull'ultima: il tag non cambia, cosi'
+      #     gli indirizzi di download restano uguali e i server e le TV gia'
+      #     installati continuano a trovarla (strumenti/aggiornamenti.json).
+      - name: Pubblica la versione
+        env:
+          APK_BUILT: ${{ steps.key.outputs.ok }}
+          REPO: ${{ github.repository }}
         run: |
-          prev=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
+          # Numero di versione: la data in Italia, piu' un contatore se serve.
+          # Un nuovo giro sullo stesso commit (Run workflow) riusa il suo numero.
+          ver=$(git tag --points-at HEAD -l 'v2*' | sort -V | tail -1)
+          if [ -z "$ver" ]; then
+            day=$(TZ=Europe/Rome date +%Y.%m.%d)
+            ver="v$day"; n=1
+            while git rev-parse -q --verify "refs/tags/$ver" > /dev/null; do
+              n=$((n+1)); ver="v$day.$n"
+            done
+            git tag "$ver" HEAD
+            git push origin "refs/tags/$ver"
+          fi
+          # Da dove partono le novita': la versione precedente o, la prima volta,
+          # il commit dell'ultima app-tv
+          prev=$(git describe --tags --abbrev=0 --match 'v2*' HEAD^ 2>/dev/null || true)
+          base=${prev:-$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)}
+          # Versione in cui e' stata compilata l'app per la TV che si sta pubblicando
+          if [ "$APK_BUILT" = 1 ]; then apkver=$ver
+          else apkver=$(git tag --points-at apk-build -l 'v2*' 2>/dev/null | sort -V | tail -1); fi
+          VER=$ver PREV=$prev BASE=$base APKVER=$apkver python3 - <<'EOF'
+          import os, subprocess
+          def git(*a):
+              return subprocess.run(["git", *a], capture_output=True, text=True).stdout
+          ver, prev, base = os.environ["VER"], os.environ["PREV"], os.environ["BASE"]
+          apkver, repo = os.environ["APKVER"], os.environ["REPO"]
+          built = os.environ.get("APK_BUILT") == "1"
+          rng = [f"{base}..HEAD"] if base else ["-1"]
+          shas = git("log", "--no-merges", "--format=%H", *rng).split() or git("log", "-1", "--format=%H").split()
+          # Parte del programma toccata da ogni commit (dai file cambiati)
+          areas = [("android/", "TV"), ("server/", "server"), ("cloud/", "account"),
+                   (("Windows/", "macOS/", "strumenti/", "docker-compose", ".env"), "installazione"),
+                   (".github/", "pubblicazione")]
+          lines = []
+          for sha in shas:
+              subj = git("log", "-1", "--format=%s", sha).strip()
+              files = git("diff-tree", "--no-commit-id", "--name-only", "-r", "--root", sha).split("\n")
+              tags = [name for pre, name in areas if any(f.startswith(pre) for f in files if f)]
+              tag = f" — _{', '.join(tags)}_" if tags else ""
+              lines.append(f"- {subj}{tag} ([{sha[:7]}](https://github.com/{repo}/commit/{sha}))")
+          if built:
+              apk = "**App per la TV:** ricompilata in questa versione: va aggiornata anche sulla TV."
+          elif apkver:
+              apk = f"**App per la TV:** invariata, è quella della [{apkver}](https://github.com/{repo}/releases/tag/{apkver})."
+          else:
+              apk = "**App per la TV:** invariata rispetto alla versione precedente."
+          compare = f"\n\nTutte le modifiche: [{prev}...{ver}](https://github.com/{repo}/compare/{prev}...{ver})" if prev else ""
+          news = "**Novità**\n" + "\n".join(lines) + "\n\n" + apk + compare
+          install = ("Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, "
+                     "nella cartella «Windows» (o «macOS»), lancia una volta sola «Installa BunkerPlex.bat» "
+                     "(o «.command»). Da lì in poi BunkerPlex lo tiene acceso Docker, anche dopo un riavvio. "
+                     "Dentro c'è già l'app per la TV.\n"
+                     "BunkerPlex.apk: l'app per Android TV, Google TV e Fire TV.")
+          with open("out/version.md", "w", encoding="utf-8") as f:
+              f.write(news + "\n\n---\n" + install + "\n")
+          with open("out/notes.md", "w", encoding="utf-8") as f:
+              f.write(f"Questa è sempre l'ultima versione di BunkerPlex: ora è la **[{ver}](https://github.com/{repo}/releases/tag/{ver})**.\n"
+                      "BunkerPlex controlla questa pagina e propone gli aggiornamenti da solo, anche dalla TV.\n"
+                      f"Storico di tutte le versioni: [Releases](https://github.com/{repo}/releases).\n\n"
+                      + news + "\n\n---\n" + install + "\n")
+          EOF
+          title="BunkerPlex ${ver#v}"
+          if gh release view "$ver" > /dev/null 2>&1; then
+            gh release upload "$ver" out/BunkerPlex.apk out/BunkerPlex.zip --clobber
+            gh release edit "$ver" --title "$title" --notes-file out/version.md --latest=false
+          else
+            gh release create "$ver" out/BunkerPlex.apk out/BunkerPlex.zip \
+              --title "$title" --notes-file out/version.md --verify-tag --latest=false
+          fi
           git tag -f "$TAG" HEAD
           git push -f origin "refs/tags/$TAG"
-          short=$(git rev-parse --short HEAD)
-          changes=$(git log --no-merges --format='- %s' "$prev..HEAD" 2>/dev/null | head -20 || true)
-          [ -n "$changes" ] || changes=$(git log -1 --format='- %s')
-          {
-            echo "Ultima versione di BunkerPlex (commit $short)."
-            echo
-            echo "**Novita'**"
-            echo "$changes"
-            echo
-            echo "Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, nella cartella «Windows» (o «macOS»), lancia una volta sola «Installa BunkerPlex.bat» (o «.command»). Da lì in poi BunkerPlex lo tiene acceso Docker, anche dopo un riavvio. Dentro c'è già l'app per la TV."
-            echo "Dopo si aggiorna da sola: BunkerPlex controlla questa pagina e propone gli aggiornamenti anche dalla TV."
-            echo
-            echo "BunkerPlex.apk: l'app per Android TV, Google TV e Fire TV."
-          } > out/notes.md
           gh release delete "$TAG" --yes || true
-          gh release create "$TAG" out/BunkerPlex.apk out/BunkerPlex.zip             --title "BunkerPlex $(date -u +%Y-%m-%d) ($short)"             --notes-file out/notes.md --target "$GITHUB_SHA" --latest
-          if [ "${{ steps.key.outputs.ok }}" = 1 ]; then
+          gh release create "$TAG" out/BunkerPlex.apk out/BunkerPlex.zip \
+            --title "BunkerPlex — ultima versione (${ver#v})" \
+            --notes-file out/notes.md --target "$GITHUB_SHA" --latest
+          if [ "$APK_BUILT" = 1 ]; then
             git tag -f apk-build HEAD
             git push -f origin refs/tags/apk-build
           fi
