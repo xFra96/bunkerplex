@@ -41,6 +41,7 @@ from fastapi.staticfiles import StaticFiles
 import contextvars
 
 import accounts
+import sigle
 import updater
 from accounts import CURRENT
 
@@ -432,7 +433,12 @@ def init_db():
                           # scelta a mano con «Correggi scheda» (0: trovata da sola)
                           ("items", "fp TEXT"), ("items", "manual REAL DEFAULT 0"),
                           ("shows", "manual REAL DEFAULT 0"),
-                          ("users", "catalog_rev INT DEFAULT 0"), ("users", "catalog_at REAL DEFAULT 0")):
+                          ("users", "catalog_rev INT DEFAULT 0"), ("users", "catalog_at REAL DEFAULT 0"),
+                          # Sigle degli episodi (vedi sigle_loop), in secondi: intro_s / intro_e = sigla
+                          # iniziale, credits_s = inizio della sigla finale; marks_v = versione del
+                          # riconoscimento con cui l'episodio e' stato guardato (0: ancora da fare)
+                          ("items", "intro_s REAL"), ("items", "intro_e REAL"), ("items", "credits_s REAL"),
+                          ("items", "marks_v INT DEFAULT 0")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -1894,6 +1900,8 @@ def play_info(con, r):
                            if nxt else ""),
             # Il film che viene dopo nella stessa saga: il player lo propone, non parte da solo
             "saga": saga,
+            # Sigle: «Salta intro» e il prossimo episodio appena partono i titoli di coda
+            **marks_info(r),
             # Il player della TV non ha i cookie della pagina: entra con questo gettone
             "session": (CURRENT.get() or {}).get("session") or ""}
 
@@ -1917,6 +1925,152 @@ def saga_next(con, r):
     n = items[at + 1]
     return {"id": n["id"], "title": n["title"] or "", "year": n["year"] or 0,
             "name": saga_name(c["name"]), "number": at + 2, "count": len(items)}
+
+
+# ---- Sigle degli episodi -------------------------------------------------------
+# Un thread guarda episodio per episodio dove sono la sigla iniziale e quella
+# finale (vedi sigle.py): prima quello appena avviato, poi le stagioni che si
+# stanno guardando, poi tutte le altre, ma solo quando nessuno sta guardando
+# (legge dal disco dei video e impegna un po' il processore).
+
+MARKS_V = 1                           # aumentarlo fa rifare il riconoscimento a tutti
+SIGLE_DIR = DATA / "sigle"            # impronte dell'audio, per confrontare gli episodi aggiunti dopo
+sigle_wake = threading.Event()
+sigle_urgent = []                     # episodi appena avviati: hanno la precedenza
+sigle_lock = threading.Lock()
+sigle_skip = {}                       # (serie, stagione) con file non raggiungibili -> quando riprovare
+
+
+def marks_missing(r):
+    return r["kind"] == "episode" and (r["marks_v"] or 0) < MARKS_V
+
+
+def marks_info(r):
+    intro = r["intro_s"] is not None and r["intro_e"] and r["intro_e"] > r["intro_s"]
+    return {"intro_start": round(r["intro_s"], 2) if intro else 0,
+            "intro_end": round(r["intro_e"], 2) if intro else 0,
+            "credits": round(r["credits_s"], 2) if r["credits_s"] else 0,
+            # Ancora da guardare: il player le richiede tra poco a /api/marks
+            "marks_pending": marks_missing(r)}
+
+
+def sigle_now(r):
+    """Un episodio appena avviato: lo si analizza subito (con il successivo)."""
+    with sigle_lock:
+        if r["id"] not in sigle_urgent:
+            sigle_urgent.append(r["id"])
+    sigle_wake.set()
+
+
+def sigle_key(r, part):
+    """Nome dell'impronta: cambia se cambia il file."""
+    return f"{r['id']}-{int(r['size'] or 0)}-{int(r['duration'] or 0)}-{part}"
+
+
+def sigle_points(r, part, nice):
+    head, tail = sigle.windows(r["duration"] or 0)
+    start, length = head if part == "h" else tail
+    return sigle.cached(SIGLE_DIR, sigle_key(r, part), r["path"], start, length, nice)
+
+
+def sigle_episode(con, r, season, nice):
+    """Trova e salva le sigle dell'episodio r. 'season' = gli episodi della stessa
+    stagione (righe del catalogo), in ordine. False se il file non si raggiunge."""
+    if not Path(r["path"]).is_file():
+        return False
+    found = sigle.from_chapters(r["path"])
+    intro, credits = found["intro"], found["credits"]
+    dur = r["duration"] or 0
+    if dur >= sigle.MIN_EPISODE and (intro is None or credits is None):
+        tail = sigle.windows(dur)[1]
+        # Con chi confrontarlo: i vicini (stessa sigla quasi di sicuro), mai un altro
+        # file dello stesso episodio (sarebbe tutto "in comune")
+        at = next((k for k, x in enumerate(season) if x["id"] == r["id"]), 0)
+        others = [season[k] for k in (at + 1, at - 1, at + 2, at - 2, at + 3)
+                  if 0 <= k < len(season) and season[k]["episode"] != r["episode"]
+                  and (season[k]["duration"] or 0) >= sigle.MIN_EPISODE
+                  and Path(season[k]["path"]).is_file()][:3]
+        mine = {}
+        for o in others:
+            if intro is None:
+                a = mine.setdefault("h", sigle_points(r, "h", nice))
+                intro = sigle.find_intro(a, sigle_points(o, "h", nice))
+            if credits is None:
+                a = mine.setdefault("t", sigle_points(r, "t", nice))
+                c = sigle.find_credits(a, sigle_points(o, "t", nice), tail[0])
+                # Un tratto in comune fin dall'inizio della finestra: due copie dello stesso video
+                credits = c if c is not None and c > tail[0] + 2 else None
+            if intro is not None and credits is not None:
+                break
+    # Una sigla finale che parte a meta' episodio non e' una sigla finale
+    if credits is not None and (credits < dur * 0.6 or credits > dur - 5):
+        credits = None
+    con.execute("UPDATE items SET intro_s=?, intro_e=?, credits_s=?, marks_v=? WHERE id=?",
+                (intro[0] if intro else None, intro[1] if intro else None, credits, MARKS_V, r["id"]))
+    con.commit()
+    return True
+
+
+def sigle_season(con, show_id, season_no, only=None, nice=True):
+    """Analizza gli episodi ancora da fare di una stagione (o solo quelli in 'only').
+    Si ferma se arriva un episodio con la precedenza o se qualcuno inizia a guardare."""
+    season = con.execute("SELECT * FROM items WHERE show_id=? AND season IS ? AND kind='episode' "
+                         "ORDER BY episode, id", (show_id, season_no)).fetchall()
+    todo = [x for x in season if (x["id"] in only if only else marks_missing(x))]
+    missing = False
+    for r in todo:
+        if only is None and (sigle_urgent or updater.busy()):
+            return
+        try:
+            if not sigle_episode(con, r, season, nice):
+                missing = True
+        except Exception as ex:
+            print("Sigle non riconosciute:", r["path"], repr(ex), flush=True)
+            con.execute("UPDATE items SET marks_v=? WHERE id=?", (MARKS_V, r["id"]))
+            con.commit()
+    if missing:
+        sigle_skip[(show_id, season_no)] = time.time() + 3600
+
+
+def sigle_loop():
+    time.sleep(30)                    # prima lascia partire il resto del server
+    while True:
+        try:
+            with sigle_lock:
+                urgent = sigle_urgent.pop(0) if sigle_urgent else None
+            con = db(raw=True)
+            try:
+                if urgent is not None:
+                    r = con.execute("SELECT * FROM items WHERE id=?", (urgent,)).fetchone()
+                    if r and marks_missing(r):
+                        sigle_season(con, r["show_id"], r["season"], only={r["id"]}, nice=False)
+                        # Anche il prossimo episodio: sara' pronto quando parte
+                        nxt = next_episode(con, r)
+                        if nxt and marks_missing(nxt):
+                            sigle_season(con, nxt["show_id"], nxt["season"], only={nxt["id"]}, nice=False)
+                    continue
+                if updater.busy():
+                    sigle_wake.wait(120)
+                    sigle_wake.clear()
+                    continue
+                now = time.time()
+                # Prima le stagioni che qualcuno sta guardando, poi le aggiunte di recente
+                rows = con.execute(
+                    "SELECT i.show_id, i.season, MAX(COALESCE(u.lp, 0)) AS lp, MAX(i.id) AS last FROM items i "
+                    "LEFT JOIN (SELECT item_id, MAX(last_played) AS lp FROM user_items GROUP BY item_id) u "
+                    "ON u.item_id = i.id WHERE i.kind='episode' AND COALESCE(i.marks_v, 0) < ? "
+                    "GROUP BY i.show_id, i.season ORDER BY lp DESC, last DESC", (MARKS_V,)).fetchall()
+                pick = next((x for x in rows if sigle_skip.get((x["show_id"], x["season"]), 0) < now), None)
+                if pick is None:
+                    sigle_wake.wait(600)
+                    sigle_wake.clear()
+                    continue
+                sigle_season(con, pick["show_id"], pick["season"])
+            finally:
+                con.close()
+        except Exception as ex:
+            print("Riconoscimento delle sigle non riuscito:", repr(ex), flush=True)
+            time.sleep(60)
 
 
 # --------------------------------------------------------------------------
@@ -2017,6 +2171,7 @@ def startup():
     threading.Thread(target=note_update, daemon=True).start()
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=drives_loop, daemon=True).start()
+    threading.Thread(target=sigle_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
     threading.Thread(target=friends_loop, daemon=True).start()
@@ -3463,10 +3618,11 @@ def push_catalog(con, uid, token):
     """Manda le righe di questo PC cambiate da quelle che ha l'account (e toglie i file spariti)."""
     me = "@" + pc_id()
     mine = catalog_rows(con, uid)
-    sent = {r["k"]: r["v"] for r in con.execute(
+    # Si confrontano i valori, non il testo: il servizio rimanda 0.0 come 0
+    sent = {r["k"]: json.loads(r["v"]) if r["v"] else None for r in con.execute(
         "SELECT k, v FROM cloud_catalog WHERE user_id=? AND k LIKE ?", (uid, "%" + me))}
     now = time.time()
-    todo = [{"k": k, "v": v, "t": now} for k, v in mine.items() if sent.get(k) != json.dumps(v)]
+    todo = [{"k": k, "v": v, "t": now} for k, v in mine.items() if sent.get(k) != v]
     todo += [{"k": k, "v": None, "t": now} for k, v in sent.items() if k not in mine and v is not None]
     for part in chunks(todo[:CATALOG_PUSH]):
         accounts.call("POST", "/catalog", {"rows": part}, token)
@@ -4562,7 +4718,22 @@ def play(item_id: int):
         return friend_play(item_id)
     con = db()
     try:
-        return play_info(con, get_item(con, item_id))
+        r = get_item(con, item_id)
+        if marks_missing(r):
+            sigle_now(r)
+        return play_info(con, r)
+    finally:
+        con.close()
+
+
+@app.get("/api/marks/{item_id}")
+def marks(item_id: int):
+    """Le sigle di un episodio: il player le richiede se all'avvio non erano pronte."""
+    if item_id >= FRIEND_BASE:
+        return {"marks_pending": False}
+    con = db()
+    try:
+        return marks_info(get_item(con, item_id))
     finally:
         con.close()
 
@@ -4579,6 +4750,9 @@ async def progress(item_id: int, request: Request):
         r = get_item(con, item_id)
         dur = dur or (r["duration"] or 0)
         finished = bool(body.get("ended")) or (dur > 0 and pos / dur > 0.93)
+        # Arrivati ai titoli di coda l'episodio e' finito (come su Netflix)
+        if r["credits_s"] and dur and r["credits_s"] > dur * 0.6 and pos >= r["credits_s"] - 1:
+            finished = True
         if finished:
             set_state(con, [item_id], watched=1, position=0, last_played=time.time())
         else:
@@ -6272,7 +6446,7 @@ F_ID = {"id", "show_id", "library_id", "next"}
 F_URL = {"poster", "backdrop", "thumb", "photo", "url", "transcode"}
 F_NUM = {"year", "year_to", "season", "episode", "count", "total", "episodes", "seasons_count",
          "unwatched", "number", "bits", "size", "index", "duration", "position", "added_at",
-         "latest", "rating", "start", "width", "height"}
+         "latest", "rating", "start", "width", "height", "intro_start", "intro_end", "credits"}
 F_CODE = {"vcodec", "acodec", "codec", "lang"}
 F_KINDS = ("movie", "episode", "show", "collection")
 
