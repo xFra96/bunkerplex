@@ -528,9 +528,12 @@ function stars(x, short) {
   return short ? 'voto ' + n : '<span class="star">' + n + ' su 10</span>';
 }
 
+// Badge della qualita' (4K, 1080p, 720p) in alto a sinistra sulla copertina
+function qBadge(x) { return x.quality && x.quality !== 'SD' ? '<span class="q">' + x.quality + '</span>' : ''; }
+
 function seenBadge() { return '<span class="badge seen">' + IC.check + '</span>'; }
 
-function posterCard(x, prefix) {
+function posterCard(x, prefix, allQ) {
   cardData[prefix + '-' + x.kind + x.id] = x;
   var isShow = x.kind === 'show';
   var href = isShow ? '#/show/' + x.id : '#/item/' + x.id;
@@ -543,7 +546,7 @@ function posterCard(x, prefix) {
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
-      (x.quality === '4K' ? '<span class="q">4K</span>' : '') +
+      (allQ || x.quality === '4K' ? qBadge(x) : '') +
       badge + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
@@ -578,7 +581,7 @@ function wideCard(x, prefix) {
   return '<button class="card wide f" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
     '<div class="art" style="--h:' + hue(title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
-      '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
+      qBadge(x) + '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></button>';
 }
@@ -658,15 +661,15 @@ async function home() {
   var rows =
     section('Continua a guardare', d.continue.map(function (x) { return wideCard(reg(x, 'cont', 'Continua a guardare'), 'cont'); })) +
     section('Prossimi episodi', d.nextup.map(function (x) { return wideCard(reg(x, 'next', 'Prossimo episodio'), 'next'); })) +
-    section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine'); })) +
+    section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine', true); })) +
     d.libraries.map(function (l) {
       // Le raccolte degli amici: stessa fila, con il nome dell'amico bene in vista
       var note = l.friend ? 'di ' + esc(l.friend) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
       var kicker = l.friend ? l.name + ' · di ' + l.friend : l.name;
-      return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id); }), note);
+      return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id, true); }), note);
     }).join('') +
     section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
-    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top'); }));
+=======
 
   return {
     html: '<div class="home"><div class="stage" id="stage"><div class="bg"></div><div class="bg"></div>' +
@@ -3861,6 +3864,10 @@ function move(dir) {
     return;
   }
   var inRail = rail.contains(cur);
+  // La campanella in alto sta fuori dalla pagina ma si raggiunge come un suo elemento
+  var bell = document.querySelector('#activity:not([hidden]) .actbtn');
+  if (bell && !bell.getBoundingClientRect().width) bell = null;
+  if (cur.closest('#activity') && !bell) { focusView(); return; }
   if (inRail && dir === 'right') { focusView(); return; }
   if (inRail && dir === 'left') return;
   // Ogni zona si naviga per conto suo: finestra di scelta, barra laterale, pagina
@@ -3868,7 +3875,8 @@ function move(dir) {
   var a = cur.getBoundingClientRect();
   var horizontal = dir === 'left' || dir === 'right';
   var cands = [];
-  var list = scope.querySelectorAll('.f');
+  var list = Array.prototype.slice.call(scope.querySelectorAll('.f'));
+  if (scope === view && bell) list.push(bell);
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -3891,6 +3899,7 @@ function move(dir) {
     cands.push({ el: el, main: Math.max(0, main), cross: cross });
   }
   if (!cands.length) {
+    if (dir === 'up' && scope === view && bell && cur !== bell) { bell.focus(); return; }
     if (dir === 'left' && !inRail && !inModal) focusRail();   // dal bordo sinistro si entra nel menu
     return;
   }
@@ -3922,6 +3931,7 @@ function scrollBox(box, pos) {
 }
 
 function scrollToEl(el) {
+  if (el.closest('#activity')) return;
   if (rail.contains(el) || modal.contains(el)) {
     if (modal.contains(el)) el.scrollIntoView({ behavior: smooth, block: 'center' });
     return;
@@ -4052,7 +4062,7 @@ document.addEventListener('keydown', function (e) {
   if (key === 'Escape' || (key === 'Backspace' && !typing)) {
     e.preventDefault();
     if (closeModal()) return;
-    if (rail.contains(document.activeElement)) { focusView(); return; }
+    if (rail.contains(document.activeElement) || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#activity'))) { focusView(); return; }
     if (currentHash !== '#/home') history.back();
   }
 });
