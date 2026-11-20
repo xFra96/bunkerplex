@@ -23,6 +23,7 @@ import threading
 import time
 import urllib.request
 import zipfile
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -40,7 +41,9 @@ router = APIRouter(prefix="/api/tv")
 _hooks = {"lan_ip": lambda host="": "", "apk_version": lambda: (None, None), "apk": None}
 _lock = threading.Lock()            # un comando adb "lungo" alla volta (scansione, installazione)
 _state = {"phase": "", "message": "", "error": "", "target": "", "done_at": 0.0,
-          "scanned_at": 0.0, "found": [], "names": {}}
+          "scanned_at": 0.0, "found": [], "names": {}, "step": ""}
+# Il racconto di quello che succede, mostrato nella pagina (e nel log di Docker)
+_log = deque(maxlen=60)
 
 
 def setup(lan_ip, apk_version, apk_path):
@@ -52,6 +55,23 @@ def setup(lan_ip, apk_version, apk_path):
 
 def _set(**kw):
     _state.update(kw)
+
+
+def log(text, kind="info"):
+    """kind: info, wait (aspetto la TV), ok, err."""
+    _log.append({"at": time.time(), "text": text, "kind": kind})
+    print("TV:", text, flush=True)
+
+
+def _say(text, kind="info", step=None):
+    """Messaggio di adesso + riga nel racconto."""
+    _set(message=text, **({"step": step} if step else {}))
+    log(text, kind)
+
+
+def _label(ip):
+    name = _state["names"].get(ip.split(":")[0], "")
+    return f"{name} ({ip.split(':')[0]})" if name else ip.split(":")[0]
 
 
 def _adb_path():
@@ -69,7 +89,7 @@ def _ensure_adb():
         return path
     if platform.machine().lower() not in ("x86_64", "amd64"):
         raise RuntimeError("adb manca: rilancia «Installa BunkerPlex» sul computer per aggiornare Docker")
-    _set(message="Preparo adb (la prima volta lo scarico da Google)…")
+    _say("Preparo adb, lo strumento per parlare con la TV (la prima volta lo scarico da Google, circa 7 MB)…")
     DATA.mkdir(parents=True, exist_ok=True)
     cached = DATA / "platform-tools.zip"
     if not cached.is_file() or cached.stat().st_size < 1_000_000:
@@ -83,6 +103,7 @@ def _ensure_adb():
         z.extractall(TOOLS_DIR)
     local = TOOLS_DIR / "platform-tools" / "adb"
     os.chmod(local, 0o755)
+    log("adb pronto", "ok")
     return str(local)
 
 
@@ -175,10 +196,17 @@ def _scan(host_header):
     if not net:
         raise RuntimeError("Non conosco ancora l'indirizzo di questo PC nella rete di casa: "
                            "apri questa pagina con l'indirizzo del PC (es. http://192.168.1.50:32500), non con localhost")
-    _set(message=f"Cerco le TV con il debug acceso nella rete {net}…")
+    _log.clear()
+    _say(f"Cerco le TV con il debug acceso nella rete di casa ({net}, {net.num_addresses - 2} indirizzi)…",
+         step="scan")
     hosts = [str(h) for h in net.hosts() if str(h) != pc]
     with ThreadPoolExecutor(64) as pool:
         found = [ip for ip, ok in zip(hosts, pool.map(_open, hosts)) if ok]
+    known = _devices()
+    for serial in known:                   # TV gia' collegate (anche con porta diversa da 5555)
+        ip = serial.split(":")[0]
+        if ip not in found:
+            found.append(ip)
     names = dict(_state["names"])
     with ThreadPoolExecutor(8) as pool:
         futures = {ip: pool.submit(_hostname, ip) for ip in found if ip not in names}
@@ -186,27 +214,94 @@ def _scan(host_header):
         for ip, fut in futures.items():
             if fut.done() and fut.result():
                 names[ip] = fut.result()
-    # Collegarsi subito fa comparire sulla TV la richiesta del permesso
-    for ip in found:
-        _set(message=f"Mi collego a {ip}…")
-        adb("connect", f"{ip}:{ADB_PORT}", timeout=12)
     _set(found=found, names=names, scanned_at=time.time())
+    for ip in found:
+        st = next((v for k, v in known.items() if k.startswith(ip + ":")), "")
+        log(f"Trovata: {_label(ip)}" + (" · già collegata" if st == "device" else
+                                       " · aspetta il permesso sulla TV" if st == "unauthorized" else
+                                       " · debug acceso"), "ok")
+    if not found:
+        _set(step="debug")
+        log("Nessuna TV con il debug acceso. Controlla che la TV sia accesa, nella stessa rete del PC "
+            "e con «Debug USB» / «Debug ADB» attivo (vedi i passi qui sotto). Puoi anche scrivere il suo indirizzo.", "err")
+        return found
+    if len(found) == 1:
+        # Una sola: ci si collega subito, cosi' sulla TV compare la richiesta del permesso
+        log("Una sola TV: mi collego subito a quella")
+        _connect_and_wait(f"{found[0]}:{ADB_PORT}" if not any(k.startswith(found[0] + ":") for k in known)
+                          else next(k for k in known if k.startswith(found[0] + ":")))
+        _set(step="install")
+        log("Ora premi «Installa l'app» qui sotto", "ok")
+    else:
+        _set(step="choose")
+        log(f"Ho trovato {len(found)} TV: scegli qui sotto su quale installare l'app", "wait")
     return found
+
+
+def _connect_and_wait(serial, wait_s=90):
+    """Collega la TV e aspetta che sulla TV si prema «Consenti». True se pronta."""
+    state = _devices().get(serial)
+    if state == "device":
+        return True
+    if state in (None, "offline"):
+        _say(f"Mi collego a {_label(serial)}…", step="connect")
+        _connect(serial)
+        time.sleep(1)
+        state = _devices().get(serial)
+    if state == "device":
+        log(f"Collegata a {_label(serial)}: il permesso c'era già", "ok")
+        return True
+    start = time.time()
+    if state == "unauthorized":
+        _say("In attesa di conferma sulla TV: sullo schermo della TV compare «Consentire il debug?». "
+             "Metti la spunta su «Consenti sempre da questo computer» e premi «OK» col telecomando.",
+             "wait", step="confirm")
+    next_note = start + 15
+    while state == "unauthorized" and time.time() - start < wait_s:
+        time.sleep(2)
+        state = _devices().get(serial)
+        if state == "unauthorized" and time.time() >= next_note:
+            left = int(wait_s - (time.time() - start))
+            _say(f"Ancora in attesa della conferma sulla TV (aspetto altri {left} secondi)… "
+                 "Se la richiesta non si vede, premi Indietro sulla TV e riprova.", "wait", step="confirm")
+            next_note += 15
+    if state == "device":
+        log("Permesso dato: la TV è collegata", "ok")
+        return True
+    if state == "unauthorized":
+        raise RuntimeError("Sulla TV non è stato dato il permesso in tempo: premi di nuovo il pulsante qui e, "
+                           "quando sulla TV compare la richiesta, scegli «Consenti sempre» e «OK»")
+    raise RuntimeError(f"{_label(serial)} non risponde: è accesa e con il debug attivo?")
 
 
 def _connect(target):
     code, out = adb("connect", target, timeout=15)
     if "connected" not in out or "cannot" in out or "failed" in out:
-        raise RuntimeError(f"Non riesco a collegarmi a {target}: controlla che sulla TV sia acceso il debug "
-                           "e che l'indirizzo sia giusto")
+        if "refused" in out:
+            why = "la TV risponde ma il debug è spento"
+        elif "timed out" in out or "No route" in out or code == 124:
+            why = "nessuna risposta: la TV è spenta, in un'altra rete o l'indirizzo è sbagliato"
+        else:
+            why = out.splitlines()[-1] if out else "nessuna risposta"
+        raise RuntimeError(f"Non riesco a collegarmi a {target}: {why}")
     ip = target.split(":")[0]
     if ip not in _state["found"]:
         _set(found=_state["found"] + [ip])
 
 
+def _connect_job(target):
+    _log.clear()
+    _connect_and_wait(target)
+    _set(step="install")
+    log("Ora premi «Installa l'app» qui sotto", "ok")
+
+
 def _pair(target, code_):
+    _say(f"Associo la TV {target} con il codice…", step="connect")
     code, out = adb("pair", target, code_, timeout=20)
-    if "Successfully paired" not in out:
+    if "Successfully paired" in out:
+        log("Associata. Ora scrivi l'indirizzo:porta di «Debug wireless» e premi Collega", "ok")
+    else:
         raise RuntimeError("Associazione non riuscita: controlla indirizzo, porta e codice mostrati sulla TV "
                            f"({out.splitlines()[-1] if out else 'nessuna risposta'})")
 
@@ -215,23 +310,14 @@ def _install(serial, replace):
     apk = _hooks["apk"]
     if not apk or not apk.is_file():
         raise RuntimeError("Sul PC non c'è ancora l'APK: aspetta il prossimo aggiornamento o avvia «Compila APK.bat»")
-    state = _devices().get(serial)
-    if state in (None, "offline"):
-        _connect(serial)
-        state = _devices().get(serial)
-    deadline = time.time() + 60
-    while state == "unauthorized" and time.time() < deadline:
-        _set(message="Sulla TV premi «Consenti» (metti la spunta su «Consenti sempre»)…")
-        time.sleep(2)
-        state = _devices().get(serial)
-    if state == "unauthorized":
-        raise RuntimeError("Sulla TV non è stato dato il permesso: premi «Consenti» quando compare, poi riprova")
-    if state != "device":
-        raise RuntimeError("La TV non risponde: è accesa e con il debug attivo?")
+    log(f"Installo BunkerPlex su {_label(serial)}")
+    _connect_and_wait(serial)
     if replace:
-        _set(message="Tolgo dalla TV l'app con la firma diversa…")
+        _say("Tolgo dalla TV la BunkerPlex con la firma diversa…", step="install")
         adb("-s", serial, "uninstall", PACKAGE, timeout=60)
-    _set(message="Copio e installo l'app sulla TV (meno di un minuto)…")
+    before = _version_of(serial, PACKAGE)
+    mb = apk.stat().st_size / 1_048_576
+    _say(f"Copio l'app sulla TV ({mb:.0f} MB) e la installo: di solito meno di un minuto…", step="install")
     code, out = adb("-s", serial, "install", "-r", str(apk), timeout=600)
     if "Success" not in out:
         if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in out or "signatures do not match" in out:
@@ -242,14 +328,17 @@ def _install(serial, replace):
             raise RuntimeError("Sulla TV c'è già una versione più nuova dell'app")
         raise RuntimeError("Installazione non riuscita: " + (out.splitlines()[-1] if out else "nessuna risposta"))
     _details_cache.pop(serial, None)
+    log("App aggiornata" if before else "App installata", "ok")
     if _version_of(serial, OLD_PACKAGE) is not None:
-        _set(message="Tolgo dalla TV la vecchia app (quella di prima di BunkerPlex)…")
+        _say("Tolgo dalla TV la vecchia app (quella di prima di BunkerPlex)…")
         adb("-s", serial, "uninstall", OLD_PACKAGE, timeout=60)
-    _set(message="Apro BunkerPlex sulla TV…")
+    _say("Apro BunkerPlex sulla TV…")
     for category in ("android.intent.category.LEANBACK_LAUNCHER", "android.intent.category.LAUNCHER"):
         c, o = adb("-s", serial, "shell", "monkey", "-p", PACKAGE, "-c", category, "1", timeout=20)
         if c == 0 and "No activities found" not in o:
             break
+    _set(step="done")
+    log(f"Fatto: BunkerPlex è aperta su {_label(serial)} e trova il server da sola", "ok")
 
 
 def _run(phase, target, fn, *args):
@@ -262,8 +351,10 @@ def _run(phase, target, fn, *args):
             fn(*args)
             _set(message="", done_at=time.time(), last=phase)
         except Exception as ex:
-            print("TV:", phase, repr(ex), flush=True)
-            _set(error=str(ex) or repr(ex), message="", done_at=time.time(), last=phase)
+            err = str(ex) or repr(ex)
+            _set(error=err, message="", done_at=time.time(), last=phase)
+            log("Sulla TV c'è una BunkerPlex con firma diversa: va tolta prima (pulsante qui sotto)"
+                if err == "INCOMPATIBILE" else err, "err")
         finally:
             _set(phase="")
             _lock.release()
@@ -291,7 +382,8 @@ def _status():
     code, name = _hooks["apk_version"]()
     out = {"phase": _state["phase"], "message": _state["message"], "error": _state["error"],
            "target": _state["target"], "last": _state.get("last", ""), "done_at": _state["done_at"],
-           "scanned_at": _state["scanned_at"], "adb": bool(_adb_path()),
+           "scanned_at": _state["scanned_at"], "adb": bool(_adb_path()), "step": _state["step"],
+           "log": list(_log)[-40:],
            "apk": bool(_hooks["apk"] and _hooks["apk"].is_file()), "apk_version": code, "devices": []}
     if not out["adb"] and not _state["scanned_at"]:
         return out
@@ -328,7 +420,7 @@ def tv_scan(request: Request):
 @router.post("/connect")
 async def tv_connect(request: Request):
     body = await request.json()
-    _run("connect", _target(body), _connect, _target(body))
+    _run("connect", _target(body), _connect_job, _target(body))
     return _status()
 
 

@@ -1530,24 +1530,84 @@ var tvPoll = null;
 
 function tvStateText(d, t) {
   var busy = t.phase && t.target === d.serial;
-  if (busy) return '<span class="nodot">' + esc(t.message || 'Un attimo…') + '</span>';
-  if (d.state === 'unauthorized') return '<span class="nodot">Sulla TV premi «Consenti» (spunta «Consenti sempre»)</span>';
-  if (d.state === 'offline' || d.state === 'found') return 'Debug acceso, da collegare';
-  if (!d.installed) return 'BunkerPlex non installata';
-  if (t.apk_version && d.installed < t.apk_version) return '<span class="nodot">App da aggiornare</span>';
-  return '<span class="okdot">App aggiornata</span>';
+  if (busy) return '<span class="nodot">' + (t.step === 'confirm' ? 'In attesa di conferma sulla TV…' : t.step === 'install' ? 'Installo l\'app…' : 'Mi collego…') + '</span>';
+  if (d.state === 'unauthorized') return '<span class="nodot">In attesa di conferma sulla TV</span>';
+  if (d.state === 'offline' || d.state === 'found') return 'Debug acceso, non ancora collegata';
+  if (!d.installed) return 'Collegata · BunkerPlex non installata';
+  if (t.apk_version && d.installed < t.apk_version) return '<span class="nodot">Collegata · app da aggiornare</span>';
+  return '<span class="okdot">Collegata · app aggiornata</span>';
 }
 
-function tvDeviceRow(d, t) {
-  var label = d.name || 'Dispositivo Android';
+function tvDeviceRow(d, t, many) {
+  var label = d.name || 'TV o dispositivo Android';
   var btn = '';
-  if (!t.phase && d.state !== 'unauthorized') {
+  if (!t.phase) {
     var again = d.state === 'device' && d.installed && !(t.apk_version && d.installed < t.apk_version);
     btn = '<button class="btn' + (again ? '' : ' primary') + ' f" data-act="tvinstall" data-arg="' + esc(d.serial) + '" data-key="tvi-' + esc(d.ip) + '">' +
-      (again ? 'Reinstalla' : (d.installed ? 'Aggiorna l\'app' : 'Installa l\'app')) + '</button>';
+      (again ? 'Reinstalla' : (d.installed ? 'Aggiorna l\'app' : (many && d.state !== 'device' ? 'Installa su questa' : 'Installa l\'app'))) + '</button>';
   }
   return '<dt>' + esc(label) + '<small class="num">' + esc(d.ip) + '</small></dt><dd>' + tvStateText(d, t) +
     (btn ? '<div class="actions" style="justify-content:flex-end;margin-top:.4rem">' + btn + '</div>' : '') + '</dd>';
+}
+
+// I passi, con quello di adesso in evidenza
+var TV_STEPS = [['debug', 'Debug acceso sulla TV'], ['scan', 'Cerco le TV'], ['choose', 'Scegli la TV'],
+  ['confirm', 'Conferma sulla TV'], ['install', 'Installo l\'app'], ['done', 'Fatto']];
+
+function tvSteps(t) {
+  var step = t.step || 'debug';
+  if (step === 'connect') step = 'confirm';
+  var now = TV_STEPS.map(function (x) { return x[0]; }).indexOf(step);
+  if (now < 0) now = 0;
+  var failed = !!t.error && !t.phase;
+  return '<ol class="tvsteps">' + TV_STEPS.map(function (x, n) {
+    var cls = n < now || step === 'done' ? 'done' : (n === now ? (failed ? 'now fail' : 'now') : '');
+    return '<li class="' + cls + '"><span>' + (n < now || step === 'done' ? '✓' : n + 1) + '</span>' + esc(x[1]) + '</li>';
+  }).join('') + '</ol>';
+}
+
+function tvLog(t) {
+  var log = t.log || [];
+  if (!log.length) return '';
+  return '<div class="tvlog" role="log" aria-live="polite">' + log.map(function (l) {
+    var d = new Date(l.at * 1000);
+    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+    return '<div class="' + esc(l.kind) + '"><time class="num">' + hh + '</time>' + esc(l.text) + '</div>';
+  }).join('') + (t.phase ? '<div class="wait spin"><time></time>…</div>' : '') + '</div>';
+}
+
+// Il riquadro grande: cosa fare adesso
+function tvNow(t, devs) {
+  var msg = '', cls = '';
+  if (t.phase && t.step === 'confirm') {
+    cls = 'wait';
+    msg = '<b>Guarda la TV</b>: è comparsa la richiesta «Consentire il debug?». Metti la spunta su <b>Consenti sempre da questo computer</b> e premi <b>OK</b> col telecomando.';
+  } else if (t.phase) {
+    cls = 'busy';
+    msg = esc(t.message || 'Un attimo…');
+  } else if (t.error === 'INCOMPATIBILE') {
+    cls = 'err';
+    msg = 'Sulla TV c\'è una BunkerPlex con una firma diversa (compilata su un altro PC): va tolta prima di mettere questa. Il server della TV andrà riscelto (lo trova da solo).' +
+      '<div class="actions"><button class="btn primary f" data-act="tvreplace" data-arg="' + esc(t.target) + '" data-key="tvreplace">Togli quella e installa</button></div>';
+  } else if (t.error) {
+    cls = 'err';
+    msg = esc(t.error);
+  } else if (t.step === 'done') {
+    cls = 'ok';
+    msg = 'Fatto: BunkerPlex è installata e si è aperta sulla TV. Da qui in poi si aggiorna da sola.';
+  } else if (t.step === 'choose' && devs.length > 1) {
+    cls = 'wait';
+    msg = 'Ho trovato <b>' + devs.length + ' TV</b>. Scegli qui sotto su quale installare l\'app: il nome o l\'indirizzo lo trovi sulla TV in Impostazioni → Rete.';
+  } else if (t.step === 'install') {
+    cls = 'ok';
+    msg = 'TV collegata: premi <b>Installa l\'app</b> qui sotto.';
+  } else if (t.scanned_at && !devs.length) {
+    cls = 'err';
+    msg = 'Nessuna TV con il debug acceso. Segui i passi qui sotto, poi premi di nuovo <b>Cerca le TV</b>, oppure scrivi l\'indirizzo della TV.';
+  } else {
+    msg = 'Accendi il debug sulla TV (passi qui sotto, una volta sola), poi premi <b>Cerca le TV</b>.';
+  }
+  return '<div class="tvnow ' + cls + '">' + msg + '</div>';
 }
 
 function tvGuide() {
@@ -1568,26 +1628,16 @@ function tvPanelBody(t) {
   if (!t) return '<p>Il server non risponde in questo momento.</p>';
   if (!t.apk) return '<p>Sul PC non c\'è ancora l\'app da installare: arriva con il prossimo aggiornamento.</p>';
   var devs = t.devices || [];
-  var scanning = t.phase === 'scan' || t.phase === 'connect' || t.phase === 'pair';
-  var html = '<p>Con il debug acceso sulla TV, il PC installa e aggiorna l\'app da solo: niente Downloader né chiavette.</p>';
-  if (scanning) html += '<p class="nodot">' + esc(t.message || 'Un attimo…') + '</p>';
-  if (t.error && t.error !== 'INCOMPATIBILE') html += '<p class="nodot">' + esc(t.error) + '</p>';
-  if (t.error === 'INCOMPATIBILE') {
-    html += '<p class="nodot">Sulla TV c\'è una BunkerPlex con una firma diversa (compilata su un altro PC): va tolta prima di mettere questa. Il server della TV andrà riscelto (lo trova da solo).</p>' +
-      '<div class="actions"><button class="btn primary f" data-act="tvreplace" data-arg="' + esc(t.target) + '" data-key="tvreplace">Togli quella e installa</button></div>';
-  }
-  if (!t.error && !t.phase && t.last === 'install' && t.done_at && Date.now() / 1000 - t.done_at < 120) {
-    html += '<p class="okdot">Fatto: BunkerPlex è installata e si è aperta sulla TV.</p>';
-  }
+  var html = '<p>Con il debug acceso sulla TV, il PC installa e aggiorna l\'app da solo: niente Downloader né chiavette.</p>' +
+    tvSteps(t) + tvNow(t, devs);
   if (devs.length) {
-    html += '<dl class="kv">' + devs.map(function (d) { return tvDeviceRow(d, t); }).join('') + '</dl>';
-  } else if (t.scanned_at && !scanning) {
-    html += '<p>Nessuna TV con il debug acceso nella rete di casa. Segui i passi qui sotto, oppure scrivi l\'indirizzo della TV (Impostazioni → Rete).</p>';
+    html += '<dl class="kv">' + devs.map(function (d) { return tvDeviceRow(d, t, devs.length > 1); }).join('') + '</dl>';
   }
   html += '<div class="actions" style="margin-top:.8rem"><button class="btn' + (devs.length ? '' : ' primary') + ' f" data-act="tvscan" data-key="tvscan"' + (t.phase ? ' disabled' : '') + '>' +
     (t.scanned_at ? 'Cerca di nuovo' : 'Cerca le TV') + '</button>' +
     '<input class="field f num tvaddr" id="tvaddr" data-key="tvaddr" placeholder="Indirizzo della TV, es. 192.168.1.180" data-enter="tvconnect">' +
     '<button class="btn f" data-act="tvconnect" data-key="tvconnect"' + (t.phase ? ' disabled' : '') + '>Collega</button></div>';
+  if ((t.log || []).length) html += '<h3 class="tvlogtitle">Cosa sta succedendo</h3>' + tvLog(t);
   return html + tvGuide();
 }
 
@@ -1607,6 +1657,7 @@ function tvShow(t) {
   Object.keys(keep).forEach(function (id) { var i = document.getElementById(id); if (i) i.value = keep[id]; });
   if (open) { var dt = el.querySelector('details'); if (dt) dt.open = true; }
   if (focused) { var f = el.querySelector('[data-key="' + focused + '"]'); if (f && !f.disabled) f.focus(); }
+  var lg = el.querySelector('.tvlog'); if (lg) lg.scrollTop = lg.scrollHeight;
   clearTimeout(tvPoll);
   tvPoll = tvNeedsPoll(t) ? setTimeout(tvRefresh, 2000) : null;
 }

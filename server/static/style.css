@@ -914,7 +914,7 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 }
 
 /* Installa sulla TV dal PC */
-#tvpanel .actions { flex-wrap: wrap; align-items: center; }
+#tvpanel .actions { flex-wrap: wrap; align-items: center; gap: .6rem; }
 #tvpanel .field.tvaddr { flex: 1 1 16rem; max-width: 22rem; }
 #tvpanel .kv { margin-top: .4rem; }
 #tvpanel .kv dt small { display: block; color: var(--ink3, var(--ink2)); font-size: .85rem; }
@@ -923,3 +923,25 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .tvguide ol.steps { margin-top: .7rem; }
 .tvpair { display: flex; gap: .6rem; flex-wrap: wrap; margin: .4rem 0 .6rem; }
 .tvpair .field { flex: 1 1 10rem; max-width: 16rem; }
+
+.tvsteps { list-style: none; display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; margin: .4rem 0 1rem; padding: 0; color: var(--ink3); font-size: .92rem; }
+.tvsteps li { display: flex; align-items: center; gap: .45rem; }
+.tvsteps li span { display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; border: 1px solid currentColor; font-size: .8rem; }
+.tvsteps li.done { color: var(--ok); }
+.tvsteps li.now { color: var(--ink); font-weight: 600; }
+.tvsteps li.now span { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.tvsteps li.now.fail { color: var(--warn); }
+.tvsteps li.now.fail span { background: var(--warn); border-color: var(--warn); }
+.tvnow { padding: .9rem 1.1rem; border-radius: .5rem; background: #ffffff0a; line-height: 1.55; margin-bottom: .6rem; }
+.tvnow.wait { border-left: 3px solid var(--warn); }
+.tvnow.busy { border-left: 3px solid var(--ink2); }
+.tvnow.ok { border-left: 3px solid var(--ok); }
+.tvnow.err { border-left: 3px solid var(--warn); color: var(--ink); }
+.tvnow .actions { margin-top: .7rem; }
+.panel h3.tvlogtitle { font-size: 1rem; margin: 1.2rem 0 .5rem; color: var(--ink2); }
+.tvlog { max-height: 14rem; overflow-y: auto; padding: .7rem .9rem; border-radius: .5rem; background: #00000033; font-size: .9rem; line-height: 1.5; }
+.tvlog div { display: flex; gap: .7rem; color: var(--ink2); }
+.tvlog time { color: var(--ink3); flex: none; min-width: 4.3rem; }
+.tvlog .ok { color: var(--ok); } .tvlog .wait { color: var(--warn); } .tvlog .err { color: var(--warn); font-weight: 600; }
+.tvlog .spin { animation: tvblink 1.2s ease-in-out infinite; }
+@keyframes tvblink { 50% { opacity: .3; } }
