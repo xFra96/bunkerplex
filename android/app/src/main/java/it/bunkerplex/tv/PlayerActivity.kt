@@ -738,7 +738,7 @@ class PlayerActivity : AppCompatActivity() {
         if (next <= 0 && saga != null && !sleepAtEnd && !isFinishing) {
             // Fine di un film di una saga: il successivo si propone, non parte da solo
             AlertDialog.Builder(this)
-                .setTitle("Saga ${saga.optString("name")} · film ${saga.optInt("number")} di ${saga.optInt("count")}")
+                .setTitle("Collezione ${saga.optString("name")} · film ${saga.optInt("number")} di ${saga.optInt("count")}")
                 .setMessage("Vuoi guardare ${sagaLabel(saga)}?")
                 .setPositiveButton("Guarda ora") { _, _ -> playNext(saga.optInt("id")) }
                 .setNegativeButton("Esci") { _, _ -> finish() }
@@ -1621,7 +1621,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         val saga = data.optJSONObject("saga")
         if (next <= 0 && saga != null) {
-            items.add("Film successivo della saga:  ${sagaLabel(saga)}" to {
+            items.add("Film successivo della collezione:  ${sagaLabel(saga)}" to {
                 report(false)
                 finished = true
                 player?.pause()

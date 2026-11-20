@@ -561,7 +561,7 @@ function sagaCard(x, prefix) {
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
-      '<span class="q saga">Saga</span>' +
+      '<span class="q saga">Collezione</span>' +
       (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge()) +
     '</div>' +
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
@@ -665,7 +665,7 @@ async function home() {
       var kicker = l.friend ? l.name + ' · di ' + l.friend : l.name;
       return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id); }), note);
     }).join('') +
-    section('Saghe', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Saga'), 'saga'); }), 'i film della stessa serie, in ordine') +
+    section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
     section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top'); }));
 
   return {
@@ -1045,7 +1045,7 @@ async function item(id) {
           : (x.friend ? '' : '<a class="btn f" href="#/match/movie/' + x.id + '" data-key="match">Correggi scheda</a>')) +
       '</div>' +
       (!isEp && (x.genres.length || x.director || x.actors.length || x.collection) ? '<div class="credits">' +
-        (x.collection ? '<div><b>Saga</b><a class="chip f" href="#/saga/' + x.collection.id + '" data-key="chip-saga">' +
+        (x.collection ? '<div><b>Collezione</b><a class="chip f" href="#/saga/' + x.collection.id + '" data-key="chip-saga">' +
           esc(x.collection.title) + ' · ' + x.collection.count + ' film</a></div>' : '') +
         (x.genres.length ? '<div><b>Genere</b>' + chips(x.genres, base, 'genre') + '</div>' : '') +
         (x.director ? '<div><b>Regia</b>' + chips(directorsOf(x), base, 'director') + '</div>' : '') +
@@ -1126,18 +1126,18 @@ async function sagasPage() {
   var res = await Promise.all([api('/collections'), api('/info')]);
   var all = res[0], i = res[1];
   if (!all.length) {
-    return '<div class="page"><div class="toolbar"><h1>Saghe</h1></div><div class="empty">' +
-      '<p>Qui compaiono da sole le saghe: quando in catalogo hai almeno due film della stessa serie ' +
+    return '<div class="page"><div class="toolbar"><h1>Collezioni</h1></div><div class="empty">' +
+      '<p>Qui compaiono da sole le collezioni: quando in catalogo hai almeno due film della stessa serie ' +
       '(Harry Potter, Il Signore degli Anelli, Ritorno al futuro…) vengono riuniti e messi in ordine di uscita.</p>' +
-      (i.tmdb ? '<p>Per ora nessuna saga ha due film in catalogo. Dopo un aggiornamento ci vuole qualche minuto perché vengano riconosciute.</p>'
+      (i.tmdb ? '<p>Per ora nessuna collezione ha due film in catalogo. Dopo un aggiornamento ci vuole qualche minuto perché vengano riconosciute.</p>'
               : '<p>Serve la chiave TMDB: inseriscila in <b>Impostazioni</b>.</p>') +
       '<p id="scanmsg"></p><div class="actions">' +
       (i.tmdb ? '<button class="btn f" data-act="scan" data-key="scan">Aggiorna adesso</button>'
               : '<a class="btn primary f" href="#/settings" data-key="to-settings">Apri Impostazioni</a>') +
       '</div></div></div>';
   }
-  return '<div class="page"><div class="toolbar"><h1>Saghe</h1>' +
-    '<span class="count">' + all.length + (all.length === 1 ? ' saga' : ' saghe') + '</span></div>' +
+  return '<div class="page"><div class="toolbar"><h1>Collezioni</h1>' +
+    '<span class="count">' + all.length + (all.length === 1 ? ' collezione' : ' collezioni') + '</span></div>' +
     gridHtml(all, 'sagas', focusMemory[location.hash]) + '</div>';
 }
 
@@ -1164,7 +1164,7 @@ async function sagaPage(id) {
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
       metaLine([
-        '<b class="lead">Saga</b>',
+        '<b class="lead">Collezione</b>',
         sagaYears(s), s.count + ' film' + (s.total > s.count ? ' su ' + s.total : ''), stars(s),
         s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">' + IC.check + ' Vista</span>'
       ]) +
@@ -1207,7 +1207,7 @@ async function search() {
             ? '<div class="browse"><h2>Oppure sfoglia per genere</h2>' + genres.map(function (g) {
                 return '<button class="chip f" data-act="searchfor" data-arg="' + esc(g) + '" data-key="sg-' + esc(g) + '">' + esc(g) + '</button>';
               }).join('') + '</div>'
-            : '<div class="empty"><p>Puoi cercare un titolo, una saga, un regista, un attore, un genere o un anno, in tutte le raccolte.</p></div>';
+            : '<div class="empty"><p>Puoi cercare un titolo, una collezione, un regista, un attore, un genere o un anno, in tutte le raccolte.</p></div>';
           return;
         }
         var found = all.filter(function (e) {
@@ -2653,7 +2653,7 @@ function startPlayer(p) {
     add('Tempo a destra della barra', prefs.remain ? 'Quanto manca' : 'Durata', function () { action('remain'); });
     add('Ricomincia dall\'inizio', undefined, function () { seekTo(0); });
     if (p.next) add('Vai all\'episodio successivo', undefined, goNext);
-    else if (p.saga) add('Film successivo della saga', esc(p.saga.title), goNext);
+    else if (p.saga) add('Film successivo della collezione', esc(p.saga.title), goNext);
     if (document.pictureInPictureEnabled && v.requestPictureInPicture) add('Finestra sopra le altre (PiP)', undefined, togglePip);
     add('Informazioni sul video', undefined, info);
     openPicker('Opzioni', o, null, function (value) { o[+value].fn(); wake(); });
@@ -2775,7 +2775,7 @@ function startPlayer(p) {
       }, 1000);
     } else if (p.saga && !p.next && !st.sleepEnd) {
       // Fine di un film di una saga: il successivo si propone, non parte da solo
-      openPicker('Saga ' + p.saga.name + ' · film ' + p.saga.number + ' di ' + p.saga.count, [
+      openPicker('Collezione ' + p.saga.name + ' · film ' + p.saga.number + ' di ' + p.saga.count, [
         { value: 'go', label: 'Guarda ' + sagaLabel() },
         { value: 'no', label: 'Torna alla scheda' }
       ], null, function (answer) {
