@@ -1840,6 +1840,8 @@ function reachState(sh) {
   var pm = sh.portmap || {};
   if (!sh.on) return 'La condivisione è spenta: da fuori non entra nessuno.';
   if (sh.manual) return dot(true) + ' Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b> (indirizzo scritto da te).';
+  if (sh.tailscale) return dot(true) + ' Tailscale trovato: gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
+    (sh.tls ? ', con collegamento cifrato' : '') + '. Sul router non si apre nessuna porta; l\'amico deve avere Tailscale e il tuo computer condiviso con lui.';
   if (!sh.auto_port) return 'Apertura automatica spenta: scrivi tu il tuo indirizzo (per esempio quello di Tailscale) quando mandi una richiesta.';
   if (pm.ok && pm.public) {
     return dot(true) + ' Porta aperta sul router (' + esc(pm.method) + '). Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
