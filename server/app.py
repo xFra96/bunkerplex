@@ -1870,6 +1870,8 @@ def play_info(con, r):
               and (vcodec != "h264" or pix in ("yuv420p", "yuvj420p"))
               and (r["acodec"] or "") in BROWSER_AUDIO)
     return {"id": r["id"], "title": title, "subtitle": subtitle,
+            # Episodio di una serie: il player ricorda la traccia audio scelta per tutta la serie
+            "show_id": r["show_id"] or 0,
             "url": f"/api/stream/{r['id']}", "transcode": f"/api/transcode/{r['id']}",
             "browser_direct": direct, "vcodec": vcodec, "bits": 10 if "10" in pix else 8,
             "start": 0 if r["watched"] else (r["position"] or 0),
@@ -4959,7 +4961,7 @@ def audio_tracks(path):
     try:
         raw = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
-             "stream=codec_name,channels:stream_tags=language,title", "-of", "json", path],
+             "stream=codec_name,channels,channel_layout:stream_tags=language,title", "-of", "json", path],
             capture_output=True, text=True, timeout=30).stdout
         for i, s in enumerate(json.loads(raw).get("streams", [])):
             tags = s.get("tags") or {}
@@ -4968,6 +4970,7 @@ def audio_tracks(path):
             detail = " ".join(x for x in ((s.get("codec_name") or "").upper(),
                                           CHANNELS.get(s.get("channels") or 0, "")) if x)
             out.append({"index": i, "lang": code, "codec": s.get("codec_name") or "",
+                        "channels": s.get("channels") or 0, "layout": s.get("channel_layout") or "",
                         "label": name + (f" · {detail}" if detail else ""),
                         "title": tags.get("title") or ""})
     except Exception:
@@ -5030,8 +5033,8 @@ def transcode_plan(r, vcopy=False):
     - 'vcopy': il dispositivo ha detto di saper decodificare il video originale
       (es. H.265 4K HDR) e gli serve solo un altro contenitore o un altro audio:
       si copia, quindi la qualita' resta quella del file, HDR compreso.
-    - Audio gia' AAC: si copia. Altrimenti AAC stereo (costa pochissimo).
-    Restituisce (argomenti video, argomenti audio, True se il video viene ricodificato)."""
+    L'audio lo sceglie audio_plan.
+    Restituisce (argomenti video, True se il video viene ricodificato)."""
     vcodec, pix = r["vcodec"] or "", r["pix"] or ""
     if vcodec == "h264" and pix in ("yuv420p", "yuvj420p"):
         vargs, heavy = ["-c:v", "copy"], False
@@ -5054,11 +5057,49 @@ def transcode_plan(r, vcopy=False):
         vargs, heavy = ["-c:v", "libx264", "-preset", "ultrafast" if SLOW_PC else "superfast",
                         "-crf", "23" if SLOW_PC else "21", "-vf", chain + ",format=yuv420p",
                         "-g", "96", "-sc_threshold", "0"], True
-    if (r["acodec"] or "") == "aac":
-        aargs = ["-c:a", "copy"]
-    else:
-        aargs = ["-c:a", "aac", "-ac", "2", "-b:a", "192k"]
-    return vargs, aargs, heavy
+    return vargs, heavy
+
+
+# Che audio vuole chi chiede la conversione ('aout'):
+#   ""     browser e app TV vecchie: stereo AAC (l'AAC originale si copia).
+#   "tv"   app TV: l'audio che la TV legge (AAC, AC3, E-AC3, Atmos compreso) si copia
+#          cosi' com'e'; DTS, TrueHD e il resto diventano AC3 5.1, il Dolby che ogni
+#          TV passa alla soundbar. Prima diventava stereo: niente surround e niente bassi.
+#   "ac3"  app TV a cui l'audio originale non e' andato: si converte sempre (AC3 5.1).
+#   "aac"  app TV che non legge neanche l'AC3: AAC, fino a 5.1.
+AOUTS = ("", "tv", "ac3", "aac")
+TV_COPY = {"aac", "ac3", "eac3"}
+
+
+def stereo_args(track, kbps=192):
+    """AAC stereo. Dal 5.1 e dal 7.1 con un mixaggio che tiene i bassi del canale
+    LFE e i dialoghi del centrale: quello di serie di ffmpeg butta via il canale
+    dei bassi e abbassa tutto di quasi 8 dB. Il limitatore evita che i picchi
+    sommati gracchino (non alza ne' abbassa il volume normale)."""
+    ch, layout = track.get("channels") or 0, track.get("layout") or ""
+    mix = ""
+    if ch == 6 and layout in ("", "5.1", "5.1(side)"):        # FL FR FC LFE SL SR
+        mix = ("pan=stereo|c0=0.707*c0+0.5*c2+0.5*c3+0.707*c4"
+               "|c1=0.707*c1+0.5*c2+0.5*c3+0.707*c5")
+    elif ch == 8 and layout in ("", "7.1"):                    # FL FR FC LFE BL BR SL SR
+        mix = ("pan=stereo|c0=0.707*c0+0.5*c2+0.5*c3+0.5*c4+0.5*c6"
+               "|c1=0.707*c1+0.5*c2+0.5*c3+0.5*c5+0.5*c7")
+    args = ["-af", mix + ",alimiter=limit=0.95:level=0"] if mix else ["-ac", "2"]
+    return args + ["-c:a", "aac", "-b:a", f"{kbps}k"]
+
+
+def audio_plan(track, aout=""):
+    """Argomenti ffmpeg per la traccia audio scelta (vedi AOUTS)."""
+    codec, ch = track.get("codec") or "", track.get("channels") or 0
+    if aout == "tv" and codec in TV_COPY:
+        return ["-c:a", "copy"]
+    if aout in ("tv", "ac3") and ch > 2:
+        return ["-c:a", "ac3", "-b:a", "640k"] + (["-ac", "6"] if ch > 6 else [])
+    if aout == "aac" and ch > 2:
+        return ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
+    if not aout and codec == "aac":
+        return ["-c:a", "copy"]
+    return stereo_args(track)
 
 
 def uplink_plan(r, height):
@@ -5081,21 +5122,23 @@ def uplink_plan(r, height):
         vargs, heavy = ["-c:v", "libx264", "-preset", "ultrafast" if SLOW_PC else "superfast",
                         "-crf", "23", "-maxrate", f"{cap}k", "-bufsize", f"{cap * 2}k",
                         "-vf", chain + ",format=yuv420p", "-g", "96", "-sc_threshold", "0"], True
-    return vargs, ["-c:a", "aac", "-ac", "2", "-b:a", "128k"], heavy
+    return vargs, heavy
 
 
 @app.get("/api/transcode/{item_id}")
-def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0):
+def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, aout: str = ""):
     """Conversione al volo in MP4 per i dispositivi che non leggono il file
     originale. Non si puo' saltare dentro il flusso: per spostarsi il player
     richiede di nuovo l'indirizzo con un altro 'start'.
-    'vcopy=1': il dispositivo sa decodificare il video, va cambiato solo il resto."""
+    'vcopy=1': il dispositivo sa decodificare il video, va cambiato solo il resto.
+    'aout': che audio vuole il dispositivo (vedi AOUTS)."""
+    aout = aout if aout in AOUTS else ""
     if item_id >= FRIEND_BASE:
-        return friend_transcode(item_id, start, vcopy, audio)
-    return run_transcode(item_id, start, vcopy, audio)
+        return friend_transcode(item_id, start, vcopy, audio, aout)
+    return run_transcode(item_id, start, vcopy, audio, aout=aout)
 
 
-def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0):
+def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0, aout=""):
     con = db()
     try:
         r = get_item(con, item_id)
@@ -5104,11 +5147,17 @@ def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0):
     path = r["path"]
     if not os.path.isfile(path):
         raise HTTPException(404, "File non trovato sul disco")
-    vargs, aargs, heavy = uplink_plan(r, height) if height else transcode_plan(r, bool(vcopy))
+    vargs, heavy = uplink_plan(r, height) if height else transcode_plan(r, bool(vcopy))
     audio = max(0, audio)
-    if audio and not height:
-        # Un'altra lingua: il suo formato puo' essere diverso da quello della prima traccia
-        aargs = ["-c:a", "aac", "-ac", "2", "-b:a", "192k"]
+    # Formato e canali della lingua scelta (ogni traccia puo' essere diversa)
+    found = audio_tracks(path)
+    track = found[audio] if audio < len(found) else {"codec": "" if audio else (r["acodec"] or "")}
+    # Per un amico fuori casa (height) conta la linea: stereo leggero
+    aargs = stereo_args(track, 128) if height else audio_plan(track, aout)
+    movflags = "frag_keyframe+empty_moov+default_base_moof"
+    out_codec = aargs[aargs.index("-c:a") + 1]
+    if (track.get("codec") if out_codec == "copy" else out_codec) in ("ac3", "eac3"):
+        movflags += "+delay_moov"       # l'MP4 non sa scrivere l'intestazione AC3 prima del primo pezzo
     # nice: la conversione lascia sempre la precedenza al resto del PC.
     cmd = ["nice", "-n", "10", "ffmpeg", "-v", "error", "-nostdin"]
     if heavy:
@@ -5118,8 +5167,7 @@ def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0):
         cmd += ["-readrate", "1.5", "-readrate_initial_burst", "30"]
     cmd += (["-ss", f"{max(0.0, start):.2f}", "-i", path,
              "-map", "0:v:0", "-map", f"0:a:{audio}?", "-sn", "-dn", "-map_chapters", "-1"] + vargs + aargs +
-            ["-movflags", "frag_keyframe+empty_moov+default_base_moof",
-             "-f", "mp4", "pipe:1"])
+            ["-movflags", movflags, "-f", "mp4", "pipe:1"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     async def body():
@@ -5590,9 +5638,11 @@ def share_stream(item_id: int, request: Request):
 
 
 @share.get("/transcode/{item_id}")
-def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, height: int = 0):
+def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, height: int = 0,
+                    aout: str = ""):
     """'height' (720 o 1080): conversione leggera, a misura della linea di casa."""
-    return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0)
+    return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0,
+                         aout if aout in AOUTS else "")
 
 
 @share.post("/hello")
@@ -6624,12 +6674,14 @@ def friend_stream(vid, request):
     return friend_pipe(f, f"/stream/{rid}", request)
 
 
-def friend_transcode(vid, start, vcopy, audio):
+def friend_transcode(vid, start, vcopy, audio, aout=""):
     f, rid = friend_of(vid)
     q = {"start": f"{max(0.0, start):.2f}", "audio": max(0, audio)}
     quality = friend_quality()
     if quality == "orig":
         q["vcopy"] = 1 if vcopy else 0
+        if aout:
+            q["aout"] = aout
     else:
         q["height"] = quality
     return friend_pipe(f, f"/transcode/{rid}?" + urllib.parse.urlencode(q))
