@@ -173,7 +173,9 @@ Se il tuo profilo è collegato a un account, gli amici sono quelli dell'account:
 
 1. In *Impostazioni → Amici → I tuoi amici* scrivi il nome dell'account BunkerPlex dell'amico e premi **Manda la richiesta**.
 2. L'amico la trova nella campanella e in *Impostazioni → Amici*, su qualsiasi suo PC (anche dalla TV), e preme **Accetta**.
-3. Chi vuole far vedere le sue raccolte accende **Condividi le tue raccolte con i tuoi amici**: BunkerPlex apre da solo la porta sul router (la `32501`) e pubblica il suo indirizzo nel servizio account.
+3. Chi vuole far vedere le sue raccolte accende **Condividi le tue raccolte con i tuoi amici**. Basta che lo faccia uno dei due: l'altro vede le sue raccolte senza accendere niente.
+
+Non c'è altro da installare né da configurare: niente porte sul router, niente firewall. BunkerPlex porta con sé **Tailscale**: quando serve (il PC condivide, oppure ha amici dell'account) lo scarica da solo dal sito ufficiale, lo accende dentro Docker ed entra nella rete di BunkerPlex con una chiave che gli dà il servizio account. Il collegamento parte dal PC verso l'esterno, quindi funziona anche dietro il firewall di Windows, con due router in fila o con un operatore che non dà un indirizzo pubblico. Se il servizio account non ha Tailscale configurato (vedi [Servizio account](#servizio-account)), BunkerPlex prova come prima ad aprire da solo la porta `32501` sul router. Lo stato è in *Impostazioni → Amici*.
 
 Da lì le raccolte dell'amico compaiono da sole nel menu e nella Home, di ogni suo PC che condivide (se sono più di uno, col nome che gli ha dato). Se cambia l'indirizzo di casa non devi fare niente: il servizio account fa da rubrica. L'amico vede **solo le raccolte del tuo profilo**, non quelle degli altri profili del PC, e solo quando lo hai tra gli amici: se lo togli, sparisce da entrambe le parti. Ogni volta che il suo server entra dal tuo usa un «biglietto» del servizio account, valido pochi minuti e una volta sola; l'impronta del certificato del tuo server arriva dal servizio, quindi anche il primo collegamento è sicuro.
 
@@ -194,7 +196,8 @@ Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli ser
 **Sicurezza**
 
 - La porta **32500** è pensata per la rete di casa (le TV entrano scegliendo il nome): non farla mai raggiungere da fuori casa. Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
-- Con Tailscale l'amico raggiunge il tuo computer su tutte le porte: condividi solo con chi ti fidi, oppure limita l'accesso alla `32501` nelle *Access controls* di Tailscale.
+- Con il Tailscale dentro BunkerPlex ogni PC entra nella rete di BunkerPlex con l'etichetta `tag:bunkerplex` e le regole della rete lasciano passare solo la `32501` tra un BunkerPlex e l'altro: nessuno vede il resto del tuo computer, che anzi non si accorge di niente (Tailscale gira dentro Docker). In più il server rifiuta chi prova la 32500 passando da lì. Sopra Tailscale la 32501 resta in HTTPS con l'impronta del certificato, che arriva dal servizio account.
+- Con un Tailscale installato a mano sul computer l'amico raggiunge il tuo computer su tutte le porte: condividi solo con chi ti fidi, oppure limita l'accesso alla `32501` nelle *Access controls* di Tailscale.
 - La porta 32501 è **cifrata** (HTTPS) con un certificato creato dal tuo server: l'amico ne ricorda l'impronta alla prima richiesta e da lì in poi accetta solo quello. Il punto debole è quel primo collegamento: per sicurezza piena, la prima richiesta fatela sapendo che l'indirizzo è davvero quello dell'amico.
 - Con la porta aperta sul router, la 32501 è visibile da Internet: risponde solo alla registrazione (che resta ferma finché non la approvi) e agli amici approvati. Dopo 5 password sbagliate l'accesso si blocca per un po'.
 - Non inoltrare mai a mano altre porte, e mai la 32500.
@@ -250,6 +253,18 @@ Sul Cloudflare dell'amministratore è pubblicato come `bunkerplex-account` all'i
 
 - **Cambiare il servizio**: Cloudflare → *Workers & Pages → bunkerplex-account → Edit code*, incolla `cloud/worker.js` e salva. Se cambi le tabelle, esegui lo stesso SQL in *Storage & databases → D1 → bunkerplex → Console*.
 - **Amici dell'account**: richiedono il servizio aggiornato (`cloud/worker.js` di questa versione e le tabelle `friends`, `servers`, `tickets` di `cloud/schema.sql`). Finché non lo è, *Impostazioni → Amici* lo dice e resta solo il collegamento con indirizzo e password.
+- **Tailscale per gli amici** (facoltativo, una volta sola): serve un account [Tailscale](https://tailscale.com) gratuito, meglio uno dedicato a BunkerPlex (il piano gratuito arriva a 100 dispositivi).
+  1. *Access controls*: incolla queste regole (tolgono anche la regola «tutti vedono tutto» di partenza):
+     ```json
+     {
+       "tagOwners": { "tag:bunkerplex": ["autogroup:admin"] },
+       "grants": [ { "src": ["tag:bunkerplex"], "dst": ["tag:bunkerplex"], "ip": ["tcp:32501"] } ]
+     }
+     ```
+  2. *Settings → OAuth clients → Generate OAuth client*: permesso **Auth Keys → Write**, etichetta `tag:bunkerplex`.
+  3. Nel Worker `bunkerplex-account` (*Settings → Variables and Secrets*) aggiungi i segreti `TS_OAUTH_ID` e `TS_OAUTH_SECRET` con i due valori del client.
+
+  Da lì ogni BunkerPlex con un account entra da solo nella rete quando serve: il servizio gli dà una chiave che vale una volta e 10 minuti, il segreto resta nel Worker. I PC compaiono in *Machines* come `bunkerplex-…`: quelli che non usi più si tolgono da lì. Se lo togli a un PC che c'è ancora, rientra da solo.
 - **Primo amministratore**: il Worker ha il segreto `SETUP_KEY`. La stessa chiave sta in `data/cloud-setup.json` del PC dove è stato preparato il servizio: solo lì compare «Crea l'account amministratore», e solo finché nel database non c'è nessun account. Dopo la creazione il file viene cancellato.
 - **Un servizio tuo** (per esempio per provare): crea un altro Worker e un altro database con gli stessi file, poi scrivi il suo indirizzo in `.env` alla voce `BUNKERPLEX_CLOUD`.
 - **Password**: il PC calcola un'impronta lenta (PBKDF2-SHA256, 200.000 giri) e al servizio manda solo quella; il servizio ne conserva un'altra impronta con un sale casuale.

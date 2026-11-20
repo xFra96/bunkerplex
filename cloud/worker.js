@@ -11,7 +11,8 @@
 // cosi' il Worker resta dentro i 10 ms di calcolo del piano gratuito.
 //
 // Collegamenti richiesti: database D1 come "DB". Segreto: SETUP_KEY (serve
-// solo per creare il primo amministratore).
+// solo per creare il primo amministratore). Facoltativi: TS_OAUTH_ID e
+// TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -305,6 +306,34 @@ async function route(request, env) {
         .bind(user.id, other, other, user.id).run();
       return json({ ok: true });
     }
+  }
+  // Tailscale dentro BunkerPlex: una chiave monouso (10 minuti) per far entrare il
+  // server che la chiede nella rete Tailscale di BunkerPlex, con l'etichetta
+  // tag:bunkerplex. La crea qui il client OAuth dell'amministratore (segreti
+  // TS_OAUTH_ID e TS_OAUTH_SECRET, permesso «Auth Keys: write» su quell'etichetta):
+  // i PC non vedono mai il segreto. Senza segreti risponde 404 e i PC restano
+  // sulla porta aperta sul router.
+  if (path === '/tailscale/key' && method === 'POST') {
+    if (!env.TS_OAUTH_ID || !env.TS_OAUTH_SECRET) fail(404, 'Tailscale non configurato nel servizio account');
+    const tag = env.TS_TAG || 'tag:bunkerplex';
+    const form = new URLSearchParams({ client_id: env.TS_OAUTH_ID, client_secret: env.TS_OAUTH_SECRET, grant_type: 'client_credentials' });
+    const tr = await fetch('https://api.tailscale.com/api/v2/oauth/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form
+    });
+    const access = tr.ok ? (await tr.json()).access_token : '';
+    if (!access) fail(502, 'Tailscale non ha accettato le credenziali del servizio account');
+    const kr = await fetch('https://api.tailscale.com/api/v2/tailnet/-/keys', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        capabilities: { devices: { create: { reusable: false, ephemeral: false, preauthorized: true, tags: [tag] } } },
+        expirySeconds: 600,
+        description: 'BunkerPlex'
+      })
+    });
+    const k = kr.ok ? await kr.json() : null;
+    if (!k || typeof k.key !== 'string') fail(502, 'Tailscale non ha dato la chiave (errore ' + kr.status + ')');
+    return json({ key: k.key, tag });
   }
   if (path === '/servers' && method === 'PUT') {
     const b = await body(request);
