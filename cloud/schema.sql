@@ -47,15 +47,32 @@ CREATE TABLE IF NOT EXISTS state(
 );
 CREATE INDEX IF NOT EXISTS state_rev ON state(user_id, rev);
 
--- Copia del catalogo: un file video per riga, riconosciuto dall'impronta del file
--- (k = "<impronta>@<PC>"). v: JSON con la scheda abbinata (ID TMDB, correzione
--- fatta a mano o no), titolo, qualita', dove sta. v = 'null': il file non c'e' piu'.
-CREATE TABLE IF NOT EXISTS catalog(
-  user_id INTEGER NOT NULL,
-  k TEXT NOT NULL,
-  v TEXT,
+-- Amici: amicizie tra account (a ha chiesto a b; 'pending' finche' b non accetta, poi 'ok').
+CREATE TABLE IF NOT EXISTS friends(
+  a INTEGER NOT NULL,
+  b INTEGER NOT NULL,
+  status TEXT NOT NULL,
   t REAL NOT NULL,
-  rev INTEGER NOT NULL,
-  PRIMARY KEY(user_id, k)
+  PRIMARY KEY(a, b)
 );
-CREATE INDEX IF NOT EXISTS catalog_rev ON catalog(user_id, rev);
+CREATE INDEX IF NOT EXISTS friends_b ON friends(b);
+
+-- I server che condividono, per account: indirizzo per gli amici e impronta del certificato.
+CREATE TABLE IF NOT EXISTS servers(
+  user_id INTEGER NOT NULL,
+  sid TEXT NOT NULL,
+  name TEXT,
+  url TEXT NOT NULL,
+  pin TEXT NOT NULL,
+  t REAL NOT NULL,
+  PRIMARY KEY(user_id, sid)
+);
+
+-- Biglietti per entrare dal server di un amico: 5 minuti, una volta sola (si salva l'impronta).
+CREATE TABLE IF NOT EXISTS tickets(
+  hash TEXT PRIMARY KEY,
+  from_user INTEGER NOT NULL,
+  to_user INTEGER NOT NULL,
+  sid TEXT NOT NULL,
+  exp REAL NOT NULL
+);

@@ -2,7 +2,8 @@
 //
 // I server BunkerPlex di casa parlano con questo servizio: login, cambio
 // password, impostazioni dell'account, visti / punti di ripresa / La mia lista,
-// copia del catalogo (l'elenco dei file con la loro scheda: i video non passano mai di qui).
+// amici (amicizie, indirizzi dei server che condividono, biglietti d'ingresso).
+// Le cartelle e i video NON passano di qui: restano su ogni PC.
 //
 // La password non arriva mai in chiaro: il server di casa manda una "verifica"
 // (PBKDF2-SHA256, 200.000 giri, sale = "bunkerplex:" + nome utente). Qui se ne
@@ -247,31 +248,108 @@ async function route(request, env) {
     return json({ ok: true, saved: stmts.length, rev });
   }
 
-  // ---- Copia del catalogo: un file per riga, chiave "<impronta>@<PC>"; vince t piu' recente.
-  //      v = null: il file non c'e' piu' (resta come riga vuota, cosi' lo sanno anche gli altri PC)
-  if (path === '/catalog' && method === 'GET') {
-    const since = Number(url.searchParams.get('since') || 0);
+  // ---- Amici: amicizie tra account, la rubrica dei server, i biglietti d'ingresso.
+  // Un'amicizia nasce come richiesta (a -> b, 'pending') e diventa 'ok' quando b accetta.
+  // Ogni server che condivide pubblica qui il suo indirizzo e l'impronta del suo
+  // certificato: gli amici li leggono da qui (niente indirizzi da dettare, niente
+  // fiducia «al primo collegamento»). Per entrare dal server di un amico si chiede
+  // qui un biglietto: vale 5 minuti e una volta sola, e quel server lo fa controllare qui.
+  if (path === '/friends' && method === 'GET') {
     const rows = await env.DB.prepare(
-      'SELECT k, v, t, rev FROM catalog WHERE user_id = ? AND rev > ? ORDER BY rev LIMIT 2000'
-    ).bind(user.id, since).all();
-    return json({ rows: rows.results.map((r) => ({ ...r, v: JSON.parse(r.v) })), more: rows.results.length === 2000 });
-  }
-  if (path === '/catalog' && method === 'POST') {
-    const b = await body(request);
-    const rows = Array.isArray(b.rows) ? b.rows.slice(0, MAX_ROWS) : [];
-    const rev = Date.now();
-    const stmts = [];
-    for (const r of rows) {
-      if (!r || !/^[0-9a-f]{16}@[0-9a-z]{4,16}$/.test(String(r.k)) || typeof r.t !== 'number') continue;
-      const v = JSON.stringify(r.v === undefined ? null : r.v);
-      if (v.length > 2000) continue;
-      stmts.push(env.DB.prepare(
-        'INSERT INTO catalog(user_id, k, v, t, rev) VALUES(?,?,?,?,?) ' +
-        'ON CONFLICT(user_id, k) DO UPDATE SET v = excluded.v, t = excluded.t, rev = excluded.rev WHERE excluded.t > catalog.t'
-      ).bind(user.id, r.k, v, Math.min(r.t, now() + 60), rev));
+      'SELECT f.a, f.b, f.status, f.t, ua.username AS ua, ub.username AS ub FROM friends f ' +
+      'JOIN users ua ON ua.id = f.a JOIN users ub ON ub.id = f.b WHERE f.a = ? OR f.b = ?'
+    ).bind(user.id, user.id).all();
+    const out = [];
+    for (const r of rows.results) {
+      const other = r.a === user.id ? r.b : r.a;
+      const item = {
+        id: other, username: r.a === user.id ? r.ub : r.ua, t: r.t,
+        status: r.status === 'ok' ? 'ok' : (r.a === user.id ? 'sent' : 'received'), servers: []
+      };
+      if (item.status === 'ok') {
+        const s = await env.DB.prepare('SELECT sid, name, url, pin, t FROM servers WHERE user_id = ?').bind(other).all();
+        item.servers = s.results;
+      }
+      out.push(item);
     }
-    if (stmts.length) await env.DB.batch(stmts);
-    return json({ ok: true, saved: stmts.length, rev });
+    return json({ friends: out });
+  }
+  if (path === '/friends' && method === 'POST') {
+    const b = await body(request);
+    const name = cleanName(b.username);
+    const other = await env.DB.prepare('SELECT id, username FROM users WHERE username = ?').bind(name).first();
+    if (!other) fail(404, 'Non esiste un account con questo nome');
+    if (other.id === user.id) fail(400, 'Questo sei tu');
+    const back = await env.DB.prepare('SELECT status FROM friends WHERE a = ? AND b = ?').bind(other.id, user.id).first();
+    if (back) {                         // lui l'aveva gia' chiesto a te: siete amici
+      await env.DB.prepare("UPDATE friends SET status = 'ok', t = ? WHERE a = ? AND b = ?").bind(now(), other.id, user.id).run();
+      return json({ ok: true, status: 'ok', username: other.username });
+    }
+    const n = await env.DB.prepare("SELECT COUNT(*) n FROM friends WHERE a = ? AND status = 'pending'").bind(user.id).first('n');
+    if (n >= 20) fail(429, 'Troppe richieste in attesa');
+    await env.DB.prepare('INSERT OR IGNORE INTO friends(a, b, status, t) VALUES(?,?,?,?)')
+      .bind(user.id, other.id, 'pending', now()).run();
+    return json({ ok: true, status: 'sent', username: other.username });
+  }
+  const fm = /^\/friends\/(\d+)(\/accept)?$/.exec(path);
+  if (fm) {
+    const other = Number(fm[1]);
+    if (fm[2] && method === 'POST') {
+      const r = await env.DB.prepare("UPDATE friends SET status = 'ok', t = ? WHERE a = ? AND b = ? AND status = 'pending'")
+        .bind(now(), other, user.id).run();
+      if (!r.meta.changes) fail(404, 'Richiesta non trovata');
+      return json({ ok: true });
+    }
+    if (!fm[2] && method === 'DELETE') {   // rifiuta, annulla o togli l'amicizia
+      await env.DB.prepare('DELETE FROM friends WHERE (a = ? AND b = ?) OR (a = ? AND b = ?)')
+        .bind(user.id, other, other, user.id).run();
+      return json({ ok: true });
+    }
+  }
+  if (path === '/servers' && method === 'PUT') {
+    const b = await body(request);
+    const sid = String(b.sid || '');
+    const url = String(b.url || '');
+    if (!/^[0-9a-f]{8}$/.test(sid) || !/^https:\/\/[^\s/]{3,200}$/.test(url) || !/^[0-9a-f]{64}$/.test(String(b.pin || ''))) {
+      fail(400, 'Richiesta non valida');
+    }
+    await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, pin, t) VALUES(?,?,?,?,?,?) ' +
+      'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, pin = excluded.pin, t = excluded.t')
+      .bind(user.id, sid, String(b.name || '').slice(0, 40), url, b.pin, now()).run();
+    return json({ ok: true });
+  }
+  const sm = /^\/servers\/([0-9a-f]{8})$/.exec(path);
+  if (sm && method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sm[1]).run();
+    return json({ ok: true });
+  }
+  if (path === '/tickets' && method === 'POST') {
+    const b = await body(request);
+    const to = Number(b.to);
+    const ok = await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
+      .bind(user.id, to, to, user.id).first();
+    if (!ok) fail(403, 'Non siete amici');
+    const server = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(to, String(b.sid || '')).first();
+    if (!server) fail(404, 'Questo server non condivide più');
+    const ticket = randomHex(32);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM tickets WHERE exp < ?').bind(now()),
+      env.DB.prepare('INSERT INTO tickets(hash, from_user, to_user, sid, exp) VALUES(?,?,?,?,?)')
+        .bind(await sha256(ticket), user.id, to, String(b.sid), now() + 300)
+    ]);
+    return json({ ticket });
+  }
+  if (path === '/tickets/check' && method === 'POST') {
+    const b = await body(request);
+    const th = await sha256(String(b.ticket || ''));
+    const t = await env.DB.prepare('SELECT * FROM tickets WHERE hash = ?').bind(th).first();
+    if (!t || t.exp < now() || t.to_user !== user.id || t.sid !== String(b.sid || '')) fail(403, 'Biglietto non valido');
+    await env.DB.prepare('DELETE FROM tickets WHERE hash = ?').bind(th).run();
+    const ok = await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
+      .bind(t.from_user, user.id, user.id, t.from_user).first();
+    if (!ok) fail(403, 'Non siete amici');
+    const from = await env.DB.prepare('SELECT id, username FROM users WHERE id = ?').bind(t.from_user).first();
+    return json({ from });
   }
 
   // ---- Gestione account (solo amministratori)
@@ -319,7 +397,9 @@ async function route(request, env) {
           env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM settings WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM state WHERE user_id = ?').bind(id),
-          env.DB.prepare('DELETE FROM catalog WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM friends WHERE a = ? OR b = ?').bind(id, id),
+          env.DB.prepare('DELETE FROM servers WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM tickets WHERE from_user = ? OR to_user = ?').bind(id, id),
           env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id)
         ]);
         return json({ ok: true });

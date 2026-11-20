@@ -183,7 +183,9 @@ def get_libraries():
     # Con gli account ognuno vede le sue raccolte (e quelle che gli altri account
     # di questo PC hanno condiviso). Le letture in sottofondo vedono tutto.
     u = CURRENT.get()
-    if u is not None:
+    if u is not None and u.get("friend"):        # un amico: solo le raccolte di quel profilo
+        out = [lib for lib in out if lib.get("owner") == u["id"]]
+    elif u is not None:
         out = [lib for lib in out if lib.get("owner") == u["id"] or lib.get("shared")]
         for lib in out:
             lib["mine"] = lib.get("owner") == u["id"]
@@ -400,11 +402,8 @@ def init_db():
         user_id INT, k TEXT, kind TEXT, a INT, b INT, c INT, pos REAL, w INT, fav REAL, lp REAL, t REAL,
         PRIMARY KEY(user_id, k));
     CREATE INDEX IF NOT EXISTS cloud_state_a ON cloud_state(user_id, kind, a);
-    -- Copia del catalogo nell'account: le righe di tutti i PC dell'account
-    -- (k = impronta@PC; v = JSON, NULL se il file non c'e' piu')
-    CREATE TABLE IF NOT EXISTS cloud_catalog(
-        user_id INT, k TEXT, fp TEXT, v TEXT, t REAL, PRIMARY KEY(user_id, k));
-    CREATE INDEX IF NOT EXISTS cloud_catalog_fp ON cloud_catalog(fp);
+    -- (la copia del catalogo nell'account non c'e' piu': il catalogo resta sui dischi)
+    DROP TABLE IF EXISTS cloud_catalog;
     """)
     # library_id: la raccolta a cui appartiene il titolo (aggiunta in un secondo momento)
     # collection_id: la saga TMDB di cui il film fa parte (id della tabella collections);
@@ -428,9 +427,13 @@ def init_db():
                           ("items", "released TEXT"),
                           ("shows", "meta_at REAL"), ("shows", "meta_tries INT DEFAULT 0"),
                           ("shows", "status TEXT"), ("shows", "next_air TEXT"), ("shows", "last_air TEXT"),
-                          # Copia del catalogo (vedi push_catalog): fp = impronta del file
-                          # ('-' se non si puo' calcolare); manual = quando la scheda e' stata
-                          # scelta a mano con «Correggi scheda» (0: trovata da sola)
+                          # Amici entrati con l'account (vedi share_ticket): cloud_from = il suo
+                          # account, profile = il profilo di qui che lo ha come amico (vede solo
+                          # le raccolte di quel profilo). NULL: vecchio collegamento con password
+                          ("accounts", "cloud_from INT"), ("accounts", "profile INT"),
+                          # manual = quando la scheda e' stata scelta a mano con «Correggi scheda»
+                          # (0: trovata da sola). fp, catalog_rev, catalog_at: della vecchia copia
+                          # del catalogo nell'account, non piu' usati
                           ("items", "fp TEXT"), ("items", "manual REAL DEFAULT 0"),
                           ("shows", "manual REAL DEFAULT 0"),
                           ("users", "catalog_rev INT DEFAULT 0"), ("users", "catalog_at REAL DEFAULT 0"),
@@ -1449,17 +1452,6 @@ def scan():
                 (i["duration"], i["vcodec"], i["acodec"], i["pix"], i["width"], i["height"], r["id"]))
             con.commit()
 
-        # Impronta di ogni file (dimensione + primi e ultimi 64 KB): riconosce lo stesso
-        # video su un altro PC o dopo una reinstallazione (copia del catalogo)
-        todo = con.execute("SELECT id, path FROM items WHERE fp IS NULL").fetchall()
-        for n, r in enumerate(todo, 1):
-            if n % 50 == 1:
-                state["message"] = f"Calcolo le impronte dei file... {n} di {len(todo)}"
-            if not os.path.isfile(r["path"]):
-                continue              # disco scollegato: si calcola quando torna
-            con.execute("UPDATE items SET fp=? WHERE id=?", (os_hash(r["path"]) or "-", r["id"]))
-            if n % 50 == 0:
-                con.commit()
         con.commit()
 
         if tmdb_key():
@@ -1470,18 +1462,12 @@ def scan():
                 for n, r in enumerate(todo, 1):
                     state["message"] = f"Scarico locandine e schede dei film... {n} di {len(todo)}"
                     tmdb_id = r["tmdb_id"]   # gia' abbinato: si riscarica la stessa scheda
-                    hint = None if tmdb_id else catalog_hint(con, [r["fp"]], "movie")
-                    if hint:                 # lo stesso file e' nella copia del catalogo: niente ricerca
-                        tmdb_id = hint[0]
-                    elif not tmdb_id:
+                    if not tmdb_id:
                         res = find_movie(r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
                         try:
-                            # (nessuna scrittura prima: il database resta libero mentre si scarica)
                             apply_movie(con, r["id"], tmdb_id)
-                            if hint and hint[1]:
-                                con.execute("UPDATE items SET manual=? WHERE id=?", (hint[1], r["id"]))
                         except urllib.error.HTTPError as ex:
                             if ex.code != 404:
                                 raise
@@ -1505,18 +1491,12 @@ def scan():
                 state["message"] = "Scarico le schede delle serie..."
                 for r in con.execute("SELECT * FROM shows WHERE meta_done=0").fetchall():
                     tmdb_id = r["tmdb_id"]
-                    hint = None if tmdb_id else catalog_hint(con, [x[0] for x in con.execute(
-                        "SELECT fp FROM items WHERE show_id=? LIMIT 30", (r["id"],))], "episode")
-                    if hint:                 # episodi gia' nella copia del catalogo: si sa che serie e'
-                        tmdb_id = hint[0]
-                    elif not tmdb_id:
+                    if not tmdb_id:
                         res = find_show(con, r)
                         tmdb_id = res[0]["id"] if res else None
                     if tmdb_id:
                         try:
                             apply_show(con, r["id"], tmdb_id)
-                            if hint and hint[1]:
-                                con.execute("UPDATE shows SET manual=? WHERE id=?", (hint[1], r["id"]))
                             merge_duplicate_show(con, r["id"])
                         except urllib.error.HTTPError as ex:
                             if ex.code != 404:
@@ -1556,8 +1536,6 @@ def scan():
     finally:
         con.close()
         state["last_scan"] = time.time()
-        catalog_wake.set()          # catalogo cambiato: la copia nell'account si rifa' subito
-        sync_soon()
         again = state.pop("again", False)
         state["scanning"] = again
         scan_lock.release()
@@ -2330,6 +2308,42 @@ def session_user(token):
             "must_change": linked and bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token}
 
 
+def share_token_of(scope):
+    for k, v in scope.get("headers") or ():
+        if k == b"x-share-token":
+            return v.decode("latin-1").strip()
+    return ""
+
+
+share_profiles = {}              # impronta del gettone di un amico -> (profilo o None, quando letto)
+
+
+def share_viewer(token):
+    """Chi e' l'amico che chiede: per uno entrato con l'account, un «utente» che vede
+    solo le raccolte del profilo che lo ha come amico; None per i vecchi collegamenti."""
+    if not token or len(token) > 100:
+        return None
+    key = token_hash(token)
+    known = share_profiles.get(key)
+    if not known or time.time() - known[1] > 30:
+        con = db(raw=True)
+        try:
+            r = con.execute("SELECT a.profile FROM share_sessions s JOIN accounts a ON a.id=s.account "
+                            "WHERE s.token=?", (key,)).fetchone()
+        finally:
+            con.close()
+        if len(share_profiles) > 500:
+            share_profiles.clear()
+        known = share_profiles[key] = (r["profile"] if r else None, time.time())
+    uid = known[0]
+    if not uid:
+        return None
+    with config_lock:
+        libs = [l["id"] for l in config.get("libraries") or [] if l.get("owner") == uid]
+    return {"id": uid, "name": "", "admin": False, "linked": True, "must_change": False,
+            "libs": libs, "session": "", "friend": True}
+
+
 # ---- Senza Internet -------------------------------------------------------------
 # Senza Internet (o con il servizio account fermo) ogni profilo va avanti con la
 # sua copia su questo PC. Le modifiche restano segnate (dirty) e partono appena il
@@ -2372,11 +2386,19 @@ class AuthGate:
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        if (scope["type"] != "http" or DATA_PROBLEM
-                or (scope.get("server") or ("", 0))[1] == SHARE_PORT):
+        if scope["type"] != "http" or DATA_PROBLEM:
             await self.inner(scope, receive, send)
             return
         path = scope["path"]
+        if path.startswith("/api/share/") or (scope.get("server") or ("", 0))[1] == SHARE_PORT:
+            # Un amico: con l'account vede (in sola lettura) solo le raccolte del profilo
+            # che lo ha come amico; con il vecchio collegamento a password, tutto il PC
+            ctx = CURRENT.set(share_viewer(share_token_of(scope)))
+            try:
+                await self.inner(scope, receive, send)
+            finally:
+                CURRENT.reset(ctx)
+            return
         user = session_user(session_token(scope))
         ctx = CURRENT.set(user)
         try:
@@ -2491,8 +2513,6 @@ def link_local(con, uid, cloud_id):
     invece, se l'account ne ha gia' di diverse, si chiede quali tenere."""
     con.execute("UPDATE users SET cloud_id=?, state_rev=0 WHERE id=?", (cloud_id, uid))
     con.execute("DELETE FROM cloud_state WHERE user_id=?", (uid,))
-    con.execute("DELETE FROM cloud_catalog WHERE user_id=?", (uid,))
-    con.execute("UPDATE users SET catalog_rev=0 WHERE id=?", (uid,))
     # L'elenco delle raccolte arriva dall'account; quelle di qui ci si aggiungono (sync_libraries)
     con.execute("DELETE FROM user_settings WHERE user_id=? AND k='libraries'", (uid,))
     con.execute("UPDATE user_items SET dirty=1 WHERE user_id=?", (uid,))
@@ -2515,8 +2535,6 @@ def unlink_profile(con, uid):
     con.execute("UPDATE users SET cloud_id=NULL, token=NULL, vsalt=NULL, vcheck=NULL, admin=0, must_change=0, "
                 "state_rev=0, last_sync=0 WHERE id=?", (uid,))
     con.execute("DELETE FROM cloud_state WHERE user_id=?", (uid,))
-    con.execute("DELETE FROM cloud_catalog WHERE user_id=?", (uid,))
-    con.execute("UPDATE users SET catalog_rev=0 WHERE id=?", (uid,))
     con.execute("DELETE FROM user_settings WHERE user_id=? AND k='libraries'", (uid,))
     # Le chiavi in attesa di scelta tornano del profilo
     for r in con.execute("SELECT k, v FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (uid,)).fetchall():
@@ -2951,7 +2969,7 @@ async def auth_profile_delete(request: Request):
         if not heir:
             raise HTTPException(400, "È l'unico profilo di questo PC: puoi rinominarlo, non toglierlo")
         token = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()["token"]
-        for table in ("user_items", "user_shows", "user_settings", "cloud_state", "cloud_catalog", "user_sessions"):
+        for table in ("user_items", "user_shows", "user_settings", "cloud_state", "user_sessions"):
             con.execute(f"DELETE FROM {table} WHERE user_id=?", (u["id"],))
         con.execute("DELETE FROM users WHERE id=?", (u["id"],))
         con.commit()
@@ -2963,6 +2981,7 @@ async def auth_profile_delete(request: Request):
                 lib.update(owner=heir["id"], synced=False)
         save_config()
     user_cache.clear()
+    await asyncio.to_thread(forget_account_friends, u["id"], token)
     if token:
         try:
             await asyncio.to_thread(accounts.call, "POST", "/logout", {}, token, 6)
@@ -2971,6 +2990,30 @@ async def auth_profile_delete(request: Request):
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
+
+
+def forget_account_friends(uid, token):
+    """Il profilo non e' piu' (o non e' piu' collegato a) quell'account: via i
+    collegamenti ai suoi amici, gli ingressi dei suoi amici e il suo indirizzo nella rubrica."""
+    for f in [f for f in get_friends() if f.get("via") == "account" and f.get("owner") == uid]:
+        friend_drop(f["n"])
+    con = db(raw=True)
+    try:
+        gone = [r["id"] for r in con.execute("SELECT id FROM accounts WHERE profile=?", (uid,))]
+    finally:
+        con.close()
+    for a in gone:
+        account_drop(a)
+    with config_lock:
+        had = (config.get("presence") or {}).pop(str(uid), None)
+        if had:
+            save_config()
+    if had and token:
+        try:
+            accounts.call("DELETE", f"/servers/{pc_id()}", token=token, timeout=6)
+        except Exception:
+            pass
+    friends_cloud.pop(uid, None)
 
 
 def local_into():
@@ -3042,6 +3085,7 @@ async def auth_unlink():
         con.commit()
     finally:
         con.close()
+    await asyncio.to_thread(forget_account_friends, u["id"], token)
     if token:
         try:
             await asyncio.to_thread(accounts.call, "POST", "/logout", {}, token, 6)
@@ -3347,8 +3391,6 @@ def sync_loop():
                     print("Sincronizzazione account:", ex.detail, flush=True)
             except Exception as ex:
                 print("Sincronizzazione account:", repr(ex), flush=True)
-        else:
-            catalog_wake.clear()      # copia del catalogo fatta per tutti gli account
 
 
 def sync_user(uid, token):
@@ -3359,10 +3401,7 @@ def sync_user(uid, token):
     push_state(uid, token)
     pull_state(uid, token)
     apply_cloud_state(uid)
-    try:
-        sync_catalog(uid, token)
-    except accounts.CloudError as ex:     # la copia del catalogo non ferma il resto
-        print("Copia del catalogo:", ex.detail, flush=True)
+    sync_friends(uid, token)          # amici dell'account (un servizio di prima risponde 404: niente)
     con = db(raw=True)
     try:
         con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
@@ -3518,25 +3557,10 @@ def apply_cloud_state(uid):
         con.close()
 
 
-# ---- Copia del catalogo nell'account ---------------------------------------------
-# Per ogni file video delle raccolte dell'account, una riga nel servizio account:
-# l'impronta del file (riconosce lo stesso video su un altro PC o dopo una
-# reinstallazione) con la scheda abbinata, il titolo, la qualita' e dove sta. Serve a:
-#  - non rifare il riconoscimento: un file gia' nella copia prende subito la sua
-#    scheda, comprese le correzioni fatte a mano con «Correggi scheda»;
-#  - portare quelle correzioni sugli altri PC che hanno lo stesso file;
-#  - sapere cosa c'e' sugli altri PC e sui dischi che qui non ci sono (o non ci
-#    sono piu'): Impostazioni → Catalogo → «Titoli che qui non ci sono».
-# I video non passano mai di qui. Si spegne da Impostazioni (catalog_copy = false).
-
-CATALOG_EVERY = 30 * 60          # senza novita', la copia si ricontrolla ogni mezz'ora
-CATALOG_PUSH = 400               # righe mandate per giro di sincronizzazione (10 chiamate)
-catalog_wake = threading.Event() # scansione finita o scheda corretta: la copia va rifatta subito
-catalog_state = {"supported": None, "checked": 0.0, "restored": 0, "fixed": 0, "last": {}}
-
+# ---- Questo PC ---------------------------------------------------------------
 
 def pc_id():
-    """Un nome breve e fisso per questa installazione (la parte dopo @ nelle righe della copia)."""
+    """Un nome breve e fisso per questa installazione (lo usano gli amici per riconoscerla)."""
     with config_lock:
         if not config.get("pc_id"):
             config["pc_id"] = secrets.token_hex(4)
@@ -3545,278 +3569,11 @@ def pc_id():
 
 
 def pc_name():
-    """Come si chiama questo PC nella copia del catalogo (si cambia da Impostazioni → Catalogo)."""
+    """Come si chiama questo PC per gli amici (si cambia da Impostazioni → Amici)."""
     if config.get("pc_name"):
         return config["pc_name"]
     return SERVER_NAME if SERVER_NAME != "BunkerPlex" else "PC " + pc_id()[:4].upper()
 
-
-def catalog_on(uid):
-    return user_setting(uid, "catalog_copy") is not False
-
-
-def catalog_hint(con, fps, kind):
-    """La scheda di un file secondo la copia del catalogo (di qualsiasi account di
-    questo PC): (id TMDB, quando e' stata scelta a mano o 0). Vince la correzione a mano piu' recente."""
-    fps = [f for f in fps if f and f != "-"]
-    if not fps:
-        return None
-    best = None
-    for r in con.execute(f"SELECT v, t FROM cloud_catalog WHERE fp IN ({','.join('?' * len(fps))}) "
-                         "AND v IS NOT NULL", fps).fetchall():
-        try:
-            v = json.loads(r["v"])
-        except ValueError:
-            continue
-        if not isinstance(v, dict) or v.get("m") != kind or not v.get("tmdb"):
-            continue
-        key = (float(v.get("fix") or 0), r["t"])
-        if best is None or key > best[0]:
-            best = (key, int(v["tmdb"]), float(v.get("fix") or 0))
-    if best:
-        catalog_state["restored"] += 1
-        return best[1], best[2]
-    return None
-
-
-def catalog_rows(con, uid):
-    """Le righe della copia per i file delle raccolte dell'account, su questo PC: {chiave: valore}."""
-    with config_lock:
-        libs = {l["id"]: l["name"] for l in config.get("libraries") or [] if l.get("owner") == uid}
-    if not libs:
-        return {}
-    me, where = pc_id(), pc_name()
-    out = {}
-    for r in con.execute(
-            "SELECT i.kind, i.fp, i.tmdb_id, i.manual, i.title, i.year, i.height, i.size, i.path, i.library_id, "
-            "i.season, i.episode, s.tmdb_id AS show_tmdb, s.manual AS show_manual, s.title AS show_title, "
-            "s.year AS show_year FROM items i LEFT JOIN shows s ON s.id=i.show_id "
-            f"WHERE i.library_id IN ({','.join('?' * len(libs))}) AND i.fp IS NOT NULL AND i.fp<>'-'",
-            tuple(libs)).fetchall():
-        ep = r["kind"] == "episode"
-        v = {"m": "episode" if ep else "movie",
-             "tmdb": r["show_tmdb"] if ep else r["tmdb_id"],
-             "fix": round(float((r["show_manual"] if ep else r["manual"]) or 0), 1),
-             "ti": (r["show_title"] if ep else r["title"]) or "",
-             "y": (r["show_year"] if ep else r["year"]) or None,
-             "q": r["height"] or 0, "sz": r["size"] or 0,
-             "lib": libs.get(r["library_id"], ""), "at": display_path(r["path"]), "pc": where}
-        if ep:
-            v.update(s=r["season"], e=r["episode"], et=r["title"] or "")
-        out[f"{r['fp']}@{me}"] = v
-    return out
-
-
-def remember_catalog(con, uid, rows):
-    con.executemany("INSERT INTO cloud_catalog(user_id, k, fp, v, t) VALUES(?,?,?,?,?) "
-                    "ON CONFLICT(user_id, k) DO UPDATE SET v=excluded.v, t=excluded.t WHERE excluded.t >= cloud_catalog.t",
-                    [(uid, r["k"], r["k"].split("@", 1)[0], None if r.get("v") is None else json.dumps(r["v"]),
-                      float(r["t"])) for r in rows])
-
-
-def push_catalog(con, uid, token):
-    """Manda le righe di questo PC cambiate da quelle che ha l'account (e toglie i file spariti)."""
-    me = "@" + pc_id()
-    mine = catalog_rows(con, uid)
-    # Si confrontano i valori, non il testo: il servizio rimanda 0.0 come 0
-    sent = {r["k"]: json.loads(r["v"]) if r["v"] else None for r in con.execute(
-        "SELECT k, v FROM cloud_catalog WHERE user_id=? AND k LIKE ?", (uid, "%" + me))}
-    now = time.time()
-    todo = [{"k": k, "v": v, "t": now} for k, v in mine.items() if sent.get(k) != v]
-    todo += [{"k": k, "v": None, "t": now} for k, v in sent.items() if k not in mine and v is not None]
-    for part in chunks(todo[:CATALOG_PUSH]):
-        accounts.call("POST", "/catalog", {"rows": part}, token)
-        remember_catalog(con, uid, part)
-        con.commit()
-    return len(todo) > CATALOG_PUSH          # ne restano: al prossimo giro
-
-
-def pull_catalog(con, uid, token):
-    """Le righe cambiate dall'ultima volta (anche quelle degli altri PC). Torna quante."""
-    since = con.execute("SELECT catalog_rev FROM users WHERE id=?", (uid,)).fetchone()[0] or 0
-    top, got = since, 0
-    while True:
-        res = accounts.call("GET", f"/catalog?since={since}", token=token)
-        rows = res.get("rows") or []
-        if rows:
-            remember_catalog(con, uid, rows)
-            top = max(top, max(int(r["rev"]) for r in rows))
-            got += len(rows)
-            con.commit()
-        if not res.get("more") or not rows:
-            break
-        since = max(int(r["rev"]) for r in rows)
-    con.execute("UPDATE users SET catalog_rev=? WHERE id=?", (top, uid))
-    con.commit()
-    return got
-
-
-def apply_cloud_catalog(con):
-    """Le correzioni fatte a mano su un altro PC valgono anche per lo stesso file qui
-    (se qui non ce n'e' una piu' recente). La scheda si riscarica alla prossima scansione."""
-    me = "@" + pc_id()
-    changed = 0
-    for r in con.execute("SELECT c.k, c.v, i.id, i.kind, i.tmdb_id, i.manual, i.show_id, s.tmdb_id AS show_tmdb, "
-                         "s.manual AS show_manual FROM cloud_catalog c JOIN items i ON i.fp=c.fp "
-                         "LEFT JOIN shows s ON s.id=i.show_id WHERE c.v IS NOT NULL AND c.k NOT LIKE ?",
-                         ("%" + me,)).fetchall():
-        try:
-            v = json.loads(r["v"])
-        except ValueError:
-            continue
-        fix, tid = float(v.get("fix") or 0), v.get("tmdb")
-        if not fix or not tid:
-            continue
-        if r["kind"] == "movie" and v.get("m") == "movie" and fix > (r["manual"] or 0) and tid != r["tmdb_id"]:
-            con.execute("UPDATE items SET tmdb_id=?, manual=?, meta_done=0 WHERE id=?", (tid, fix, r["id"]))
-            changed += 1
-        elif r["kind"] == "episode" and v.get("m") == "episode" and r["show_id"] \
-                and fix > (r["show_manual"] or 0) and tid != r["show_tmdb"]:
-            con.execute("UPDATE shows SET tmdb_id=?, manual=?, meta_done=0 WHERE id=?", (tid, fix, r["show_id"]))
-            changed += 1
-    con.commit()
-    if changed:
-        catalog_state["fixed"] += changed
-        print(f"Correzioni arrivate dalla copia del catalogo: {changed}", flush=True)
-        scan_async()
-
-
-def sync_catalog(uid, token):
-    """Dentro la sincronizzazione dell'account: copia del catalogo (se l'account la vuole
-    e il servizio la conosce: uno vecchio risponde 404 e si riprova dopo 6 ore).
-    Le novita' degli altri PC si leggono a ogni giro (una chiamata); le righe di
-    questo PC si mandano subito dopo un cambiamento, altrimenti ogni mezz'ora."""
-    if not catalog_on(uid):
-        return
-    now = time.time()
-    if catalog_state["supported"] is False and now - catalog_state["checked"] < 6 * 3600:
-        return
-    more = False
-    con = db(raw=True)
-    try:
-        try:
-            got = pull_catalog(con, uid, token)
-        except accounts.CloudError as ex:
-            if ex.status != 404:
-                raise
-            catalog_state.update(supported=False, checked=now)
-            print("Copia del catalogo: il servizio account va aggiornato (vedi README)", flush=True)
-            return
-        catalog_state.update(supported=True, checked=now)
-        if got:
-            apply_cloud_catalog(con)
-        if catalog_wake.is_set() or now - catalog_state["last"].get(uid, 0) >= CATALOG_EVERY:
-            more = push_catalog(con, uid, token)
-            con.execute("UPDATE users SET catalog_at=? WHERE id=?", (time.time(), uid))
-            con.commit()
-            catalog_state["last"][uid] = 0 if more else time.time()
-    finally:
-        con.close()
-    if more:                       # ne restano (prima copia): si continua subito, a blocchi
-        sync_soon()
-
-
-# Le righe degli altri PC (quelle di questo PC per file che qui non ci sono piu' stanno per
-# essere tolte dalla copia) per file che su questo PC non ci sono
-ELSEWHERE_SQL = ("FROM cloud_catalog c WHERE c.user_id=? AND c.v IS NOT NULL AND c.k NOT LIKE ? "
-                 "AND NOT EXISTS (SELECT 1 FROM items i WHERE i.fp=c.fp)")
-
-
-@app.get("/api/catalog-copy")
-def catalog_copy_status():
-    u = CURRENT.get()
-    if u is None or not u["linked"]:
-        return {"linked": False}
-    con = db(raw=True)
-    try:
-        me = "@" + pc_id()
-        row = con.execute("SELECT catalog_at FROM users WHERE id=?", (u["id"],)).fetchone()
-        return {
-            "linked": True, "enabled": catalog_on(u["id"]), "supported": catalog_state["supported"],
-            "pc": pc_name(), "last": row["catalog_at"] if row else 0,
-            "here": con.execute("SELECT COUNT(*) FROM cloud_catalog WHERE user_id=? AND v IS NOT NULL AND k LIKE ?",
-                                (u["id"], "%" + me)).fetchone()[0],
-            "account": con.execute("SELECT COUNT(DISTINCT fp) FROM cloud_catalog WHERE user_id=? AND v IS NOT NULL",
-                                   (u["id"],)).fetchone()[0],
-            "elsewhere": con.execute("SELECT COUNT(DISTINCT c.fp) " + ELSEWHERE_SQL, (u["id"], "%" + me)).fetchone()[0],
-            "restored": catalog_state["restored"], "fixed": catalog_state["fixed"],
-        }
-    finally:
-        con.close()
-
-
-@app.post("/api/catalog-copy")
-async def catalog_copy_set(request: Request):
-    u = CURRENT.get()
-    if u is None or not u["linked"]:
-        raise HTTPException(400, "Serve un account per la copia del catalogo")
-    body = await read_json(request)
-    if "enabled" in body:
-        put_user_setting(u["id"], "catalog_copy", bool(body["enabled"]))
-    if "pc_name" in body:
-        name = re.sub(r"\s+", " ", str(body["pc_name"] or "")).strip()[:30]
-        with config_lock:
-            config["pc_name"] = name
-            save_config()
-    catalog_wake.set()
-    sync_soon()
-    return {"ok": True, "pc": pc_name()}
-
-
-@app.get("/api/catalog-copy/elsewhere")
-def catalog_elsewhere():
-    """I titoli della copia che su questo PC non ci sono: sugli altri PC dell'account,
-    o su dischi che qui non sono mai stati collegati (o che non ci sono piu')."""
-    u = CURRENT.get()
-    if u is None or not u["linked"]:
-        return {"groups": [], "total": 0}
-    con = db(raw=True)
-    try:
-        rows = con.execute("SELECT c.v " + ELSEWHERE_SQL, (u["id"], "%@" + pc_id())).fetchall()
-    finally:
-        con.close()
-    def parent(path):
-        return re.split(r"[\\/](?=[^\\/]*$)", path)[0] if re.search(r"[\\/]", path) else path
-
-    def common(dirs):
-        """La cartella che contiene tutte quelle date (es. quella della serie sopra le stagioni)."""
-        parts = [re.split(r"[\\/]", d) for d in dirs]
-        same = []
-        for bits in zip(*parts):
-            if any(b.lower() != bits[0].lower() for b in bits):
-                break
-            same.append(bits[0])
-        sep = "\\" if "\\" in dirs[0] else "/"
-        return sep.join(same) or dirs[0]
-
-    # Prima ogni titolo (una serie e' una voce sola, con tutti i suoi episodi), poi per PC e cartella
-    titles = {}
-    for (raw,) in rows:
-        try:
-            v = json.loads(raw)
-        except ValueError:
-            continue
-        at = str(v.get("at") or "")
-        pc = str(v.get("pc") or "")
-        key = (pc, "show", v.get("tmdb") or v.get("ti")) if v.get("m") == "episode" else (pc, "movie", at)
-        e = titles.setdefault(key, {"kind": key[1], "title": v.get("ti") or "", "year": v.get("y"),
-                                    "q": 0, "count": 0, "seasons": set(), "dirs": set()})
-        e["q"] = max(e["q"], int(v.get("q") or 0))
-        e["count"] += 1
-        e["dirs"].add(parent(at))
-        if v.get("s") is not None:
-            e["seasons"].add(v["s"])
-    groups = {}
-    for (pc, kind, _), e in titles.items():
-        dirs = sorted(e.pop("dirs"))
-        folder = common(dirs) if kind == "show" and len(dirs) > 1 else dirs[0]
-        if kind == "show" and len(dirs) == 1 and re.search(r"(?:season|stagione|staffel|serie|\bs)\s*\d+", folder, re.I):
-            folder = parent(folder)          # un'unica cartella di stagione: si mostra quella della serie
-        e["seasons"] = sorted(e["seasons"])
-        groups.setdefault((pc, folder if kind == "movie" else parent(folder)), []).append(e)
-    out = [{"pc": pc, "folder": folder, "items": sorted(items, key=lambda e: norm_title(e["title"]))}
-           for (pc, folder), items in sorted(groups.items())]
-    return {"groups": out, "total": len(titles)}
 
 
 # ---- Aggiornamenti da GitHub ----------------------------------------------
@@ -4012,6 +3769,9 @@ def info():
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
             "apk_version": apk_code, "apk_version_name": apk_name,
             "update": updater.available(),
+            # Richieste di amicizia arrivate all'account di chi guarda
+            "friend_requests": sum(1 for f in (friends_cloud.get((CURRENT.get() or {}).get("id")) or {})
+                                   .get("friends", []) if f.get("status") == "received"),
             "updated": update_notice(),      # appena aggiornato: le novita'
             # Richieste di condivisione degli amici ancora da approvare
             "share_requests": con.execute(
@@ -4378,7 +4138,6 @@ async def match(request: Request):
             con.commit()
             enrich_episodes(con, get_show(con, kept))
         con.commit()
-        catalog_wake.set()
         return {"ok": True}
     except (urllib.error.URLError, TimeoutError):
         raise HTTPException(502, "Non riesco a contattare TMDB")
@@ -5561,6 +5320,63 @@ async def share_login(request: Request):
     return await in_thread(work)
 
 
+@app.post("/api/share/ticket")
+async def share_ticket(request: Request):
+    """Un amico dell'account entra con un biglietto del servizio account: lo si fa
+    controllare li' (vale una volta sola, solo tra amici, solo per questo server) e
+    l'amico riceve un gettone come quelli dei vecchi collegamenti, ma vede solo le
+    raccolte del profilo di cui e' amico."""
+    if not share_on():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    body = await read_json(request)
+    ticket, to = str(body.get("ticket") or ""), body.get("to")
+    if not re.fullmatch(r"[0-9a-f]{64}", ticket) or not isinstance(to, int):
+        raise HTTPException(400, "Richiesta non valida")
+    con = db(raw=True)
+    try:
+        p = con.execute("SELECT id, token FROM users WHERE cloud_id=? AND token IS NOT NULL", (to,)).fetchone()
+    finally:
+        con.close()
+    if not p or not friends_shared(p["id"]):
+        raise HTTPException(404, "Su questo server quell'account non condivide")
+    try:
+        res = await asyncio.to_thread(accounts.call, "POST", "/tickets/check",
+                                      {"ticket": ticket, "sid": pc_id()}, p["token"])
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Il server dell'amico non raggiunge il servizio account")
+    except accounts.CloudError as ex:
+        raise HTTPException(403, ex.detail)
+    who = res.get("from") or {}
+    if not isinstance(who.get("id"), int):
+        raise HTTPException(403, "Biglietto non valido")
+
+    def work():
+        con = db(raw=True)
+        try:
+            r = con.execute("SELECT id FROM accounts WHERE cloud_from=? AND profile=?", (who["id"], p["id"])).fetchone()
+            if r:
+                account = r["id"]
+                con.execute("UPDATE accounts SET approved=1 WHERE id=?", (account,))
+            else:
+                base = "@" + re.sub(r"[^\w.\-]", "", str(who.get("username") or ""))[:24]
+                name, i = base, 1
+                while con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+                    i += 1
+                    name = f"{base} {i}"
+                salt = secrets.token_bytes(16)   # nessuna password: si entra solo con i biglietti
+                account = con.execute(
+                    "INSERT INTO accounts(name, salt, hash, approved, created, cloud_from, profile) "
+                    "VALUES(?,?,?,1,?,?,?)", (name, salt, password_hash(secrets.token_urlsafe(24), salt),
+                                              time.time(), who["id"], p["id"])).lastrowid
+            token = new_session(con, account)
+            con.commit()
+            return {"ok": True, "token": token, "approved": True, "server": pc_name()}
+        finally:
+            con.close()
+
+    return await in_thread(work)
+
+
 @app.get("/api/sharing")
 def sharing_status():
     """Per Impostazioni (rete di casa): stato della condivisione e amici registrati."""
@@ -6176,8 +5992,14 @@ def portmap_loop():
 
 
 def get_friends():
+    """I collegamenti agli amici. Dentro la richiesta di un profilo, solo quelli che
+    vede lui: i vecchi (del PC) e quelli degli amici del suo account."""
     with config_lock:
-        return json.loads(json.dumps(config.get("friends") or []))
+        out = json.loads(json.dumps(config.get("friends") or []))
+    u = CURRENT.get()
+    if u is not None and not u.get("friend"):
+        out = [f for f in out if not f.get("owner") or f["owner"] == u["id"]]
+    return out
 
 
 def friend_by_n(n):
@@ -6376,7 +6198,15 @@ def friend_sync(f):
     if not lock.acquire(blocking=False):
         return
     try:
-        libs = friend_json(f, "/libraries", timeout=6)
+        if f.get("via") == "account" and not f.get("token"):
+            friend_ticket_login(f)       # amico dell'account: si entra col biglietto
+        try:
+            libs = friend_json(f, "/libraries", timeout=6)
+        except FriendDown as ex:
+            if f.get("via") != "account" or ex.code != 401:
+                raise
+            friend_ticket_login(f)       # gettone non piu' valido: biglietto nuovo
+            libs = friend_json(f, "/libraries", timeout=6)
         clean = []
         for l in libs if isinstance(libs, list) else []:
             if isinstance(l, dict) and _is_id(l.get("id")):
@@ -6398,8 +6228,9 @@ def friend_sync(f):
                 if not friend_by_n(n) or not friend_image_file(f, m.group(1)):
                     break
                 time.sleep(0.05)
-    except FriendDown:
-        pass
+    except FriendDown as ex:
+        if f.get("via") == "account" and (friend_status.get(n) or {}).get("online") is not False:
+            friend_mark(n, False, str(ex))
     except Exception as ex:
         print("Amico", f.get("name"), "- aggiornamento non riuscito:", ex, flush=True)
     finally:
@@ -6952,7 +6783,7 @@ async def friends_add(request: Request):
     return {"ok": True, "n": n, "approved": bool(got.get("approved"))}
 
 
-def friend_store(name, url, user, token, account=None, pin=None):
+def friend_store(name, url, user, token, account=None, pin=None, extra=None):
     """Mette un amico tra i collegamenti e comincia subito a scaricarne gli elenchi."""
     with config_lock:
         current = config.setdefault("friends", [])
@@ -6963,6 +6794,7 @@ def friend_store(name, url, user, token, account=None, pin=None):
             f["account"] = account       # l'account con cui lui entra qui: se ne va insieme a lui
         if pin:
             f["pin"] = pin               # impronta del suo certificato: si accetta solo quello
+        f.update(extra or {})            # amico dell'account: via, owner, fid, sid
         current.append(f)
         save_config()
     shutil.rmtree(FRIENDS_DIR / str(n), ignore_errors=True)
@@ -7016,6 +6848,238 @@ async def friends_quality(request: Request):
         config["friend_quality"] = q
         save_config()
     return {"ok": True}
+
+
+# ---- Amici dell'account ------------------------------------------------------------
+# Con un profilo collegato a un account gli amici sono quelli dell'account: si
+# aggiungono col nome del loro account e accettano da qualsiasi loro PC. Il servizio
+# account fa da rubrica: ogni server che condivide vi pubblica indirizzo e impronta
+# del certificato, e gli amici li leggono da li' (anche quando l'indirizzo cambia).
+# Per entrare si chiede al servizio un biglietto (vedi share_ticket). Ogni server
+# di un amico diventa un collegamento come quelli di prima (config «friends», con
+# via = "account" e owner = il profilo di qui), visibile solo a quel profilo.
+# I vecchi collegamenti con indirizzo e password restano come sono.
+
+friends_cloud = {}               # profilo -> {"at", "friends": [...], "supported"}
+
+
+def friends_shared(uid):
+    """Il profilo condivide le sue raccolte con i suoi amici (scelta dell'account)."""
+    return user_setting(uid, "friends_share") is True
+
+
+def presence_url():
+    """L'indirizzo da pubblicare per gli amici: solo cifrato (con impronta da controllare)."""
+    url = my_address()
+    return url if url.startswith("https://") and share_tls["pin"] else ""
+
+
+def publish_presence(uid, token):
+    want = None
+    if friends_shared(uid) and share_on() and presence_url():
+        want = {"sid": pc_id(), "name": pc_name(), "url": presence_url(), "pin": share_tls["pin"]}
+    key = str(uid)
+    with config_lock:
+        had = (config.get("presence") or {}).get(key)
+    if want == had:
+        return
+    if want:
+        accounts.call("PUT", "/servers", want, token)
+    elif had:
+        accounts.call("DELETE", f"/servers/{pc_id()}", token=token)
+    with config_lock:
+        pres = config.setdefault("presence", {})
+        if want:
+            pres[key] = want
+        else:
+            pres.pop(key, None)
+        save_config()
+
+
+def sync_friends(uid, token):
+    """Dentro la sincronizzazione dell'account: amici, collegamenti ai loro server,
+    chi puo' entrare qui, il proprio indirizzo nella rubrica."""
+    try:
+        res = accounts.call("GET", "/friends", token=token)
+    except accounts.CloudError as ex:
+        if ex.status != 404:
+            raise
+        friends_cloud[uid] = {"at": time.time(), "friends": [], "supported": False}
+        return                   # servizio account di prima: niente amici dell'account
+    lst = [f for f in res.get("friends") or [] if isinstance(f, dict) and isinstance(f.get("id"), int)]
+    friends_cloud[uid] = {"at": time.time(), "friends": lst, "supported": True}
+    ok = [f for f in lst if f.get("status") == "ok"]
+    # 1. I collegamenti ai server degli amici
+    wanted = {}
+    for fr in ok:
+        servers = [s for s in fr.get("servers") or [] if isinstance(s, dict) and s.get("sid") != pc_id()]
+        for s in servers:
+            try:
+                url = friend_address(s.get("url"))
+            except HTTPException:
+                continue
+            if not re.fullmatch(r"[0-9a-f]{64}", str(s.get("pin") or "")):
+                continue
+            name = str(fr.get("username") or "Amico") + (" · " + str(s["name"]) if len(servers) > 1 and s.get("name") else "")
+            wanted[(fr["id"], s["sid"])] = {"name": name[:30], "url": url, "pin": s["pin"]}
+    for f in get_friends():
+        if f.get("via") != "account" or f.get("owner") != uid:
+            continue
+        w = wanted.pop((f.get("fid"), f.get("sid")), None)
+        if w is None:
+            friend_drop(f["n"])          # non piu' amici (o quel server non condivide piu')
+        elif (w["url"], w["pin"], w["name"]) != (f["url"], f.get("pin"), f["name"]):
+            fields = {"url": w["url"], "name": w["name"]}
+            if w["pin"] != f.get("pin"):
+                fields.update(pin=w["pin"], token="")
+            friend_set(f["n"], **fields)
+            friend_status.pop(f["n"], None)
+    for (fid, sid), w in wanted.items():
+        if len(get_friends()) >= FRIEND_MAX:
+            break
+        friend_store(w["name"], w["url"], "", "", None, w["pin"],
+                     extra={"via": "account", "owner": uid, "fid": fid, "sid": sid})
+    # 2. Chi entra qui con l'account: solo gli amici di adesso
+    ids = {f["id"] for f in ok}
+    con = db(raw=True)
+    try:
+        gone = [r["id"] for r in con.execute("SELECT id, cloud_from FROM accounts WHERE profile=?", (uid,))
+                if r["cloud_from"] not in ids]
+    finally:
+        con.close()
+    for a in gone:
+        account_drop(a)
+    # 3. Il proprio indirizzo nella rubrica (se il profilo condivide)
+    publish_presence(uid, token)
+
+
+def friend_ticket_login(f):
+    """Entra dal server di un amico dell'account con un biglietto del servizio account."""
+    con = db(raw=True)
+    try:
+        p = con.execute("SELECT token FROM users WHERE id=? AND token IS NOT NULL", (f.get("owner"),)).fetchone()
+    finally:
+        con.close()
+    if not p:
+        raise FriendDown("ridai la password del tuo account per vedere gli amici")
+    try:
+        ticket = accounts.call("POST", "/tickets", {"to": f["fid"], "sid": f["sid"]}, p["token"]).get("ticket")
+    except accounts.CloudOffline:
+        raise FriendDown("niente Internet")
+    except accounts.CloudError as ex:
+        raise FriendDown(ex.detail, ex.status)
+    got = friend_json({"url": f["url"], "pin": f.get("pin"), "token": ""}, "/ticket", 8,
+                      {"ticket": ticket, "to": f["fid"]})
+    if not isinstance(got, dict) or not isinstance(got.get("token"), str) or not got["token"]:
+        raise FriendDown("risposta non valida")
+    f["token"] = got["token"]
+    friend_set(f["n"], token=got["token"])
+
+
+def profile_token():
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        raise HTTPException(400, "Gli amici dell'account servono un profilo collegato a un account")
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        con.close()
+    if not r or not r["token"]:
+        raise HTTPException(401, "Ridai la password del tuo account (Impostazioni → Account)")
+    return u["id"], r["token"]
+
+
+async def friends_cloud_call(method, path, body=None):
+    uid, token = profile_token()
+    res = await cloud(method, path, body, token)
+    try:
+        await asyncio.to_thread(sync_friends, uid, token)
+    except Exception as ex:
+        print("Amici dell'account:", repr(ex), flush=True)
+    return res
+
+
+@app.get("/api/account-friends")
+async def account_friends():
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        return {"linked": False}
+    info = friends_cloud.get(u["id"])
+    if info is None or time.time() - info["at"] > 60:
+        try:                         # prima apertura: si chiede subito al servizio
+            uid, token = profile_token()
+            await asyncio.to_thread(sync_friends, uid, token)
+        except Exception:
+            pass
+        info = friends_cloud.get(u["id"]) or {}
+    local = {(f.get("fid"), f.get("sid")): f for f in get_friends() if f.get("via") == "account"}
+    out = []
+    for fr in info.get("friends") or []:
+        servers = []
+        for s in fr.get("servers") or []:
+            lf = local.get((fr["id"], s.get("sid")))
+            st = (friend_status.get(lf["n"]) if lf else None) or {}
+            servers.append({"name": str(s.get("name") or ""), "online": st.get("online"),
+                            "error": st.get("error") or "", "n": lf["n"] if lf else None})
+        out.append({"id": fr["id"], "username": fr.get("username") or "", "status": fr.get("status"),
+                    "servers": servers})
+    return {"linked": True, "supported": info.get("supported"), "loaded": bool(info), "friends": out,
+            "sharing": friends_shared(u["id"]), "address": presence_url(), "pc": pc_name(),
+            "published": bool((config.get("presence") or {}).get(str(u["id"]))),
+            "share_on": share_on()}
+
+
+@app.post("/api/account-friends")
+async def account_friends_add(request: Request):
+    name = str((await read_json(request)).get("username") or "").strip()
+    if not name:
+        raise HTTPException(400, "Scrivi il nome dell'account del tuo amico")
+    return await friends_cloud_call("POST", "/friends", {"username": name})
+
+
+@app.post("/api/account-friends/{fid}/accept")
+async def account_friends_accept(fid: int):
+    return await friends_cloud_call("POST", f"/friends/{fid}/accept")
+
+
+@app.delete("/api/account-friends/{fid}")
+async def account_friends_remove(fid: int):
+    return await friends_cloud_call("DELETE", f"/friends/{fid}")
+
+
+@app.post("/api/account-friends/share")
+async def account_friends_share(request: Request):
+    """Condividi le tue raccolte con i tuoi amici: accende anche la porta degli amici."""
+    uid, token = profile_token()
+    on = bool((await read_json(request)).get("on"))
+    put_user_setting(uid, "friends_share", on)
+    if on and not share_on():
+        with config_lock:
+            config.setdefault("share", {})["on"] = True
+            save_config()
+        asked = time.time()
+        portmap_wake.set()
+        for _ in range(40):          # si aspetta un attimo il router: l'indirizzo va pubblicato
+            if portmap["at"] >= asked or (config.get("share") or {}).get("manual"):
+                break
+            await asyncio.sleep(0.25)
+    try:
+        await asyncio.to_thread(sync_friends, uid, token)
+    except Exception as ex:
+        print("Amici dell'account:", repr(ex), flush=True)
+    return {"ok": True, "address": presence_url()}
+
+
+@app.post("/api/pc-name")
+async def set_pc_name(request: Request):
+    """Il nome di questo PC per gli amici (quando un account ha piu' PC che condividono)."""
+    name = re.sub(r"\s+", " ", str((await read_json(request)).get("name") or "")).strip()[:30]
+    with config_lock:
+        config["pc_name"] = name
+        save_config()
+    sync_soon()                      # l'indirizzo nella rubrica si aggiorna col nome nuovo
+    return {"ok": True, "pc": pc_name()}
 
 
 @app.get("/BunkerPlex.apk")
