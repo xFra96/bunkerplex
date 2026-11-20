@@ -912,3 +912,14 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 @media (display-mode: standalone) {
   body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
 }
+
+/* Installa sulla TV dal PC */
+#tvpanel .actions { flex-wrap: wrap; align-items: center; }
+#tvpanel .field.tvaddr { flex: 1 1 16rem; max-width: 22rem; }
+#tvpanel .kv { margin-top: .4rem; }
+#tvpanel .kv dt small { display: block; color: var(--ink3, var(--ink2)); font-size: .85rem; }
+.tvguide { margin-top: 1.2rem; color: var(--ink2); }
+.tvguide summary { cursor: pointer; color: var(--ink); padding: .3rem 0; }
+.tvguide ol.steps { margin-top: .7rem; }
+.tvpair { display: flex; gap: .6rem; flex-wrap: wrap; margin: .4rem 0 .6rem; }
+.tvpair .field { flex: 1 1 10rem; max-width: 16rem; }

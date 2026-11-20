@@ -1523,6 +1523,108 @@ async function apkPanel(title) {
     '</div></div></div>';
 }
 
+// ---------------------------------------------------------------- App sulla TV dal PC (adb)
+// Il server cerca le TV di casa con il debug acceso, si collega e installa l'app
+// con un clic (server/tvinstall.py). Il pannello si aggiorna da solo mentre lavora.
+var tvPoll = null;
+
+function tvStateText(d, t) {
+  var busy = t.phase && t.target === d.serial;
+  if (busy) return '<span class="nodot">' + esc(t.message || 'Un attimo…') + '</span>';
+  if (d.state === 'unauthorized') return '<span class="nodot">Sulla TV premi «Consenti» (spunta «Consenti sempre»)</span>';
+  if (d.state === 'offline' || d.state === 'found') return 'Debug acceso, da collegare';
+  if (!d.installed) return 'BunkerPlex non installata';
+  if (t.apk_version && d.installed < t.apk_version) return '<span class="nodot">App da aggiornare</span>';
+  return '<span class="okdot">App aggiornata</span>';
+}
+
+function tvDeviceRow(d, t) {
+  var label = d.name || 'Dispositivo Android';
+  var btn = '';
+  if (!t.phase && d.state !== 'unauthorized') {
+    var again = d.state === 'device' && d.installed && !(t.apk_version && d.installed < t.apk_version);
+    btn = '<button class="btn' + (again ? '' : ' primary') + ' f" data-act="tvinstall" data-arg="' + esc(d.serial) + '" data-key="tvi-' + esc(d.ip) + '">' +
+      (again ? 'Reinstalla' : (d.installed ? 'Aggiorna l\'app' : 'Installa l\'app')) + '</button>';
+  }
+  return '<dt>' + esc(label) + '<small class="num">' + esc(d.ip) + '</small></dt><dd>' + tvStateText(d, t) +
+    (btn ? '<div class="actions" style="justify-content:flex-end;margin-top:.4rem">' + btn + '</div>' : '') + '</dd>';
+}
+
+function tvGuide() {
+  return '<details class="tvguide"' + '><summary class="f" data-key="tvguide">Come si accende il debug sulla TV (una volta sola)</summary>' +
+    '<ol class="steps">' +
+    '<li><b>Google TV / Android TV</b>: Impostazioni → Sistema → Info → premi 7 volte su <b>Build del sistema operativo Android TV</b> (compare «Ora sei uno sviluppatore»)</li>' +
+    '<li>torna in Impostazioni → Sistema → <b>Opzioni sviluppatore</b> e attiva <b>Debug USB</b> (se c\'è, anche <b>Debug di rete</b> / <b>ADB in rete</b>)</li>' +
+    '<li><b>Fire TV</b>: Impostazioni → La mia Fire TV → Informazioni → premi 7 volte sul nome del dispositivo, poi Opzioni sviluppatore → <b>Debug ADB</b> attivo</li>' +
+    '<li>premi <b>Cerca le TV</b> qui sotto; quando la TV chiede «Consentire il debug?» metti la spunta su <b>Consenti sempre</b> e premi <b>OK</b></li></ol>' +
+    '<p><small>Se la TV ha solo <b>Debug wireless</b> (con codice di associazione): aprilo, scegli «Associa dispositivo con codice» e scrivi qui sotto indirizzo:porta e codice che mostra.</small></p>' +
+    '<div class="tvpair"><input class="field f num" id="tvpairaddr" data-key="tvpairaddr" placeholder="192.168.1.180:37123">' +
+    '<input class="field f num" id="tvpaircode" data-key="tvpaircode" inputmode="numeric" maxlength="6" placeholder="Codice" data-enter="tvpair">' +
+    '<button class="btn f" data-act="tvpair" data-key="tvpair">Associa</button></div>' +
+    '<p><small>Dopo l\'associazione scrivi nel campo «Indirizzo della TV» l\'indirizzo:porta di «Debug wireless» (non quello del codice) e premi Collega.</small></p></details>';
+}
+
+function tvPanelBody(t) {
+  if (!t) return '<p>Il server non risponde in questo momento.</p>';
+  if (!t.apk) return '<p>Sul PC non c\'è ancora l\'app da installare: arriva con il prossimo aggiornamento.</p>';
+  var devs = t.devices || [];
+  var scanning = t.phase === 'scan' || t.phase === 'connect' || t.phase === 'pair';
+  var html = '<p>Con il debug acceso sulla TV, il PC installa e aggiorna l\'app da solo: niente Downloader né chiavette.</p>';
+  if (scanning) html += '<p class="nodot">' + esc(t.message || 'Un attimo…') + '</p>';
+  if (t.error && t.error !== 'INCOMPATIBILE') html += '<p class="nodot">' + esc(t.error) + '</p>';
+  if (t.error === 'INCOMPATIBILE') {
+    html += '<p class="nodot">Sulla TV c\'è una BunkerPlex con una firma diversa (compilata su un altro PC): va tolta prima di mettere questa. Il server della TV andrà riscelto (lo trova da solo).</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="tvreplace" data-arg="' + esc(t.target) + '" data-key="tvreplace">Togli quella e installa</button></div>';
+  }
+  if (!t.error && !t.phase && t.last === 'install' && t.done_at && Date.now() / 1000 - t.done_at < 120) {
+    html += '<p class="okdot">Fatto: BunkerPlex è installata e si è aperta sulla TV.</p>';
+  }
+  if (devs.length) {
+    html += '<dl class="kv">' + devs.map(function (d) { return tvDeviceRow(d, t); }).join('') + '</dl>';
+  } else if (t.scanned_at && !scanning) {
+    html += '<p>Nessuna TV con il debug acceso nella rete di casa. Segui i passi qui sotto, oppure scrivi l\'indirizzo della TV (Impostazioni → Rete).</p>';
+  }
+  html += '<div class="actions" style="margin-top:.8rem"><button class="btn' + (devs.length ? '' : ' primary') + ' f" data-act="tvscan" data-key="tvscan"' + (t.phase ? ' disabled' : '') + '>' +
+    (t.scanned_at ? 'Cerca di nuovo' : 'Cerca le TV') + '</button>' +
+    '<input class="field f num tvaddr" id="tvaddr" data-key="tvaddr" placeholder="Indirizzo della TV, es. 192.168.1.180" data-enter="tvconnect">' +
+    '<button class="btn f" data-act="tvconnect" data-key="tvconnect"' + (t.phase ? ' disabled' : '') + '>Collega</button></div>';
+  return html + tvGuide();
+}
+
+function tvNeedsPoll(t) {
+  return t && (t.phase || (t.devices || []).some(function (d) { return d.state === 'unauthorized'; }));
+}
+
+function tvShow(t) {
+  var el = document.getElementById('tvpanel');
+  if (!el) { clearTimeout(tvPoll); tvPoll = null; return; }
+  // Non si perde quello che si sta scrivendo nei campi
+  var keep = {};
+  ['tvaddr', 'tvpairaddr', 'tvpaircode'].forEach(function (id) { var i = document.getElementById(id); if (i) keep[id] = i.value; });
+  var open = !!el.querySelector('details[open]');
+  var focused = document.activeElement && document.activeElement.getAttribute('data-key');
+  el.innerHTML = '<h2>Installa sulla TV dal PC</h2>' + tvPanelBody(t);
+  Object.keys(keep).forEach(function (id) { var i = document.getElementById(id); if (i) i.value = keep[id]; });
+  if (open) { var dt = el.querySelector('details'); if (dt) dt.open = true; }
+  if (focused) { var f = el.querySelector('[data-key="' + focused + '"]'); if (f && !f.disabled) f.focus(); }
+  clearTimeout(tvPoll);
+  tvPoll = tvNeedsPoll(t) ? setTimeout(tvRefresh, 2000) : null;
+}
+
+function tvRefresh() {
+  return api('/tv').then(tvShow, function () { tvShow(null); });
+}
+
+function tvSend(path, body) {
+  return post('/tv/' + path, body).then(tvShow, function (e) { toast(e.message); });
+}
+
+async function tvPanel() {
+  var t = await api('/tv').catch(function () { return null; });
+  setTimeout(function () { if (tvNeedsPoll(t)) tvShow(t); }, 0);
+  return '<div class="panel" id="tvpanel"><h2>Installa sulla TV dal PC</h2>' + tvPanelBody(t) + '</div>';
+}
+
 function networkPanel(n) {
   if (!n) return '';
   return '<div class="panel"><h2>Indirizzi di questo PC</h2><dl class="kv">' +
@@ -1677,7 +1779,7 @@ async function settingsArea(area) {
     return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
       (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>') +
-      (APP ? '' : await apkPanel('App per la TV e per il telefono')));
+      (APP ? '' : await tvPanel() + await apkPanel('App per la TV e per il telefono')));
   }
 
   // Questo dispositivo: preferenze di visione e collegamento al server
@@ -3685,6 +3787,24 @@ var actions = {
     }, function (e) { toast(e.message); });
   },
   updinstall: function () { startServerUpdate(); },
+  // --- app sulla TV dal PC
+  tvscan: function () { tvSend('scan'); },
+  tvconnect: function () {
+    var v = (document.getElementById('tvaddr') || {}).value || '';
+    if (!v.trim()) { toast('Scrivi l\'indirizzo della TV (Impostazioni → Rete sulla TV)'); return; }
+    tvSend('connect', { target: v.trim() });
+  },
+  tvpair: function () {
+    var a = (document.getElementById('tvpairaddr') || {}).value || '', c = (document.getElementById('tvpaircode') || {}).value || '';
+    if (!a.trim() || !c.trim()) { toast('Scrivi indirizzo:porta e codice che mostra la TV'); return; }
+    tvSend('pair', { target: a.trim(), code: c.trim() });
+  },
+  tvinstall: function (serial) { tvSend('install', { target: serial }); },
+  tvreplace: function (serial) {
+    confirmBox('Togliere dalla TV la BunkerPlex che c\'è e mettere questa? Sulla TV andrà rifatto l\'accesso al profilo.', 'Sì, sostituiscila', function () {
+      tvSend('install', { target: serial, replace: true });
+    });
+  },
   updauto: function (arg) {
     post('/update/auto', { auto: arg === '1' }).then(render, function (e) { toast(e.message); });
   },
