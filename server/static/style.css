@@ -272,6 +272,8 @@ html.tv .art .more { display: none; }
 
 /* ---------- Episodi ---------- */
 .seasons { display: flex; flex-wrap: wrap; padding: 0 var(--pad); margin-top: 1.4rem; }
+.seasonbar { padding: .8rem var(--pad) 0; }
+.seasonbar .btn svg { width: 1.1em; height: 1.1em; vertical-align: -.15em; }
 .eps { padding: .6rem var(--pad) 0; max-width: 78rem; }
 .eprow { display: flex; align-items: stretch; margin-bottom: .7rem; }
 .ep { flex: 1; min-width: 0; display: flex; align-items: center; text-align: left; padding: .7rem; border-radius: var(--r); background: var(--surface); }
