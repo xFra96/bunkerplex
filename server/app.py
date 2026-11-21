@@ -5487,7 +5487,7 @@ def sharing_status():
     try:
         accounts = [{"id": r["id"], "name": r["name"], "approved": bool(r["approved"]),
                      "created": r["created"], "last_seen": r["last_seen"] or 0,
-                     "back_url": r["back_url"] or ""}
+                     "back_url": r["back_url"] or "", "via": "account" if r["cloud_from"] else ""}
                     for r in con.execute("SELECT * FROM accounts ORDER BY approved, name COLLATE NOCASE")]
     finally:
         con.close()
@@ -7066,7 +7066,7 @@ def friends_list():
         n = f["n"]
         s = friend_status.get(n) or {}
         libs, age = fc_load(n, "libraries.json")
-        out.append({"n": n, "name": f["name"], "url": f["url"], "user": f.get("user") or "",
+        out.append({"n": n, "name": f["name"], "url": f["url"], "user": f.get("user") or "", "via": f.get("via") or "",
                     "online": s.get("online"), "error": s.get("error") or "",
                     "synced": time.time() - age if libs is not None else 0,
                     "libraries": [{"id": fvid(n, l["id"]), "name": l["name"],
