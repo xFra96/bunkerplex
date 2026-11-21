@@ -1422,6 +1422,7 @@ function settingsAreas() {
 }
 
 var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+var ICON_FRIENDS = '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.4c1.6.6 2.7 2.2 3 4.6"/></svg>';
 
 // Un'icona per ogni area delle impostazioni: si riconoscono a colpo d'occhio
 var SICON = {
@@ -3154,7 +3155,7 @@ function stopPlayer() {
 // ---------------------------------------------------------------- Finestra di scelta
 
 function openPicker(title, options, current, onPick) {
-  modal.classList.remove('corner');
+  modal.classList.remove('corner', 'friendsnow');
   modalState = { options: options, onPick: onPick, returnFocus: document.activeElement };
   modal.innerHTML = '<div class="sheet"><h3>' + esc(title) + '</h3><div class="opts">' + options.map(function (o, i) {
     return '<button class="opt f' + (o.value === current ? ' sel' : '') + '" data-act="opt" data-arg="' + i + '">' +
@@ -3444,7 +3445,7 @@ function closeModal(silent) {
   var back = modalState && modalState.returnFocus;
   modal.hidden = true;
   modal.innerHTML = '';
-  modal.classList.remove('corner');
+  modal.classList.remove('corner', 'friendsnow');
   modalState = null;
   if (!silent && back && document.body.contains(back)) back.focus();
   return true;
@@ -3694,6 +3695,7 @@ var actions = {
       });
   },
   activity: function () { openActivity(); },
+  friendsnow: function () { openFriendsNow(); },
   actgo: function (href) {
     closeModal(true);
     if (location.hash === href) render(); else location.hash = href;
@@ -4067,8 +4069,10 @@ function move(dir) {
   }
   var inRail = rail.contains(cur);
   // La campanella in alto sta fuori dalla pagina ma si raggiunge come un suo elemento
-  var bell = document.querySelector('#activity:not([hidden]) .actbtn');
-  if (bell && !bell.getBoundingClientRect().width) bell = null;
+  // (con accanto il pulsante degli amici: si passa dall'uno all'altro con le frecce)
+  var tops = Array.prototype.filter.call(document.querySelectorAll('#activity:not([hidden]) .actbtn'),
+    function (el) { return el.getBoundingClientRect().width; });
+  var bell = tops.length ? tops[tops.length - 1] : null;
   if (cur.closest('#activity') && !bell) { focusView(); return; }
   if (inRail && dir === 'right') { focusView(); return; }
   if (inRail && dir === 'left') return;
@@ -4078,7 +4082,7 @@ function move(dir) {
   var horizontal = dir === 'left' || dir === 'right';
   var cands = [];
   var list = Array.prototype.slice.call(scope.querySelectorAll('.f'));
-  if (scope === view && bell) list.push(bell);
+  if (scope === view) list = list.concat(tops);
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -4612,6 +4616,58 @@ function activityRows(st) {
 
 function activityOpen() { return !modal.hidden && modal.classList.contains('corner'); }
 
+// ---- Amici, accanto alla campanella: chi e' acceso adesso, e le sue raccolte a un clic.
+// Ci sono anche i tuoi altri PC e gli amici spenti (con le raccolte, ma senza video).
+function friendsNowRows() {
+  var on = friends.filter(function (f) { return f.online !== false; });
+  var off = friends.filter(function (f) { return f.online === false; });
+  function rows(list, offline) {
+    return list.map(function (fr) {
+      var who = (fr.self ? 'Tuo PC · ' : '') + fr.name;
+      var libsHtml = fr.libraries.map(function (l) {
+        var n = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : '']
+          .filter(Boolean).join(' · ');
+        return '<button class="actrow f" data-act="actgo" data-arg="#/lib/' + l.id + '" data-key="frnow-' + fr.n + '-' + l.id + '">' +
+          avatar(l.name) + '<span class="acttxt"><b>' + esc(l.name) + '</b><small>' + esc(n || 'raccolta') + '</small></span>' + CHEVRON + '</button>';
+      }).join('');
+      return '<div class="frnow' + (offline ? ' off' : '') + '"><p class="frwho"><span class="odot' + (offline ? ' off' : '') + '" aria-hidden="true"></span>' +
+        esc(who) + '<small>' + (offline ? 'spento o non raggiungibile' : 'online') + '</small></p>' +
+        (libsHtml || '<p class="actempty">Nessuna raccolta condivisa.</p>') + '</div>';
+    }).join('');
+  }
+  return '<div class="sheet actsheet" role="dialog" aria-label="Amici"><h3>Amici</h3>' +
+    (on.length ? '<div class="actgroup"><h4>Online</h4>' + rows(on, false) + '</div>' : '') +
+    (off.length ? '<div class="actgroup"><h4>Offline</h4>' + rows(off, true) + '</div>' : '') +
+    (friends.length ? '' : '<p class="actempty">Nessun amico collegato. Aggiungine uno per vedere le sue raccolte.</p>') +
+    '<div class="actgroup"><button class="actrow f" data-act="actgo" data-arg="#/settings/friends" data-key="frnow-add">' +
+    '<span class="acttxt"><b>Aggiungi un amico</b><small>Con il nome del suo account, in Impostazioni → Amici</small></span>' + CHEVRON + '</button></div></div>';
+}
+
+function renderFriendsButton(btn) {
+  if (!btn) return;
+  var on = friends.filter(function (f) { return f.online !== false; }).length;
+  var show = friends.length > 0 || !!(auth && auth.cloud);
+  btn.hidden = !show;
+  var html = ICON_FRIENDS + (on ? '<span class="frcount">' + on + '</span>' : '');
+  if (btn.getAttribute('data-sig') !== html) {
+    btn.innerHTML = html;
+    btn.setAttribute('data-sig', html);
+  }
+  btn.setAttribute('aria-label', on ? 'Amici, ' + on + ' online' : 'Amici');
+}
+
+function openFriendsNow() {
+  if (activityOpen() && modal.classList.contains('friendsnow')) { closeModal(); return; }
+  closeModal(true);
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.classList.add('corner', 'friendsnow');
+  modal.innerHTML = friendsNowRows();
+  modal.hidden = false;
+  var first = modal.querySelector('.f');
+  if (first) first.focus();
+  loadLibs(true).then(renderActivity, function () {});    // lo stato degli amici, fresco
+}
+
 // Appena aggiornato: un avviso una volta per dispositivo (poi resta nella campanella)
 function announceUpdate(u) {
   if (!u || !u.to || player) return;
@@ -4660,7 +4716,8 @@ function renderActivity() {
   if (!box) {
     box = document.createElement('div');
     box.id = 'activity';
-    box.innerHTML = '<button class="actbtn f" data-act="activity" data-key="actbtn" aria-label="Attività e notifiche"></button>';
+    box.innerHTML = '<button class="actbtn friendsbtn f" data-act="friendsnow" data-key="friendsbtn" aria-label="Amici" hidden></button>' +
+      '<button class="actbtn f" data-act="activity" data-key="actbtn" aria-label="Attività e notifiche"></button>';
     document.body.appendChild(box);
   }
   var locked = document.body.classList.contains('locked') || (auth && !auth.user);
@@ -4673,7 +4730,8 @@ function renderActivity() {
     ? '<span class="spin" aria-hidden="true"></span><span class="acttext">' + esc(op.title) + (op.pct === null ? '' : ' ' + op.pct + '%') + '</span>'
     : IC.bell;
   if (unseen) html += '<span class="actcount">' + unseen + '</span>';
-  var btn = box.firstChild;
+  renderFriendsButton(box.querySelector('.friendsbtn'));
+  var btn = box.querySelector('[data-act="activity"]');
   btn.classList.toggle('busy', !!op);
   if (btn.getAttribute('data-sig') !== html) {      // il pulsante resta lo stesso: chi ci sta sopra col telecomando non perde il posto
     btn.innerHTML = html;
@@ -4681,7 +4739,7 @@ function renderActivity() {
   }
   if (activityOpen()) {
     var key = document.activeElement && modal.contains(document.activeElement) ? document.activeElement.getAttribute('data-key') : '';
-    var fresh = activityRows(st);
+    var fresh = modal.classList.contains('friendsnow') ? friendsNowRows() : activityRows(st);
     if (modal.getAttribute('data-sig') !== fresh) {
       modal.innerHTML = fresh;
       modal.setAttribute('data-sig', fresh);
