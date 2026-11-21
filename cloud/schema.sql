@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS servers(
   sid TEXT NOT NULL,
   name TEXT,
   url TEXT NOT NULL,
+  lan TEXT,                          -- indirizzo nella rete di casa (si prova per primo)
+  friends INTEGER NOT NULL DEFAULT 1, -- 0 = solo per gli altri PC dello stesso account
   pin TEXT NOT NULL,
   t REAL NOT NULL,
   PRIMARY KEY(user_id, sid)

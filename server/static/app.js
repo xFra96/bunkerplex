@@ -445,6 +445,11 @@ function buildQuery(o) {
 
 // ---------------------------------------------------------------- raccolte
 
+// «di Marco» per un amico, «su Fra Server» per un altro tuo PC
+function fromWho(name, mine) {
+  return (mine ? 'su ' : 'di ') + esc(name);
+}
+
 function libById(id) {
   for (var i = 0; i < libs.length; i++) if (String(libs[i].id) === String(id)) return libs[i];
   // Le raccolte degli amici: si sfogliano come le proprie, ma non si modificano
@@ -453,7 +458,7 @@ function libById(id) {
     for (var b = 0; b < fl.length; b++) {
       if (String(fl[b].id) === String(id)) {
         return { id: fl[b].id, name: fl[b].name, movies: fl[b].movies, shows: fl[b].shows, folders: [],
-          friend: friends[a].name, offline: friends[a].online === false };
+          friend: friends[a].name, friend_self: !!friends[a].self, offline: friends[a].online === false };
       }
     }
   }
@@ -478,13 +483,14 @@ async function loadLibs(force) {
   friends = res[1].friends || [];
   friendQuality = res[1].quality || '720';
   libsLoadedAt = Date.now();
-  var html = libs.map(function (l) {
+  // Una raccolta che sta tutta su un altro tuo PC acceso compare sotto quel PC
+  var html = libs.filter(function (l) { return !l.remote; }).map(function (l) {
     return '<a class="f railitem" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
       avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
   }).join('') + friends.map(function (fr) {
     if (!fr.libraries.length) return '';
     var off = fr.online === false;
-    return '<div class="raillabel"><span>' + esc(fr.name) + (off ? ' · non raggiungibile' : '') + '</span></div>' +
+    return '<div class="raillabel"><span>' + (fr.self ? 'Tuo PC · ' : '') + esc(fr.name) + (off ? ' · non raggiungibile' : '') + '</span></div>' +
       fr.libraries.map(function (l) {
         return '<a class="f railitem friend' + (off ? ' off' : '') + '" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
           avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
@@ -571,7 +577,7 @@ function wideCard(x, prefix) {
   var title = isEp ? (x.show_title || x.title) : x.title;
   var sub = isEp ? 'S' + x.season + ' · E' + x.episode + ' · ' + esc(x.title) : (x.year || '');
   if (x.position && x.duration && !x.watched) sub += ' · mancano ' + fmtDur(x.duration - x.position);
-  if (x.friend) sub += ' · di ' + esc(x.friend);
+  if (x.friend) sub += ' · ' + fromWho(x.friend, x.friend_self);
   var img = isEp ? x.thumb : (x.backdrop || x.thumb);
   return '<button class="card wide f" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
     '<div class="art" style="--h:' + hue(title) + '">' +
@@ -659,8 +665,8 @@ async function home() {
     section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine', true); })) +
     d.libraries.map(function (l) {
       // Le raccolte degli amici: stessa fila, con il nome dell'amico bene in vista
-      var note = l.friend ? 'di ' + esc(l.friend) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
-      var kicker = l.friend ? l.name + ' · di ' + l.friend : l.name;
+      var note = l.friend ? fromWho(l.friend, l.friend_self) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
+      var kicker = l.friend ? l.name + (l.friend_self ? ' · su ' : ' · di ') + l.friend : l.name;
       return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id, true); }), note);
     }).join('') +
     section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
@@ -827,12 +833,12 @@ async function libraryPage(id) {
   var all = await api('/libraries/' + lib.id + '/items');
   var owner = [];
   if (lib.friend) {
-    owner.push('di ' + esc(lib.friend));
+    owner.push(fromWho(lib.friend, lib.friend_self));
     if (lib.offline) owner.push('<span class="warn">' + dot(false) + ' non raggiungibile: vedi l\'ultimo elenco salvato</span>');
   }
   if (!all.length && lib.friend) {
     return '<div class="page">' + libHeader(lib, owner) + '<div class="empty">' +
-      '<p>Questa raccolta di ' + esc(lib.friend) + ' è vuota, oppure il suo elenco non è ancora arrivato.</p></div></div>';
+      '<p>Questa raccolta ' + fromWho(lib.friend, lib.friend_self) + ' è vuota, oppure il suo elenco non è ancora arrivato.</p></div></div>';
   }
   if (!all.length) {
     return '<div class="page">' + libHeader(lib, owner.concat(lib.folders.length ? [] : ['nessuna cartella'])) + '<div class="empty">' +
@@ -1024,7 +1030,7 @@ async function item(id) {
       (x.tagline ? '<div class="tagline">' + esc(x.tagline) + '</div>' : '') +
       metaLine([
         isEp ? '<b class="lead">' + esc(x.show_title || '') + ' · Stagione ' + x.season + ' · Episodio ' + x.episode + '</b>' : '',
-        x.friend ? '<b class="lead">Di ' + esc(x.friend) + '</b>' : '',
+        x.friend ? '<b class="lead">' + (x.friend_self ? 'Su ' : 'Di ') + esc(x.friend) + '</b>' : '',
         x.year, fmtDur(x.duration), stars(x),
         x.quality ? '<span class="tag">' + x.quality + '</span>' : '',
         x.watched ? '<span class="okdot">' + IC.check + ' Visto</span>' : '',
@@ -1096,7 +1102,7 @@ async function show(id) {
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
       metaLine([
-        s.friend ? '<b class="lead">Di ' + esc(s.friend) + '</b>' : '',
+        s.friend ? '<b class="lead">' + (s.friend_self ? 'Su ' : 'Di ') + esc(s.friend) + '</b>' : '',
         s.year, s.seasons_count + (s.seasons_count === 1 ? ' stagione' : ' stagioni'),
         s.episodes + ' episodi', stars(s),
         s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">' + IC.check + ' Vista</span>'
@@ -1820,7 +1826,7 @@ async function settingsArea(area) {
     var af = auth.cloud ? await api('/account-friends').catch(function () { return null; }) : null;
     return settingsShell('friends', 'Amici',
       'Tu e un amico con BunkerPlex guardate ciascuno le raccolte dell\'altro, anche da case diverse. Si guarda soltanto.',
-      accountFriendsPanel(af, sh) + friendsPanel(sh, !!auth.cloud) +
+      myPcsPanel(af) + accountFriendsPanel(af, sh) + friendsPanel(sh, !!auth.cloud) +
       '<div class="panel"><h2>Video degli amici</h2>' +
       '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
       '<p class="kvnote">Viaggiano sulla linea in caricamento di chi condivide: 720p va bene quasi sempre.</p></div>');
@@ -1997,6 +2003,25 @@ function whenSeen(sec) {
 
 // Come si arriva a questo server da fuori casa: di solito il Tailscale dentro
 // BunkerPlex; se il servizio account non lo offre, la porta aperta sul router
+// I tuoi altri PC (stesso account): le loro raccolte si vedono da qui, prima
+// dalla rete di casa e, fuori casa, da Tailscale.
+function myPcsPanel(af) {
+  if (!af || !af.linked || af.supported === false || !af.mine) return '';
+  var rows = af.mine.map(function (m) {
+    var st = m.online === false ? dot(false) + ' ' + esc(m.error || 'spento o non raggiungibile')
+      : m.online ? dot(true) + ' collegato' + (m.route === 'lan' ? ' dalla rete di casa' : m.route === 'tailscale' ? ' da Tailscale' : '')
+        : 'collegamento in corso…';
+    return '<div class="folder"><div class="where"><b>' + esc(m.name || 'Il tuo altro PC') + '</b><small>' + st + '</small></div></div>';
+  }).join('');
+  var state = !af.self_reach ? 'Spento: da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
+    : af.reachable ? 'Attivo: ogni PC dove sei entrato vede le raccolte degli altri accesi'
+      : 'Attivo, ma gli altri tuoi PC non raggiungono ancora questo (Tailscale in avvio)';
+  return '<div class="panel"><h2>I tuoi PC</h2>' +
+    (af.self_reach ? (rows ? '<div class="lib">' + rows + '</div>' : '<p>Nessun altro PC acceso con il tuo account, per ora.</p>') : '') +
+    '<button class="setting f" data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself">Raggiungi le tue raccolte dagli altri tuoi PC<small>' + esc(state) + '</small></button>' +
+    '<p class="kvnote">In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
+}
+
 function reachState(sh) {
   var pm = sh.portmap || {}, tn = sh.tailnet || {};
   if (!sh.on) return 'Condivisione spenta: da fuori non entra nessuno.';
@@ -2715,8 +2740,8 @@ function startPlayer(p) {
     var lines = [
       (v.videoWidth ? v.videoWidth + '×' + v.videoHeight + ' · ' : '') + (p.vcodec || '').toUpperCase(),
       a ? 'Audio: ' + a.label : '',
-      !st.transcoding ? 'Riproduzione diretta del file' + (p.friend ? ' dal PC di ' + p.friend : '') :
-        p.friend && p.friend_quality !== 'orig' ? 'Convertito a ' + p.friend_quality + 'p dal PC di ' + p.friend :
+      !st.transcoding ? 'Riproduzione diretta del file' + (p.friend ? (p.friend_self ? ' da ' : ' dal PC di ') + p.friend : '') :
+        p.friend && p.friend_quality !== 'orig' ? 'Convertito a ' + p.friend_quality + 'p ' + (p.friend_self ? 'da ' : 'dal PC di ') + p.friend :
         (st.vcopy || (p.vcodec === 'h264' && p.bits === 8) ? 'Conversione leggera (video originale)' : 'Conversione completa sul PC')
     ].filter(Boolean);
     openPicker(p.title + (p.subtitle ? ' — ' + p.subtitle : '') + ' · ' + lines.join(' · '), [{ value: 'ok', label: 'Chiudi' }], 'ok', wake);
@@ -3570,6 +3595,10 @@ var actions = {
     };
     if (name === 'no') { go(); return; }
     confirmBox('Togliere ' + name + ' dai tuoi amici? Non vedrete più le raccolte l\'uno dell\'altro.', 'Sì, togli', go);
+  },
+  afself: function (arg) {
+    toast(arg === '1' ? 'Collego i tuoi PC…' : 'Scollego i tuoi PC…');
+    post('/account-friends/self', { on: arg === '1' }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
   },
   afshare: function (arg) {
     toast(arg === '1' ? 'Apro la porta per gli amici…' : 'Spengo la condivisione…');

@@ -3840,10 +3840,14 @@ def libraries_list():
     finally:
         con.close()
     out = []
+    elsewhere = self_synced()
     for lib in get_libraries():
         paths = files.get(lib["id"], [])
         out.append({
-            "id": lib["id"], "name": lib["name"],
+            "id": lib["id"], "name": lib["name"], "sync": lib.get("sync_id") or "",
+            # tutta su un altro tuo PC, che la fa vedere da lì: nel menu c'è già sotto quel PC
+            "remote": bool(lib.get("sync_id")) and lib["sync_id"] in elsewhere
+                      and not any(folder_state(p).get("online") for p in lib["folders"]),
             "mine": lib.get("mine", True), "shared": bool(lib.get("shared")),
             "movies": movies.get(lib["id"], 0), "shows": shows.get(lib["id"], 0),
             "folders": [dict(folder_state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
@@ -5227,6 +5231,32 @@ def share_on():
     return bool((config.get("share") or {}).get("on"))
 
 
+# ---- I propri PC: da ogni server dove sei entrato con l'account si arriva agli
+# altri tuoi server accesi (rete di casa se ci sei, altrimenti Tailscale), anche
+# se non condividi con gli amici. Si spegne per account (self_reach = False).
+
+def self_reach(uid):
+    return user_setting(uid, "self_reach") is not False
+
+
+def self_wanted():
+    """C'e' qui almeno un account collegato che vuole raggiungere (ed essere
+    raggiunto da) i suoi altri PC: serve la porta 32501 e Tailscale."""
+    if not auth_on():
+        return False
+    con = db(raw=True)
+    try:
+        ids = [r[0] for r in con.execute("SELECT id FROM users WHERE cloud_id IS NOT NULL AND token IS NOT NULL")]
+    finally:
+        con.close()
+    return any(self_reach(i) for i in ids)
+
+
+def share_open():
+    """La porta 32501 risponde: per gli amici (share_on) o per gli altri PC dell'account."""
+    return share_on() or self_wanted()
+
+
 def token_hash(token):
     return hashlib.sha256(token.encode("utf-8", "replace")).hexdigest()
 
@@ -5248,8 +5278,9 @@ def new_session(con, account):
 
 
 def share_guard(request: Request):
-    """Chi puo' usare /api/share/...: solo un amico registrato e approvato."""
-    if not share_on():
+    """Chi puo' usare /api/share/...: solo un amico registrato e approvato (o un
+    altro PC dello stesso account)."""
+    if not share_open():
         raise HTTPException(403, "La condivisione è spenta su questo server")
     token = request.headers.get("x-share-token", "")
     if not token:
@@ -5259,8 +5290,9 @@ def share_guard(request: Request):
     if not known or time.time() - known[2] > 30:
         con = db()
         try:
-            r = con.execute("SELECT a.id, a.approved, a.last_seen FROM share_sessions s JOIN accounts a "
-                            "ON a.id=s.account WHERE s.token=?", (key,)).fetchone()
+            r = con.execute("SELECT a.id, a.approved, a.last_seen, a.cloud_from, u.cloud_id FROM share_sessions s "
+                            "JOIN accounts a ON a.id=s.account LEFT JOIN users u ON u.id=a.profile "
+                            "WHERE s.token=?", (key,)).fetchone()
             if r and r["approved"] and time.time() - (r["last_seen"] or 0) > 300:
                 con.execute("UPDATE accounts SET last_seen=? WHERE id=?", (time.time(), r["id"]))
                 con.commit()
@@ -5270,11 +5302,14 @@ def share_guard(request: Request):
             raise HTTPException(401, "Accesso non valido: ripeti l'accesso")
         if len(share_tokens) > 500:
             share_tokens.clear()
-        known = share_tokens[key] = (r["id"], bool(r["approved"]), time.time())
+        mine = bool(r["cloud_from"]) and r["cloud_from"] == r["cloud_id"]     # un altro PC dello stesso account
+        known = share_tokens[key] = (r["id"], bool(r["approved"]), time.time(), mine)
         if r["approved"]:
             friend_nudge(r["id"])
     if not known[1]:
         raise HTTPException(403, "Registrazione in attesa di approvazione")
+    if not known[3] and not share_on():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
     request.state.share_account = known[0]
 
 
@@ -5378,8 +5413,9 @@ async def share_ticket(request: Request):
     """Un amico dell'account entra con un biglietto del servizio account: lo si fa
     controllare li' (vale una volta sola, solo tra amici, solo per questo server) e
     l'amico riceve un gettone come quelli dei vecchi collegamenti, ma vede solo le
-    raccolte del profilo di cui e' amico."""
-    if not share_on():
+    raccolte del profilo di cui e' amico. Lo stesso vale per un altro PC dello
+    stesso account (biglietto da te a te)."""
+    if not share_open():
         raise HTTPException(403, "La condivisione è spenta su questo server")
     body = await read_json(request)
     ticket, to = str(body.get("ticket") or ""), body.get("to")
@@ -5390,7 +5426,7 @@ async def share_ticket(request: Request):
         p = con.execute("SELECT id, token FROM users WHERE cloud_id=? AND token IS NOT NULL", (to,)).fetchone()
     finally:
         con.close()
-    if not p or not friends_shared(p["id"]):
+    if not p or not ((friends_shared(p["id"]) and share_on()) or self_reach(p["id"])):
         raise HTTPException(404, "Su questo server quell'account non condivide")
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/tickets/check",
@@ -5402,6 +5438,11 @@ async def share_ticket(request: Request):
     who = res.get("from") or {}
     if not isinstance(who.get("id"), int):
         raise HTTPException(403, "Biglietto non valido")
+    if who["id"] == to:
+        if not self_reach(p["id"]):
+            raise HTTPException(403, "Questo PC non si fa raggiungere dagli altri tuoi PC")
+    elif not (friends_shared(p["id"]) and share_on()):
+        raise HTTPException(404, "Su questo server quell'account non condivide")
 
     def work():
         con = db(raw=True)
@@ -5588,7 +5629,7 @@ def share_info():
 @share.get("/libraries")
 def share_libraries():
     """Le raccolte, senza i percorsi delle cartelle."""
-    return [{"id": l["id"], "name": l["name"], "movies": l["movies"], "shows": l["shows"]}
+    return [{"id": l["id"], "name": l["name"], "movies": l["movies"], "shows": l["shows"], "sync": l["sync"]}
             for l in libraries_list()]
 
 
@@ -6118,7 +6159,9 @@ def tailnet_wanted():
     if share_on() and not (sh.get("manual") and sh.get("address")):
         return True
     with config_lock:
-        return any(f.get("via") == "account" for f in config.get("friends") or [])
+        if any(f.get("via") == "account" for f in config.get("friends") or []):
+            return True
+    return self_wanted() and not (sh.get("manual") and sh.get("address"))
 
 
 def tailnet_binaries():
@@ -6341,14 +6384,38 @@ def friend_usable(n):
     return s.get("online") is not False or time.time() - s.get("tried", 0) > 30
 
 
+lan_fails = {}                   # indirizzo di casa -> quando non ha risposto
+
+
 def friend_open(f, path, timeout=5, headers=None, method="GET", data=None):
+    """Un altro tuo PC si prova prima nella rete di casa (se ci sei e' piu' veloce
+    e va anche senza Internet), poi da Tailscale. Per 2 minuti dopo un tentativo a
+    vuoto l'indirizzo di casa si salta, cosi' fuori casa non si aspetta."""
+    lan_ = f.get("lan") or ""
+    if lan_ and lan_ != f["url"] and time.time() - lan_fails.get(lan_, 0) > 120:
+        try:
+            r = friend_open_at(f, lan_, path, min(timeout, 2), headers, method, data)
+            if f.get("n"):
+                friend_status.setdefault(f["n"], {})["route"] = "lan"
+            return r
+        except urllib.error.HTTPError:
+            raise                        # il PC risponde: l'errore e' suo, non della strada
+        except Exception:
+            lan_fails[lan_] = time.time()
+    r = friend_open_at(f, f["url"], path, timeout, headers, method, data)
+    if f.get("n"):
+        friend_status.setdefault(f["n"], {})["route"] = "tailscale" if via_tailnet(f["url"]) else "internet"
+    return r
+
+
+def friend_open_at(f, base, path, timeout=5, headers=None, method="GET", data=None):
     h = {"X-Share-Token": f.get("token") or "", "User-Agent": "BunkerPlex/" + VERSION}
     h.update(headers or {})
-    req = urllib.request.Request(f["url"] + "/api/share" + path, data=data, headers=h, method=method)
+    req = urllib.request.Request(base + "/api/share" + path, data=data, headers=h, method=method)
     # Verso un 100.x si passa dal Tailscale dentro BunkerPlex, se e' acceso
     # (altrimenti, come prima, dal Tailscale eventualmente installato sul computer)
-    extra = [tailnet_proxy()] if via_tailnet(f["url"]) and tailnet_on() else []
-    if not f["url"].startswith("https://"):
+    extra = [tailnet_proxy()] if via_tailnet(base) and tailnet_on() else []
+    if not base.startswith("https://"):
         if extra:
             return urllib.request.build_opener(_NoRedirect, *extra).open(req, timeout=timeout)
         return friend_opener.open(req, timeout=timeout)
@@ -6518,7 +6585,8 @@ def friend_sync(f):
         for l in libs if isinstance(libs, list) else []:
             if isinstance(l, dict) and _is_id(l.get("id")):
                 clean.append({"id": l["id"], "name": str(l.get("name") or "Raccolta")[:40],
-                              "movies": int(_num(l.get("movies"))), "shows": int(_num(l.get("shows")))})
+                              "movies": int(_num(l.get("movies"))), "shows": int(_num(l.get("shows"))),
+                              "sync": l["sync"] if re.fullmatch(r"[0-9a-f]{16}", str(l.get("sync") or "")) else ""})
         fc_save(n, "libraries.json", clean)
         everything = []
         for l in clean:
@@ -6655,6 +6723,7 @@ def f_adapt(f, x, st=None):
     kind = out.get("kind")
     if kind:
         out["friend"] = f["name"]
+        out["friend_self"] = bool(f.get("self"))       # un altro tuo PC, non un amico
         out["fav"] = False
         for k in ("genres", "actors"):
             if not isinstance(out.get(k), list):
@@ -6794,11 +6863,14 @@ def friend_play(vid):
     friend_item_meta(f, rid)         # la scheda serve poi a «Continua a guardare»
     out = f_adapt(f, p)
     out["friend"] = f["name"]
+    out["friend_self"] = bool(f.get("self"))
     out["subs_online"] = False      # i video dell'amico non si toccano: li scarica lui
     out["subs"] = [s for s in out.get("subs") or [] if isinstance(s, dict) and s.get("url")]
     s = friend_states(f["n"])[0].get(rid)
     out["start"] = s["position"] if s and not s["watched"] else 0
     quality = friend_quality()
+    if f.get("self") and (friend_status.get(f["n"]) or {}).get("route") == "lan":
+        quality = "orig"             # un altro tuo PC nella rete di casa: il file com'e'
     out["friend_quality"] = quality
     if quality != "orig":
         # Sempre convertito. Il browser lo capisce da 'browser_direct'; l'app TV prova
@@ -6948,6 +7020,7 @@ def friend_home_rows():
     """Una fila per ogni raccolta di ogni amico. Solo dalla copia locale: la
     Home non aspetta mai la rete."""
     rows = []
+    here = local_syncs()
     for f in get_friends():
         try:
             n = f["n"]
@@ -6960,7 +7033,10 @@ def friend_home_rows():
                     continue
                 items.sort(key=lambda x: _num(x.get("latest")) or _num(x.get("added_at")), reverse=True)
                 st = st or friend_states(n)
+                if f.get("self") and l.get("sync") and l["sync"] in here:
+                    continue             # c'e' anche qui: la fila e' quella della raccolta di qui
                 rows.append({"id": fvid(n, l["id"]), "name": l["name"], "friend": f["name"],
+                             "friend_self": bool(f.get("self")),
                              "offline": (friend_status.get(n) or {}).get("online") is False,
                              "items": f_adapt(f, items[:24], st)})
         except Exception as ex:
@@ -7009,18 +7085,42 @@ def friend_address(raw):
     return f"{u.scheme}://{host}:{port or 32501}"
 
 
+def local_syncs():
+    """Le raccolte (sync_id) che qui hanno almeno una cartella raggiungibile: per
+    quelle si usano i file di qui, non quelli di un altro tuo PC."""
+    return {l["sync_id"] for l in get_libraries() if l.get("sync_id")
+            and any(folder_state(p).get("online") for p in l["folders"])}
+
+
+def self_synced():
+    """Le raccolte (sync_id) che si vedono da un altro tuo PC."""
+    out = set()
+    if CURRENT.get() is None:
+        return out
+    for f in get_friends():
+        if f.get("self"):
+            libs, _ = fc_load(f["n"], "libraries.json")
+            out.update(l.get("sync") for l in libs or [] if l.get("sync"))
+    return out
+
+
 @app.get("/api/friends")
 def friends_list():
     out = []
+    # Una raccolta che c'e' anche qui, con le sue cartelle: si usa quella di qui
+    here = local_syncs()
     for f in get_friends():
         n = f["n"]
         s = friend_status.get(n) or {}
         libs, age = fc_load(n, "libraries.json")
+        mine = bool(f.get("self"))
         out.append({"n": n, "name": f["name"], "url": f["url"], "user": f.get("user") or "", "via": f.get("via") or "",
+                    "self": mine, "route": s.get("route") or "",
                     "online": s.get("online"), "error": s.get("error") or "",
                     "synced": time.time() - age if libs is not None else 0,
                     "libraries": [{"id": fvid(n, l["id"]), "name": l["name"],
-                                   "movies": l["movies"], "shows": l["shows"]} for l in libs or []]})
+                                   "movies": l["movies"], "shows": l["shows"]} for l in libs or []
+                                  if not (mine and l.get("sync") and l["sync"] in here)]})
     return {"friends": out, "quality": friend_quality()}
 
 
@@ -7186,10 +7286,21 @@ def presence_url():
     return url if url.startswith("https://") and share_tls["pin"] else ""
 
 
+def lan_url():
+    """L'indirizzo della porta 32501 nella rete di casa: gli altri tuoi PC lo provano
+    per primo (piu' veloce, e funziona anche senza Internet)."""
+    ip = os.environ.get("BUNKERPLEX_LAN_IP", "").strip() or lan["ip"]
+    if not ip or not SHARE_PORT or not share_tls["on"] or not re.fullmatch(r"[\d.]{7,15}", ip):
+        return ""
+    return f"https://{ip}:{SHARE_PORT}"
+
+
 def publish_presence(uid, token):
     want = None
-    if friends_shared(uid) and share_on() and presence_url():
-        want = {"sid": pc_id(), "name": pc_name(), "url": presence_url(), "pin": share_tls["pin"]}
+    friends = friends_shared(uid) and share_on()
+    if (friends or self_reach(uid)) and presence_url():
+        want = {"sid": pc_id(), "name": pc_name(), "url": presence_url(), "pin": share_tls["pin"],
+                "lan": lan_url(), "friends": friends}
     key = str(uid)
     with config_lock:
         had = (config.get("presence") or {}).get(key)
@@ -7219,7 +7330,9 @@ def sync_friends(uid, token):
         friends_cloud[uid] = {"at": time.time(), "friends": [], "supported": False}
         return                   # servizio account di prima: niente amici dell'account
     lst = [f for f in res.get("friends") or [] if isinstance(f, dict) and isinstance(f.get("id"), int)]
-    friends_cloud[uid] = {"at": time.time(), "friends": lst, "supported": True}
+    friends_cloud[uid] = {"at": time.time(), "friends": lst, "supported": True,
+                          "mine": [{"sid": str(s.get("sid") or ""), "name": str(s.get("name") or "")}
+                                   for s in res.get("mine") or [] if isinstance(s, dict)]}
     ok = [f for f in lst if f.get("status") == "ok"]
     # 1. I collegamenti ai server degli amici
     wanted = {}
@@ -7233,15 +7346,33 @@ def sync_friends(uid, token):
             if not re.fullmatch(r"[0-9a-f]{64}", str(s.get("pin") or "")):
                 continue
             name = str(fr.get("username") or "Amico") + (" · " + str(s["name"]) if len(servers) > 1 and s.get("name") else "")
-            wanted[(fr["id"], s["sid"])] = {"name": name[:30], "url": url, "pin": s["pin"]}
+            wanted[(fr["id"], s["sid"])] = {"name": name[:30], "url": url, "pin": s["pin"], "lan": ""}
+    # 1b. Gli altri PC del tuo account (accesi e raggiungibili): le tue raccolte da lì
+    me = res.get("me")
+    mine_ok = isinstance(me, int) and not isinstance(me, bool) and self_reach(uid)
+    if mine_ok:
+        for s in res.get("mine") or []:
+            if not isinstance(s, dict) or not re.fullmatch(r"[0-9a-f]{8}", str(s.get("sid") or "")) \
+                    or s["sid"] == pc_id() or not re.fullmatch(r"[0-9a-f]{64}", str(s.get("pin") or "")):
+                continue
+            try:
+                url = friend_address(s.get("url"))
+            except HTTPException:
+                continue
+            try:
+                lan_ = friend_address(s.get("lan")) if str(s.get("lan") or "").startswith("https://") else ""
+            except HTTPException:
+                lan_ = ""
+            wanted[(me, s["sid"])] = {"name": str(s.get("name") or "Il tuo altro PC")[:30], "url": url,
+                                      "pin": s["pin"], "lan": lan_, "self": True}
     for f in get_friends():
         if f.get("via") != "account" or f.get("owner") != uid:
             continue
         w = wanted.pop((f.get("fid"), f.get("sid")), None)
         if w is None:
             friend_drop(f["n"])          # non piu' amici (o quel server non condivide piu')
-        elif (w["url"], w["pin"], w["name"]) != (f["url"], f.get("pin"), f["name"]):
-            fields = {"url": w["url"], "name": w["name"]}
+        elif (w["url"], w["pin"], w["name"], w["lan"]) != (f["url"], f.get("pin"), f["name"], f.get("lan") or ""):
+            fields = {"url": w["url"], "name": w["name"], "lan": w["lan"]}
             if w["pin"] != f.get("pin"):
                 fields.update(pin=w["pin"], token="")
             friend_set(f["n"], **fields)
@@ -7249,11 +7380,15 @@ def sync_friends(uid, token):
     for (fid, sid), w in wanted.items():
         if len(get_friends()) >= FRIEND_MAX:
             break
-        friend_store(w["name"], w["url"], "", "", None, w["pin"],
-                     extra={"via": "account", "owner": uid, "fid": fid, "sid": sid})
+        extra = {"via": "account", "owner": uid, "fid": fid, "sid": sid}
+        if w.get("self"):
+            extra.update(self=True, lan=w["lan"])
+        friend_store(w["name"], w["url"], "", "", None, w["pin"], extra=extra)
         tailnet_wake.set()               # per arrivare da lui serve Tailscale anche qui
     # 2. Chi entra qui con l'account: solo gli amici di adesso
     ids = {f["id"] for f in ok}
+    if mine_ok:
+        ids.add(me)                      # i tuoi altri PC
     con = db(raw=True)
     try:
         gone = [r["id"] for r in con.execute("SELECT id, cloud_from FROM accounts WHERE profile=?", (uid,))
@@ -7281,7 +7416,7 @@ def friend_ticket_login(f):
         raise FriendDown("niente Internet")
     except accounts.CloudError as ex:
         raise FriendDown(ex.detail, ex.status)
-    got = friend_json({"url": f["url"], "pin": f.get("pin"), "token": ""}, "/ticket", 8,
+    got = friend_json({"url": f["url"], "lan": f.get("lan") or "", "pin": f.get("pin"), "token": ""}, "/ticket", 8,
                       {"ticket": ticket, "to": f["fid"]})
     if not isinstance(got, dict) or not isinstance(got.get("token"), str) or not got["token"]:
         raise FriendDown("risposta non valida")
@@ -7337,7 +7472,16 @@ async def account_friends():
                             "error": st.get("error") or "", "n": lf["n"] if lf else None})
         out.append({"id": fr["id"], "username": fr.get("username") or "", "status": fr.get("status"),
                     "servers": servers})
+    mine = []
+    for s in info.get("mine") or []:
+        if s["sid"] == pc_id():
+            continue
+        lf = next((f for f in local.values() if f.get("self") and f.get("sid") == s["sid"]), None)
+        st = (friend_status.get(lf["n"]) if lf else None) or {}
+        mine.append({"name": s["name"], "online": st.get("online"), "error": st.get("error") or "",
+                     "route": st.get("route") or "", "n": lf["n"] if lf else None})
     return {"linked": True, "supported": info.get("supported"), "loaded": bool(info), "friends": out,
+            "mine": mine, "self_reach": self_reach(u["id"]), "reachable": bool((config.get("presence") or {}).get(str(u["id"]))),
             "sharing": friends_shared(u["id"]), "address": presence_url(), "pc": pc_name(),
             "published": bool((config.get("presence") or {}).get(str(u["id"]))),
             "share_on": share_on()}
@@ -7383,6 +7527,25 @@ async def account_friends_share(request: Request):
     except Exception as ex:
         print("Amici dell'account:", repr(ex), flush=True)
     return {"ok": True, "address": presence_url()}
+
+
+@app.post("/api/account-friends/self")
+async def account_friends_self(request: Request):
+    """I tuoi altri PC: da qui vedi le loro raccolte e loro vedono quelle di qui."""
+    uid, token = profile_token()
+    on = bool((await read_json(request)).get("on"))
+    put_user_setting(uid, "self_reach", on)
+    tailnet_wake.set()
+    if on:
+        for _ in range(40):          # si aspetta un attimo Tailscale: l'indirizzo va pubblicato
+            if tailnet_on() or (config.get("share") or {}).get("manual"):
+                break
+            await asyncio.sleep(0.25)
+    try:
+        await asyncio.to_thread(sync_friends, uid, token)
+    except Exception as ex:
+        print("Amici dell'account:", repr(ex), flush=True)
+    return {"ok": True}
 
 
 @app.post("/api/pc-name")
