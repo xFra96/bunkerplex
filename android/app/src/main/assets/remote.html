@@ -130,9 +130,35 @@ function cloud(method, path, body) {
 var proxy = '';                          // http://127.0.0.1:PORTA/<segreto>
 var me = 0, friendsList = [], pcs = {}, pcOrder = [];
 
-function startNet() {
+// Al limite dei dispositivi dell'account il servizio non fa entrare: si chiede
+// all'utente quale togliere e si riprova con quello (replace)
+function startNet(replace) {
   if (proxy) return Promise.resolve(proxy);
-  return bridge('remoteNet', []).then(function (b) { proxy = b; return b; }, function (t) { throw new Error(t); });
+  return bridge('remoteNet', [replace || '']).then(function (b) { proxy = b; return b; }, function (t) {
+    var e;
+    try { e = JSON.parse(t); } catch (x) { e = { detail: t }; }
+    if (e.limit && Array.isArray(e.limit.devices)) {
+      return pickDevice(e.limit).then(function (id) {
+        if (!id) throw new Error('Senza un posto libero l\'app non raggiunge amici e tuoi PC.');
+        return startNet(id);
+      });
+    }
+    throw new Error(e.detail || 'Tailscale non parte');
+  });
+}
+
+function pickDevice(lim) {
+  return new Promise(function (resolve) {
+    var rows = lim.devices.map(function (d) {
+      return '<button class="f ep" data-act="pickdev" data-arg="' + esc(d.id) + '"><span><b>' + esc(d.label) + '</b>' +
+        '<small>' + (d.kind === 'pc' ? 'PC' : 'App') + ' · ' + (d.online ? 'collegato adesso' : 'spento') + '</small></span></button>';
+    }).join('');
+    pickDevice.done = resolve;
+    show(centerPage('<h1>Hai già ' + (lim.limit || 4) + ' dispositivi</h1>' +
+      '<p>Ogni account ha al massimo ' + (lim.limit || 4) + ' dispositivi nella rete di BunkerPlex. Quale togli per far entrare questo?</p>' +
+      '<div style="text-align:left">' + rows + '</div>' +
+      '<div class="row"><button class="f" data-act="pickdev" data-arg="">Non ora</button></div>'));
+  });
 }
 
 function hostOf(url) { return String(url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
@@ -220,7 +246,13 @@ function readFriends() {
   });
 }
 
+var devices = null;                      // {limit, devices}: i dispositivi dell'account nella rete
+function loadDevices() {
+  return cloud('GET', '/tailscale/devices').then(function (d) { devices = d; }, function () { devices = null; });
+}
+
 function refreshAll() {
+  loadDevices().then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
   return readFriends().then(function () {
     return Promise.all(Object.keys(pcs).map(function (k) { return pcs[k].base ? loadPc(pcs[k]) : null; }));
   });
@@ -321,6 +353,14 @@ function friendsPage() {
   html += '<h2>Aggiungi un amico</h2><div class="add"><input id="fn" class="f" autocapitalize="none" placeholder="Nome del suo account">' +
     '<button class="f primary" data-act="addfriend">Aggiungi</button></div>' +
     (sent.length ? '<p class="note" style="margin-top:.6rem">In attesa: ' + sent.map(function (f) { return esc(f.username); }).join(', ') + '</p>' : '');
+  if (devices && devices.devices) {
+    html += '<h2>I tuoi dispositivi · ' + devices.devices.length + ' di ' + (devices.limit || 4) + '</h2>' + devices.devices.map(function (d) {
+      return '<div class="req"><span>' + esc(d.label) + '<br><small class="who">' + (d.kind === 'pc' ? 'PC' : 'App') + ' · ' +
+        (d.online ? 'collegato' : 'spento') + '</small></span>' +
+        '<button class="f small" data-act="devdel" data-arg="' + esc(d.id) + '">Togli</button></div>';
+    }).join('') + '<p class="note">PC e app con cui raggiungi amici e tuoi PC: al massimo ' + (devices.limit || 4) +
+      ' per account. Le app si tolgono da sole poco dopo che le chiudi.</p>';
+  }
   html += '<div class="row left" style="margin-top:2rem"><button class="f" data-act="refresh">Aggiorna</button>' +
     '<button class="f" data-act="retry">Cerca il server di casa</button>' +
     '<button class="f" data-act="logout">Esci dall\'account</button></div>';
@@ -468,6 +508,18 @@ var acts = {
   },
   logout: function () { app.remoteLogout(); proxy = ''; netReady = false; pcs = {}; go('login'); },
   lib: function (arg) { go('lib/' + arg); },
+  pickdev: function (id) {
+    var done = pickDevice.done;
+    pickDevice.done = null;
+    if (!done) return;
+    if (id) show(loadingPage('Tolgo il dispositivo e mi collego…'));
+    done(id || '');
+  },
+  devdel: function (id) {
+    if (!window.confirm('Togliere questo dispositivo dalla rete di BunkerPlex?')) return;
+    cloud('DELETE', '/tailscale/devices/' + id).then(function () { toast('Dispositivo tolto'); return loadDevices(); })
+      .then(function () { show(friendsPage(), true); }, function (e) { toast(e.message); });
+  },
   open: function (arg) { go(arg); },
   play: function (arg) { var a = arg.split('/'); var pc = pcs[a[0]]; if (pc) play(pc, a[1]); },
   season: function (arg) {

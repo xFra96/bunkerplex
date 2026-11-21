@@ -45,7 +45,8 @@ object Remote {
         return key.joinToString("") { "%02x".format(it) }
     }
 
-    class CloudError(val status: Int, message: String) : IOException(message)
+    /** data: tutta la risposta del servizio (es. l'elenco dei dispositivi al limite). */
+    class CloudError(val status: Int, message: String, val data: String = "") : IOException(message)
 
     /** Una chiamata al servizio account: la risposta JSON, o CloudError col motivo. */
     fun call(ctx: Context, method: String, path: String, body: String?): String {
@@ -68,7 +69,7 @@ object Remote {
             if (code >= 400) {
                 val detail = try { JSONObject(text).optString("detail") } catch (_: Exception) { "" }
                 if (code == 401 && path != "/login") logout(ctx)
-                throw CloudError(code, detail.ifBlank { "Servizio account: errore $code" })
+                throw CloudError(code, detail.ifBlank { "Servizio account: errore $code" }, text)
             }
             return text
         } catch (e: CloudError) {
@@ -98,27 +99,42 @@ object Remote {
 
     // ---- Tailscale dentro l'app
 
-    @Volatile
-    private var starting = false
+    /** L'account ha gia' tutti i dispositivi che puo' avere nella rete: 'devices' e'
+     *  la risposta del servizio con l'elenco, per chiedere quale togliere. */
+    class DeviceLimit(val devices: String, message: String) : IOException(message)
+
+    /** Il nome di questo dispositivo nella rete: sempre lo stesso per questa app
+     *  installata (cosi' rientrando non conta come un dispositivo in piu'). */
+    private fun host(ctx: Context): String {
+        val p = prefs(ctx)
+        var id = p.getString("net_id", "") ?: ""
+        if (!Regex("[0-9a-f]{6}").matches(id)) {
+            id = (1..6).map { "0123456789abcdef".random() }.joinToString("")
+            p.edit().putString("net_id", id).apply()
+        }
+        val model = (Build.MODEL ?: "android").lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(24)
+        return "bunkerplex-app-$model-$id".replace("--", "-")
+    }
 
     /** Entra nella rete di BunkerPlex (se non c'e' gia'). Restituisce la base del
-     *  proxy locale, oppure lancia IOException con il motivo. Lento: fuori dal thread principale. */
+     *  proxy locale, oppure lancia IOException con il motivo (DeviceLimit se l'account
+     *  e' al limite: replace = il dispositivo da togliere per far posto a questo).
+     *  Lento: fuori dal thread principale. */
     @Synchronized
-    fun startNet(ctx: Context): String {
+    fun startNet(ctx: Context, replace: String = "", label: String = ""): String {
         TsNet.base().let { if (it.isNotEmpty()) return it }
-        starting = true
         try {
-            val key = JSONObject(call(ctx, "POST", "/tailscale/key", JSONObject().put("ephemeral", true).toString()))
-                .getString("key")
+            val body = JSONObject().put("ephemeral", true).put("kind", "app").put("host", host(ctx))
+                .put("label", label.ifBlank { Build.MODEL ?: "Android" })
+            if (replace.isNotEmpty()) body.put("replace", replace)
+            val key = JSONObject(call(ctx, "POST", "/tailscale/key", body.toString())).getString("key")
             val dir = File(ctx.filesDir, "tailscale").apply { mkdirs() }
-            val host = "bunkerplex-tel-" + (Build.MODEL ?: "android").lowercase().replace(Regex("[^a-z0-9]+"), "-").trim('-').take(20)
-            val err = TsNet.start(dir.absolutePath, key, host)
+            val err = TsNet.start(dir.absolutePath, key, host(ctx))
             if (err.isNotEmpty()) throw IOException(err)
             return TsNet.base()
         } catch (e: CloudError) {
+            if (e.status == 409) throw DeviceLimit(e.data, e.message ?: "Troppi dispositivi")
             throw IOException(if (e.status == 404) "Il servizio account non ha Tailscale configurato" else e.message)
-        } finally {
-            starting = false
         }
     }
 

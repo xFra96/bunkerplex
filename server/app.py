@@ -3768,6 +3768,8 @@ def info():
         return {
             "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION,
             "addresses": other_addresses(), "cloud": accounts.cloud_url(),
+            # Questo PC non entra nella rete di BunkerPlex: l'account ha gia' 4 dispositivi
+            "devices_full": tailnet["limit"] is not None,
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
             "shows": con.execute("SELECT COUNT(*) FROM shows").fetchone()[0],
             "episodes": con.execute("SELECT COUNT(*) FROM items WHERE kind='episode'").fetchone()[0],
@@ -5601,7 +5603,8 @@ def sharing_status():
             "tailscale": tailscale_ip(), "lan": lan["ip"],
             "portmap": {k: portmap[k] for k in ("ok", "method", "ip", "port", "public", "error", "at")},
             "tailnet": {"on": tailnet_on(), "ip": tailnet["ip"], "error": tailnet["error"],
-                        "running": bool(tailnet_proc["p"]), "supported": tailnet["supported"]}}
+                        "running": bool(tailnet_proc["p"]), "supported": tailnet["supported"],
+                        "limit": tailnet["limit"]}}
 
 
 @app.post("/api/sharing")
@@ -6252,7 +6255,9 @@ TS_PROXY = int(os.environ.get("TS_PROXY_PORT", "32510"))
 TS_PKGS = "https://pkgs.tailscale.com/stable/"
 TS_ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64",
            "armv7l": "arm", "armv6l": "arm", "i686": "386", "i386": "386"}
-tailnet = {"state": "", "ip": "", "error": "", "at": 0.0, "supported": None, "version": ""}
+tailnet = {"state": "", "ip": "", "error": "", "at": 0.0, "supported": None, "version": "",
+           # Al limite dei dispositivi dell'account: l'elenco, per chiedere quale togliere
+           "limit": None, "replace": ""}
 tailnet_wake = threading.Event()
 tailnet_proc = {"p": None}
 
@@ -6370,14 +6375,22 @@ def tailnet_key():
     if not rows:
         raise FriendDown("serve essere entrati con un account")
     rows = sorted(rows, key=lambda r: not friends_shared(r["id"]))
+    body = {"sid": pc_id(), "host": "bunkerplex-" + pc_id(), "kind": "pc", "label": pc_name()}
+    if tailnet["replace"]:
+        body["replace"] = tailnet["replace"]
     try:
-        got = accounts.call("POST", "/tailscale/key", {"sid": pc_id()}, rows[0]["token"])
+        got = accounts.call("POST", "/tailscale/key", body, rows[0]["token"])
     except accounts.CloudError as ex:
         if ex.status == 404:
             tailnet.update(supported=False)
+        if ex.status == 409 and isinstance(ex.data.get("devices"), list):
+            # Troppi dispositivi nell'account: l'interfaccia chiede quale togliere
+            tailnet.update(limit={"limit": ex.data.get("limit") or 4, "devices": ex.data["devices"]})
+        tailnet["replace"] = ""
         raise FriendDown(ex.detail, ex.status)
     except accounts.CloudOffline:
         raise FriendDown("niente Internet")
+    tailnet.update(limit=None, replace="")
     key = str(got.get("key") or "")
     if not key.startswith("tskey-"):
         raise FriendDown("risposta non valida dal servizio account")
@@ -7599,6 +7612,50 @@ async def account_friends():
             "share_on": share_on()}
 
 
+# ---- I dispositivi dell'account nella rete di BunkerPlex (al massimo 4: lo decide
+# il servizio account). Da qui si vedono e si tolgono; se questo PC non entra perche'
+# sono gia' 4, l'interfaccia chiede quale togliere e il PC entra al suo posto.
+
+@app.get("/api/devices")
+async def devices_list():
+    _, token = profile_token()
+    res = await cloud("GET", "/tailscale/devices", None, token)
+    me = "bunkerplex-" + pc_id()
+    for d in res.get("devices") or []:
+        d["this"] = d.get("host") == me
+    res["waiting"] = tailnet["limit"] is not None      # questo PC aspetta un posto
+    return res
+
+
+@app.delete("/api/devices/{dev_id}")
+async def devices_remove(dev_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9]{1,40}", dev_id):
+        raise HTTPException(400, "Richiesta non valida")
+    _, token = profile_token()
+    res = await cloud("DELETE", f"/tailscale/devices/{dev_id}", None, token)
+    if tailnet["limit"] is not None:     # si e' liberato un posto: questo PC riprova subito
+        tailnet_wake.set()
+    return res
+
+
+@app.post("/api/devices/replace")
+async def devices_replace(request: Request):
+    """Questo PC entra nella rete al posto del dispositivo scelto (che viene tolto)."""
+    dev_id = str((await read_json(request)).get("id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9]{1,40}", dev_id):
+        raise HTTPException(400, "Richiesta non valida")
+    profile_token()
+    tailnet["replace"] = dev_id
+    tailnet_wake.set()
+    for _ in range(60):                  # si aspetta l'esito (al massimo mezzo minuto)
+        await asyncio.sleep(0.5)
+        if not tailnet["replace"]:
+            break
+    if tailnet["limit"] is not None:
+        raise HTTPException(409, tailnet["error"] or "Il PC non è ancora entrato nella rete")
+    return {"ok": True}
+
+
 @app.post("/api/account-friends")
 async def account_friends_add(request: Request):
     name = str((await read_json(request)).get("username") or "").strip()
@@ -7722,7 +7779,9 @@ async def network(request: Request):
     return {"private": private_ip(request.headers.get("host", "")), "port": 32500,
             "public": pub["ip"], "public_source": pub["source"],
             "friends_port": SHARE_PORT, "friends_open": bool(portmap.get("ok") and portmap.get("public")),
-            "tailnet": tailnet["ip"] if tailnet_on() else ""}
+            "tailnet": tailnet["ip"] if tailnet_on() else "",
+            # Il Tailscale installato sul computer: da li' i tuoi dispositivi entrano anche dal browser
+            "tailscale": tailscale_ip()}
 
 
 @app.get("/api/apk-link")

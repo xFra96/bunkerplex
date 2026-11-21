@@ -425,12 +425,18 @@ class MainActivity : AppCompatActivity() {
 
         /** Entra nella rete di BunkerPlex: risponde con la base del proxy locale. */
         @JavascriptInterface
-        fun remoteNet(cb: Int) {
+        fun remoteNet(replace: String, cb: Int) {
+            // Al limite dei dispositivi dell'account risponde {"limit": ...}: la pagina
+            // chiede quale togliere e richiama con replace = quello scelto
+            val label = (if (isTelevision) "TV " else "Telefono ") + (Build.MODEL ?: "Android")
             thread {
                 try {
-                    done(cb, true, Remote.startNet(this@MainActivity))
+                    done(cb, true, Remote.startNet(this@MainActivity, replace, label))
+                } catch (e: Remote.DeviceLimit) {
+                    val lim = try { JSONObject(e.devices) } catch (_: Exception) { JSONObject() }
+                    done(cb, false, JSONObject().put("limit", lim).put("detail", e.message).toString())
                 } catch (e: Throwable) {
-                    done(cb, false, e.message ?: "Tailscale non parte")
+                    done(cb, false, JSONObject().put("detail", e.message ?: "Tailscale non parte").toString())
                 }
             }
         }

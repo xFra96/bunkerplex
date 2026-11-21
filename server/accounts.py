@@ -41,10 +41,11 @@ def verifier(username, password):
 class CloudError(Exception):
     """Il servizio ha risposto con un errore (password sbagliata, gettone scaduto...)."""
 
-    def __init__(self, status, detail):
+    def __init__(self, status, detail, data=None):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.data = data or {}       # tutta la risposta (es. l'elenco dei dispositivi al limite)
 
 
 class CloudOffline(Exception):
@@ -67,9 +68,10 @@ def call(method, path, body=None, token=None, timeout=12):
             return json.load(r)
     except urllib.error.HTTPError as ex:
         try:
-            detail = json.loads(ex.read().decode("utf-8", "replace")).get("detail")
+            data = json.loads(ex.read().decode("utf-8", "replace"))
+            data = data if isinstance(data, dict) else {}
         except Exception:
-            detail = None
-        raise CloudError(ex.code, detail or f"Servizio account: errore {ex.code}")
+            data = {}
+        raise CloudError(ex.code, data.get("detail") or f"Servizio account: errore {ex.code}", data)
     except Exception:
         raise CloudOffline("Non riesco a contattare il servizio account: controlla la connessione del PC")

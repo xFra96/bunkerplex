@@ -78,3 +78,13 @@ CREATE TABLE IF NOT EXISTS tickets(
   sid TEXT NOT NULL,
   exp REAL NOT NULL
 );
+
+-- Dispositivi nella rete Tailscale di BunkerPlex (al massimo 4 per account): a chi
+-- appartengono e come si chiamano. Il Worker la crea anche da solo.
+CREATE TABLE IF NOT EXISTS ts_devices(
+  host TEXT PRIMARY KEY,             -- nome del dispositivo in Tailscale (bunkerplex-...)
+  user_id INTEGER NOT NULL,
+  label TEXT,                        -- nome da mostrare (PC, Telefono Pixel 8...)
+  kind TEXT,                         -- pc / app
+  t REAL NOT NULL
+);
