@@ -1,7 +1,13 @@
 package it.bunkerplex.tv
 
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.app.UiModeManager
+import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.content.Intent
@@ -9,6 +15,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -16,7 +23,9 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.core.content.IntentCompat
 import androidx.core.content.pm.PackageInfoCompat
 import org.json.JSONObject
 import java.io.File
@@ -29,6 +38,10 @@ import kotlin.concurrent.thread
  * player nativo. Al primo avvio cerca da solo il server sulla rete di casa.
  */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val ACTION_INSTALL_RESULT = "it.bunkerplex.tv.INSTALL_RESULT"
+    }
 
     private lateinit var web: WebView
     private val prefs by lazy { getSharedPreferences("bunkerplex", MODE_PRIVATE) }
@@ -91,6 +104,8 @@ class MainActivity : AppCompatActivity() {
         })
 
         updateFile.delete()   // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
+        ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
+            ContextCompat.RECEIVER_NOT_EXPORTED)
         if (server == null) showSetup(false) else openServer()
     }
 
@@ -118,6 +133,97 @@ class MainActivity : AppCompatActivity() {
     private val updating = AtomicBoolean(false)
     private val updateFile by lazy { File(cacheDir, "BunkerPlex-update.apk") }
 
+    /** Dopo il download, se la TV non permette ancora a BunkerPlex di installare
+     *  app si apre la sua schermata del permesso: al ritorno l'installazione riparte da sola. */
+    private var waitingPermission = false
+
+    private fun canInstall() = Build.VERSION.SDK_INT < 26 || packageManager.canRequestPackageInstalls()
+
+    private fun install() {
+        if (!canInstall()) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+                waitingPermission = true
+                js("window.fpUpdate&&fpUpdate('permission',0)")
+                return
+            } catch (e: ActivityNotFoundException) {
+                // TV senza quella schermata: ci pensa l'installatore, che chiede lui il permesso
+                openInstaller()
+                return
+            }
+        }
+        thread {
+            try {
+                installWithSession()
+            } catch (e: Exception) {
+                // Installatore "a sessioni" non disponibile o rotto su questa TV: quello classico
+                runOnUiThread { openInstaller() }
+            }
+        }
+    }
+
+    /** Installazione con il PackageInstaller di Android: la TV mostra la sua conferma
+     *  e il risultato torna in installResult, cosi' la pagina sa com'e' andata. */
+    private fun installWithSession() {
+        val installer = packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        params.setAppPackageName(packageName)
+        if (Build.VERSION.SDK_INT >= 31) {
+            params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+        }
+        val id = installer.createSession(params)
+        try {
+            installer.openSession(id).use { session ->
+                session.openWrite("BunkerPlex.apk", 0, updateFile.length()).use { out ->
+                    updateFile.inputStream().use { it.copyTo(out) }
+                    session.fsync(out)
+                }
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+                val result = PendingIntent.getBroadcast(this, id,
+                    Intent(ACTION_INSTALL_RESULT).setPackage(packageName), flags)
+                session.commit(result.intentSender)
+            }
+        } catch (e: Exception) {
+            try { installer.abandonSession(id) } catch (_: Exception) {}
+            throw e
+        }
+    }
+
+    private val installResult = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    val confirm = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_INTENT, Intent::class.java)
+                    if (confirm == null) { openInstaller(); return }
+                    try {
+                        startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        js("window.fpUpdate&&fpUpdate('install',0)")
+                    } catch (e: Exception) {
+                        openInstaller()
+                    }
+                }
+                PackageInstaller.STATUS_SUCCESS -> updateFile.delete()   // di solito l'app viene chiusa prima
+                PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                    updateFile.delete()
+                    js("window.fpUpdate&&fpUpdate('cancel',0)")
+                }
+                else -> updateFailed(IOException(
+                    intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "installazione non riuscita"))
+            }
+        }
+    }
+
+    /** Installatore classico (le TV dove quello a sessioni non va): apre l'APK. */
+    private fun openInstaller() {
+        try {
+            startActivity(installIntent())
+            js("window.fpUpdate&&fpUpdate('install',0)")
+        } catch (e: Exception) {
+            updateFailed(e)
+        }
+    }
+
     private fun installIntent(): Intent {
         val uri = if (Build.VERSION.SDK_INT >= 24) {
             FileProvider.getUriForFile(this, "$packageName.files", updateFile)
@@ -139,6 +245,11 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         web.onResume()
+        if (waitingPermission) {
+            waitingPermission = false
+            if (canInstall() && updateFile.isFile) install()
+            else js("window.fpUpdate&&fpUpdate('denied',0)")
+        }
         if (cameFromPlayer) {
             cameFromPlayer = false
             web.evaluateJavascript("window.fpRefresh&&window.fpRefresh()", null)
@@ -151,6 +262,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try { unregisterReceiver(installResult) } catch (_: Exception) {}
         web.destroy()
         super.onDestroy()
     }
@@ -177,6 +289,10 @@ class MainActivity : AppCompatActivity() {
             packageManager.getPackageInfo(packageName, 0)
         ).toInt()
 
+        /** La pagina sa che l'installazione la segue l'app (permesso, conferma, esito). */
+        @JavascriptInterface
+        fun installsBySession(): Boolean = true
+
         @JavascriptInterface
         fun getVersionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
@@ -192,14 +308,7 @@ class MainActivity : AppCompatActivity() {
                     Net.download("$base/BunkerPlex.apk", updateFile) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
                     val found = packageManager.getPackageArchiveInfo(updateFile.path, 0)
                     if (found?.packageName != packageName) throw IOException("il file scaricato non è l'app BunkerPlex")
-                    runOnUiThread {
-                        try {
-                            startActivity(installIntent())
-                            js("window.fpUpdate&&fpUpdate('install',0)")
-                        } catch (e: Exception) {
-                            updateFailed(e)
-                        }
-                    }
+                    runOnUiThread { install() }
                 } catch (e: Exception) {
                     updateFailed(e)
                 } finally {

@@ -1,3 +1,7 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -14,8 +18,14 @@ android {
         // Numero di versione automatico (i minuti dal 1970): ogni compilazione e'
         // "piu' nuova" della precedente, cosi' l'app sulla TV si accorge da sola
         // che sul PC c'e' un APK aggiornato e propone di installarlo.
-        versionCode = (System.currentTimeMillis() / 60_000L).toInt()
-        versionName = "2.0"
+        val now = System.currentTimeMillis()
+        versionCode = (now / 60_000L).toInt()
+        // Nome mostrato sulla TV: la versione della release (es. 2026.11.20, la passa
+        // GitHub in BUNKERPLEX_VERSION) o, compilando sul PC, data e ora in Italia.
+        versionName = System.getenv("BUNKERPLEX_VERSION")?.removePrefix("v")?.takeIf { it.isNotBlank() }
+            ?: SimpleDateFormat("yyyy.MM.dd HH:mm").apply {
+                timeZone = TimeZone.getTimeZone("Europe/Rome")
+            }.format(Date(now))
     }
 
     // Chiave di firma personale, creata alla prima compilazione e poi riusata:
