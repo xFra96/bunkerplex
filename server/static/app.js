@@ -71,11 +71,12 @@ function saveDevicePrefs(p) {
   pushPrefs();
 }
 
-// ---------------------------------------------------------------- Profili e account
-// Si entra in un profilo di questo PC («Chi guarda?»; con un solo profilo si entra
-// da soli), senza password e anche senza Internet. Il login e' facoltativo: collega
-// il profilo a un account, che lo porta su ogni PC e sblocca la condivisione.
-// Le preferenze di visione seguono il profilo su ogni dispositivo, tranne cio' che
+// ---------------------------------------------------------------- Account
+// Ogni account e' una persona, con la sua collezione: niente profili. Finche' su
+// questo PC non e' entrato nessun account c'e' solo l'utente di questo PC, in cui
+// si entra da soli, senza password e anche senza Internet. Il primo account che
+// entra lo prende con tutto quello che ha. Con piu' account, «Chi guarda?».
+// Le preferenze di visione seguono l'account su ogni dispositivo, tranne cio' che
 // dipende dal dispositivo stesso (lento o no, aspetto da TV).
 var auth = null;                     // {on, cloud, user, profiles, offline, setup}
 var LOCAL_ONLY = ['slow', 'tv'];             // dipendono dal dispositivo
@@ -165,7 +166,7 @@ function checkPrefs() {
     var remoteEmpty = !Object.keys(remote.device).length && !Object.keys(remote.player).length;
     var first = seenAccount() !== String(auth.user.id);
     if (remoteEmpty) { markAccount(); if (!localEmpty) sendPrefs(); return null; }
-    // Profilo senza account: valgono le sue, senza domande
+    // Senza account: valgono le sue, senza domande
     if (!first || localEmpty || !auth.user.linked) { applyPrefs(remote); markAccount(); return null; }
     if (sorted(local.device) === sorted(remote.device) && sorted(local.player) === sorted(remote.player)) { markAccount(); return null; }
     cache.remotePrefs = remote;
@@ -217,8 +218,8 @@ function accountForm(name, fixed) {
     '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button></div>';
 }
 
-// «Chi guarda?»: i profili di questo PC. Si entra senza password (tranne gli account
-// che l'hanno chiesta); da qui si crea un profilo nuovo o si entra con un account.
+// «Chi guarda?»: gli account gia' entrati su questo PC. Si entra senza password
+// (tranne gli account che l'hanno chiesta); da qui si entra con un altro account.
 function profilesPage() {
   var a = auth, mode = cache.whoMode || '';
   var list = (a.profiles || []).map(function (p, n) {
@@ -226,20 +227,13 @@ function profilesPage() {
       face(p.name, 'big') + '<span>' + esc(p.name) + '</span></button>';
   }).join('');
   var body = '';
-  if (mode === 'new') {
-    body = '<h2>Nuovo profilo</h2><p>Visti, punti di ripresa, lista e raccolte suoi. Niente password, niente Internet: ' +
-      'se poi vuoi, lo colleghi a un account da Impostazioni → Account.</p>' +
-      '<div class="inline"><input class="field f" id="pname" data-key="pname" data-autofocus data-enter="newprofile" autocomplete="off" maxlength="24" placeholder="Il nome">' +
-      '<button class="btn primary f" data-act="newprofile" data-key="newprofile">Crea ed entra</button></div>';
-  } else if (mode === 'login') {
-    body = '<h2>Entra con un account</h2><p>Impostazioni, chiavi, visti e lista ti seguono su ogni PC e TV. ' +
-      'Se l\'account su questo PC non c\'è ancora, nasce un profilo nuovo.</p>' + accountForm('', false);
+  if (mode === 'login') {
+    body = '<h2>Entra con un account</h2><p>Visti, lista, raccolte e impostazioni sono del tuo account e ti seguono su ogni PC e TV.</p>' + accountForm('', false);
   } else if (/^pw:/.test(mode)) {
     var p = (a.profiles || []).filter(function (x) { return String(x.id) === mode.slice(3); })[0];
-    if (p) body = '<h2>Password di ' + esc(p.name) + '</h2><p>Questo profilo si apre con la password del suo account.</p>' + accountForm(p.name, true);
+    if (p) body = '<h2>Password di ' + esc(p.name) + '</h2><p>Questo account si apre con la sua password.</p>' + accountForm(p.name, true);
   }
   var more = '<div class="actions" style="margin-top:1.4rem">' +
-    '<button class="btn f" data-act="whomode" data-arg="new" data-key="who-new">Nuovo profilo</button>' +
     (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>' : '') +
       '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' : '') +
     (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
@@ -274,7 +268,7 @@ async function tvLoginPage() {
     '<div class="apktext"><p>Inquadra il QR con la fotocamera del telefono (collegato alla rete di casa) e scrivi lì nome e password del tuo account: la TV entra da sola.</p>' + where +
     '<p style="margin-bottom:0"><small>Codice della TV, lo ritrovi sul telefono:</small></p>' +
     '<p class="paircode num">' + esc(p.code.slice(0, 3) + ' ' + p.code.slice(3)) + '</p>' +
-    '<p><small>' + (inside ? 'Questo profilo diventa il tuo account: visti, lista e raccolte di qui si uniscono a quelli dell\'account.'
+    '<p><small>' + (inside && !auth.user.linked ? 'Quello che hai già qui passa al tuo account: visti, lista e raccolte si uniscono a quelli dell\'account.'
       : 'Se hai già usato il tuo account su questo PC non serve: torna indietro e scegli il tuo nome in «Chi guarda?».') + '</small></p>' +
     '<div class="actions"><a class="btn f" data-autofocus href="' + (inside ? '#/settings/account' : '#/home') + '" data-key="pairback">Indietro</a></div></div></div></div></div>';
 }
@@ -300,7 +294,7 @@ function phonePairPage(code) {
 
 function passwordPage(forced) {
   return '<div class="page"><div class="panel login"><h1>' + (forced ? 'Scegli la tua password' : 'Cambia password') + '</h1>' +
-    (forced ? '<p>Il tuo account ha una password provvisoria. Scegline una tua: varrà su tutti i PC e le TV. Finché non lo fai il profilo funziona, ma non si sincronizza.</p>'
+    (forced ? '<p>Il tuo account ha una password provvisoria. Scegline una tua: varrà su tutti i PC e le TV. Finché non lo fai funziona tutto, ma non si sincronizza.</p>'
       : '<p>Gli altri PC dove sei entrato ti chiederanno la password nuova.</p>') +
     '<input class="field f" style="margin-bottom:.6rem" id="pold" data-key="pold" data-autofocus type="password" autocomplete="current-password" placeholder="' + (forced ? 'Password provvisoria' : 'Password attuale') + '">' +
     '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
@@ -320,7 +314,7 @@ function whenDate(sec) {
   return d.toLocaleDateString('it-IT') + ' alle ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Segnale fisso in basso: profilo con account, ma il servizio non si raggiunge
+// Segnale fisso in basso: account, ma il servizio non si raggiunge
 function markOffline() {
   var on = !!(auth && auth.user && auth.user.linked && auth.offline);
   var el = document.getElementById('offpill');
@@ -1334,7 +1328,7 @@ function refreshPanel(i) {
     '</dl></div>';
 }
 
-// Come sta il profilo rispetto all'account: {state: '' | ok | warn, text}
+// Come sta questo PC rispetto all'account: {state: '' | ok | warn, text}
 function syncState() {
   var u = auth && auth.user;
   if (!u) return null;
@@ -1348,7 +1342,7 @@ function syncState() {
   return { state: 'ok', text: u.last_sync ? 'Sincronizzato ' + ago(u.last_sync) : 'Sincronizzazione in corso' };
 }
 
-// La voce del profilo nel menu laterale: il volto e il nome di chi sta guardando
+// La voce dell'account nel menu laterale: il volto e il nome di chi sta guardando
 function markMe() {
   var el = document.getElementById('navme');
   if (!el) return;
@@ -1466,7 +1460,7 @@ function settingsRows(i, u, sh) {
       desc: auth.user.admin ? 'Il tuo account · amministratore' : 'Il tuo account', value: s.text, state: s.state });
   } else if (auth && auth.user) {
     rows.push({ area: 'account', face: auth.user.name, label: auth.user.name,
-      desc: 'Profilo di questo PC, senza account', value: auth.cloud ? 'Entra con un account' : s.text, state: '' });
+      desc: 'Su questo PC, senza account', value: auth.cloud ? 'Entra con un account' : s.text, state: '' });
   }
   if (auth && auth.user && auth.user.admin && !TV) {
     rows.push({ area: 'people', label: 'Persone', desc: 'Chi può entrare, password provvisorie', value: 'Gestisci', state: '' });
@@ -1721,7 +1715,7 @@ async function settingsArea(area) {
   var res = await settingsData();
   var i = res[0];
   var inAccount = !!(auth && auth.user && auth.user.linked);
-  var manyProfiles = !!(auth && auth.profiles && auth.profiles.length > 1);
+  var manyAccounts = !!(auth && auth.profiles && auth.profiles.length > 1);
   var known = settingsAreas().some(function (a) { return a[0] === area; });
   if (!known) { location.replace('#/settings'); return ''; }
 
@@ -1736,8 +1730,8 @@ async function settingsArea(area) {
           '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + ' · condivisa da un altro account di questo PC</small></div></div></div>';
       }
       return '<div class="lib"><div class="head">' + avatar(l.name) +
-        '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + (manyProfiles && l.shared ? ' · la vedono anche gli altri profili di questo PC' : '') + '</small></div>' +
-        (manyProfiles ? '<button class="btn f" data-act="libshare" data-arg="' + l.id + ':' + (l.shared ? 0 : 1) + '" data-key="' + k + '-share">' + (l.shared ? 'Non condividere' : 'Condividi') + '</button>' : '') +
+        '<div class="name"><b>' + esc(l.name) + '</b><small>' + what + (manyAccounts && l.shared ? ' · la vedono anche gli altri account di questo PC' : '') + '</small></div>' +
+        (manyAccounts ? '<button class="btn f" data-act="libshare" data-arg="' + l.id + ':' + (l.shared ? 0 : 1) + '" data-key="' + k + '-share">' + (l.shared ? 'Non condividere' : 'Condividi') + '</button>' : '') +
         '<a class="btn f" href="#/browse/' + l.id + '" data-key="' + k + '-add">+ Cartella</a>' +
         '<button class="btn f" data-act="refreshmenu" data-arg="' + l.id + '" data-key="' + k + '-upd">Aggiorna</button>' +
         '<a class="btn f" href="#/rename/' + l.id + '" data-key="' + k + '-ren">Rinomina</a>' +
@@ -1909,20 +1903,16 @@ function accountArea(i) {
   var many = (auth.profiles || []).length > 1;
   var who = '<div class="panel who">' + face(u.name, 'big') +
     '<div class="whotext"><h2>' + esc(u.name) + '</h2>' +
-    '<p>' + (u.linked ? (u.admin ? 'Account amministratore' : 'Account') : 'Profilo di questo PC') + ' · ' + esc(auth.server || 'BunkerPlex') + '</p>' +
+    '<p>' + (u.linked ? (u.admin ? 'Account amministratore' : 'Account') : 'Su questo PC, senza account') + ' · ' + esc(auth.server || 'BunkerPlex') + '</p>' +
     '<p class="sync ' + s.state + '">' + esc(s.text) + '</p></div></div>';
-  var profile = '<div class="panel"><h2>Profilo</h2>' +
-    (u.linked ? '' : '<label class="flabel" for="pname">Nome</label>' +
-      '<div class="inline"><input class="field f" id="pname" data-key="pname" data-enter="renameprofile" autocomplete="off" maxlength="24" value="' + esc(u.name) + '">' +
-      '<button class="btn f" data-act="renameprofile" data-key="renameprofile">Rinomina</button></div>') +
-    '<div class="actions">' +
-      '<button class="btn f" data-act="logout" data-key="logout">Cambia profilo</button>' +
-      (many ? '<button class="btn danger f" data-act="delprofile" data-key="delprofile">Togli questo profilo da qui</button>' : '') +
+  // Esci / togli: solo dove c'e' un altro account in cui entrare (o il servizio per entrarci)
+  var leave = !auth.cloud ? '' : '<div class="panel"><h2>Su questo dispositivo</h2><div class="actions">' +
+      '<button class="btn f" data-act="logout" data-key="logout">' + (many ? 'Cambia account' : 'Esci') + '</button>' +
+      (many ? '<button class="btn danger f" data-act="delprofile" data-key="delprofile">Togli l\'account da questo PC</button>' : '') +
     '</div></div>';
-
   if (!u.linked) {
     var join = !auth.cloud ? '' : '<div class="panel"><h2>Entra con un account</h2>' +
-      '<p>Funziona tutto anche senza: il login è facoltativo. Con un account questo profilo ti segue su ogni PC e TV, ' +
+      '<p>Funziona tutto anche senza: il login è facoltativo. Con un account visti, lista e raccolte ti seguono su ogni PC e TV, ' +
       'anche su un\'installazione nuova, e riprendi esattamente da dove eri:</p>' +
       '<dl class="kv"><dt>Impostazioni e chiavi</dt><dd>TMDB, sottotitoli, preferenze di visione</dd>' +
       '<dt>Visti, ripresa e La mia lista</dt><dd>Anche quelli fatti senza Internet, appena torna la rete</dd>' +
@@ -1933,12 +1923,12 @@ function accountArea(i) {
         (TV ? '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvlogin">Entra dal telefono</a></div>' +
           '<h2 style="margin-top:1.2rem">Oppure scrivi qui nome e password</h2>' : '') + accountForm('', false)) +
       '</div>';
-    return settingsShell('account', 'Account', '', who + join + profile);
+    return settingsShell('account', 'Account', '', who + join);
   }
 
   var relogin = u.online ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
     '<p>L\'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). ' +
-    'Il profilo funziona lo stesso; per riprendere la sincronizzazione scrivi la password.</p>' + accountForm(u.name, true) + '</div>';
+    'Qui funziona tutto lo stesso; per riprendere la sincronizzazione scrivi la password.</p>' + accountForm(u.name, true) + '</div>';
   return settingsShell('account', 'Account', '', who + relogin +
     '<div class="panel"><h2>Ti segue su ogni PC</h2>' +
       '<dl class="kv">' +
@@ -1954,8 +1944,7 @@ function accountArea(i) {
         (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-        '<button class="btn f" data-act="unlink" data-key="unlink">Scollega l\'account</button>' +
-      '</div></div>' + profile);
+      '</div></div>' + leave);
 }
 
 async function peopleArea() {
@@ -2055,7 +2044,7 @@ function accountFriendsPanel(af, sh) {
     return row(f, '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-undo-' + f.id + '">Annulla</button>', 'richiesta mandata: aspetta che accetti');
   }).join('');
   var sharing = af.sharing
-    ? (af.published ? 'Attiva: i tuoi amici vedono le raccolte del tuo profilo' : 'Attiva, ma gli amici non ti raggiungono ancora')
+    ? (af.published ? 'Attiva: i tuoi amici vedono le tue raccolte' : 'Attiva, ma gli amici non ti raggiungono ancora')
     : 'Spenta: i tuoi amici non vedono le tue raccolte (tu vedi le loro)';
   return head +
     (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
@@ -2069,7 +2058,7 @@ function accountFriendsPanel(af, sh) {
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
       '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
       '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' : '') +
-    '<p class="kvnote">Gli amici vedono solo le raccolte del tuo profilo e possono soltanto guardare. Il collegamento è cifrato e il servizio account garantisce che dall\'altra parte ci sia davvero il loro server.</p></div>';
+    '<p class="kvnote">Gli amici vedono solo le tue raccolte e possono soltanto guardare. Il collegamento è cifrato e il servizio account garantisce che dall\'altra parte ci sia davvero il loro server.</p></div>';
 }
 
 // Il sistema di prima, con indirizzo e password: completo solo senza servizio
@@ -2156,7 +2145,7 @@ function labelOf(list, key) {
 function devicePanel() {
   var auto = !device.anim && device.slow ? ' (ridotte: questo dispositivo è lento)' : '';
   return '<div class="panel"><h2>Preferenze di visione</h2>' +
-    '<p>Animazioni e locandine seguono il tuo ' + (auth && auth.user && auth.user.linked ? 'account' : 'profilo') +
+    '<p>Animazioni e locandine seguono il tuo ' + (auth && auth.user && auth.user.linked ? 'account' : 'PC') +
       ' su ogni TV, telefono e PC dove entri. Restano di questo dispositivo solo l\'aspetto da TV e il riconoscimento dei dispositivi lenti.</p>' +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
@@ -3501,16 +3490,15 @@ function enterApp(r) {
     if (auth.user && !auth.user.must_change) return afterLogin(r && r.conflicts);
   }).then(function () {
     if (r && r.offline) toast('Entrato senza Internet: si sincronizza appena torna la rete');
-    else if (r && r.switched) toast('Questo account aveva già il suo profilo su questo PC: sei entrato in quello');
-    else if (wasLocal && auth.user && auth.user.linked) toast('Fatto: il profilo ora è il tuo account, sto sincronizzando');
-    // Dalle impostazioni si resta li'; dalla scelta del profilo si va alla Home
+    else if (wasLocal && auth.user && auth.user.linked) toast('Fatto: sei entrato con il tuo account, sto sincronizzando');
+    // Dalle impostazioni si resta li'; da «Chi guarda?» si va alla Home
     if (!/^#\/settings/.test(location.hash) || !auth.user) location.replace('#/home');
     render();
   });
 }
 
 var actions = {
-  // --- profili e account
+  // --- account
   login: function () {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
     if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
@@ -3538,41 +3526,18 @@ var actions = {
     cache.whoMode = cache.whoMode === mode ? '' : mode;
     render();
   },
-  newprofile: function () {
-    var name = fieldValue('pname').trim();
-    if (!name) { toast('Scrivi un nome'); return; }
-    post('/auth/profiles', { name: name, device: devName() }).then(enterApp, function (e) { toast(e.message); });
-  },
-  renameprofile: function () {
-    var name = fieldValue('pname').trim();
-    if (!name) { toast('Scrivi un nome'); return; }
-    post('/auth/rename', { name: name }).then(function () {
-      toast('Fatto');
-      return loadAuth().then(render);
-    }, function (e) { toast(e.message); });
-  },
   delprofile: function () {
     var u = auth.user, heir = (auth.profiles || []).filter(function (p) { return p.id !== u.id; })[0];
-    confirmBox('Togliere il profilo «' + u.name + '» da questo PC? Visti, punti di ripresa e lista di qui si perdono' +
-      (u.linked ? ' (quelli già nell\'account restano online)' : '') + '. Le sue raccolte passano a ' + (heir ? heir.name : 'un altro profilo') + ': i video non si toccano.',
-      'Sì, togli il profilo', function () {
+    confirmBox('Togliere l\'account «' + u.name + '» da questo PC? L\'account resta online con visti, ripresa e lista già sincronizzati. ' +
+      'Le sue raccolte di qui passano a ' + (heir ? heir.name : 'un altro account') + ': i video non si toccano.',
+      'Sì, togli l\'account', function () {
         send('DELETE', '/auth/profile').then(function () {
           try { sessionStorage.setItem('fpNoAuto', '1'); } catch (e) { /* niente */ }
           auth = null;
           conflicts = null;
-          toast('Profilo tolto');
+          toast('Account tolto da questo PC');
           location.replace('#/home');
           render();
-        }, function (e) { toast(e.message); });
-      });
-  },
-  unlink: function () {
-    confirmBox('Scollegare l\'account da questo profilo? Il profilo resta qui con tutto quello che ha, ma smette di sincronizzarsi. ' +
-      'L\'account resta online e lo ritrovi entrando di nuovo. La condivisione con gli amici già attiva resta com\'è.',
-      'Sì, scollega', function () {
-        post('/auth/unlink').then(function () {
-          toast('Account scollegato: il profilo ora è solo di questo PC');
-          return loadAuth().then(render);
         }, function (e) { toast(e.message); });
       });
   },
@@ -3887,7 +3852,7 @@ var actions = {
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
   tvreplace: function (serial) {
-    confirmBox('Togliere dalla TV la BunkerPlex che c\'è e mettere questa? Sulla TV andrà rifatto l\'accesso al profilo.', 'Sì, sostituiscila', function () {
+    confirmBox('Togliere dalla TV la BunkerPlex che c\'è e mettere questa? Sulla TV andrà rifatto l\'accesso.', 'Sì, sostituiscila', function () {
       tvSend('install', { target: serial, replace: true });
     });
   },
@@ -4347,7 +4312,7 @@ var routes = [
   }]
 ];
 
-// Prima di ogni pagina: chi guarda? (scelta del profilo, password provvisoria da cambiare,
+// Prima di ogni pagina: chi guarda? (scelta dell'account, password provvisoria da cambiare,
 // impostazioni diverse da confrontare). Mai una pagina che chieda Internet per andare avanti.
 async function gate() {
   if (!auth) await loadAuth();
@@ -4355,7 +4320,7 @@ async function gate() {
   markMe();
   setTimeout(renderActivity, 0);
   if (!auth.user) {
-    // Un solo profilo che si apre senza password: si entra da soli (non dopo «Cambia profilo»)
+    // Un solo account che si apre senza password: si entra da soli (non dopo «Esci»)
     var noAuto = false;
     try { noAuto = sessionStorage.getItem('fpNoAuto') === '1'; } catch (e) { /* niente */ }
     var only = auth.profiles && auth.profiles.length === 1 ? auth.profiles[0] : null;
@@ -4405,7 +4370,7 @@ async function render() {
 
   var out;
   try {
-    // Il telefono che entra per la TV non deve scegliere un profilo per se'
+    // Il telefono che entra per la TV non deve scegliere un account per se'
     var pairing = handler === phonePairPage;
     out = pairing ? null : await gate();
     if (pairing) {
