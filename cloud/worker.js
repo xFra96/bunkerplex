@@ -46,6 +46,17 @@ function fail(status, detail) {
 
 const now = () => Date.now() / 1000;
 
+// Le colonne aggiunte dopo alla tabella dei server (lan, friends): si aggiungono
+// da sole alla prima chiamata, cosi' il database non va ritoccato a mano.
+let serverCols = false;
+async function ensureServerCols(env) {
+  if (serverCols) return;
+  const cols = (await env.DB.prepare('PRAGMA table_info(servers)').all()).results.map((c) => c.name);
+  if (!cols.includes('lan')) await env.DB.prepare('ALTER TABLE servers ADD COLUMN lan TEXT').run();
+  if (!cols.includes('friends')) await env.DB.prepare('ALTER TABLE servers ADD COLUMN friends INTEGER NOT NULL DEFAULT 1').run();
+  serverCols = true;
+}
+
 function hex(buf) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -256,6 +267,7 @@ async function route(request, env) {
   // fiducia «al primo collegamento»). Per entrare dal server di un amico si chiede
   // qui un biglietto: vale 5 minuti e una volta sola, e quel server lo fa controllare qui.
   if (path === '/friends' && method === 'GET') {
+    await ensureServerCols(env);
     const rows = await env.DB.prepare(
       'SELECT f.a, f.b, f.status, f.t, ua.username AS ua, ub.username AS ub FROM friends f ' +
       'JOIN users ua ON ua.id = f.a JOIN users ub ON ub.id = f.b WHERE f.a = ? OR f.b = ?'
@@ -268,12 +280,15 @@ async function route(request, env) {
         status: r.status === 'ok' ? 'ok' : (r.a === user.id ? 'sent' : 'received'), servers: []
       };
       if (item.status === 'ok') {
-        const s = await env.DB.prepare('SELECT sid, name, url, pin, t FROM servers WHERE user_id = ?').bind(other).all();
+        const s = await env.DB.prepare('SELECT sid, name, url, pin, t FROM servers WHERE user_id = ? AND friends = 1').bind(other).all();
         item.servers = s.results;
       }
       out.push(item);
     }
-    return json({ friends: out });
+    // I propri server accesi: da ogni PC dell'account si arriva agli altri (anche
+    // quelli che non condividono con gli amici). lan = indirizzo nella rete di casa.
+    const mine = await env.DB.prepare('SELECT sid, name, url, lan, pin, t FROM servers WHERE user_id = ?').bind(user.id).all();
+    return json({ friends: out, me: user.id, mine: mine.results });
   }
   if (path === '/friends' && method === 'POST') {
     const b = await body(request);
@@ -336,15 +351,19 @@ async function route(request, env) {
     return json({ key: k.key, tag });
   }
   if (path === '/servers' && method === 'PUT') {
+    await ensureServerCols(env);
     const b = await body(request);
     const sid = String(b.sid || '');
     const url = String(b.url || '');
-    if (!/^[0-9a-f]{8}$/.test(sid) || !/^https:\/\/[^\s/]{3,200}$/.test(url) || !/^[0-9a-f]{64}$/.test(String(b.pin || ''))) {
+    const lan = String(b.lan || '');
+    if (!/^[0-9a-f]{8}$/.test(sid) || !/^https:\/\/[^\s/]{3,200}$/.test(url) || !/^[0-9a-f]{64}$/.test(String(b.pin || '')) ||
+        (lan && !/^https:\/\/[^\s/]{3,200}$/.test(lan))) {
       fail(400, 'Richiesta non valida');
     }
-    await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, pin, t) VALUES(?,?,?,?,?,?) ' +
-      'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, pin = excluded.pin, t = excluded.t')
-      .bind(user.id, sid, String(b.name || '').slice(0, 40), url, b.pin, now()).run();
+    await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t) VALUES(?,?,?,?,?,?,?,?) ' +
+      'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
+      'friends = excluded.friends, pin = excluded.pin, t = excluded.t')
+      .bind(user.id, sid, String(b.name || '').slice(0, 40), url, lan, b.friends === false ? 0 : 1, b.pin, now()).run();
     return json({ ok: true });
   }
   const sm = /^\/servers\/([0-9a-f]{8})$/.exec(path);
@@ -355,10 +374,13 @@ async function route(request, env) {
   if (path === '/tickets' && method === 'POST') {
     const b = await body(request);
     const to = Number(b.to);
-    const ok = await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
+    // Verso un altro server del proprio account non serve l'amicizia
+    const ok = to === user.id || await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
       .bind(user.id, to, to, user.id).first();
     if (!ok) fail(403, 'Non siete amici');
-    const server = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(to, String(b.sid || '')).first();
+    await ensureServerCols(env);
+    const server = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ? AND (friends = 1 OR user_id = ?)')
+      .bind(to, String(b.sid || ''), user.id).first();
     if (!server) fail(404, 'Questo server non condivide più');
     const ticket = randomHex(32);
     await env.DB.batch([
@@ -374,7 +396,7 @@ async function route(request, env) {
     const t = await env.DB.prepare('SELECT * FROM tickets WHERE hash = ?').bind(th).first();
     if (!t || t.exp < now() || t.to_user !== user.id || t.sid !== String(b.sid || '')) fail(403, 'Biglietto non valido');
     await env.DB.prepare('DELETE FROM tickets WHERE hash = ?').bind(th).run();
-    const ok = await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
+    const ok = t.from_user === user.id || await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
       .bind(t.from_user, user.id, user.id, t.from_user).first();
     if (!ok) fail(403, 'Non siete amici');
     const from = await env.DB.prepare('SELECT id, username FROM users WHERE id = ?').bind(t.from_user).first();
