@@ -3761,13 +3761,13 @@ def info():
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "login": True,
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
-                "addresses": other_addresses()}
+                "addresses": other_addresses(), "cloud": accounts.cloud_url()}
     con = db()
     try:
         key = tmdb_key()
         return {
             "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION,
-            "addresses": other_addresses(),
+            "addresses": other_addresses(), "cloud": accounts.cloud_url(),
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
             "shows": con.execute("SELECT COUNT(*) FROM shows").fetchone()[0],
             "episodes": con.execute("SELECT COUNT(*) FROM items WHERE kind='episode'").fetchone()[0],

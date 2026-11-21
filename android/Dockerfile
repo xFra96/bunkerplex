@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Compila l'APK di BunkerPlex senza installare nulla sul PC.
 # Uso:  docker build --output ../apk .   (lo fa strumenti/sviluppo/"Compila APK.bat")
 FROM eclipse-temurin:17-jdk AS build
@@ -17,7 +18,14 @@ RUN mkdir -p $ANDROID_HOME/cmdline-tools \
  && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
  && rm /tmp/tools.zip \
  && yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null \
- && $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" > /dev/null
+ && $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools" "ndk;27.2.12479018" > /dev/null
+
+# Go, per Tailscale dentro l'app (tsnet/): la versione giusta la scarica Go da solo (GOTOOLCHAIN)
+RUN wget -q https://go.dev/dl/go1.25.0.linux-amd64.tar.gz -O /tmp/go.tgz \
+ && tar -C /usr/local -xzf /tmp/go.tgz && rm /tmp/go.tgz
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH \
+    ANDROID_NDK_HOME=/opt/android-sdk/ndk/27.2.12479018 \
+    GOTOOLCHAIN=auto
 
 # Gradle
 RUN wget -q https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip -O /tmp/gradle.zip \
@@ -42,6 +50,9 @@ RUN mkdir -p keystore \
         -keyalg RSA -keysize 2048 -validity 12000 \
         -storepass bunkerplex -keypass bunkerplex -dname "CN=BunkerPlex"; \
     fi
+
+# Libreria Tailscale (bpnet.aar), poi l'app
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build sh tsnet/build.sh
 
 RUN gradle --no-daemon assembleRelease
 

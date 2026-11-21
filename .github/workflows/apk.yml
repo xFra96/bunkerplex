@@ -109,6 +109,18 @@ jobs:
           gradle-version: "8.11.1"
           cache-provider: basic
 
+      # Tailscale dentro l'app (android/tsnet): Go e gomobile, con l'NDK gia' sul server di GitHub
+      - uses: actions/setup-go@v6
+        if: steps.key.outputs.ok == '1'
+        with:
+          go-version-file: android/tsnet/go.mod
+          cache-dependency-path: android/tsnet/go.sum
+
+      - name: Libreria Tailscale
+        if: steps.key.outputs.ok == '1'
+        working-directory: android
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh tsnet/build.sh
+
       - name: Compila l'APK
         if: steps.key.outputs.ok == '1'
         working-directory: android

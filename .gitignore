@@ -30,3 +30,5 @@ __pycache__/
 .idea/
 *.iml
 .claude/
+# Libreria Tailscale dell'app: la compila android/tsnet/build.sh
+/android/app/libs/

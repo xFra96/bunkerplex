@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BunkerPlex</title>
+<style>
+  * { box-sizing: border-box; }
+  html { font-size: 15px; }
+  html.tv { font-size: clamp(14px, 1.5vw, 40px); }
+  body { margin: 0; min-height: 100vh; background: #060a07; color: #f2f5f2; font-family: Roboto, "Segoe UI", sans-serif;
+         -webkit-tap-highlight-color: transparent; }
+  .wrap { max-width: 64rem; margin: 0 auto; padding: 1.2rem 1rem 3rem; }
+  .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; }
+  .box { width: 34rem; max-width: 92vw; }
+  .logo { font-size: 2.2rem; font-weight: 400; letter-spacing: -.02em; margin-bottom: .4rem; }
+  .logo b { font-weight: 800; }
+  .top { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+  .top .logo { font-size: 1.5rem; margin: 0; flex: 1; }
+  .who { color: #9fada3; font-size: .9rem; }
+  h1 { font-size: 1.4rem; font-weight: 600; margin: 1.2rem 0 .6rem; }
+  h2 { font-size: 1rem; font-weight: 600; color: #9fada3; margin: 1.6rem 0 .6rem; text-transform: none; }
+  p { color: #9fada3; line-height: 1.55; margin: 0 0 1rem; }
+  p b { color: #f2f5f2; }
+  .err { color: #e0a030; min-height: 1.4rem; }
+  input { width: 100%; padding: .8rem 1rem; font: inherit; font-size: 1.1rem; color: #f2f5f2; margin-bottom: .7rem;
+          background: #0e1510; border: 2px solid #17211a; border-radius: .4rem; outline: none; }
+  input:focus { border-color: #f2f5f2; background: #17211a; }
+  button, a.btn { font: inherit; font-weight: 700; font-size: 1rem; padding: .75rem 1.4rem; border: 0; cursor: pointer;
+           border-radius: .4rem; background: #ffffff1f; color: #f2f5f2; outline: none; text-decoration: none; display: inline-block; }
+  button.primary { background: #1a7f45; color: #fff; }
+  button.small { padding: .45rem .9rem; font-size: .9rem; }
+  button:focus, a.btn:focus, .card:focus, .lib:focus, .ep:focus { background: #f2f5f2 !important; color: #060a07 !important; }
+  .row { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; margin-top: 1rem; }
+  .left { justify-content: flex-start; }
+  .spin { width: 2.6rem; height: 2.6rem; margin: 1.5rem auto; border: .3rem solid #17211a; border-top-color: #4cbf7f;
+          border-radius: 50%; animation: s 1s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .pc { background: #0e1510; border-radius: .6rem; padding: .9rem 1rem; margin-bottom: .7rem; }
+  .pc.off { opacity: .6; }
+  .pchead { display: flex; align-items: center; gap: .6rem; font-weight: 600; }
+  .pchead small { margin-left: auto; color: #9fada3; font-weight: 400; font-size: .85rem; text-align: right; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #4cbf7f; flex: none; }
+  .off .dot { background: #6b776f; }
+  .libs { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .7rem; }
+  .lib { padding: .55rem 1rem; border-radius: 999px; background: #17211a; color: #f2f5f2; font-weight: 600; border: 0; font: inherit; }
+  .lib small { color: #9fada3; font-weight: 400; margin-left: .35rem; }
+  .lib:focus small { color: #060a07; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: .8rem; }
+  .card { background: #0e1510; border-radius: .5rem; overflow: hidden; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
+  .card .ph { aspect-ratio: 2 / 3; background: #17211a center / cover no-repeat; display: flex; align-items: flex-end; }
+  .card .ph span { padding: .4rem; font-size: .8rem; color: #9fada3; }
+  .card b { display: block; padding: .4rem .5rem 0; font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card small { display: block; padding: 0 .5rem .5rem; font-size: .75rem; color: #9fada3; }
+  .card:focus small { color: #060a07; }
+  .hero { position: relative; border-radius: .6rem; overflow: hidden; background: #0e1510 center / cover no-repeat; min-height: 12rem; margin-bottom: 1rem; }
+  .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(0deg, #060a07 5%, #060a0799 60%, #060a0733); }
+  .hero div { position: relative; z-index: 1; padding: 6rem 1rem 1rem; }
+  .hero h1 { margin: 0 0 .3rem; font-size: 1.6rem; }
+  .meta { color: #9fada3; font-size: .9rem; }
+  .tabs { display: flex; gap: .4rem; flex-wrap: wrap; margin: .6rem 0 .8rem; }
+  .tabs button.on { background: #1a7f45; }
+  .ep { display: flex; gap: .8rem; width: 100%; text-align: left; background: #0e1510; color: inherit; border: 0; font: inherit;
+        border-radius: .5rem; padding: .6rem; margin-bottom: .5rem; align-items: center; }
+  .ep i { width: 7rem; flex: none; aspect-ratio: 16 / 9; border-radius: .3rem; background: #17211a center / cover no-repeat; }
+  .ep span { min-width: 0; }
+  .ep b { display: block; font-weight: 600; }
+  .ep small { display: block; color: #9fada3; font-size: .85rem; margin-top: .2rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .ep:focus small { color: #060a07; }
+  .req { display: flex; align-items: center; gap: .5rem; padding: .5rem 0; flex-wrap: wrap; }
+  .req span { flex: 1; min-width: 8rem; }
+  .add { display: flex; gap: .5rem; }
+  .add input { margin: 0; }
+  .note { font-size: .85rem; }
+  #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: #f2f5f2; color: #060a07;
+           padding: .7rem 1.2rem; border-radius: .4rem; font-weight: 600; max-width: 90vw; z-index: 9; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" hidden></div>
+<script>
+(function () {
+'use strict';
+var app = window.BunkerPlexTV;
+var TV = !!(app && app.isTv && app.isTv());
+if (TV) document.documentElement.classList.add('tv');
+var root = document.getElementById('app');
+var QUALITY = 720;                       // da fuori casa i video arrivano convertiti: la linea di chi condivide e' poca
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function toast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(function () { t.hidden = true; }, 3500);
+}
+
+// ---- Ponte con l'app: le risposte lente tornano in remoteDone(n, ok, testo)
+var waiting = {}, seq = 0;
+window.remoteDone = function (n, ok, text) {
+  var w = waiting[n];
+  delete waiting[n];
+  if (w) (ok ? w.ok : w.ko)(text);
+};
+function bridge(fn, args) {
+  return new Promise(function (ok, ko) {
+    if (!app || !app[fn]) { ko('Questa pagina funziona solo nell\'app BunkerPlex'); return; }
+    var n = ++seq;
+    waiting[n] = { ok: ok, ko: ko };
+    app[fn].apply(app, args.concat([n]));
+  });
+}
+function cloud(method, path, body) {
+  return bridge('remoteCloud', [method, path, body ? JSON.stringify(body) : '']).then(JSON.parse, function (t) {
+    var e;
+    try { e = JSON.parse(t); } catch (x) { e = { detail: t }; }
+    if (e.status === 401) { go('login'); }
+    throw new Error(e.detail || 'Servizio account non raggiungibile');
+  });
+}
+
+// ---- Rete di BunkerPlex e PC (tuoi e degli amici)
+var proxy = '';                          // http://127.0.0.1:PORTA/<segreto>
+var me = 0, friendsList = [], pcs = {}, pcOrder = [];
+
+function startNet() {
+  if (proxy) return Promise.resolve(proxy);
+  return bridge('remoteNet', []).then(function (b) { proxy = b; return b; }, function (t) { throw new Error(t); });
+}
+
+function hostOf(url) { return String(url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, ''); }
+
+function withTimeout(ms) {
+  var c = window.AbortController ? new AbortController() : null;
+  if (c) setTimeout(function () { c.abort(); }, ms);
+  return c ? c.signal : undefined;
+}
+
+function share(pc, path, opts) {
+  opts = opts || {};
+  return fetch(pc.base + '/api/share' + path, {
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : {},
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: withTimeout(opts.timeout || 15000)
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) {
+        var e = new Error(j.detail || ('Errore ' + r.status));
+        e.status = r.status;
+        e.offline = !!j.offline;
+        throw e;
+      }
+      return j;
+    });
+  }, function () {
+    var e = new Error('Non raggiungibile');
+    e.offline = true;
+    throw e;
+  });
+}
+
+function tokKey(pc) { return 'bp-tok:' + pc.owner + ':' + pc.sid; }
+
+// Si entra nel PC con un biglietto del servizio account (vale una volta): in cambio
+// il PC da' un gettone, che poi si riusa finche' vale
+function enter(pc) {
+  return cloud('POST', '/tickets', { to: pc.owner, sid: pc.sid }).then(function (r) {
+    app.remoteToken(pc.host, '');
+    return share(pc, '/ticket', { method: 'POST', body: { ticket: r.ticket, to: pc.owner } });
+  }).then(function (r) {
+    try { localStorage.setItem(tokKey(pc), r.token); } catch (e) { /* niente */ }
+    app.remoteToken(pc.host, r.token);
+  });
+}
+
+function loadPc(pc) {
+  var saved = '';
+  try { saved = localStorage.getItem(tokKey(pc)) || ''; } catch (e) { /* niente */ }
+  if (saved) app.remoteToken(pc.host, saved);
+  var first = saved ? share(pc, '/libraries') : Promise.reject({ status: 401 });
+  return first.catch(function (e) {
+    if (e.offline) throw e;
+    return enter(pc).then(function () { return share(pc, '/libraries'); });
+  }).then(function (libs) {
+    pc.online = true;
+    pc.error = '';
+    pc.libs = Array.isArray(libs) ? libs : [];
+  }, function (e) {
+    pc.online = false;
+    pc.error = e.offline ? '' : e.message;
+  }).then(function () { pc.checked = true; });
+}
+
+function readFriends() {
+  return cloud('GET', '/friends').then(function (r) {
+    me = r.me;
+    friendsList = r.friends || [];
+    var seen = {};
+    function add(owner, ownerName, self, s) {
+      var key = owner + '-' + s.sid;
+      seen[key] = 1;
+      var pc = pcs[key] || (pcs[key] = { key: key, libs: [], online: null });
+      pc.owner = owner; pc.ownerName = ownerName; pc.self = self; pc.sid = s.sid;
+      pc.name = s.name || 'PC'; pc.pin = s.pin; pc.host = hostOf(s.url);
+      pc.base = proxy ? proxy + '/' + pc.host + '/' + pc.pin : '';
+    }
+    (r.mine || []).forEach(function (s) { add(me, 'tu', true, s); });
+    friendsList.forEach(function (f) {
+      if (f.status === 'ok') (f.servers || []).forEach(function (s) { add(f.id, f.username, false, s); });
+    });
+    Object.keys(pcs).forEach(function (k) { if (!seen[k]) delete pcs[k]; });
+  });
+}
+
+function refreshAll() {
+  return readFriends().then(function () {
+    return Promise.all(Object.keys(pcs).map(function (k) { return pcs[k].base ? loadPc(pcs[k]) : null; }));
+  });
+}
+
+function img(pc, path) {
+  if (!path || typeof path !== 'string' || path.indexOf('/api/') !== 0) return '';
+  return pc.base + '/api/share/' + path.slice(5);
+}
+
+// ---- Pagine
+
+var route = [];
+function go(hash) { if (location.hash === '#' + hash) render(); else location.hash = hash; }
+window.addEventListener('hashchange', render);
+
+// Indietro (tasto della TV o del telefono): l'app chiede prima alla pagina
+window.fpBack = function () {
+  var r = (location.hash || '#ask').slice(1).split('/');
+  if (r[0] === 'movie' || r[0] === 'show') { history.back(); return true; }
+  if (r[0] === 'lib') { go('friends'); return true; }
+  return false;
+};
+
+function centerPage(html) {
+  return '<div class="center"><div class="box"><div class="logo"><b>Bunker</b>Plex</div>' + html + '</div></div>';
+}
+
+function top() {
+  var who = app && app.remoteAccount ? app.remoteAccount() : '';
+  return '<div class="top"><div class="logo"><b>Bunker</b>Plex</div>' +
+    (who ? '<span class="who">' + esc(who) + '</span>' : '') + '</div>';
+}
+
+function askPage() {
+  return centerPage('<h1>Non ci sono server BunkerPlex in casa</h1>' +
+    '<p>Vuoi vedere i server condivisi dagli amici e i tuoi PC accesi?</p>' +
+    '<div class="row"><button class="f primary" data-act="friends" autofocus>Sì, mostrali</button>' +
+    '<button class="f" data-act="retry">Cerca di nuovo in casa</button></div>' +
+    '<div class="row"><button class="f small" data-act="setup">Scrivi l\'indirizzo del server</button></div>');
+}
+
+function loginPage() {
+  return centerPage('<h1>Entra con il tuo account</h1>' +
+    '<p>Lo stesso account di BunkerPlex sul PC. La password non lascia il telefono.</p>' +
+    '<input id="u" class="f" autocomplete="username" autocapitalize="none" placeholder="Nome utente">' +
+    '<input id="p" class="f" type="password" autocomplete="current-password" placeholder="Password">' +
+    '<p class="err" id="lerr"></p>' +
+    '<div class="row"><button class="f primary" data-act="login">Entra</button>' +
+    '<button class="f" data-act="ask">Indietro</button></div>');
+}
+
+function loadingPage(text) {
+  return centerPage('<div class="spin"></div><h1>' + esc(text) + '</h1>');
+}
+
+function pcCard(pc) {
+  var off = pc.online === false;
+  var state = pc.online === null || !pc.checked ? 'controllo…' : off ? (pc.error || 'spento o non raggiungibile') : 'online';
+  var libs = off ? '' : pc.libs.map(function (l) {
+    var n = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ');
+    return '<button class="f lib" data-act="lib" data-arg="' + pc.key + '/' + l.id + '">' + esc(l.name) +
+      (n ? '<small>' + esc(n) + '</small>' : '') + '</button>';
+  }).join('');
+  if (!off && pc.checked && !pc.libs.length) libs = '<p class="note">Nessuna raccolta condivisa.</p>';
+  return '<div class="pc' + (off ? ' off' : '') + '"><div class="pchead"><span class="dot"></span>' +
+    esc(pc.self ? pc.name : pc.ownerName + ' · ' + pc.name) + '<small>' + esc(state) + '</small></div>' +
+    (libs ? '<div class="libs">' + libs + '</div>' : '') + '</div>';
+}
+
+function friendsPage() {
+  var list = Object.keys(pcs).map(function (k) { return pcs[k]; });
+  var mine = list.filter(function (p) { return p.self; });
+  var theirs = list.filter(function (p) { return !p.self; });
+  var on = theirs.filter(function (p) { return p.online !== false; });
+  var off = theirs.filter(function (p) { return p.online === false; });
+  // Amici senza nessun PC che condivide: compaiono tra gli offline
+  var noPc = friendsList.filter(function (f) { return f.status === 'ok' && !(f.servers || []).length; });
+  var received = friendsList.filter(function (f) { return f.status === 'received'; });
+  var sent = friendsList.filter(function (f) { return f.status === 'sent'; });
+  var html = top();
+  if (received.length) {
+    html += '<h2>Richieste di amicizia</h2>' + received.map(function (f) {
+      return '<div class="req"><span>' + esc(f.username) + ' vuole essere tuo amico</span>' +
+        '<button class="f small primary" data-act="accept" data-arg="' + f.id + '">Accetta</button>' +
+        '<button class="f small" data-act="unfriend" data-arg="' + f.id + '">Rifiuta</button></div>';
+    }).join('');
+  }
+  html += '<h2>I tuoi PC</h2>' + (mine.length ? mine.map(pcCard).join('') :
+    '<p class="note">Nessun tuo PC acceso con questo account.</p>');
+  html += '<h2>Amici online</h2>' + (on.length ? on.map(pcCard).join('') : '<p class="note">Nessun amico online adesso.</p>');
+  if (off.length || noPc.length) {
+    html += '<h2>Amici offline</h2>' + off.map(pcCard).join('') + noPc.map(function (f) {
+      return '<div class="pc off"><div class="pchead"><span class="dot"></span>' + esc(f.username) +
+        '<small>non condivide nessun PC</small></div></div>';
+    }).join('');
+  }
+  html += '<h2>Aggiungi un amico</h2><div class="add"><input id="fn" class="f" autocapitalize="none" placeholder="Nome del suo account">' +
+    '<button class="f primary" data-act="addfriend">Aggiungi</button></div>' +
+    (sent.length ? '<p class="note" style="margin-top:.6rem">In attesa: ' + sent.map(function (f) { return esc(f.username); }).join(', ') + '</p>' : '');
+  html += '<div class="row left" style="margin-top:2rem"><button class="f" data-act="refresh">Aggiorna</button>' +
+    '<button class="f" data-act="retry">Cerca il server di casa</button>' +
+    '<button class="f" data-act="logout">Esci dall\'account</button></div>';
+  return '<div class="wrap">' + html + '</div>';
+}
+
+function posterCard(pc, x) {
+  var bg = img(pc, x.poster || x.thumb);
+  var sub = x.kind === 'show' ? (x.seasons_count ? x.seasons_count + (x.seasons_count === 1 ? ' stagione' : ' stagioni') : 'Serie') : (x.year || '');
+  return '<button class="f card" data-act="open" data-arg="' + (x.kind === 'show' ? 'show' : 'movie') + '/' + pc.key + '/' + x.id + '">' +
+    '<div class="ph" style="' + (bg ? 'background-image:url(\'' + bg + '\')' : '') + '">' + (bg ? '' : '<span>' + esc(x.title) + '</span>') + '</div>' +
+    '<b>' + esc(x.title) + '</b><small>' + esc(sub) + '</small></button>';
+}
+
+function libPage(pc, libId) {
+  return share(pc, '/libraries/' + libId + '/items').then(function (items) {
+    items = (Array.isArray(items) ? items : []).filter(function (x) { return x && (x.kind === 'movie' || x.kind === 'show'); });
+    items.sort(function (a, b) { return String(a.title).localeCompare(String(b.title), 'it'); });
+    var lib = (pc.libs || []).filter(function (l) { return String(l.id) === String(libId); })[0] || { name: 'Raccolta' };
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="friends">‹ Amici e PC</button></div>' +
+      '<h1>' + esc(lib.name) + ' <span class="who">' + esc(pc.self ? 'su ' + pc.name : 'di ' + pc.ownerName) + '</span></h1>' +
+      (items.length ? '<div class="grid">' + items.map(function (x) { return posterCard(pc, x); }).join('') + '</div>'
+        : '<p>Questa raccolta è vuota.</p>') + '</div>';
+  });
+}
+
+function hero(pc, x, extra) {
+  var bg = img(pc, x.backdrop || x.poster);
+  var meta = [x.year, x.duration ? Math.round(x.duration / 60) + ' min' : '', (x.genres || []).slice(0, 3).join(', ')].filter(Boolean).join(' · ');
+  return '<div class="hero" style="' + (bg ? 'background-image:url(\'' + bg + '\')' : '') + '"><div><h1>' + esc(x.title) + '</h1>' +
+    '<div class="meta">' + esc(meta) + '</div></div></div>' + extra +
+    (x.overview ? '<p style="margin-top:1rem">' + esc(x.overview) + '</p>' : '');
+}
+
+function moviePage(pc, id) {
+  return share(pc, '/items/' + id).then(function (x) {
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="back">‹ Indietro</button></div>' +
+      hero(pc, x, '<div class="row left"><button class="f primary" data-act="play" data-arg="' + pc.key + '/' + x.id + '" autofocus>▶ Riproduci</button></div>') + '</div>';
+  });
+}
+
+var showSeason = {};
+function showPage(pc, id) {
+  return share(pc, '/shows/' + id).then(function (x) {
+    var seasons = (x.seasons || []).filter(function (s) { return s && Array.isArray(s.episodes); });
+    var cur = showSeason[pc.key + '/' + id];
+    if (!seasons.some(function (s) { return s.season === cur; })) cur = seasons.length ? seasons[0].season : 0;
+    var tabs = seasons.length > 1 ? '<div class="tabs">' + seasons.map(function (s) {
+      return '<button class="f small' + (s.season === cur ? ' on' : '') + '" data-act="season" data-arg="' + pc.key + '/' + id + '/' + s.season + '">' +
+        (s.season ? 'Stagione ' + s.season : 'Speciali') + '</button>';
+    }).join('') + '</div>' : '';
+    var season = seasons.filter(function (s) { return s.season === cur; })[0];
+    var eps = season ? season.episodes.map(function (e) {
+      var th = img(pc, e.thumb);
+      return '<button class="f ep" data-act="play" data-arg="' + pc.key + '/' + e.id + '"><i style="' + (th ? 'background-image:url(\'' + th + '\')' : '') + '"></i>' +
+        '<span><b>' + esc(e.episode + '. ' + (e.title || 'Episodio ' + e.episode)) + '</b>' +
+        (e.overview ? '<small>' + esc(e.overview) + '</small>' : '') + '</span></button>';
+    }).join('') : '<p>Nessun episodio.</p>';
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="back">‹ Indietro</button></div>' +
+      hero(pc, x, '') + tabs + eps + '</div>';
+  });
+}
+
+function play(pc, id) {
+  toast('Avvio…');
+  share(pc, '/play/' + id).then(function (p) {
+    function abs(u) { return typeof u === 'string' && u.indexOf('/api/') === 0 ? pc.base + '/api/share/' + u.slice(5) : ''; }
+    p.url = abs(p.url);
+    p.transcode = abs(p.transcode);
+    p.subs = (p.subs || []).map(function (s) { s.url = abs(s.url); return s; }).filter(function (s) { return s.url; });
+    p.subs_online = false;
+    p.friend = pc.self ? pc.name : pc.ownerName;
+    p.remote_height = QUALITY;
+    p.start = 0;
+    app.remotePlay(pc.base, JSON.stringify(p));
+  }, function (e) { toast(e.offline ? 'Il PC non risponde' : e.message); });
+}
+
+// ---- Disegno
+
+var netReady = false;
+function render() {
+  var r = (location.hash || '#ask').slice(1).split('/');
+  var page = r[0] || 'ask';
+  if (page === 'ask') return show(askPage());
+  if (page === 'login') { show(loginPage()); var u = document.getElementById('u'); if (u) u.focus(); return; }
+  if (!app || !app.remoteAccount || !app.remoteAccount()) { go('login'); return; }
+  var ready = netReady ? Promise.resolve() : (show(loadingPage('Mi collego alla rete di BunkerPlex…')), startNet().then(function () {
+    netReady = true;
+    return readFriends();
+  }));
+  ready.then(function () {
+    if (page === 'friends') {
+      show(friendsPage());
+      refreshAll().then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
+      return;
+    }
+    var pc = pcs[r[1]];
+    if (!pc) { go('friends'); return; }
+    var job = pc.checked && pc.online ? Promise.resolve() : loadPc(pc);
+    return job.then(function () {
+      if (page === 'lib') return libPage(pc, r[2]);
+      if (page === 'movie') return moviePage(pc, r[2]);
+      if (page === 'show') return showPage(pc, r[2]);
+      return null;
+    }).then(function (html) { if (html) show(html); else go('friends'); });
+  }).catch(function (e) {
+    show(centerPage('<h1>Non riesco a collegarmi</h1><p>' + esc(e && e.message ? e.message : e) + '</p>' +
+      '<div class="row"><button class="f primary" data-act="again" autofocus>Riprova</button>' +
+      '<button class="f" data-act="retry">Cerca il server di casa</button></div>'));
+  });
+}
+
+function show(html, keep) {
+  var key = keep && document.activeElement ? document.activeElement.getAttribute('data-arg') : null;
+  root.innerHTML = html;
+  var el = (key && root.querySelector('[data-arg="' + key + '"]')) || root.querySelector('[autofocus]') || (TV ? root.querySelector('.f') : null);
+  if (el) el.focus();
+  if (!keep) window.scrollTo(0, 0);
+}
+
+// ---- Azioni
+
+var acts = {
+  friends: function () { go('friends'); },
+  ask: function () { go('ask'); },
+  retry: function () { app && app.retryHome(); },
+  setup: function () { app && app.openSetup(); },
+  back: function () { history.back(); },
+  again: function () { netReady = false; render(); },
+  refresh: function () { toast('Aggiorno…'); refreshAll().then(function () { show(friendsPage(), true); }); },
+  login: function () {
+    var u = document.getElementById('u').value.trim(), p = document.getElementById('p').value;
+    var err = document.getElementById('lerr');
+    if (!u || !p) { err.textContent = 'Scrivi nome utente e password.'; return; }
+    err.textContent = 'Entro…';
+    bridge('remoteLogin', [u, p]).then(function (t) {
+      var res = JSON.parse(t);
+      if (res.user && res.user.must_change) {
+        err.textContent = 'La password è provvisoria: cambiala prima da BunkerPlex sul PC.';
+        return;
+      }
+      go('friends');
+    }, function (m) { err.textContent = m; });
+  },
+  logout: function () { app.remoteLogout(); proxy = ''; netReady = false; pcs = {}; go('login'); },
+  lib: function (arg) { go('lib/' + arg); },
+  open: function (arg) { go(arg); },
+  play: function (arg) { var a = arg.split('/'); var pc = pcs[a[0]]; if (pc) play(pc, a[1]); },
+  season: function (arg) {
+    var a = arg.split('/');
+    showSeason[a[0] + '/' + a[1]] = +a[2];
+    render();
+  },
+  addfriend: function () {
+    var name = document.getElementById('fn').value.trim();
+    if (!name) return;
+    cloud('POST', '/friends', { username: name }).then(function (r) {
+      toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username);
+      return refreshAll();
+    }).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
+  },
+  accept: function (id) {
+    cloud('POST', '/friends/' + id + '/accept').then(refreshAll).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
+  },
+  unfriend: function (id) {
+    cloud('DELETE', '/friends/' + id).then(refreshAll).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
+  }
+};
+
+document.addEventListener('click', function (e) {
+  var el = e.target.closest('[data-act]');
+  if (!el || !acts[el.getAttribute('data-act')]) return;
+  e.preventDefault();
+  acts[el.getAttribute('data-act')](el.getAttribute('data-arg'));
+});
+
+document.addEventListener('keydown', function (e) {
+  var code = e.keyCode;
+  if (code === 13 && e.target.tagName === 'INPUT') {
+    e.preventDefault();
+    var b = e.target.id === 'fn' ? 'addfriend' : (e.target.id === 'u' ? null : 'login');
+    if (b) acts[b](); else document.getElementById('p').focus();
+    return;
+  }
+  // Frecce del telecomando: si va all'elemento piu' vicino in quella direzione
+  var dir = { 37: 'l', 38: 'u', 39: 'r', 40: 'd' }[code];
+  if (!dir) return;
+  var cur = document.activeElement;
+  if (cur && cur.tagName === 'INPUT' && (dir === 'l' || dir === 'r')) return;
+  var list = Array.prototype.slice.call(root.querySelectorAll('.f'));
+  if (!cur || list.indexOf(cur) < 0) { if (list[0]) { list[0].focus(); e.preventDefault(); } return; }
+  var a = cur.getBoundingClientRect(), best = null, bestScore = Infinity;
+  list.forEach(function (el) {
+    if (el === cur) return;
+    var b = el.getBoundingClientRect();
+    if (!b.width) return;
+    var dx = (b.left + b.width / 2) - (a.left + a.width / 2), dy = (b.top + b.height / 2) - (a.top + a.height / 2);
+    var main = dir === 'l' ? -dx : dir === 'r' ? dx : dir === 'u' ? -dy : dy;
+    var cross = dir === 'l' || dir === 'r' ? Math.abs(dy) : Math.abs(dx);
+    if (main <= 2) return;
+    var score = main + cross * 2.5;
+    if (score < bestScore) { bestScore = score; best = el; }
+  });
+  if (best) {
+    e.preventDefault();
+    best.focus();
+    best.scrollIntoView({ block: 'nearest' });
+  }
+});
+
+render();
+})();
+</script>
+</body>
+</html>

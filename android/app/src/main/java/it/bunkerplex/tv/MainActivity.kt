@@ -102,10 +102,6 @@ class MainActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (onSetup) {
-                    finish()
-                    return
-                }
                 // Prima chiede alla pagina (es. per chiudere una finestra di scelta)
                 web.evaluateJavascript("(window.fpBack&&window.fpBack())?1:0") { handled ->
                     if (handled != "1") {
@@ -135,13 +131,14 @@ class MainActivity : AppCompatActivity() {
         thread {
             val found = (listOf(home) + others).distinct().firstOrNull { url ->
                 val info = Net.info(url, if (url == home) 3000 else 6000) ?: return@firstOrNull false
+                Remote.setCloud(this, info.optString("cloud"))
                 val list = info.optJSONArray("addresses")
                 if (list != null) others = (0 until list.length()).map { Net.normalize(list.getString(it)) }
                 true
             }
             runOnUiThread {
                 if (found == null) {
-                    showSetup(true)
+                    showRemote("ask")       // niente server in casa: si propongono amici e tuoi PC
                 } else {
                     active = found
                     onSetup = false
@@ -155,7 +152,14 @@ class MainActivity : AppCompatActivity() {
     /** La pagina non si carica (es. si e' usciti di casa con l'app aperta): si riprova
      *  con tutti gli indirizzi, ma una volta sola, poi la schermata di configurazione. */
     private fun lost() {
-        if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showSetup(true)
+        if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showRemote("ask")
+    }
+
+    /** La pagina dell'app senza server di casa: amici e tuoi PC, raggiunti con Tailscale. */
+    private fun showRemote(hash: String) {
+        onSetup = true
+        clearHistoryOnLoad = true
+        web.loadUrl("file:///android_asset/remote.html#$hash")
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -301,6 +305,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         try { unregisterReceiver(installResult) } catch (_: Exception) {}
+        Remote.stopNet()     // il telefono esce dalla rete di BunkerPlex (e, temporaneo, sparisce)
         web.destroy()
         super.onDestroy()
     }
@@ -382,6 +387,81 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // ---- Fuori casa (remote.html): account, Tailscale dentro l'app, player
+
+        /** Risposta a una richiesta lenta della pagina: remoteDone(n, ok, testo). */
+        private fun done(cb: Int, ok: Boolean, text: String) =
+            js("window.remoteDone&&remoteDone($cb,$ok,${JSONObject.quote(text)})")
+
+        @JavascriptInterface
+        fun remoteAccount(): String = if (Remote.token(this@MainActivity).isEmpty()) "" else Remote.account(this@MainActivity)
+
+        @JavascriptInterface
+        fun remoteLogin(user: String, password: String, cb: Int) {
+            thread {
+                try {
+                    done(cb, true, Remote.login(this@MainActivity, user, password).toString())
+                } catch (e: Exception) {
+                    done(cb, false, e.message ?: "Accesso non riuscito")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun remoteLogout() = Remote.logout(this@MainActivity)
+
+        /** Una chiamata al servizio account con il gettone dell'account. */
+        @JavascriptInterface
+        fun remoteCloud(method: String, path: String, body: String, cb: Int) {
+            thread {
+                try {
+                    done(cb, true, Remote.call(this@MainActivity, method, path, body.ifEmpty { null }))
+                } catch (e: Remote.CloudError) {
+                    done(cb, false, JSONObject().put("status", e.status).put("detail", e.message).toString())
+                }
+            }
+        }
+
+        /** Entra nella rete di BunkerPlex: risponde con la base del proxy locale. */
+        @JavascriptInterface
+        fun remoteNet(cb: Int) {
+            thread {
+                try {
+                    done(cb, true, Remote.startNet(this@MainActivity))
+                } catch (e: Throwable) {
+                    done(cb, false, e.message ?: "Tailscale non parte")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun remoteToken(hostport: String, token: String) = Remote.setToken(hostport, token)
+
+        /** Avvia un video di un PC raggiunto da fuori: base = proxy verso quel PC. */
+        @JavascriptInterface
+        fun remotePlay(base: String, json: String) {
+            runOnUiThread {
+                cameFromPlayer = true
+                startActivity(
+                    Intent(this@MainActivity, PlayerActivity::class.java)
+                        .putExtra("server", base).putExtra("remote", true).putExtra("data", json)
+                )
+            }
+        }
+
+        /** Dalla pagina degli amici: riprova il server di casa, o la sua configurazione. */
+        @JavascriptInterface
+        fun retryHome() = runOnUiThread { if (server == null) showSetup(false) else openServer() }
+
+        @JavascriptInterface
+        fun openSetup() = runOnUiThread {
+            onSetup = true
+            web.loadUrl("file:///android_asset/setup.html#manual")
+        }
+
+        @JavascriptInterface
+        fun openRemote() = runOnUiThread { showRemote("friends") }
 
         @JavascriptInterface
         fun discover() {

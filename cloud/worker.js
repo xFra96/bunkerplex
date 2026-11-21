@@ -331,6 +331,9 @@ async function route(request, env) {
   if (path === '/tailscale/key' && method === 'POST') {
     if (!env.TS_OAUTH_ID || !env.TS_OAUTH_SECRET) fail(404, 'Tailscale non configurato nel servizio account');
     const tag = env.TS_TAG || 'tag:bunkerplex';
+    // I telefoni (l'app fuori casa) entrano come dispositivi temporanei: quando
+    // l'app si spegne Tailscale li toglie da solo, senza riempire Machines
+    const ephemeral = (await body(request)).ephemeral === true;
     const form = new URLSearchParams({ client_id: env.TS_OAUTH_ID, client_secret: env.TS_OAUTH_SECRET, grant_type: 'client_credentials' });
     const tr = await fetch('https://api.tailscale.com/api/v2/oauth/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form
@@ -341,7 +344,7 @@ async function route(request, env) {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        capabilities: { devices: { create: { reusable: false, ephemeral: false, preauthorized: true, tags: [tag] } } },
+        capabilities: { devices: { create: { reusable: false, ephemeral, preauthorized: true, tags: [tag] } } },
         expirySeconds: 600,
         description: 'BunkerPlex'
       })

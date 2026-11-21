@@ -50,6 +50,7 @@
       <button class="f primary" id="connect">Collega</button>
       <button class="f" id="retry">Cerca di nuovo</button>
     </div>
+    <div class="row"><button class="f" id="remote">Amici e tuoi PC fuori casa</button></div>
   </div>
 </div>
 <script>
@@ -83,13 +84,17 @@ function connect() {
 
 // Chiamate dall'app
 window.setupFound = function (url) { showSearching('Trovato! ' + url.replace('http://', '')); };
-window.setupNotFound = function () { showManual('Server non trovato', ''); };
+// Niente server in casa: l'app propone gli amici e i tuoi PC (remote.html)
+window.setupNotFound = function () {
+  if (app && app.openRemote) location.replace('remote.html#ask'); else showManual('Server non trovato', '');
+};
 window.setupError = function (url) {
   showManual('Collegamento non riuscito', 'Nessun BunkerPlex risponde a ' + url.replace('http://', '') + '. Il PC è acceso?');
 };
 
 $('connect').addEventListener('click', connect);
 $('retry').addEventListener('click', search);
+$('remote').addEventListener('click', function () { if (app && app.openRemote) app.openRemote(); });
 $('addr').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.keyCode === 13) connect(); });
 
 // Frecce del telecomando tra campo e pulsanti
@@ -108,8 +113,12 @@ document.addEventListener('keydown', function (e) {
 // Anche quando il server salvato non risponde (es. il PC ha cambiato indirizzo) rifa' la scansione
 // da solo; se non trova nulla resta il campo per scrivere l'indirizzo a mano.
 var offline = location.hash === '#offline';
-if (offline) {
+if (location.hash === '#manual') {
+  showManual('Indirizzo del server', '');
+  $('addr').focus();
+} else if (offline) {
   window.setupNotFound = function () {
+    if (app && app.openRemote) { location.replace('remote.html#ask'); return; }
     showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo. Fuori casa accendi Tailscale su questo dispositivo.');
   };
   showSearching('Il server salvato non risponde, lo cerco sulla rete…');
