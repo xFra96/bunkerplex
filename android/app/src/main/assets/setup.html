@@ -110,7 +110,7 @@ document.addEventListener('keydown', function (e) {
 var offline = location.hash === '#offline';
 if (offline) {
   window.setupNotFound = function () {
-    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo.');
+    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo. Fuori casa accendi Tailscale su questo dispositivo.');
   };
   showSearching('Il server salvato non risponde, lo cerco sulla rete…');
   if (app) app.discover(); else setupNotFound();

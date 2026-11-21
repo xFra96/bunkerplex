@@ -3747,18 +3747,27 @@ def apk_version():
     return _apk_seen["version"]
 
 
+def other_addresses():
+    """Gli altri indirizzi da cui l'app raggiunge questo PC fuori casa: quello del
+    Tailscale installato sul computer (la tua rete Tailscale, solo i tuoi dispositivi)."""
+    ts = tailscale_ip()
+    return [f"http://{ts}:32500"] if ts else []
+
+
 @app.get("/api/info")
 def info():
     apk_code, apk_name = apk_version()
     if CURRENT.get() is None:
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "login": True,
-                "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name}
+                "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
+                "addresses": other_addresses()}
     con = db()
     try:
         key = tmdb_key()
         return {
             "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION,
+            "addresses": other_addresses(),
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
             "shows": con.execute("SELECT COUNT(*) FROM shows").fetchone()[0],
             "episodes": con.execute("SELECT COUNT(*) FROM items WHERE kind='episode'").fetchone()[0],

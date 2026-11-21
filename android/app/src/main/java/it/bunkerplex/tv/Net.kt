@@ -104,6 +104,14 @@ object Net {
         }
     }
 
+    /** Le informazioni del server, o null se a quell'indirizzo non risponde BunkerPlex. */
+    fun info(baseUrl: String, timeoutMs: Int): org.json.JSONObject? =
+        try {
+            org.json.JSONObject(get("$baseUrl/api/info", timeoutMs)).takeIf { it.optString("app") == "bunkerplex" }
+        } catch (_: Exception) {
+            null
+        }
+
     fun isBunkerPlex(baseUrl: String, timeoutMs: Int = 4000): Boolean =
         try {
             get("$baseUrl/api/info", timeoutMs).contains("bunkerplex")

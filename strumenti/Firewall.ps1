@@ -2,7 +2,8 @@
 # richiesta di Windows "Consenti modifiche?"): non serve aprirla a mano.
 #
 # Apre in entrata:
-#   - 32500 (TV, telefoni e PC di casa), solo dalla rete locale;
+#   - 32500 (TV, telefoni e PC di casa), solo dalla rete locale e da Tailscale
+#     (100.64.0.0/10: i tuoi dispositivi, per esempio il telefono fuori casa);
 #   - 32501 (amici e tuoi altri PC), che risponde solo a /api/share/.
 # Se in passato alla domanda di Windows su Docker si e' risposto "Annulla",
 # Windows ha creato regole che bloccano Docker e prevalgono su ogni consenso:
@@ -18,7 +19,7 @@ param([switch]$Check)
 $ErrorActionPreference = 'Continue'
 
 $rules = @(
-    @{ Name = 'BunkerPlex-32500'; Display = 'BunkerPlex (TV, telefoni e PC di casa)'; Port = 32500; Remote = 'LocalSubnet' },
+    @{ Name = 'BunkerPlex-32500'; Display = 'BunkerPlex (TV, telefoni e PC di casa)'; Port = 32500; Remote = @('LocalSubnet', '100.64.0.0/255.192.0.0') },
     @{ Name = 'BunkerPlex-32501'; Display = 'BunkerPlex (amici e tuoi altri PC)';     Port = 32501; Remote = 'Any' }
 )
 
@@ -34,6 +35,9 @@ function Test-Rules {
     foreach ($r in $rules) {
         $x = Get-NetFirewallRule -Name $r.Name -ErrorAction SilentlyContinue
         if (-not $x -or $x.Enabled -ne 'True' -or $x.Action -ne 'Allow') { return $false }
+        # Da una versione precedente (32500 senza Tailscale): si rifa' la regola
+        $have = @(($x | Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue).RemoteAddress)
+        if ($r.Port -eq 32500 -and -not ($have -match '^100.64.0.0/')) { return $false }
     }
     return -not @(Get-DockerBlocks)
 }

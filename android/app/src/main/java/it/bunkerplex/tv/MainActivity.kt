@@ -55,6 +55,18 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("server", value).apply()
         }
 
+    /** Gli altri indirizzi dello stesso PC (es. Tailscale), da provare fuori casa: li dice il server. */
+    private var others: List<String>
+        get() = (prefs.getString("server_others", "") ?: "").split(' ').filter { it.isNotBlank() }
+        set(value) {
+            prefs.edit().putString("server_others", value.distinct().joinToString(" ")).apply()
+        }
+
+    /** L'indirizzo che si sta usando adesso: quello di casa o, fuori casa, uno degli altri. */
+    @Volatile
+    private var active: String? = null
+    private var lastOpen = 0L
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,12 +91,12 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame && !onSetup) showSetup(true)
+                if (request.isForMainFrame && !onSetup) lost()
             }
 
             @Deprecated("Usato solo dalle versioni vecchie di Android")
             override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
-                if (!onSetup) showSetup(true)
+                if (!onSetup) lost()
             }
         }
 
@@ -114,10 +126,36 @@ class MainActivity : AppCompatActivity() {
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
+    /** Apre BunkerPlex dal primo indirizzo che risponde: prima quello di casa, poi
+     *  (fuori casa) gli altri del PC, per esempio quello di Tailscale. */
     private fun openServer() {
+        val home = server ?: return showSetup(false)
         onSetup = false
-        clearHistoryOnLoad = true
-        web.loadUrl("$server/#/home")
+        lastOpen = System.currentTimeMillis()
+        thread {
+            val found = (listOf(home) + others).distinct().firstOrNull { url ->
+                val info = Net.info(url, if (url == home) 3000 else 6000) ?: return@firstOrNull false
+                val list = info.optJSONArray("addresses")
+                if (list != null) others = (0 until list.length()).map { Net.normalize(list.getString(it)) }
+                true
+            }
+            runOnUiThread {
+                if (found == null) {
+                    showSetup(true)
+                } else {
+                    active = found
+                    onSetup = false
+                    clearHistoryOnLoad = true
+                    web.loadUrl("$found/#/home")
+                }
+            }
+        }
+    }
+
+    /** La pagina non si carica (es. si e' usciti di casa con l'app aperta): si riprova
+     *  con tutti gli indirizzi, ma una volta sola, poi la schermata di configurazione. */
+    private fun lost() {
+        if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showSetup(true)
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -272,7 +310,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun play(json: String) {
-            val base = server ?: return
+            val base = active ?: server ?: return
             runOnUiThread {
                 cameFromPlayer = true
                 startActivity(
@@ -300,7 +338,7 @@ class MainActivity : AppCompatActivity() {
          *  La pagina segue l'andamento con window.fpUpdate(stato, valore). */
         @JavascriptInterface
         fun update() {
-            val base = server ?: return
+            val base = active ?: server ?: return
             if (!updating.compareAndSet(false, true)) return
             thread {
                 try {
@@ -326,7 +364,7 @@ class MainActivity : AppCompatActivity() {
         fun isTv(): Boolean = isTelevision
 
         @JavascriptInterface
-        fun getServer(): String = server ?: ""
+        fun getServer(): String = active ?: server ?: ""
 
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }
@@ -337,6 +375,7 @@ class MainActivity : AppCompatActivity() {
             thread {
                 if (Net.isBunkerPlex(url)) {
                     server = url
+                    others = emptyList()
                     runOnUiThread { openServer() }
                 } else {
                     js("setupError(${JSONObject.quote(url)})")
@@ -350,6 +389,7 @@ class MainActivity : AppCompatActivity() {
                 val url = Net.discover()
                 if (url != null) {
                     server = url
+                    others = emptyList()
                     js("setupFound(${JSONObject.quote(url)})")
                     Thread.sleep(900)
                     runOnUiThread { if (onSetup) openServer() }

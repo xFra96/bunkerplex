@@ -5,6 +5,7 @@ Il tuo cinema di casa: il computer tiene i video, la TV li guarda.
 - **Server** sul computer (dentro Docker): cataloga film e serie, scarica locandine, trame e foto del cast, manda i video in streaming.
 - **App per la TV**: Android TV, Google TV, Fire TV. Si usa col telecomando.
 - **Dal browser** di qualsiasi PC, tablet o telefono di casa: `http://INDIRIZZO-DEL-COMPUTER:32500`.
+- **Fuori casa, dal tuo telefono**: installa [Tailscale](https://tailscale.com) sul telefono e sul PC con lo stesso account. L'app, quando l'indirizzo di casa non risponde, passa da sola a quello Tailscale del PC (dal browser: `http://100.x.y.z:32500`). Sul PC Windows la porta 32500 la apre «Installa» anche per Tailscale.
 
 Funziona sempre, anche senza Internet e senza account: a casa, con il disco collegato, vedi tutto. Ogni account è una persona, con la sua collezione (visti, lista, raccolte).
 
@@ -196,7 +197,7 @@ Dentro Docker BunkerPlex non vede la rete di casa: per trovare il router gli ser
 
 **Sicurezza**
 
-- La porta **32500** è pensata per la rete di casa (le TV entrano scegliendo il nome): non farla mai raggiungere da fuori casa. Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
+- La porta **32500** è pensata per la rete di casa (le TV entrano scegliendo il nome): non farla mai raggiungere da fuori casa (tranne che da Tailscale con il tuo account: lì ci sono solo i tuoi dispositivi). Agli amici serve solo la **32501**, che risponde soltanto agli amici approvati.
 - Con il Tailscale dentro BunkerPlex ogni PC entra nella rete di BunkerPlex con l'etichetta `tag:bunkerplex` e le regole della rete lasciano passare solo la `32501` tra un BunkerPlex e l'altro: nessuno vede il resto del tuo computer, che anzi non si accorge di niente (Tailscale gira dentro Docker). In più il server rifiuta chi prova la 32500 passando da lì. Sopra Tailscale la 32501 resta in HTTPS con l'impronta del certificato, che arriva dal servizio account.
 - Con un Tailscale installato a mano sul computer l'amico raggiunge il tuo computer su tutte le porte: condividi solo con chi ti fidi, oppure limita l'accesso alla `32501` nelle *Access controls* di Tailscale.
 - La porta 32501 è **cifrata** (HTTPS) con un certificato creato dal tuo server: l'amico ne ricorda l'impronta alla prima richiesta e da lì in poi accetta solo quello. Il punto debole è quel primo collegamento: per sicurezza piena, la prima richiesta fatela sapendo che l'indirizzo è davvero quello dell'amico.
@@ -225,6 +226,7 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 - **Cartella «non raggiungibile»**: collega il disco; torna da sola in pochi secondi. Se non succede, rilancia «Installa».
 - **Docker Desktop non parte** con *«The file cannot be accessed by the system»* su un file `.sock`: lancia «Installa», che a Docker spento toglie da solo quei file rimasti bloccati.
 - **La TV non trova il server** (o Downloader resta su *Connecting…*): computer e TV devono essere sulla stessa rete. Il firewall lo sistema «Installa»: su Windows apre le porte `32500` (solo dalla rete di casa) e `32501` chiedendo una volta il consenso di Windows, e spegne le regole che bloccano Docker rimaste da un «Annulla» di Windows; su Mac, se il firewall è acceso, consente le connessioni in entrata a Docker chiedendo la password del Mac. Se hai risposto no, rilancia «Installa». Su Mac con *Blocca tutte le connessioni in entrata* attivo non c'è modo di entrare: va tolto da *Impostazioni di Sistema → Rete → Firewall → Opzioni*. Su Linux Docker apre da sé le porte pubblicate, anche con `ufw`.
+- **Fuori casa il telefono non arriva al PC**: Tailscale dev'essere acceso sul telefono, con lo stesso account del PC. Su Windows «Installa» apre la `32500` anche ai tuoi dispositivi su Tailscale (`100.64.0.0/10`, non a Internet): se l'hai installato prima di questa versione, rilancia «Installa».
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
