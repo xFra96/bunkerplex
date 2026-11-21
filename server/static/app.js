@@ -1417,6 +1417,7 @@ function settingsAreas() {
   if (auth && auth.user && auth.user.admin && !TV) out.push(['people', 'Persone']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Catalogo e schede'], ['subtitles', 'Sottotitoli'],
     ['friends', 'Amici'], ['updates', 'Aggiornamenti'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
+  if (!APP || TV) out.push(['apps', TV ? 'App sul telefono' : 'App per TV e telefono']);
   return out;
 }
 
@@ -1432,7 +1433,8 @@ var SICON = {
   subtitles: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6.5 12.5h3M11.5 12.5h6M6.5 15.5h7M15.5 15.5h2"/>',
   friends: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>',
   updates: '<path d="M20 11a8 8 0 0 0-14.5-4.5M4 13a8 8 0 0 0 14.5 4.5M5.5 3v3.5H9M18.5 21v-3.5H15"/>',
-  device: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M12 16.5V20"/>'
+  device: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M12 16.5V20"/>',
+  apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>'
 };
 function sicon(area) {
   return SICON[area] ? '<svg class="sic" viewBox="0 0 24 24" aria-hidden="true">' + SICON[area] + '</svg>' : '';
@@ -1477,7 +1479,7 @@ function settingsRows(i, u, sh) {
     if (l.mine !== false) away += (l.missing || []).length;
   });
   rows.push({ area: 'libraries', label: 'Raccolte',
-    desc: away ? (away === 1 ? 'Una cartella sta su un altro PC' : away + ' cartelle stanno su altri PC') : 'Le cartelle dei video di questo PC',
+    desc: away ? (away === 1 ? 'Una cartella sta su un altro PC' : away + ' cartelle stanno su altri PC') : 'Le sezioni del menu e le cartelle dei video',
     value: off ? (off === 1 ? 'Una cartella non raggiungibile' : off + ' cartelle non raggiungibili')
       : (libs.length ? libs.length + (libs.length === 1 ? ' raccolta' : ' raccolte') : 'Nessuna raccolta'),
     state: off || !libs.length ? 'warn' : 'ok' });
@@ -1491,7 +1493,7 @@ function settingsRows(i, u, sh) {
     var pending = sh.accounts.filter(function (a) { return !a.approved; }).length;
     shareRequests = pending;
     markRequests();
-    rows.push({ area: 'friends', label: 'Amici', desc: 'Raccolte condivise con altre case',
+    rows.push({ area: 'friends', label: 'Amici', desc: 'Raccolte condivise con altre case, via Tailscale integrato',
       value: !sh.on ? 'Spenta' : (pending ? (pending === 1 ? 'Una richiesta da approvare' : pending + ' richieste da approvare')
         : (friends.length ? friends.length + (friends.length === 1 ? ' amico collegato' : ' amici collegati') : 'Attiva')),
       state: pending ? 'warn' : (sh.on ? 'ok' : '') });
@@ -1502,8 +1504,12 @@ function settingsRows(i, u, sh) {
       state: u.error || u.access === false || u.available || u.phase ? 'warn' : 'ok' });
   }
   var tvOld = APP && i.apk_version > (+tvCall('getVersion') || 0);
-  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo', desc: 'Animazioni, locandine, collegamento',
+  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo', desc: 'Preferenze di visione, collegamento al server',
     value: tvOld ? 'App da aggiornare' : 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: tvOld ? 'warn' : '' });
+  if (!APP || TV) {
+    rows.push({ area: 'apps', label: TV ? 'App sul telefono' : 'App per TV e telefono',
+      desc: TV ? 'Il QR per scaricarla sul telefono Android' : 'Installa sulla TV dal PC, app sul telefono', value: 'Installa', state: '' });
+  }
   return rows;
 }
 
@@ -1511,14 +1517,15 @@ function settingsRows(i, u, sh) {
 async function apkPanel(title) {
   var link = await api('/apk-link').catch(function () { return null; });
   if (!link || !link.apk) {
-    return '<div class="panel"><h2>' + title + '</h2><p>App non ancora compilata: avvia <b>Compila APK.bat</b> sul PC.</p></div>';
+    return '<div class="panel"><h2>' + title + '</h2><p>Sul PC non c\'è ancora l\'app Android: arriva con il prossimo aggiornamento di BunkerPlex.</p></div>';
   }
   if (!link.url) {
     return '<div class="panel"><h2>' + title + '</h2><p>Non conosco ancora l\'indirizzo di questo PC nella rete di casa: rilancia «Installa BunkerPlex» sul computer, oppure apri questa pagina da un altro dispositivo di casa.</p></div>';
   }
   return '<div class="panel"><h2>' + title + '</h2><div class="apkqr">' +
     (link.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per scaricare l\'app">' + link.svg + '</div>' : '') +
-    '<div class="apktext"><p>Inquadra il codice con la fotocamera del telefono: scarica l\'app da questo PC. Sulla TV invece apri lo stesso indirizzo con l\'app «Downloader».</p>' +
+    '<div class="apktext"><p>Inquadra il codice con la fotocamera del telefono Android: scarica l\'app da questo PC.' +
+      (TV ? '' : ' Per la TV è più comodo «Installa sulla TV dal PC» qui sopra; in alternativa apri lo stesso indirizzo sulla TV con l\'app «Downloader».') + '</p>' +
     '<p class="apkurl num">' + esc(link.url) + '</p>' +
     (APP ? '' : '<div class="actions" style="margin-top:.4rem"><a class="btn f" href="/BunkerPlex.apk" download data-key="apk">Scarica BunkerPlex.apk</a></div>') +
     '</div></div></div>';
@@ -1682,10 +1689,11 @@ function networkPanel(n) {
   return '<div class="panel"><h2>Indirizzi di questo PC</h2><dl class="kv">' +
     '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
       (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Installa BunkerPlex»</small>') + '</dd>' +
-    '<dt>IP pubblico<small>su Internet: lo usano solo gli amici</small></dt><dd class="num">' +
-      (n.public ? esc(n.public) + '<small>' + (n.public_source === 'router' ? 'dal router' : 'dal servizio account') + (n.tailnet ? ' · amici via Tailscale (' + esc(n.tailnet) + ')' : n.friends_open ? ' · porta amici ' + n.friends_port + ' aperta' : '') + '</small>'
-        : '<span class="nodot">non raggiungibile</span><small>niente Internet?</small>') + '</dd>' +
-    '</dl><p class="kvnote">Da fuori casa si entra solo dalla porta degli amici: non aprire mai la ' + n.port + ' sul router.</p></div>';
+    '<dt>Per gli amici<small>da fuori casa, solo la porta ' + n.friends_port + '</small></dt><dd class="num">' +
+      (n.tailnet ? esc(n.tailnet) + '<small>Tailscale integrato</small>'
+        : n.friends_open ? esc(n.public) + '<small>porta aperta sul router</small>'
+        : '<span class="nodot">nessun accesso da fuori</span><small>si accende in Amici</small>') + '</dd>' +
+    '</dl><p class="kvnote">Non aprire mai la ' + n.port + ' sul router: è solo per la rete di casa.</p></div>';
 }
 
 async function settings() {
@@ -1760,7 +1768,7 @@ async function settingsArea(area) {
         '<div class="actions" style="margin-top:.4rem"><button class="btn danger f" data-act="pushlocal" data-key="pushlocal">Sovrascrivi l\'account con le raccolte di questo PC</button></div></div>'
       : '';
     return settingsShell('libraries', 'Raccolte',
-      'Ogni raccolta è una sezione del tuo cinema, con una o più cartelle di questo PC. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.',
+      'Ogni raccolta è una voce del menu (per esempio Film o Serie TV), con una o più cartelle di questo PC. Non sono le Collezioni: quelle raggruppano da sole i film della stessa saga. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.',
       '<div class="panel">' + (libsHtml || '<p>Ancora nessuna raccolta su questo PC.</p>') +
       '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div></div>' +
       accountPanelHtml);
@@ -1816,27 +1824,33 @@ async function settingsArea(area) {
     var sh = res[3];
     if (!sh) return settingsShell('friends', 'Amici', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
     var af = auth.cloud ? await api('/account-friends').catch(function () { return null; }) : null;
-    var legacy = friendsPanel(sh)
-      .replace('<h2>Amici</h2>', '<h2>' + (af && af.linked ? 'Collegamenti con indirizzo e password' : 'Amici') + '</h2>')
-      .replace(/<p>Tu e un amico con BunkerPlex[\s\S]*?<\/p>/, af && af.linked
-        ? '<p>Il sistema di prima, per chi non ha un account sul tuo servizio o se usate Tailscale: si scrive l\'indirizzo dell\'amico e ci si registra da lui. ' +
-          'L\'interruttore qui sotto apre o chiude la porta per gli amici di tutto il PC.</p>' : '');
     return settingsShell('friends', 'Amici',
       'Tu e un amico con BunkerPlex guardate ciascuno le raccolte dell\'altro, anche da case diverse. Si guarda soltanto.',
-      accountFriendsPanel(af, sh) + legacy);
+      accountFriendsPanel(af, sh) + friendsPanel(sh, !!auth.cloud) +
+      '<div class="panel"><h2>Video degli amici</h2>' +
+      '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
+      '<p class="kvnote">Viaggiano sulla linea in caricamento di chi condivide: 720p va bene quasi sempre.</p></div>');
   }
 
   if (area === 'updates') {
     var u = res[2];
     return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
-      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>') +
-      (APP ? '' : await tvPanel() + await apkPanel('App per la TV e per il telefono')));
+      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>'));
+  }
+
+  if (area === 'apps') {
+    if (TV) {
+      return settingsShell('apps', 'App sul telefono', 'Sul telefono Android BunkerPlex si usa anche come app, con tutte le funzioni.',
+        await apkPanel('Scaricala sul telefono'));
+    }
+    return settingsShell('apps', 'App per TV e telefono', 'L\'app per TV e telefoni Android arriva da questo PC e poi si aggiorna da sola.',
+      installPanel() + await tvPanel() + await apkPanel('App Android per il telefono'));
   }
 
   // Questo dispositivo: preferenze di visione e collegamento al server
   return settingsShell('device', TV ? 'Questa TV' : 'Questo dispositivo', '',
-    devicePanel().replace(/<h2>Questo dispositivo<\/h2>/, '<h2>Preferenze di visione</h2>') +
+    devicePanel() +
     '<div class="panel"><h2>Collegamento</h2>' +
     '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Programma</dt><dd>' + esc(i.name) + ' ' + esc(i.version) + '</dd>' +
     (APP ? '<dt>' + (TV ? 'App su questa TV' : 'App BunkerPlex') + '</dt><dd>' + esc(tvCall('getVersionName') || 'precedente') +
@@ -1844,7 +1858,7 @@ async function settingsArea(area) {
     '</dl>' +
     (APP ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
       '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
-    '</div>' + installPanel() + (TV ? await apkPanel('L\'app sul telefono') : ''));
+    '</div>');
 }
 
 // ---------------------------------------------------------------- App sul telefono (PWA)
@@ -1857,12 +1871,12 @@ var IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 
 window.addEventListener('beforeinstallprompt', function (e) {
   e.preventDefault();
   installEvt = e;
-  if (/^#\/settings\/device/.test(location.hash)) render();
+  if (/^#\/settings\/apps/.test(location.hash)) render();
 });
 window.addEventListener('appinstalled', function () {
   installEvt = null;
   toast('BunkerPlex è sulla schermata Home');
-  if (/^#\/settings\/device/.test(location.hash)) render();
+  if (/^#\/settings\/apps/.test(location.hash)) render();
 });
 if (!APP && window.isSecureContext && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(function () {});
@@ -1992,24 +2006,20 @@ function whenSeen(sec) {
   return 'ultimo accesso ' + d.toLocaleDateString('it-IT') + ' alle ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
-// Come si arriva a questo server da fuori casa: la porta aperta sul router, oppure no
+// Come si arriva a questo server da fuori casa: di solito il Tailscale dentro
+// BunkerPlex; se il servizio account non lo offre, la porta aperta sul router
 function reachState(sh) {
-  var pm = sh.portmap || {};
-  if (!sh.on) return 'La condivisione è spenta: da fuori non entra nessuno.';
-  if (sh.manual) return dot(true) + ' Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b> (indirizzo scritto da te).';
-  var tn = sh.tailnet || {};
-  if (tn.on) return dot(true) + ' Gli amici ti raggiungono attraverso Tailscale, già dentro BunkerPlex: niente porte da aprire sul router (<b>' + esc(sh.address) + '</b>).';
-  if (tn.running && !tn.error && !(pm.ok && pm.public)) return 'Collego BunkerPlex alla rete degli amici…';
-  if (sh.tailscale) return dot(true) + ' Tailscale trovato: gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
-    (sh.tls ? ', con collegamento cifrato' : '') + '. Sul router non si apre nessuna porta; l\'amico deve avere Tailscale e il tuo computer condiviso con lui.';
-  if (!sh.auto_port) return 'Apertura automatica spenta: scrivi tu il tuo indirizzo (per esempio quello di Tailscale) quando mandi una richiesta.';
-  if (pm.ok && pm.public) {
-    return dot(true) + ' Porta aperta sul router (' + esc(pm.method) + '). Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b>' +
-      (sh.tls ? ', con collegamento cifrato.' : '. Attenzione: collegamento non cifrato.');
-  }
-  if (tn.error && tn.supported !== false) return dot(false) + ' Non riesco a collegarmi alla rete degli amici (Tailscale): ' + esc(tn.error) + '. Riprovo da solo.';
-  if (pm.error) return dot(false) + ' Non riesco ad aprire la porta da solo: ' + esc(pm.error) + '.';
-  return 'Sto chiedendo al router di aprire la porta…';
+  var pm = sh.portmap || {}, tn = sh.tailnet || {};
+  if (!sh.on) return 'Condivisione spenta: da fuori non entra nessuno.';
+  if (sh.manual) return dot(true) + ' Gli amici ti raggiungono a <b>' + esc(sh.address) + '</b> (indirizzo scritto a mano).';
+  if (tn.on) return dot(true) + ' Collegato alla rete degli amici con il Tailscale integrato (<b>' + esc(tn.ip) + '</b>): niente porte da aprire sul router.';
+  if (tn.running && !tn.error && !(pm.ok && pm.public)) return 'Mi collego alla rete degli amici…';
+  if (sh.tailscale) return dot(true) + ' Gli amici ti raggiungono con il Tailscale installato sul computer (<b>' + esc(sh.address) + '</b>).';
+  if (pm.ok && pm.public) return dot(true) + ' Tailscale integrato non disponibile: uso la porta aperta sul router (' + esc(pm.method) + '), <b>' + esc(sh.address) + '</b>.';
+  if (tn.error && tn.supported !== false) return dot(false) + ' Non riesco a collegarmi alla rete degli amici: ' + esc(tn.error) + '. Riprovo da solo.';
+  if (!sh.auto_port) return 'Apertura della porta sul router spenta: scrivi tu il tuo indirizzo quando mandi una richiesta.';
+  if (pm.error) return dot(false) + ' Tailscale integrato non disponibile e il router non apre la porta da solo: ' + esc(pm.error) + '.';
+  return 'Mi collego alla rete degli amici…';
 }
 
 // Gli amici dell'account: si aggiungono col nome del loro account, accettano da un
@@ -2045,7 +2055,7 @@ function accountFriendsPanel(af, sh) {
     return row(f, '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-undo-' + f.id + '">Annulla</button>', 'richiesta mandata: aspetta che accetti');
   }).join('');
   var sharing = af.sharing
-    ? (af.published ? 'Attiva: i tuoi amici vedono le raccolte del tuo profilo' : 'Attiva, ma il tuo indirizzo non è ancora pubblicato: ' + reachState(sh).replace(/<[^>]+>/g, ''))
+    ? (af.published ? 'Attiva: i tuoi amici vedono le raccolte del tuo profilo' : 'Attiva, ma gli amici non ti raggiungono ancora')
     : 'Spenta: i tuoi amici non vedono le tue raccolte (tu vedi le loro)';
   return head +
     (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
@@ -2055,18 +2065,23 @@ function accountFriendsPanel(af, sh) {
     '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
     '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>' +
     '<button class="setting f" data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare">Condividi le tue raccolte con i tuoi amici<small>' + esc(sharing) + '</small></button>' +
+    (af.sharing && sh ? '<p>' + reachState(sh) + '</p>' : '') +
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
       '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
       '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' : '') +
     '<p class="kvnote">Gli amici vedono solo le raccolte del tuo profilo e possono soltanto guardare. Il collegamento è cifrato e il servizio account garantisce che dall\'altra parte ci sia davvero il loro server.</p></div>';
 }
 
-function friendsPanel(sh) {
+// Il sistema di prima, con indirizzo e password: completo solo senza servizio
+// account; con il servizio si vedono soltanto i vecchi collegamenti rimasti.
+function friendsPanel(sh, cloud) {
   if (!sh) return '';
   var pending = sh.accounts.filter(function (a) { return !a.approved; });
-  var guests = sh.accounts.filter(function (a) { return a.approved; });
+  var guests = sh.accounts.filter(function (a) { return a.approved && a.via !== 'account'; });
   shareRequests = pending.length;
   markRequests();
+  var old = friends.filter(function (fr) { return fr.via !== 'account'; });
+  if (cloud && !pending.length && !guests.length && !old.length) return '';
 
   var asks = pending.map(function (a) {
     return '<div class="folder"><div class="where"><b>' + esc(a.name) + ' chiede di condividere le raccolte</b><small>' +
@@ -2075,7 +2090,7 @@ function friendsPanel(sh) {
       '<button class="btn f" data-act="accdel" data-arg="' + a.id + '" data-key="acc-no-' + a.id + '">Rifiuta</button></div>';
   }).join('');
 
-  var mine = friends.map(function (fr) {
+  var mine = old.map(function (fr) {
     var n = fr.libraries.length;
     var state = fr.online === false
       ? dot(false) + ' ' + esc(fr.error || 'non raggiungibile') + (n ? ' · resta sfogliabile l\'ultimo elenco salvato' : '')
@@ -2092,21 +2107,22 @@ function friendsPanel(sh) {
       '<button class="btn danger f" data-act="accdel" data-arg="' + a.id + '" data-key="acc-del-' + a.id + '">Togli</button></div>';
   }).join('');
 
-  return '<div class="panel"><h2>Amici</h2>' +
-    '<p>Tu e un amico con BunkerPlex potete guardare ciascuno le raccolte dell\'altro, anche da case diverse. ' +
-    'Uno dei due manda la richiesta, l\'altro la accetta: da quel momento, quando il PC dell\'amico è acceso, le sue raccolte compaiono nel menu e nella Home. ' +
-    'Si guarda soltanto: nessuno può modificare la libreria dell\'altro.</p>' +
-    (asks ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da approvare</b></div></div>' + asks + '</div>' : '') +
+  var lists = (asks ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da approvare</b></div></div>' + asks + '</div>' : '') +
     (mine ? '<div class="lib"><div class="head"><div class="name"><b>Le raccolte che vedi</b></div></div>' + mine + '</div>' : '') +
-    (seen ? '<div class="lib"><div class="head"><div class="name"><b>Chi vede le tue</b></div></div>' + seen + '</div>' : '') +
-    (!sh.on && auth.cloud && !auth.user.linked
-      ? '<p><b>Per condividere serve un account.</b> Tutto il resto funziona senza. <a class="link f" href="#/settings/account" data-key="share-login">Entra con un account</a></p>'
-      : '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Porta per gli amici su questo PC<small>' +
-        (sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') + '</small></button>') +
+    (seen ? '<div class="lib"><div class="head"><div class="name"><b>Chi vede le tue</b></div></div>' + seen + '</div>' : '');
+  if (cloud) {
+    return '<div class="panel"><h2>Vecchi collegamenti con indirizzo e password</h2>' +
+      '<p>Fatti con il sistema di prima: funzionano ancora, e qui li puoi sospendere o togliere. I nuovi amici si aggiungono col nome del loro account, qui sopra.</p>' +
+      lists + '</div>';
+  }
+  return '<div class="panel"><h2>Amici</h2>' +
+    '<p>Uno dei due manda la richiesta, l\'altro la accetta: da quel momento, quando il PC dell\'amico è acceso, le sue raccolte compaiono nel menu e nella Home. ' +
+    'Si guarda soltanto: nessuno può modificare la libreria dell\'altro.</p>' + lists +
+    '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Porta per gli amici su questo PC<small>' +
+      (sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') + '</small></button>' +
     '<button class="setting f" data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport">Apri da solo la porta sul router<small>' +
-      (sh.auto_port ? 'Sì' : 'No') + '</small></button>' +
+      (sh.auto_port ? 'Sì' : 'No: scrivi tu il tuo indirizzo, per esempio quello di Tailscale') + '</small></button>' +
     '<p>' + reachState(sh) + '</p>' +
-    '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità dei video degli amici<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
     // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
     '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
@@ -2139,10 +2155,9 @@ function labelOf(list, key) {
 
 function devicePanel() {
   var auto = !device.anim && device.slow ? ' (ridotte: questo dispositivo è lento)' : '';
-  return '<div class="panel"><h2>Questo dispositivo</h2>' +
-    (auth && auth.user && auth.user.linked
-      ? '<p>Restano nel tuo account e valgono su ogni dispositivo dove entri (il riconoscimento dei dispositivi lenti resta di ognuno).</p>'
-      : '<p>Restano nel tuo profilo e valgono su ogni TV, telefono e PC di casa dove entri (il riconoscimento dei dispositivi lenti resta di ognuno).</p>') +
+  return '<div class="panel"><h2>Preferenze di visione</h2>' +
+    '<p>Animazioni e locandine seguono il tuo ' + (auth && auth.user && auth.user.linked ? 'account' : 'profilo') +
+      ' su ogni TV, telefono e PC dove entri. Restano di questo dispositivo solo l\'aspetto da TV e il riconoscimento dei dispositivi lenti.</p>' +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
     (TV ? '' : '<button class="setting f" data-act="devtv" data-key="devtv">Aspetto da TV (per il browser di una smart TV)<small>' + (device.tv ? 'Attivo' : 'Spento') + '</small></button>') +
