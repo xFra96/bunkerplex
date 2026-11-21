@@ -2191,7 +2191,7 @@ def startup():
         return
     init_db()
     migrate_catalog()
-    ensure_profile()
+    ensure_identity()
     threading.Thread(target=note_update, daemon=True).start()
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=drives_loop, daemon=True).start()
@@ -2206,17 +2206,18 @@ def startup():
         threading.Thread(target=tailnet_loop, daemon=True).start()
 
 
-# ---- Profili e account ----------------------------------------------------------
-# Chi guarda entra in un PROFILO di questo PC: visti, punti di ripresa, lista,
-# raccolte e impostazioni sono suoi. Un profilo funziona sempre, anche senza
-# Internet e senza account: il primo («Casa») nasce da solo e, finche' e' l'unico,
-# si entra senza scegliere niente.
-# Il login e' facoltativo: un profilo si puo' collegare a un account del servizio
-# su Cloudflare (vedi cloud/ e accounts.py). Da quel momento impostazioni, chiavi,
-# visti, lista e raccolte lo seguono su ogni PC, e si sblocca la condivisione con
-# gli amici. Le modifiche fatte senza Internet si uniscono da sole al ritorno
-# della rete, voce per voce: vince la piu' recente.
-# Profilo locale: cloud_id NULL. Profilo collegato: cloud_id dell'account
+# ---- Account ------------------------------------------------------------------
+# Chi guarda entra con il suo ACCOUNT: visti, punti di ripresa, lista, raccolte e
+# impostazioni sono suoi. Niente profili: un account, una collezione.
+# Finche' su questo PC non e' entrato nessun account (o senza servizio account)
+# c'e' solo l'utente di questo PC («Casa»), in cui si entra da soli: funziona
+# sempre, anche senza Internet. Il primo account che entra lo prende con tutto
+# quello che ha (vedi store_user).
+# Con l'account impostazioni, chiavi, visti, lista e raccolte lo seguono su ogni
+# PC, e si sblocca la condivisione con gli amici. Le modifiche fatte senza
+# Internet si uniscono da sole al ritorno della rete, voce per voce: vince la
+# piu' recente.
+# Utente di questo PC: cloud_id NULL. Account: cloud_id dell'account
 # (token NULL = va ridata la password per riprendere la sincronizzazione).
 
 SESSION_COOKIE = "bp_session"
@@ -2230,28 +2231,85 @@ cloud_status = {"at": 0.0, "ready": None}
 
 
 def auth_on():
-    """C'e' un servizio account a cui collegare i profili?"""
+    """C'e' un servizio account?"""
     return bool(accounts.cloud_url()) and not DATA_PROBLEM
 
 
-DEFAULT_PROFILE = "Casa"
+DEFAULT_USER = "Casa"
 
 
-def ensure_profile():
-    """Al primo avvio (o arrivando da una versione senza profili) nasce il profilo
-    «Casa», che prende raccolte, visti, lista e chiavi che c'erano prima."""
+def merge_user(con, src, dst):
+    """Tutto quello che ha src (visti, ripresa, lista, impostazioni, raccolte,
+    dispositivi entrati) passa a dst, senza perdere niente; poi src non c'e' piu'.
+    Per ogni titolo vince la ripresa piu' recente; visto e lista restano se uno dei
+    due li aveva."""
+    con.execute("INSERT INTO user_items(user_id, item_id, position, watched, last_played, fav, t, dirty) "
+                "SELECT ?, item_id, position, watched, last_played, fav, t, 1 FROM user_items WHERE user_id=? "
+                "ON CONFLICT(user_id, item_id) DO UPDATE SET "
+                "position=CASE WHEN excluded.t>user_items.t THEN excluded.position ELSE user_items.position END, "
+                "watched=MAX(user_items.watched, excluded.watched), "
+                "last_played=MAX(user_items.last_played, excluded.last_played), "
+                "fav=MAX(user_items.fav, excluded.fav), t=MAX(user_items.t, excluded.t), dirty=1", (dst, src))
+    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) "
+                "SELECT ?, show_id, fav, t, 1 FROM user_shows WHERE user_id=? "
+                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=MAX(user_shows.fav, excluded.fav), "
+                "t=MAX(user_shows.t, excluded.t), dirty=1", (dst, src))
+    # Le impostazioni che dst non ha ancora (chiavi API comprese)
+    con.execute("INSERT OR IGNORE INTO user_settings(user_id, k, v, t, dirty) "
+                "SELECT ?, k, v, t, 1 FROM user_settings WHERE user_id=? AND k<>'libraries'", (dst, src))
+    con.execute("UPDATE user_sessions SET user_id=? WHERE user_id=?", (dst, src))
+    con.execute("UPDATE accounts SET profile=? WHERE profile=?", (dst, src))
+    for table in ("user_items", "user_shows", "user_settings", "cloud_state"):
+        con.execute(f"DELETE FROM {table} WHERE user_id=?", (src,))
+    con.execute("DELETE FROM users WHERE id=?", (src,))
+    with config_lock:
+        changed = False
+        for lib in config.get("libraries") or []:
+            if lib.get("owner") == src:
+                lib.update(owner=dst, synced=False)   # se dst ha l'account, le raccolte ci vanno
+                changed = True
+        if config.get("accounts_adopted") == src:
+            config["accounts_adopted"] = dst
+            changed = True
+        if changed:
+            save_config()
+    with settings_lock:
+        settings_cache.clear()
+    user_cache.clear()
+
+
+def ensure_identity():
+    """Al primo avvio nasce l'utente di questo PC («Casa»), che prende raccolte, visti,
+    lista e chiavi che c'erano prima. Arrivando dalla versione con i profili, i
+    profili senza account si uniscono all'account principale di questo PC
+    (l'amministratore, o il primo entrato); se di account non ce ne sono, al primo
+    profilo. Gli account restano ognuno con la sua collezione."""
     con = db(raw=True)
     try:
         con.execute("DELETE FROM user_sessions WHERE user_id=0")   # vecchi ingressi «senza account»
         con.commit()
-        if con.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+        rows = con.execute("SELECT id, cloud_id, admin FROM users ORDER BY created, id").fetchall()
+        if rows:
+            local = [r["id"] for r in rows if r["cloud_id"] is None]
+            linked = [r for r in rows if r["cloud_id"] is not None]
+            if linked:
+                main = next((r["id"] for r in linked if r["admin"]), linked[0]["id"])
+                rest = local
+            else:
+                main, rest = local[0], local[1:]
+            for src in rest:
+                merge_user(con, src, main)
+                con.commit()
+                print("Profilo", src, "unito all'account", main, flush=True)
+            if rest:
+                sync_soon()
             return
         uid = con.execute("INSERT INTO users(name, created, last_login, tv_quick) VALUES(?,?,?,1)",
-                          (DEFAULT_PROFILE, time.time(), time.time())).lastrowid
+                          (DEFAULT_USER, time.time(), time.time())).lastrowid
         con.commit()
     finally:
         con.close()
-    print("Creato il profilo", DEFAULT_PROFILE, flush=True)
+    print("Creato l'utente", DEFAULT_USER, flush=True)
     adopt_legacy(uid)
 
 
@@ -2424,8 +2482,8 @@ def pending_changes(con, uid):
 
 
 class AuthGate:
-    """Le API rispondono a chi e' entrato in un profilo di questo PC (con o senza
-    account, con o senza Internet). Restano aperte: la scelta del profilo e
+    """Le API rispondono a chi e' entrato su questo PC (con o senza
+    account, con o senza Internet). Restano aperte: «Chi guarda?» e
     l'accesso, la porta degli amici e /api/info (ridotta), che serve all'app
     della TV per riconoscere il server e aggiornarsi."""
 
@@ -2532,17 +2590,17 @@ def open_session(con, uid, device):
 KEY_SETTINGS = ("tmdb_key", "opensubtitles")
 
 
-def store_user(con, cloud_user, token, ver, into=None):
+def store_user(con, cloud_user, token, ver):
     """Copia locale dell'account appena entrato (con l'impronta per entrare anche offline).
-    into: il profilo locale da cui si e' fatto l'accesso, che diventa quell'account
-    (se l'account non ha gia' un suo profilo su questo PC). Torna l'id del profilo."""
+    Se l'account su questo PC non c'e' ancora e c'e' l'utente di questo PC (senza
+    account), l'account prende quello con tutto quello che ha. Torna l'id."""
     vsalt = secrets.token_hex(16)
     vcheck = hashlib.sha256((vsalt + ver).encode()).hexdigest()
     row = con.execute("SELECT id FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
     fields = (cloud_user["username"], int(cloud_user["admin"]), int(cloud_user["must_change"]),
               token, vsalt, vcheck, time.time())
-    if not row and into:
-        row = con.execute("SELECT id FROM users WHERE id=? AND cloud_id IS NULL", (into,)).fetchone()
+    if not row:
+        row = con.execute("SELECT id FROM users WHERE cloud_id IS NULL ORDER BY created, id LIMIT 1").fetchone()
         if row:
             link_local(con, row["id"], cloud_user["id"])
     if row:
@@ -2560,7 +2618,7 @@ def store_user(con, cloud_user, token, ver, into=None):
 
 
 def link_local(con, uid, cloud_id):
-    """Un profilo locale diventa un account. Visti, lista e raccolte di qui si
+    """L'utente di questo PC diventa un account. Visti, lista e raccolte di qui si
     uniranno a quelli dell'account (vince la modifica piu' recente); le chiavi API
     invece, se l'account ne ha gia' di diverse, si chiede quali tenere."""
     con.execute("UPDATE users SET cloud_id=?, state_rev=0 WHERE id=?", (cloud_id, uid))
@@ -2579,31 +2637,6 @@ def link_local(con, uid, cloud_id):
                         (uid, "pending." + k, json.dumps(v), time.time()))
     with settings_lock:
         settings_cache.clear()
-
-
-def unlink_profile(con, uid):
-    """L'account si scollega: il profilo resta su questo PC con tutto quello che ha
-    (visti, lista, raccolte, chiavi) e smette di sincronizzarsi."""
-    con.execute("UPDATE users SET cloud_id=NULL, token=NULL, vsalt=NULL, vcheck=NULL, admin=0, must_change=0, "
-                "state_rev=0, last_sync=0 WHERE id=?", (uid,))
-    con.execute("DELETE FROM cloud_state WHERE user_id=?", (uid,))
-    con.execute("DELETE FROM user_settings WHERE user_id=? AND k='libraries'", (uid,))
-    # Le chiavi in attesa di scelta tornano del profilo
-    for r in con.execute("SELECT k, v FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (uid,)).fetchall():
-        con.execute("INSERT OR IGNORE INTO user_settings(user_id, k, v, t, dirty) VALUES(?,?,?,?,0)",
-                    (uid, r["k"][8:], r["v"], time.time()))
-    con.execute("DELETE FROM user_settings WHERE user_id=? AND k LIKE 'pending.%'", (uid,))
-    with config_lock:
-        changed = False
-        for lib in config.get("libraries") or []:
-            if lib.get("owner") == uid and lib.get("synced"):
-                lib["synced"] = False      # se si ricollega, le raccolte di qui tornano nell'account
-                changed = True
-        if changed:
-            save_config()
-    with settings_lock:
-        settings_cache.clear()
-    user_cache.clear()
 
 
 def adopt_legacy(uid):
@@ -2866,7 +2899,7 @@ def sync_libraries(uid):
 
 def drop_cloud_token(uid):
     """Il servizio non riconosce piu' questo PC per l'account (password cambiata
-    altrove, password provvisoria nuova, account eliminato). Il profilo resta e si
+    altrove, password provvisoria nuova, account eliminato). La copia di qui resta e si
     usa come prima; per riprendere la sincronizzazione va ridata la password."""
     con = db(raw=True)
     try:
@@ -2877,18 +2910,16 @@ def drop_cloud_token(uid):
     user_cache.clear()
 
 
-async def finish_login(res, ver, device, into=None):
-    u, token, conflicts = await complete_login(res, ver, device, into)
-    # switched: l'account aveva gia' il suo profilo su questo PC, e si e' entrati in quello
-    return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts,
-                         "switched": bool(into) and u["id"] != into}, token)
+async def finish_login(res, ver, device):
+    u, token, conflicts = await complete_login(res, ver, device)
+    return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts}, token)
 
 
-async def complete_login(res, ver, device, into=None):
-    """Account entrato: copia locale, ingresso nel profilo, impostazioni da confrontare."""
+async def complete_login(res, ver, device):
+    """Account entrato: copia locale, ingresso, impostazioni da confrontare."""
     con = db(raw=True)
     try:
-        uid = store_user(con, res["user"], res["token"], ver, into)
+        uid = store_user(con, res["user"], res["token"], ver)
         token = open_session(con, uid, device)
         con.commit()
         u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
@@ -2907,22 +2938,10 @@ async def complete_login(res, ver, device, into=None):
     return u, token, conflicts
 
 
-def profile_name(raw):
-    name = re.sub(r"\s+", " ", str(raw or "")).strip()
-    if not name:
-        raise HTTPException(400, "Scrivi un nome")
-    if len(name) > 24:
-        raise HTTPException(400, "Nome troppo lungo (al massimo 24 caratteri)")
-    return name
-
-
-def name_taken(con, name, but=0):
-    return con.execute("SELECT 1 FROM users WHERE name=? COLLATE NOCASE AND id<>?", (name, but)).fetchone() is not None
-
-
 @app.get("/api/auth/state")
 def auth_state():
-    """Chi sta guardando, i profili di questo PC e com'e' messo il collegamento con l'account."""
+    """Chi sta guardando, gli account entrati su questo PC (profiles, per «Chi guarda?»)
+    e com'e' messo il collegamento con il servizio account."""
     u = CURRENT.get()
     cloud_on = auth_on()
     if cloud_on and (cloud_link["online"] is None or time.time() - cloud_link["at"] > 60):
@@ -2950,16 +2969,16 @@ def auth_state():
 
 @app.post("/api/auth/profile")
 async def auth_profile(request: Request):
-    """«Chi guarda?»: si entra in un profilo di questo PC. Senza password, tranne
-    per gli account che l'hanno chiesta (Impostazioni → Account)."""
+    """«Chi guarda?»: si entra in un account gia' entrato su questo PC. Senza password,
+    tranne per gli account che l'hanno chiesta (Impostazioni → Account)."""
     body = await read_json(request)
     con = db(raw=True)
     try:
         u = con.execute("SELECT * FROM users WHERE id=?", (int(body.get("id") or 0),)).fetchone()
         if not u:
-            raise HTTPException(404, "Questo profilo non c'è più")
+            raise HTTPException(404, "Questo account non c'è più su questo PC")
         if u["cloud_id"] is not None and not u["tv_quick"]:
-            raise HTTPException(403, "Questo profilo si apre con la password del suo account")
+            raise HTTPException(403, "Questo account si apre con la sua password")
         token = open_session(con, u["id"], body.get("device") or "tv")
         con.execute("UPDATE users SET last_login=? WHERE id=?", (time.time(), u["id"]))
         con.commit()
@@ -2968,50 +2987,10 @@ async def auth_profile(request: Request):
     return with_session({"ok": True, "user": user_json(u)}, token)
 
 
-@app.post("/api/auth/profiles")
-async def auth_profile_create(request: Request):
-    """Un profilo nuovo su questo PC, senza account e senza password."""
-    body = await read_json(request)
-    name = profile_name(body.get("name"))
-    con = db(raw=True)
-    try:
-        if name_taken(con, name):
-            raise HTTPException(409, "C'è già un profilo con questo nome")
-        uid = con.execute("INSERT INTO users(name, created, last_login, tv_quick) VALUES(?,?,?,1)",
-                          (name, time.time(), time.time())).lastrowid
-        token = open_session(con, uid, body.get("device") or "browser")
-        con.commit()
-        u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-    finally:
-        con.close()
-    return with_session({"ok": True, "user": user_json(u)}, token)
-
-
-@app.post("/api/auth/rename")
-async def auth_rename(request: Request):
-    """Nuovo nome per il profilo locale (quello di un account e' il nome dell'account)."""
-    u = CURRENT.get()
-    if u is None:
-        raise HTTPException(401, "Scegli chi guarda per continuare")
-    if u["linked"]:
-        raise HTTPException(400, "Il nome di un profilo collegato è quello del suo account")
-    name = profile_name((await read_json(request)).get("name"))
-    con = db(raw=True)
-    try:
-        if name_taken(con, name, u["id"]):
-            raise HTTPException(409, "C'è già un profilo con questo nome")
-        con.execute("UPDATE users SET name=? WHERE id=?", (name, u["id"]))
-        con.commit()
-    finally:
-        con.close()
-    user_cache.clear()
-    return {"ok": True}
-
-
 @app.delete("/api/auth/profile")
 async def auth_profile_delete(request: Request):
-    """Toglie da questo PC il profilo in cui si e' entrati (non l'account, che resta
-    online). Le sue raccolte passano al primo degli altri profili: i video restano."""
+    """Toglie da questo PC l'account in cui si e' entrati (l'account resta online).
+    Le sue raccolte passano al primo degli altri account di qui: i video restano."""
     u = CURRENT.get()
     if u is None:
         raise HTTPException(401, "Scegli chi guarda per continuare")
@@ -3019,7 +2998,7 @@ async def auth_profile_delete(request: Request):
     try:
         heir = con.execute("SELECT id FROM users WHERE id<>? ORDER BY created, id LIMIT 1", (u["id"],)).fetchone()
         if not heir:
-            raise HTTPException(400, "È l'unico profilo di questo PC: puoi rinominarlo, non toglierlo")
+            raise HTTPException(400, "È l'unico account di questo PC: non si può togliere")
         token = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()["token"]
         for table in ("user_items", "user_shows", "user_settings", "cloud_state", "user_sessions"):
             con.execute(f"DELETE FROM {table} WHERE user_id=?", (u["id"],))
@@ -3045,7 +3024,7 @@ async def auth_profile_delete(request: Request):
 
 
 def forget_account_friends(uid, token):
-    """Il profilo non e' piu' (o non e' piu' collegato a) quell'account: via i
+    """L'account non c'e' piu' su questo PC: via i
     collegamenti ai suoi amici, gli ingressi dei suoi amici e il suo indirizzo nella rubrica."""
     for f in [f for f in get_friends() if f.get("via") == "account" and f.get("owner") == uid]:
         friend_drop(f["n"])
@@ -3068,12 +3047,6 @@ def forget_account_friends(uid, token):
     friends_cloud.pop(uid, None)
 
 
-def local_into():
-    """Il profilo locale da cui si sta facendo l'accesso (diventera' l'account)."""
-    u = CURRENT.get()
-    return u["id"] if u is not None and not u["linked"] else None
-
-
 @app.post("/api/auth/setup")
 async def auth_setup(request: Request):
     """Il primo account (amministratore), solo sul PC che ha la chiave di installazione."""
@@ -3089,14 +3062,13 @@ async def auth_setup(request: Request):
                                          "device": SERVER_NAME})
     SETUP_FILE.unlink(missing_ok=True)
     cloud_status["at"] = 0.0
-    return await finish_login(res, ver, body.get("device") or "browser", local_into())
+    return await finish_login(res, ver, body.get("device") or "browser")
 
 
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
-    """Accesso con un account. Da un profilo locale: il profilo diventa quell'account
-    (o, se l'account ha gia' un profilo su questo PC, si entra in quello). Dalla
-    scelta del profilo: si entra nel profilo dell'account, creato se non c'e'."""
+    """Accesso con un account. La prima volta su questo PC prende l'utente di qui
+    senza account, se c'e' (vedi store_user); altrimenti nasce la sua copia."""
     body = await read_json(request)
     name, password = login_fields(body)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
@@ -3121,36 +3093,14 @@ async def auth_login(request: Request):
         finally:
             con.close()
         return with_session({"ok": True, "user": user_json(u), "offline": True}, token)
-    return await finish_login(res, ver, body.get("device") or "browser", local_into())
-
-
-@app.post("/api/auth/unlink")
-async def auth_unlink():
-    """Scollega l'account: il profilo resta su questo PC con tutto quello che ha."""
-    u = CURRENT.get()
-    if u is None or not u["linked"]:
-        raise HTTPException(400, "Questo profilo non è collegato a un account")
-    con = db(raw=True)
-    try:
-        token = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()["token"]
-        unlink_profile(con, u["id"])
-        con.commit()
-    finally:
-        con.close()
-    await asyncio.to_thread(forget_account_friends, u["id"], token)
-    if token:
-        try:
-            await asyncio.to_thread(accounts.call, "POST", "/logout", {}, token, 6)
-        except Exception:
-            pass
-    return {"ok": True}
+    return await finish_login(res, ver, body.get("device") or "browser")
 
 
 @app.post("/api/auth/password")
 async def auth_password(request: Request):
     u = CURRENT.get()
     if u is None or not u["linked"]:
-        raise HTTPException(400, "Questo profilo non è collegato a un account")
+        raise HTTPException(400, "Qui non sei entrato con un account")
     body = await read_json(request)
     old, new = str(body.get("old") or ""), str(body.get("new") or "")
     check_new_password(new)
@@ -3195,7 +3145,7 @@ async def auth_password(request: Request):
 
 @app.post("/api/auth/logout")
 def auth_logout(request: Request):
-    """«Cambia profilo»: si esce dal profilo su questo dispositivo (il profilo e l'account restano)."""
+    """«Esci»: si esce dall'account su questo dispositivo (l'account resta, anche su questo PC)."""
     token = request.headers.get("x-bp-session") or request.cookies.get(SESSION_COOKIE) or ""
     if token:
         con = db(raw=True)
@@ -3230,12 +3180,12 @@ async def auth_options(request: Request):
 # Sulla TV scrivere nome e password col telecomando e' scomodo: la TV mostra un
 # codice (e il suo QR), il telefono di casa apre l'indirizzo e scrive li' nome e
 # password. Quando l'accesso riesce la TV entra da sola (chiede ogni 2 secondi).
-# Serve per gli account che su questo PC non hanno ancora un profilo: quelli che
+# Serve per gli account che su questo PC non sono ancora entrati: quelli che
 # ci sono gia' si scelgono in «Chi guarda?».
 
 PAIR_TTL = 600
 PAIR_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-pairs = {}                       # codice -> {"at", "into", "token", "user", "conflicts", "name"}
+pairs = {}                       # codice -> {"at", "token", "user", "conflicts", "name"}
 pairs_lock = threading.Lock()
 
 
@@ -3272,7 +3222,7 @@ def auth_pair_start(request: Request):
     with pairs_lock:
         if len(pairs) > 30:
             pairs.pop(min(pairs, key=lambda k: pairs[k]["at"]), None)
-        pairs[code] = {"at": time.time(), "into": local_into(), "token": None}
+        pairs[code] = {"at": time.time(), "token": None}
     host = request.headers.get("host", "")
     port = host.rsplit(":", 1)[1] if ":" in host and not host.endswith("]") else "32500"
     ip = private_ip(host)
@@ -3321,7 +3271,7 @@ async def auth_pair_finish(code: str, request: Request):
     except accounts.CloudOffline:
         mark_cloud(False)
         raise HTTPException(503, "Il PC non raggiunge il servizio account: serve Internet per entrare con un account")
-    u, token, conflicts = await complete_login(res, ver, "tv", p["into"])
+    u, token, conflicts = await complete_login(res, ver, "tv")
     with pairs_lock:
         p.update(token=token, user=user_json(u), conflicts=conflicts, name=u["name"])
     return {"ok": True, "name": u["name"]}
@@ -6263,7 +6213,7 @@ def tailnet_key():
     finally:
         con.close()
     if not rows:
-        raise FriendDown("serve un profilo collegato a un account")
+        raise FriendDown("serve essere entrati con un account")
     rows = sorted(rows, key=lambda r: not friends_shared(r["id"]))
     try:
         got = accounts.call("POST", "/tailscale/key", {"sid": pc_id()}, rows[0]["token"])
@@ -7342,7 +7292,7 @@ def friend_ticket_login(f):
 def profile_token():
     u = CURRENT.get()
     if u is None or not u["linked"]:
-        raise HTTPException(400, "Gli amici dell'account servono un profilo collegato a un account")
+        raise HTTPException(400, "Per gli amici dell'account entra con un account")
     con = db(raw=True)
     try:
         r = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()

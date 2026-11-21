@@ -6,9 +6,9 @@ Il tuo cinema di casa: il computer tiene i video, la TV li guarda.
 - **App per la TV**: Android TV, Google TV, Fire TV. Si usa col telecomando.
 - **Dal browser** di qualsiasi PC, tablet o telefono di casa: `http://INDIRIZZO-DEL-COMPUTER:32500`.
 
-Funziona sempre, anche senza Internet e senza account: a casa, con il disco collegato, vedi tutto. Ognuno ha il suo profilo (visti, lista, raccolte).
+Funziona sempre, anche senza Internet e senza account: a casa, con il disco collegato, vedi tutto. Ogni account è una persona, con la sua collezione (visti, lista, raccolte).
 
-Il login è facoltativo: un account porta il tuo profilo su ogni PC e TV (impostazioni, chiavi, visti, lista, raccolte) e sblocca la condivisione con gli amici. La rete serve anche per scaricare le schede dei titoli e gli aggiornamenti, con o senza account.
+Il login è facoltativo: un account porta la tua collezione su ogni PC e TV (impostazioni, chiavi, visti, lista, raccolte) e sblocca la condivisione con gli amici. La rete serve anche per scaricare le schede dei titoli e gli aggiornamenti, con o senza account.
 
 ## Installazione
 
@@ -65,9 +65,9 @@ L'app per la TV è nuova (versione 2.0, il nome interno è cambiato con BunkerPl
 
 ## Primi passi
 
-1. **Apri BunkerPlex**: al primo avvio c'è già il profilo «Casa» e si entra da soli, senza password e senza Internet. Altri profili si aggiungono da «Chi guarda?» (vedi [Profili e account](#profili-e-account)).
+1. **Apri BunkerPlex**: al primo avvio si entra da soli, senza password e senza Internet. Quando entri con un account, quello che hai fatto fin lì passa a lui (vedi [Account](#account)).
 2. **Crea una raccolta**: nel menu a sinistra **Aggiungi raccolta**, dai un nome (Film, Serie TV, Cartoni…) e scegli la cartella dei video. Film e serie vengono riconosciuti da soli. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.
-3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta nel tuo profilo; se entri con un account, anche sugli altri PC non va rimessa.
+3. **Attiva locandine e schede**: crea un account gratuito su [themoviedb.org](https://www.themoviedb.org/), copia la chiave da *Impostazioni → API* e incollala in **Impostazioni** di BunkerPlex. Resta su questo PC; se entri con un account, anche sugli altri PC non va rimessa.
 4. **Metti l'app sulla TV**: il modo più semplice è dal PC. Sulla TV accendi una volta il debug (*Impostazioni → Sistema → Info*, premi 7 volte su *Build*, poi *Opzioni sviluppatore → Debug USB*; su Fire TV *Debug ADB*), poi nel browser del PC apri *Impostazioni → App per TV e telefono → Installa sulla TV dal PC* e premi **Cerca le TV**: BunkerPlex trova le TV di casa, sulla TV premi «Consenti» (con «Consenti sempre») e poi **Installa l'app**. L'app si apre da sola e trova il server. In alternativa, sulla TV installa l'app «Downloader» e aprici `http://INDIRIZZO-DEL-COMPUTER:32500/BunkerPlex.apk` (l'indirizzo giusto è nella stessa pagina, con un QR da inquadrare col telefono per scaricarla lì). Poi l'app si aggiorna da sé.
 5. **Se vuoi, entra con un account** (*Impostazioni → Account*): è facoltativo, vedi sotto.
 
@@ -80,34 +80,35 @@ Nomi dei file che funzionano meglio:
 | Sottotitoli | stesso nome del video: `Il Padrino (1972).it.srt` |
 | Locandina tua | `poster.jpg` nella cartella del film |
 
-## Profili e account
+## Account
 
-Chi guarda entra in un **profilo** di questo PC: visti, punti di ripresa, «La mia lista», raccolte, chiavi API e preferenze di visione sono suoi. Un profilo funziona sempre, con o senza Internet, con o senza account.
+Niente profili: **ogni account è una persona** e ha la sua collezione: visti, punti di ripresa, «La mia lista», raccolte, chiavi API e preferenze di visione.
 
-- **Chi guarda?**: con un solo profilo si entra da soli; con più profili si sceglie il nome (su TV, telefono e browser). **Nuovo profilo** ne crea un altro, senza password. Da *Impostazioni → Account* si rinomina, si cambia (**Cambia profilo**) o si toglie da questo PC (le sue raccolte passano a un altro profilo, i video non si toccano).
-- **Raccolte condivise**: sullo stesso PC una raccolta si può condividere con gli altri profili (*Impostazioni → Raccolte → Condividi*). Ognuno conserva i suoi visti.
-- **Arrivando da una versione precedente** senza account, il profilo «Casa» prende raccolte, visti, lista e chiavi che c'erano prima. Chi aveva già un account ritrova il suo profilo.
+- **Senza account** si usa BunkerPlex lo stesso: c'è un solo utente, quello del PC, e si entra da soli. Funziona sempre, con o senza Internet.
+- **Il primo account che entra** su un PC prende tutto quello che c'era (visti, lista, raccolte, chiavi): non si perde niente.
+- **Più account sullo stesso PC**: ognuno entra con il suo; all'apertura «Chi guarda?» mostra gli account già entrati su quel PC. Da *Impostazioni → Account* si cambia account o si toglie il proprio da quel PC (l'account resta online; le sue raccolte di lì passano a un altro account, i video non si toccano).
+- **Raccolte condivise**: con più account sullo stesso PC una raccolta si può condividere con gli altri (*Impostazioni → Raccolte → Condividi*). Ognuno conserva i suoi visti.
+- **Arrivando dalla versione con i profili**: i profili senza account si uniscono da soli all'account principale del PC (l'amministratore, o il primo entrato), voce per voce, senza perdere visti, lista e raccolte. Se sul PC non c'era nessun account, si uniscono al primo profilo. Gli account restano com'erano, ognuno con la sua collezione.
 
 ### Entrare con un account (facoltativo)
 
-*Impostazioni → Account → Entra con un account*, oppure da «Chi guarda?». Il profilo in cui sei diventa il tuo account: quello che avevi già si unisce a quello dell'account, voce per voce, e vince la modifica più recente. Se l'account ha già un suo profilo su questo PC, entri in quello. Con l'account:
+*Impostazioni → Account → Entra con un account*, oppure da «Chi guarda?». La prima volta su un PC, quello che c'era già (senza account) si unisce all'account, voce per voce, e vince la modifica più recente. Con l'account:
 
 - **Ti segue ovunque**: impostazioni, chiavi (TMDB, OpenSubtitles), preferenze di visione, visti, punti di ripresa e lista li ritrovi su ogni PC e TV dove entri, anche su un'installazione nuova, e riprendi esattamente da dove eri.
 - **Raccolte su ogni PC**: nomi e cartelle delle tue raccolte seguono l'account. Su un altro PC le raccolte compaiono già create; le cartelle che lì esistono con lo stesso percorso (anche su un disco con un'altra lettera) si collegano da sole, e una raccolta di quel PC con le stesse cartelle diventa la stessa (niente doppioni). Le altre restano «su un altro PC»: in *Impostazioni → Raccolte* scegli dove stanno su quel PC, oppure le togli dall'account. Se l'elenco online non ti torna, *Sovrascrivi l'account con le raccolte di questo PC* (chiede conferma) lo rimette uguale a quello del PC dove sei.
-- **Amici**: gli amici sono quelli dell'account (si aggiungono col nome del loro account) e vedono solo le raccolte del tuo profilo: vedi [Amici](#amici-condividere-le-raccolte-via-internet).
-- **Senza Internet** (o con il servizio account fermo) non cambia niente: si continua con il profilo, e in basso compare «Offline · si sincronizza quando torna la rete». Le modifiche fatte intanto partono da sole appena il servizio risponde e si uniscono a quelle fatte sugli altri PC: per ogni titolo e ogni impostazione vince la modifica più recente. Non c'è niente da scegliere.
-- **Chiavi API diverse**: al primo accesso, se le chiavi o le preferenze di visione del profilo sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di qui senza chiedere. Volume e audio muto restano di ogni dispositivo.
-- **Scollega l'account** (*Impostazioni → Account*): il profilo resta qui con tutto quello che ha e smette di sincronizzarsi; l'account resta online.
+- **Amici**: gli amici sono quelli dell'account (si aggiungono col nome del loro account) e vedono solo le tue raccolte: vedi [Amici](#amici-condividere-le-raccolte-via-internet).
+- **Senza Internet** (o con il servizio account fermo) non cambia niente: si continua come prima, e in basso compare «Offline · si sincronizza quando torna la rete». Le modifiche fatte intanto partono da sole appena il servizio risponde e si uniscono a quelle fatte sugli altri PC: per ogni titolo e ogni impostazione vince la modifica più recente. Non c'è niente da scegliere.
+- **Chiavi API diverse**: al primo accesso, se le chiavi o le preferenze di visione di questo PC sono diverse da quelle dell'account, BunkerPlex mostra le differenze e chiede quali tenere. Se l'account non le ha ancora, prende quelle di qui senza chiedere. Volume e audio muto restano di ogni dispositivo.
 - **Password dalla TV**: in «Chi guarda?» (o *Impostazioni → Account*) scegli **Entra con un account dal telefono**. La TV mostra un QR e un codice: inquadralo col telefono di casa, scrivi lì nome e password e la TV entra da sola. Se l'account ha una password provvisoria, il telefono chiede subito quella nuova. Serve solo per gli account che su quel PC non ci sono ancora: quelli già entrati dal PC si scelgono in «Chi guarda?».
-- **Senza password in «Chi guarda?»**: un profilo con account si apre scegliendo il nome; si può spegnere per il proprio account (*Impostazioni → Account → Accesso*), e allora serve la password.
+- **Senza password in «Chi guarda?»**: un account già entrato su quel PC si apre scegliendo il nome; si può spegnere per il proprio account (*Impostazioni → Account → Accesso*), e allora serve la password.
 
 ### Gli account
 
 - **Primo account**: sul PC dove è stato preparato il servizio, *Impostazioni → Account* propone «Crea l'account amministratore». Quello è il tuo.
-- **Altri account**: *Impostazioni → Persone*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata (finché non lo fai il profilo funziona, ma non si sincronizza). «Nuova password provvisoria» scollega l'account da tutti i PC.
-- **Cambio password**: *Impostazioni → Account → Cambia password*. Sugli altri PC il profilo continua a funzionare; per riprendere la sincronizzazione chiede la password nuova.
+- **Altri account**: *Impostazioni → Persone*. Scegli il nome; BunkerPlex propone una password provvisoria da comunicare. Al primo accesso va cambiata (finché non lo fai funziona tutto, ma non si sincronizza). «Nuova password provvisoria» scollega l'account da tutti i PC.
+- **Cambio password**: *Impostazioni → Account → Cambia password*. Sugli altri PC l'account continua a funzionare; per riprendere la sincronizzazione chiede la password nuova.
 - **Password dimenticata**: l'amministratore dà una *Nuova password provvisoria* da *Impostazioni → Persone*.
-- **Senza Internet** si può aprire un profilo con account anche scrivendo l'ultima password usata su quel PC.
+- **Senza Internet** si può aprire un account anche scrivendo l'ultima password usata su quel PC.
 
 Gli account stanno in un piccolo servizio gratuito su Cloudflare (vedi [Servizio account](#servizio-account) più sotto). Le password non lasciano mai il PC: al servizio arriva solo un'impronta.
 
@@ -170,7 +171,7 @@ Due BunkerPlex in case diverse possono mostrarsi a vicenda le raccolte. **Si gua
 
 ### Con l'account (consigliato)
 
-Se il tuo profilo è collegato a un account, gli amici sono quelli dell'account: niente indirizzi né password da scambiarsi.
+Se sei entrato con un account, gli amici sono quelli dell'account: niente indirizzi né password da scambiarsi.
 
 1. In *Impostazioni → Amici → I tuoi amici* scrivi il nome dell'account BunkerPlex dell'amico e premi **Manda la richiesta**.
 2. L'amico la trova nella campanella e in *Impostazioni → Amici*, su qualsiasi suo PC (anche dalla TV), e preme **Accetta**.
@@ -178,11 +179,11 @@ Se il tuo profilo è collegato a un account, gli amici sono quelli dell'account:
 
 Non c'è altro da installare né da configurare: niente porte sul router, niente firewall. BunkerPlex porta con sé **Tailscale**: quando serve (il PC condivide, oppure ha amici dell'account) lo scarica da solo dal sito ufficiale, lo accende dentro Docker ed entra nella rete di BunkerPlex con una chiave che gli dà il servizio account. Il collegamento parte dal PC verso l'esterno, quindi funziona anche dietro il firewall di Windows, con due router in fila o con un operatore che non dà un indirizzo pubblico. Se il servizio account non ha Tailscale configurato (vedi [Servizio account](#servizio-account)), BunkerPlex prova come prima ad aprire da solo la porta `32501` sul router. Lo stato è in *Impostazioni → Amici*.
 
-Da lì le raccolte dell'amico compaiono da sole nel menu e nella Home, di ogni suo PC che condivide (se sono più di uno, col nome che gli ha dato). Se cambia l'indirizzo di casa non devi fare niente: il servizio account fa da rubrica. L'amico vede **solo le raccolte del tuo profilo**, non quelle degli altri profili del PC, e solo quando lo hai tra gli amici: se lo togli, sparisce da entrambe le parti. Ogni volta che il suo server entra dal tuo usa un «biglietto» del servizio account, valido pochi minuti e una volta sola; l'impronta del certificato del tuo server arriva dal servizio, quindi anche il primo collegamento è sicuro.
+Da lì le raccolte dell'amico compaiono da sole nel menu e nella Home, di ogni suo PC che condivide (se sono più di uno, col nome che gli ha dato). Se cambia l'indirizzo di casa non devi fare niente: il servizio account fa da rubrica. L'amico vede **solo le tue raccolte**, non quelle degli altri account del PC, e solo quando lo hai tra gli amici: se lo togli, sparisce da entrambe le parti. Ogni volta che il suo server entra dal tuo usa un «biglietto» del servizio account, valido pochi minuti e una volta sola; l'impronta del certificato del tuo server arriva dal servizio, quindi anche il primo collegamento è sicuro.
 
 ### Con indirizzo e password (senza servizio account)
 
-Il sistema di prima, che compare in *Impostazioni → Amici* solo se BunkerPlex non ha un servizio account. Con il servizio account restano visibili soltanto i vecchi collegamenti già fatti, per sospenderli o toglierli. Qui la condivisione è del PC: l'amico vede tutte le raccolte di quel PC, e le sue le vedono tutti i profili del PC.
+Il sistema di prima, che compare in *Impostazioni → Amici* solo se BunkerPlex non ha un servizio account. Con il servizio account restano visibili soltanto i vecchi collegamenti già fatti, per sospenderli o toglierli. Qui la condivisione è del PC: l'amico vede tutte le raccolte di quel PC, e le sue le vedono tutti gli account del PC.
 
 1. Entrambi accendete **Impostazioni → Amici → Porta per gli amici su questo PC**. BunkerPlex chiede da solo al router di casa di aprire la porta per gli amici (la `32501`, e solo quella) e ti mostra **il tuo indirizzo**: è quello da dare all'amico.
 2. Uno dei due apre **Manda una richiesta** (dal browser di un computer, non dalla TV) e scrive l'indirizzo dell'amico, un nome e una password a scelta.
@@ -226,9 +227,9 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
-- **Chi è sulla tua rete di casa** può entrare in un profilo scegliendo il nome (per un profilo con account si può chiedere la password: *Impostazioni → Account*): non esporre BunkerPlex su Internet.
+- **Chi è sulla tua rete di casa** può entrare in un account già entrato sul PC scegliendo il nome (si può chiedere la password: *Impostazioni → Account*): non esporre BunkerPlex su Internet.
 - **«Nome utente o password sbagliati»** dopo un cambio di password fatto su un altro PC: usa la password nuova. Dopo 5 tentativi sbagliati l'account si blocca per 5 minuti.
-- **«Offline · si sincronizza quando torna la rete»**: il PC non raggiunge il servizio account. Non serve fare niente: si continua con il profilo e, quando la rete torna, BunkerPlex se ne accorge entro un minuto e sincronizza da solo.
+- **«Offline · si sincronizza quando torna la rete»**: il PC non raggiunge il servizio account. Non serve fare niente: si continua come prima e, quando la rete torna, BunkerPlex se ne accorge entro un minuto e sincronizza da solo.
 - **Sulla TV il punto di ripresa non si salva**: aggiorna l'app della TV quando lo propone (serve la versione 1.4 o successiva).
 
 ## Per chi lo modifica
