@@ -109,6 +109,62 @@ if ! docker compose up -d --build; then
   fine 1
 fi
 
+# Firewall del Mac: se e' acceso, deve lasciar entrare Docker (e' lui che
+# risponde sulle porte 32500 e 32501), altrimenti TV e telefoni restano su
+# "Connessione..." per sempre. Si controlla senza permessi; se serve, macOS
+# chiede una volta la password per sistemarlo.
+fw=/usr/libexec/ApplicationFirewall/socketfilterfw
+if [ -x "$fw" ] && "$fw" --getglobalstate 2>/dev/null | grep -q 'State = [12]'; then
+  apps=()
+  sleep 2
+  # Il programma che ascolta davvero sulla porta, piu' quelli noti di Docker Desktop
+  for port in 32500 32501; do
+    for pid in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
+      p=$(ps -o comm= -p "$pid" 2>/dev/null)
+      [ -n "$p" ] && apps+=("$p")
+    done
+  done
+  if [ -n "$docker_app" ]; then
+    apps+=("$docker_app/Contents/MacOS/com.docker.backend" \
+           "$docker_app/Contents/MacOS/com.docker.vpnkit" \
+           "$docker_app/Contents/Resources/bin/com.docker.vpnkit")
+  fi
+  todo=()
+  for p in "${apps[@]}"; do
+    [ -f "$p" ] || continue
+    case " ${todo[*]} " in *" $p "*) continue ;; esac
+    "$fw" --getappblocked "$p" 2>/dev/null | grep -qi 'permitted' || todo+=("$p")
+  done
+  if [ ${#todo[@]} -gt 0 ]; then
+    echo
+    echo "Apro BunkerPlex nel firewall del Mac: macOS chiede la password del Mac."
+    if osascript - "$fw" "${todo[@]}" >/dev/null 2>&1 <<'EOF'
+on run argv
+  set fw to quoted form of item 1 of argv
+  set cmd to "true"
+  repeat with i from 2 to count of argv
+    set p to quoted form of item i of argv
+    set cmd to cmd & "; " & fw & " --add " & p & "; " & fw & " --unblockapp " & p
+  end repeat
+  do shell script cmd with prompt "BunkerPlex deve consentire le connessioni in entrata a Docker, cosi' TV e telefoni trovano il server." with administrator privileges
+end run
+EOF
+    then
+      echo "Firewall a posto: TV e telefoni possono collegarsi."
+    else
+      echo "Il firewall non e' stato aperto: TV e telefoni potrebbero non trovare il server."
+      echo "Rilancia questo file e inserisci la password, oppure: Impostazioni di Sistema -"
+      echo "Rete - Firewall - Opzioni, e consenti le connessioni in entrata a Docker."
+    fi
+  fi
+  if "$fw" --getblockall 2>/dev/null | grep -qi 'enabled'; then
+    echo
+    echo "ATTENZIONE: il firewall del Mac blocca TUTTE le connessioni in entrata."
+    echo "TV e telefoni non trovano il server finche' non togli \"Blocca tutte le"
+    echo "connessioni in entrata\" da Impostazioni di Sistema - Rete - Firewall - Opzioni."
+  fi
+fi
+
 echo
 echo "BunkerPlex e' installato e acceso."
 echo "  Da questo Mac:        http://localhost:32500"

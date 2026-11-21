@@ -224,7 +224,7 @@ Per usare lo stesso catalogo su più computer tieni tutta la cartella di BunkerP
 
 - **Cartella «non raggiungibile»**: collega il disco; torna da sola in pochi secondi. Se non succede, rilancia «Installa».
 - **Docker Desktop non parte** con *«The file cannot be accessed by the system»* su un file `.sock`: lancia «Installa», che a Docker spento toglie da solo quei file rimasti bloccati.
-- **La TV non trova il server**: computer e TV devono essere sulla stessa rete. Se dal telefono `http://INDIRIZZO-DEL-COMPUTER:32500` non si apre, è il firewall: consenti Docker o imposta la rete come «Privata».
+- **La TV non trova il server** (o Downloader resta su *Connecting…*): computer e TV devono essere sulla stessa rete. Il firewall lo sistema «Installa»: su Windows apre le porte `32500` (solo dalla rete di casa) e `32501` chiedendo una volta il consenso di Windows, e spegne le regole che bloccano Docker rimaste da un «Annulla» di Windows; su Mac, se il firewall è acceso, consente le connessioni in entrata a Docker chiedendo la password del Mac. Se hai risposto no, rilancia «Installa». Su Mac con *Blocca tutte le connessioni in entrata* attivo non c'è modo di entrare: va tolto da *Impostazioni di Sistema → Rete → Firewall → Opzioni*. Su Linux Docker apre da sé le porte pubblicate, anche con `ufw`.
 - **Titolo riconosciuto male**: menu della locandina → *Correggi scheda*.
 - **Il video si ferma dopo una pausa**: nelle opzioni del player attiva *Audio compatibile*.
 - **L'indirizzo del computer cambia**: nel router assegnagli un indirizzo fisso.
