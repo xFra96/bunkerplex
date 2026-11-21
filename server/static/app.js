@@ -3259,8 +3259,23 @@ window.fpUpdate = function (state, value) {
     return;
   }
   if (mine) closeModal(true);
+  var managed = tvCall('installsBySession') === true;   // app che segue da sola permesso e installazione
+  if (managed && state === 'install') { toast('Conferma «Installa» o «Aggiorna» nella finestra della TV'); return; }
+  if (state === 'cancel') { toast('Aggiornamento annullato: puoi rifarlo da Impostazioni'); return; }
+  if (state === 'permission') {
+    toast('Consenti a BunkerPlex di installare app, poi torna indietro: l\'aggiornamento riparte da solo');
+    return;
+  }
   if (!modal.hidden || player) {   // c'e' altro sullo schermo: basta un avviso
     toast(state === 'install' ? 'Aggiornamento pronto: conferma l\'installazione' : 'Aggiornamento non riuscito');
+    return;
+  }
+  if (state === 'denied') {
+    openPicker('Per aggiornarsi da sola, BunkerPlex ha bisogno del permesso «Installa app sconosciute» della TV. ' +
+      'Premi «Riprova» e attivalo nella schermata che si apre.',
+      [{ value: 'retry', label: 'Riprova' }, { value: 'no', label: 'Chiudi' }], 'retry', function (answer) {
+        if (answer === 'retry') startUpdate();
+      });
     return;
   }
   if (state === 'install') {
