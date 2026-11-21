@@ -388,6 +388,34 @@ if ($missing) {
     }
 }
 
+# ---------------------------------------------------------------- 4b. Firewall
+# TV e telefoni arrivano da fuori: il firewall di Windows deve lasciar entrare
+# le porte 32500 e 32501 (anche con la rete impostata come "Pubblica").
+# Firewall.ps1 lo controlla senza permessi; se serve sistemare chiede una volta
+# il consenso di Windows. Lanciato dall'aiutante nessuno puo' rispondere: si
+# rimanda alla prossima volta che si apre "Installa".
+
+$firewall = Join-Path $PSScriptRoot 'Firewall.ps1'
+if (Test-Path -LiteralPath $firewall) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $firewall -Check 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0 -and -not $env:BUNKERPLEX_AUTO) {
+        Say 'Apro le porte di BunkerPlex nel firewall di Windows: conferma la richiesta di Windows.' Cyan
+        $fwArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$firewall`""
+        $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+        try {
+            if ($admin) { & powershell -NoProfile -ExecutionPolicy Bypass -File $firewall | Out-Null }
+            else { Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList $fwArgs -ErrorAction Stop }
+        } catch { }
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $firewall -Check 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { Say 'Firewall a posto: TV e telefoni possono collegarsi.' Green }
+        else {
+            Say 'Il firewall non e'' stato aperto: TV e telefoni potrebbero non trovare il server.' Yellow
+            Say 'Rilancia questo file e rispondi Si'' alla richiesta di Windows.' Yellow
+        }
+    }
+}
+
 # ---------------------------------------------------------------- 5. Aiutante aggiornamenti
 # Agente.ps1 resta acceso nascosto: fa gli aggiornamenti chiesti dal server
 # (dalla TV, dal telefono, dal browser o dal controllo automatico), compresa
