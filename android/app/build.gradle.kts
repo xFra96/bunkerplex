@@ -1,3 +1,7 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.TimeZone
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,9 +23,9 @@ android {
         // Nome mostrato sulla TV: la versione della release (es. 2026.11.20, la passa
         // GitHub in BUNKERPLEX_VERSION) o, compilando sul PC, data e ora in Italia.
         versionName = System.getenv("BUNKERPLEX_VERSION")?.removePrefix("v")?.takeIf { it.isNotBlank() }
-            ?: java.text.SimpleDateFormat("yyyy.MM.dd HH:mm").apply {
-                timeZone = java.util.TimeZone.getTimeZone("Europe/Rome")
-            }.format(java.util.Date(now))
+            ?: SimpleDateFormat("yyyy.MM.dd HH:mm").apply {
+                timeZone = TimeZone.getTimeZone("Europe/Rome")
+            }.format(Date(now))
     }
 
     // Chiave di firma personale, creata alla prima compilazione e poi riusata:
