@@ -1964,6 +1964,8 @@ def play_info(con, r):
               and (vcodec != "h264" or pix in ("yuv420p", "yuvj420p"))
               and (r["acodec"] or "") in BROWSER_AUDIO)
     return {"id": r["id"], "title": title, "subtitle": subtitle,
+            # Qualita' del file (4K, 1080p...), nel player accanto all'anno
+            "quality": quality(r),
             # Episodio di una serie: il player ricorda la traccia audio scelta per tutta la serie
             "show_id": r["show_id"] or 0,
             "url": f"/api/stream/{r['id']}", "transcode": f"/api/transcode/{r['id']}",
@@ -7106,6 +7108,11 @@ def friend_play(vid):
         quality = "orig"             # un altro tuo PC nella rete di casa: il file com'e'
     out["friend_quality"] = quality
     if quality != "orig":
+        # Arriva convertito: nel player conta la qualita' che vedi, non quella del file
+        rank = ["SD", "720p", "1080p", "4K"]
+        q = out.get("quality") or ""
+        if q in rank and rank.index(q) > rank.index(quality + "p"):
+            out["quality"] = quality + "p"
         # Sempre convertito. Il browser lo capisce da 'browser_direct'; l'app TV prova
         # prima 'url': li' trova un file che non e' un video e passa da sola alla conversione.
         out.update(browser_direct=False, url="/api/friend/convert", vcodec="h264", bits=8)

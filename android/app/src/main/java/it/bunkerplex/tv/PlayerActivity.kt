@@ -137,6 +137,8 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var remainView: TextView
     private lateinit var scrubLabel: TextView
     private lateinit var episodeView: TextView
+    private lateinit var qualityView: TextView
+    private lateinit var subRow: LinearLayout
     private lateinit var row: LinearLayout
     private val rowActions = mutableListOf<() -> Unit>()
     private lateinit var floatWrap: LinearLayout
@@ -423,7 +425,23 @@ class PlayerActivity : AppCompatActivity() {
         controls.addView(titleView)
         episodeView = label(17f, false)
         episodeView.setTextColor(Color.rgb(205, 209, 218))
-        controls.addView(episodeView)
+        // Anno (o episodio) e accanto la qualita' del video in un riquadro, come 4K o 1080p.
+        // La riga e' larga quanto il contenuto: se il titolo dell'episodio e' lungo si
+        // accorcia lui (peso 1) e il riquadro resta visibile.
+        subRow = LinearLayout(this)
+        subRow.orientation = LinearLayout.HORIZONTAL
+        subRow.gravity = Gravity.CENTER_VERTICAL
+        subRow.addView(episodeView, LinearLayout.LayoutParams(-2, -2, 1f))
+        qualityView = label(13f, true)
+        qualityView.setTextColor(Color.rgb(205, 209, 218))
+        qualityView.setShadowLayer(0f, 0f, 0f, 0)
+        qualityView.setPadding(dp(7), dp(1), dp(7), dp(1))
+        qualityView.background = GradientDrawable().apply {
+            setStroke(dp(1), Color.rgb(205, 209, 218))
+            cornerRadius = dp(4).toFloat()
+        }
+        subRow.addView(qualityView, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10) })
+        controls.addView(subRow, LinearLayout.LayoutParams(-2, -2))
 
         val barRow = LinearLayout(this)
         barRow.orientation = LinearLayout.HORIZONTAL
@@ -550,6 +568,11 @@ class PlayerActivity : AppCompatActivity() {
         titleView.text = title
         episodeView.text = subtitle
         episodeView.visibility = if (subtitle.isBlank()) View.GONE else View.VISIBLE
+        val quality = d.optString("quality")
+        qualityView.text = quality
+        qualityView.visibility = if (quality.isBlank()) View.GONE else View.VISIBLE
+        (qualityView.layoutParams as LinearLayout.LayoutParams).marginStart = if (subtitle.isBlank()) 0 else dp(10)
+        subRow.visibility = if (subtitle.isBlank() && quality.isBlank()) View.GONE else View.VISIBLE
         buildRow()
 
         val uri: String

@@ -434,6 +434,8 @@ function play(pc, id) {
     p.subs_online = false;
     p.friend = pc.self ? pc.name : pc.ownerName;
     p.remote_height = QUALITY;
+    // Arriva convertito: il player mostra la qualita' che si vede, non quella del file
+    if (p.quality === '4K' || p.quality === '1080p') p.quality = QUALITY + 'p';
     p.start = 0;
     app.remotePlay(pc.base, JSON.stringify(p));
   }, function (e) { toast(e.offline ? 'Il PC non risponde' : e.message); });

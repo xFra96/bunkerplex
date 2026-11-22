@@ -303,12 +303,54 @@ function Update-Files {
     }
 }
 
+# I messaggi di git vanno nel racconto (aggiornamento.log) ma non alla fine: le ultime
+# righe sono quelle che la TV mostra quando qualcosa non va, e devono spiegare in italiano.
+function Git-Quiet {
+    $out = @(Git @args 2>&1 | ForEach-Object { "$_" })
+    $code = $LASTEXITCODE
+    foreach ($line in $out) { if ($line.Trim()) { Say "  git: $line" DarkGray } }
+    return $code
+}
+
 function Update-Git {
     Say 'Questa e'' la copia di sviluppo: aggiorno con git...'
-    Git pull --ff-only origin $branch
-    if ($LASTEXITCODE -ne 0) {
-        Say 'git non e'' riuscito ad aggiornare: ci sono modifiche locali non pubblicate' Yellow
-        Say '(usa "Pubblica aggiornamento.bat") oppure manca l''accesso di git a GitHub.' Yellow
+    if ((Git-Quiet fetch -q origin $branch) -ne 0) {
+        Say 'git non riesce a scaricare da GitHub: manca l''accesso di git al repository.' Yellow
+        return $false
+    }
+    $remote = "origin/$branch"
+    $dirty = @(Git status --porcelain --untracked-files=no)
+    $cur = "$(Git rev-parse --abbrev-ref HEAD)".Trim()
+    if ($cur -ne $branch) {
+        # Su un branch di lavoro (per esempio quello di una pull request). Se tutto
+        # quello che contiene e' gia' su GitHub, anche unito in un solo commit
+        # ("squash"), si torna su $branch; se no si lascia stare, per non perdere niente.
+        # Prova di unione senza toccare i file: se non aggiunge niente, e' gia' tutto la'.
+        $merged = "$(Git merge-tree --write-tree $remote HEAD 2>$null | Select-Object -First 1)".Trim()
+        $there = "$(Git rev-parse "$remote^{tree}")".Trim()
+        if (-not $merged -or $merged -ne $there) {
+            Say "Questa copia e' sul branch $cur, con modifiche che non sono ancora su GitHub." Yellow
+            Say "Pubblicale (unisci la pull request o usa Pubblica aggiornamento.bat), poi riprova." Yellow
+            return $false
+        }
+        if ($dirty) {
+            Say "Questa copia e' sul branch $cur e ha file modificati a mano: salvali o annullali, poi riprova." Yellow
+            return $false
+        }
+        Git show-ref -q --verify "refs/heads/$branch"
+        $code = if ($LASTEXITCODE -eq 0) { Git-Quiet checkout -q $branch } else { Git-Quiet checkout -q -b $branch $remote }
+        if ($code -ne 0) {
+            Say "Non riesco a tornare sul branch ${branch}: leggi i messaggi di git qui sopra." Yellow
+            return $false
+        }
+        Say "Il branch $cur e' gia' tutto su GitHub: torno su $branch."
+    }
+    if ((Git-Quiet merge --ff-only -q $remote) -ne 0) {
+        if ($dirty) {
+            Say 'Ci sono file modificati a mano che l''aggiornamento cambierebbe: salvali o annullali, poi riprova.' Yellow
+        } else {
+            Say "Questa copia ha commit che non sono su GitHub: pubblicali (Pubblica aggiornamento.bat), poi riprova." Yellow
+        }
         return $false
     }
     return $true
