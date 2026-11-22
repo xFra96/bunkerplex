@@ -216,6 +216,54 @@ def display_path(path):
     return s
 
 
+def disk_of(path):
+    """Il disco su cui sta un percorso: ('G:', /host/g) su Windows, ('Nome', /host/Volumes/Nome)
+    sul Mac; ('', None) se non e' su un disco riconoscibile."""
+    s, root = str(path), str(HOST_ROOT)
+    if s.startswith(root + "/"):
+        parts = s[len(root) + 1:].split("/")
+        if len(parts[0]) == 1:
+            return parts[0].upper() + ":", HOST_ROOT / parts[0]
+        if parts[0] == "Volumes" and len(parts) > 1:
+            return parts[1], HOST_ROOT / "Volumes" / parts[1]
+    return "", None
+
+
+_offline = {"at": 0.0, "roots": []}
+
+
+def offline_roots():
+    """Le cartelle delle raccolte che adesso non si raggiungono (di solito un disco
+    esterno scollegato). I loro video restano in catalogo: servono a dire dove sono.
+    Si ricontrolla al massimo ogni 10 secondi, cosi' gli elenchi lunghi non pesano."""
+    now = time.time()
+    if now - _offline["at"] > 10:
+        with config_lock:
+            folders = [p for lib in config.get("libraries") or [] for p in lib.get("folders") or []]
+        _offline["roots"] = [f for f in folders if not has_content(Path(f))]
+        _offline["at"] = now
+    return _offline["roots"]
+
+
+def is_offline(path):
+    return any(path.startswith(root + "/") for root in offline_roots())
+
+
+def missing_file(path):
+    """None se il file c'e'; altrimenti dove dovrebbe trovarsi e perche' non si trova:
+    {"where": 'G:\\Film\\Matrix.mkv', "disk": 'G:', "unplugged": True/False, "message": ...}"""
+    if os.path.isfile(path):
+        return None
+    where = display_path(path)
+    disk, root = disk_of(path)
+    unplugged = bool(root) and not has_content(root)
+    if unplugged:
+        msg = f"Il disco {disk} non è collegato. Collegalo: il file dovrebbe trovarsi in {where}"
+    else:
+        msg = f"Il file non è al suo posto: dovrebbe trovarsi in {where}"
+    return {"where": where, "disk": disk, "unplugged": unplugged, "message": msg}
+
+
 def browse_path(raw):
     """Accetta solo percorsi dentro i dischi montati."""
     p = Path(os.path.normpath(raw)) if raw else HOST_ROOT
@@ -1738,6 +1786,12 @@ def item_json(r, show=None):
     d["poster"] = img_url(r["poster"]) if r["kind"] == "movie" else None
     d["backdrop"] = img_url(r["backdrop"])
     d["matched"] = bool(r["tmdb_id"])
+    # Su un disco scollegato: la scheda resta, con il posto dove dovrebbe trovarsi il file
+    path = r["path"] if "path" in r.keys() else None
+    if path and is_offline(path):
+        d["offline"] = True
+        d["where"] = display_path(path)
+        d["disk"] = disk_of(path)[0]
     if r["kind"] == "episode":
         if not d["title"]:
             d["title"] = f"Episodio {r['episode']}"
@@ -4488,6 +4542,13 @@ def item_detail(item_id: int):
         d["size"] = r["size"]
         d["vcodec"] = r["vcodec"]
         d["acodec"] = r["acodec"]
+        gone = missing_file(r["path"])   # qui si guarda il file vero, non solo la cartella
+        d["offline"] = bool(gone)
+        if gone:
+            d.update(where=gone["where"], disk=gone["disk"], unplugged=gone["unplugged"])
+        else:
+            d.pop("where", None)
+            d.pop("disk", None)
         return d
     finally:
         con.close()
@@ -4500,6 +4561,9 @@ def play(item_id: int):
     con = db()
     try:
         r = get_item(con, item_id)
+        gone = missing_file(r["path"])
+        if gone:   # disco scollegato: si dice quale e dove dovrebbe stare il file
+            return JSONResponse({"detail": gone["message"], "missing": gone}, status_code=404)
         if marks_missing(r):
             sigle_now(r)
         return play_info(con, r)
@@ -4560,11 +4624,50 @@ async def set_watched(item_id: int, request: Request):
 
 
 @app.get("/api/image/{name}")
-def image(name: str):
+def image(name: str, size: int = 0):
     f = IMG / Path(name).name
     if not f.is_file():
         raise HTTPException(404)
+    if size in SMALL_SIZES:   # versione leggera per le griglie (vedi small_image)
+        f = small_image(f, size) or f
     return FileResponse(f, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+# Le griglie mostrano le locandine a circa 200 pixel: quelle da 500 (e gli sfondi da 1280)
+# costano a TV e chiavette il doppio (o di piu') di memoria e di tempo per essere
+# decodificate, ed e' cio' che rallenta lo scorrimento veloce. La versione piccola si
+# scarica da TMDB la prima volta che serve; senza internet si usa quella grande.
+SMALL_SIZES = (342, 780)
+small_slots = threading.Semaphore(4)
+small_state = {"fail": set(), "down_until": 0.0}
+
+
+def small_image(f, w):
+    m = re.match(r"(w(\d+)|original)_(.+)$", f.name)
+    if not m or (m.group(2) and int(m.group(2)) <= w):
+        return None
+    target = IMG / f"w{w}_{m.group(3)}"
+    if target.is_file():
+        return target
+    if target.name in small_state["fail"] or time.time() < small_state["down_until"]:
+        return None
+    with small_slots:
+        if target.is_file():
+            return target
+        try:
+            req = urllib.request.Request(f"https://image.tmdb.org/t/p/w{w}/{m.group(3)}",
+                                         headers={"User-Agent": "media-server"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = r.read()
+            tmp = target.with_name(target.name + ".part")
+            tmp.write_bytes(data)
+            os.replace(tmp, target)
+            return target
+        except urllib.error.HTTPError:
+            small_state["fail"].add(target.name)      # TMDB non ce l'ha: la grande va bene
+        except Exception:
+            small_state["down_until"] = time.time() + 600   # niente internet: riprova fra 10 minuti
+        return None
 
 
 thumb_slots = threading.Semaphore(2)
@@ -5727,6 +5830,8 @@ def scrub(x):
         for k in ("watched", "fav"):
             if k in x:
                 x[k] = False
+        for k in ("where", "disk", "unplugged"):   # i percorsi dei dischi restano a casa
+            x.pop(k, None)
         if x.get("kind") == "show" and "episodes" in x:
             x["unwatched"] = x["episodes"]
         elif x.get("kind") == "collection" and "count" in x:
@@ -5770,7 +5875,10 @@ def share_collection(coll_id: int):
 
 @share.get("/play/{item_id}")
 def share_play(item_id: int):
-    return scrub(play(_own(item_id)))
+    p = play(_own(item_id))
+    if isinstance(p, Response):   # file su un disco scollegato: agli amici niente percorsi
+        raise HTTPException(404, "Questo titolo adesso non è disponibile: è su un disco non collegato")
+    return scrub(p)
 
 
 @share.get("/tracks/{item_id}")

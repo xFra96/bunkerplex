@@ -365,7 +365,11 @@ function api(path, opt) {
         auth = null;
         setTimeout(render, 0);
       }
-      if (!r.ok) throw new Error(j.detail || ('Errore ' + r.status));
+      if (!r.ok) {
+        var err = new Error(j.detail || ('Errore ' + r.status));
+        err.data = j;   // es. 'missing': il disco scollegato e dove dovrebbe stare il file
+        throw err;
+      }
       return j;
     });
   });
@@ -538,19 +542,25 @@ function posterCard(x, prefix, allQ) {
   cardData[prefix + '-' + x.kind + x.id] = x;
   var isShow = x.kind === 'show';
   var href = isShow ? '#/show/' + x.id : '#/item/' + x.id;
-  var img = x.poster || x.thumb;
+  var img = small(x.poster, 342) || x.thumb;
   var badge = isShow
     ? (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge())
     : (x.watched ? seenBadge() : '');
   var sub = [x.year || '', isShow ? 'Serie' : '', stars(x, true)].filter(Boolean).join(' · ');
-  return '<a class="card poster f" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
+  return '<a class="card poster f' + (x.offline ? ' off' : '') + '" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
-      (allQ || x.quality === '4K' ? qBadge(x) : '') +
+      (x.offline ? offBadge(x) : allQ || x.quality === '4K' ? qBadge(x) : '') +
       badge + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
+}
+
+// Immagini nelle griglie: la versione leggera (le TV la decodificano in meta' tempo).
+// Solo per le immagini di questo PC; quelle degli amici restano come sono.
+function small(url, w) {
+  return url && url.indexOf('/api/image/') === 0 ? url + '?size=' + w : url;
 }
 
 // Saga: i film della stessa serie cinematografica, riuniti da soli
@@ -559,7 +569,7 @@ function sagaYears(x) {
 }
 
 function sagaCard(x, prefix) {
-  var img = x.poster || x.thumb;
+  var img = small(x.poster, 342) || x.thumb;
   var sub = [x.count + ' film' + (x.total > x.count ? ' su ' + x.total : ''), sagaYears(x)].filter(Boolean).join(' · ');
   return '<a class="card poster f" href="#/saga/' + x.id + '" data-key="' + prefix + '-collection' + x.id + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
@@ -571,6 +581,11 @@ function sagaCard(x, prefix) {
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
 }
 
+// Locandina di un video su un disco scollegato: piu' scura, con il nome del disco
+function offBadge(x) {
+  return x.offline ? '<span class="q offb" title="Dovrebbe trovarsi in ' + esc(x.where || '') + '">' + IC.disk + esc(x.disk || 'Non collegato') + '</span>' : '';
+}
+
 function wideCard(x, prefix) {
   cardData[prefix + '-' + x.kind + x.id] = x;
   var isEp = x.kind === 'episode';
@@ -578,11 +593,11 @@ function wideCard(x, prefix) {
   var sub = isEp ? 'S' + x.season + ' · E' + x.episode + ' · ' + esc(x.title) : (x.year || '');
   if (x.position && x.duration && !x.watched) sub += ' · mancano ' + fmtDur(x.duration - x.position);
   if (x.friend) sub += ' · ' + fromWho(x.friend, x.friend_self);
-  var img = isEp ? x.thumb : (x.backdrop || x.thumb);
-  return '<button class="card wide f" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
+  var img = isEp ? x.thumb : (small(x.backdrop, 780) || x.thumb);
+  return '<button class="card wide f' + (x.offline ? ' off' : '') + '" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
     '<div class="art" style="--h:' + hue(title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
-      qBadge(x) + '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
+      (x.offline ? offBadge(x) : qBadge(x)) + '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></button>';
 }
@@ -1037,6 +1052,7 @@ async function item(id) {
         resume ? 'mancano ' + fmtDur(x.duration - x.position) : ''
       ]) +
       '<p class="overview full">' + esc(x.overview || (x.matched || isEp || x.friend ? '' : 'Nessuna scheda trovata per questo file: prova «Correggi scheda».')) + '</p>' +
+      offlineNote(x) +
       '<div class="actions">' +
         '<button class="btn primary f" data-act="play" data-arg="' + x.id + '" data-key="play">' + IC.play +
           (resume ? 'Riprendi da ' + fmtTime(x.position) : 'Riproduci') + '</button>' +
@@ -1064,6 +1080,7 @@ async function item(id) {
 async function show(id) {
   var s = await api('/shows/' + id);
   cache.navLib = s.library_id;
+  cache.show = s;   // per il menu delle stagioni
   var q = parseQuery(location.hash);
   var up = s.up_next;
   var base = '#/lib/' + s.library_id;
@@ -1072,32 +1089,46 @@ async function show(id) {
   var season = s.seasons.filter(function (x) { return x.season === current; })[0] || s.seasons[0];
 
   var faces = castRow(s, base);
-  var tabs = s.seasons.length > 1 ? '<div class="seasons">' + s.seasons.map(function (x) {
-    return '<button class="filter f' + (x === season ? ' active' : '') + '" data-act="season" data-arg="' + s.id + ':' + x.season +
-      '" data-key="season-' + x.season + '"><b>' + (x.season === 0 ? 'Speciali' : 'Stagione ' + x.season) + '</b></button>';
-  }).join('') + '</div>' : '';
+  var many = s.seasons.length > 1;
 
+  // Episodi come su Netflix: numero grande, miniatura con ▶, titolo e durata, trama sotto.
+  // L'episodio da vedere adesso ha il fondo piu' chiaro.
   var eps = season ? season.episodes.map(function (e) {
-    return '<div class="eprow">' +
+    var started = e.position > 20 && !e.watched;
+    return '<div class="eprow' + (up && up.id === e.id ? ' cur' : '') + (e.watched ? ' seen' : '') + (e.offline ? ' off' : '') + '"' +
+        (e.offline ? ' title="Dovrebbe trovarsi in ' + esc(e.where) + '"' : '') + '>' +
       '<button class="ep f" data-act="play" data-arg="' + e.id + '" data-key="ep-' + e.id + '">' +
-        '<div class="art" style="--h:' + hue(s.title) + '"><img loading="lazy" decoding="async" src="' + e.thumb + '" alt="" onerror="this.style.display=\'none\'">' + progressBar(e) + '</div>' +
-        '<div class="body"><div class="num">Episodio ' + e.episode + (e.duration ? ' · ' + fmtDur(e.duration) : '') +
-          (e.position > 20 && !e.watched ? ' · mancano ' + fmtDur(e.duration - e.position) : '') + '</div>' +
-        '<h3>' + esc(e.title) + '</h3><p>' + esc(e.overview || '') + '</p></div>' +
+        '<span class="num">' + e.episode + '</span>' +
+        '<div class="art" style="--h:' + hue(s.title) + '"><img loading="lazy" decoding="async" src="' + e.thumb + '" alt="" onerror="this.style.display=\'none\'">' +
+          '<span class="playico">' + IC.play + '</span>' + progressBar(e) + '</div>' +
+        '<div class="head"><h3><span class="n">' + e.episode + '. </span>' + esc(e.title) + '</h3>' +
+          '<span class="dur' + (e.offline ? ' gone' : started ? ' left' : '') + '">' +
+            (e.offline ? IC.disk + 'Disco ' + esc(e.disk) + ' non collegato'
+              : started ? 'mancano ' + fmtDur(e.duration - e.position) : fmtDur(e.duration)) + '</span></div>' +
+        '<p>' + esc(e.overview || '') + '</p>' +
       '</button>' +
       '<button class="seenbtn f' + (e.watched ? ' on' : '') + '" data-act="watched" data-arg="' + e.id + ':' + (e.watched ? 0 : 1) +
-        '" data-key="seen-' + e.id + '" title="Visto / da vedere" aria-label="' + (e.watched ? 'Segna come da vedere' : 'Segna come visto') + '">' + IC.check + '</button>' +
+        '" data-key="seen-' + e.id + '" title="' + (e.watched ? 'Visto: segna come da vedere' : 'Segna come visto') +
+        '" aria-label="' + (e.watched ? 'Segna come da vedere' : 'Segna come visto') + '">' + IC.check + '</button>' +
     '</div>';
   }).join('') : '';
 
-  // Segna come vista solo la stagione aperta (con una stagione sola basta il pulsante della serie)
+  // Stagioni: un menu a tendina «Stagione 2 ▾»; con una stagione sola basta il titolo
+  var seasonName = function (n) { return n === 0 ? 'Speciali' : 'Stagione ' + n; };
   var seasonSeen = season && season.episodes.length && season.episodes.every(function (e) { return e.watched; });
-  var seasonBar = season && s.seasons.length > 1 ? '<div class="seasonbar">' +
-    '<button class="btn f" data-act="seasonwatched" data-arg="' + s.id + ':' + season.season + ':' + (seasonSeen ? 0 : 1) +
-      '" data-key="seasonseen">' + IC.check + ' ' +
-      (seasonSeen ? 'Segna ' + (season.season === 0 ? 'gli speciali' : 'la stagione ' + season.season) + ' come da vedere'
-                  : 'Segna ' + (season.season === 0 ? 'gli speciali come visti' : 'la stagione ' + season.season + ' come vista')) +
-    '</button></div>' : '';
+  var left = season ? season.episodes.filter(function (e) { return !e.watched; }).length : 0;
+  var epHead = season ? '<div class="ephead">' +
+      '<h2>Episodi</h2>' +
+      (many ? '<button class="seasonpick f" data-act="seasons" data-arg="' + s.id + ':' + season.season + '" data-key="seasonpick">' +
+        seasonName(season.season) + '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9.5 6 6 6-6"/></svg></button>' : '') +
+      '<span class="epcount">' + season.episodes.length + (season.episodes.length === 1 ? ' episodio' : ' episodi') +
+        (left && left < season.episodes.length ? ' · ' + left + ' da vedere' : '') + '</span>' +
+      // Segna come vista solo la stagione aperta (con una stagione sola basta il pulsante della serie)
+      (many ? '<button class="btn small f" data-act="seasonwatched" data-arg="' + s.id + ':' + season.season + ':' + (seasonSeen ? 0 : 1) +
+        '" data-key="seasonseen">' + IC.check +
+        (seasonSeen ? (season.season === 0 ? 'Speciali visti' : 'Stagione vista') : 'Segna ' + (season.season === 0 ? 'come visti' : 'come vista')) +
+        '</button>' : '') +
+    '</div>' : '';
 
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
@@ -1121,7 +1152,7 @@ async function show(id) {
         (s.director ? '<div><b>Creata da</b>' + chips(directorsOf(s), base, 'director') + '</div>' : '') +
         (s.actors.length && !faces ? '<div><b>Cast</b>' + chips(s.actors, base, 'actor') + '</div>' : '') +
       '</div>' : '') +
-    '</div></div></header>' + tabs + seasonBar + '<div class="eps">' + eps + '</div>' + faces;
+    '</div></div></header>' + '<section class="eplist">' + epHead + '<div class="eps">' + eps + '</div></section>' + faces;
 }
 
 // ---------------------------------------------------------------- Saghe
@@ -2312,7 +2343,10 @@ async function browsePage(id) {
 
 async function play(id, fromStart) {
   var p;
-  try { p = await api('/play/' + id); } catch (e) { toast(e.message); return; }
+  try { p = await api('/play/' + id); } catch (e) {
+    if (e.data && e.data.missing) missingBox(e.data.missing); else toast(e.message);
+    return;
+  }
   if (fromStart) p.start = 0;
   if (APP) { tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
@@ -3227,6 +3261,23 @@ function openPicker(title, options, current, onPick) {
   if (first) first.focus();
 }
 
+// Video su un disco scollegato (o spostato): quale disco collegare e dove dovrebbe stare il file
+function missingBox(m) {
+  openPicker(m.unplugged ? 'Il disco ' + m.disk + ' non è collegato' : 'File non trovato',
+    [{ value: 'ok', label: 'OK' }], 'ok', function () {});
+  var h = modal.querySelector('.sheet h3');
+  if (h) h.insertAdjacentHTML('afterend', '<div class="missing"><p>' +
+    (m.unplugged ? 'Collega il disco ' + esc(m.disk) + ' e riprova. Il file dovrebbe trovarsi in:'
+                 : 'Il disco c\'è, ma il file non è più al suo posto. Dovrebbe trovarsi in:') +
+    '</p><code>' + esc(m.where) + '</code></div>');
+}
+
+function offlineNote(x) {
+  if (!x.offline) return '';
+  return '<div class="offnote">' + IC.disk + '<div><b>' + (x.unplugged === false ? 'File non trovato' : 'Disco ' + esc(x.disk || '') + ' non collegato') +
+    '</b><span>Il file dovrebbe trovarsi in <code>' + esc(x.where || '') + '</code></span></div></div>';
+}
+
 function confirmBox(question, yesLabel, onYes) {
   openPicker(question, [{ value: 'no', label: 'Annulla' }, { value: 'yes', label: yesLabel }], 'no', function (answer) {
     if (answer === 'yes') onYes();
@@ -3819,8 +3870,19 @@ var actions = {
   },
   season: function (arg) {
     var parts = arg.split(':'), target = '#/show/' + parts[0] + '?season=' + parts[1];
-    focusMemory[target] = 'season-' + parts[1];
+    focusMemory[target] = 'seasonpick';
     if (target !== location.hash) location.replace(target);
+  },
+  // Menu a tendina delle stagioni, con quanti episodi ha ciascuna e quanti restano da vedere
+  seasons: function (arg) {
+    var parts = arg.split(':'), id = parts[0], current = +parts[1];
+    var s = cache.show;
+    if (!s || String(s.id) !== id) return;
+    openPicker('Stagioni', s.seasons.map(function (x) {
+      var left = x.episodes.filter(function (e) { return !e.watched; }).length;
+      return { value: x.season, label: x.season === 0 ? 'Speciali' : 'Stagione ' + x.season,
+        count: x.episodes.length + ' ep.' + (left === 0 ? ' · visti' : left < x.episodes.length ? ' · ' + left + ' da vedere' : '') };
+    }), current, function (n) { actions.season(id + ':' + n); });
   },
   opt: function (arg) {
     var st = modalState;
@@ -4196,14 +4258,19 @@ function move(dir) {
 }
 
 // Scorrimento: morbido dove il dispositivo regge, immediato con le animazioni ridotte
+// Freccia tenuta premuta (telecomando): si salta dritti, senza scorrimento morbido.
+// Ogni nuova locandina farebbe ripartire l'animazione dall'inizio: sulle TV lente
+// le animazioni si accavallano e il catalogo scatta.
+var held = false;
+
 function scrollBox(box, pos) {
-  pos.behavior = smooth;
+  pos.behavior = held ? 'auto' : smooth;
   try { box.scrollTo(pos); }
   catch (e) {   // browser vecchi: niente opzioni
     if (pos.left !== undefined) box.scrollLeft = pos.left;
     if (pos.top !== undefined) { if (box === window) window.scrollTo(0, pos.top); else box.scrollTop = pos.top; }
   }
-  if (smooth === 'smooth') probeFrames();
+  if (pos.behavior === 'smooth') probeFrames();
 }
 
 function scrollToEl(el) {
@@ -4228,7 +4295,7 @@ function scrollToEl(el) {
   var grid = el.parentNode;   // prima riga di una griglia: si rivedono titolo e filtri
   if (grid && grid.id === 'grid' && grid.firstElementChild && el.offsetTop === grid.firstElementChild.offsetTop &&
       grid.getBoundingClientRect().top + window.pageYOffset < window.innerHeight * 0.5) { scrollBox(window, { top: 0 }); return; }
-  el.scrollIntoView({ behavior: smooth, block: 'center', inline: 'nearest' });
+  el.scrollIntoView({ behavior: held ? 'auto' : smooth, block: 'center', inline: 'nearest' });
 }
 
 // Misura quanto e' fluido lo scorrimento. Se il dispositivo perde troppi fotogrammi,
@@ -4305,6 +4372,7 @@ document.addEventListener('keydown', function (e) {
   if (dir) {
     if (typing && (dir === 'left' || dir === 'right') && t.value) return;
     e.preventDefault();
+    held = !!e.repeat;
     move(dir);
     return;
   }
@@ -4348,6 +4416,11 @@ document.addEventListener('keydown', function (e) {
 document.addEventListener('keyup', function (e) {
   var key = e.key;
   if (!key || key === 'Unidentified') key = KEYCODES[e.keyCode] || '';
+  if (held) {   // freccia rilasciata: l'ultima locandina si porta al suo posto con calma
+    held = false;
+    var a = document.activeElement;
+    if (kb && a && a.classList && a.classList.contains('f') && view.contains(a)) scrollToEl(a);
+  }
   if (key !== 'Enter' || !press) return;
   var p = press;
   press = null;
@@ -4362,10 +4435,23 @@ document.addEventListener('click', function (e) {
 
 document.addEventListener('mousedown', function () { setKb(false); });
 document.addEventListener('touchstart', function () { setKb(false); }, { passive: true });
+// Scorrimento: il lavoro si fa una volta per fotogramma, non a ogni evento. Mentre la
+// pagina scorre (rotella, dito) le locandine non reagiscono al passaggio del mouse:
+// ingrandimenti e ombre ridisegnati a ogni riga che passa sotto il puntatore sono la
+// prima causa degli scatti nello scorrimento veloce.
+var scrollTick = false, scrollIdle = 0;
 window.addEventListener('scroll', function () {
-  if (currentHash) scrollMemory[currentHash] = window.pageYOffset;
-  if (chunk && chunk.shown < chunk.list.length &&
-      window.pageYOffset + window.innerHeight * 2.5 > document.documentElement.scrollHeight) growGrid();
+  if (!kb && !scrollIdle) document.body.classList.add('scrolling');
+  clearTimeout(scrollIdle);
+  scrollIdle = setTimeout(function () { scrollIdle = 0; document.body.classList.remove('scrolling'); }, 140);
+  if (scrollTick) return;
+  scrollTick = true;
+  requestAnimationFrame(function () {
+    scrollTick = false;
+    if (currentHash) scrollMemory[currentHash] = window.pageYOffset;
+    if (chunk && chunk.shown < chunk.list.length &&
+        window.pageYOffset + window.innerHeight * 2.5 > document.documentElement.scrollHeight) growGrid();
+  });
 }, { passive: true });
 
 // Orologio in alto a destra (solo con l'aspetto da TV)
