@@ -7,12 +7,15 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.display.DisplayManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.TypedValue
+import android.view.Display
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -54,6 +57,8 @@ import androidx.media3.ui.SubtitleView
 import org.json.JSONObject
 import java.util.Locale
 import kotlin.concurrent.thread
+import kotlin.math.abs as fabs
+import kotlin.math.roundToInt
 
 /**
  * Player nativo (ExoPlayer): legge direttamente MKV/MP4 con audio e
@@ -702,6 +707,7 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         override fun onTracksChanged(tracks: Tracks) {
+            matchRefresh(tracks)
             applyPendingSub()
             applyAutoSubs(tracks)
             restoreAudio(tracks)
@@ -1890,6 +1896,79 @@ class PlayerActivity : AppCompatActivity() {
         showControls(Zone.BAR)
     }
 
+    // ---- Frequenza dello schermo come quella del film
+    // Un film a 23,976 fps su una TV a 60 Hz va a scatti: i fotogrammi restano a schermo
+    // un po' 3 e un po' 2 refresh (pulldown 3:2) e nelle panoramiche si vede il microlag.
+    // Come Kodi: si sceglie il modo della TV con la stessa risoluzione e un refresh
+    // multiplo dei fps (24, 48, 120 Hz...). Il film resta in pausa il secondo che serve
+    // alla TV per riagganciare il segnale. Uscendo dal player la TV torna com'era.
+
+    private var refreshFps = 0f
+    private var refreshListener: DisplayManager.DisplayListener? = null
+    private val refreshDone = Runnable { endRefreshSwitch() }
+    private var resumeAfterSwitch = false
+
+    private fun matchRefresh(tracks: Tracks) {
+        if (Build.VERSION.SDK_INT < 23) return
+        var fps = 0f
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_VIDEO) continue
+            for (i in 0 until group.length) if (group.isTrackSelected(i)) fps = group.getTrackFormat(i).frameRate
+        }
+        if (fps < 10f || fabs(fps - refreshFps) < 0.01f) return
+        refreshFps = fps
+        @Suppress("DEPRECATION")
+        val display = windowManager.defaultDisplay
+        val current = display.mode
+        fun error(m: Display.Mode): Float {
+            val ratio = m.refreshRate / fps
+            val k = ratio.roundToInt()
+            return if (k < 1) 1f else fabs(ratio - k) / k
+        }
+        // 24 Hz per un film a 23,976 va bene: un fotogramma ripetuto ogni 40 secondi circa
+        val good = 0.0015f
+        if (error(current) < good) return
+        val best = display.supportedModes
+            .filter { it.physicalWidth == current.physicalWidth && it.physicalHeight == current.physicalHeight && error(it) < good }
+            .minWithOrNull(compareBy<Display.Mode>({ (error(it) * 10000).roundToInt() }, { it.refreshRate }))
+            ?: return
+        val p = player ?: return
+        endRefreshSwitch()
+        resumeAfterSwitch = p.playWhenReady
+        p.pause()
+        val manager = (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager)
+        val listener = object : DisplayManager.DisplayListener {
+            override fun onDisplayChanged(id: Int) {
+                @Suppress("DEPRECATION")
+                if (windowManager.defaultDisplay.mode.modeId == best.modeId) {
+                    // La TV ha cambiato modo, ma l'immagine torna dopo un attimo
+                    handler.removeCallbacks(refreshDone)
+                    handler.postDelayed(refreshDone, 1200)
+                }
+            }
+            override fun onDisplayAdded(id: Int) {}
+            override fun onDisplayRemoved(id: Int) {}
+        }
+        refreshListener = listener
+        manager.registerDisplayListener(listener, handler)
+        handler.postDelayed(refreshDone, 5000)      // se la TV non cambia, si riparte comunque
+        window.attributes = window.attributes.apply { preferredDisplayModeId = best.modeId }
+        val hz = best.refreshRate
+        val label = if (fabs(hz - hz.roundToInt()) < 0.01f) hz.roundToInt().toString()
+                    else String.format(Locale.ITALY, "%.3f", hz)
+        showOsd("Schermo a $label Hz, come il film", 3000)
+    }
+
+    private fun endRefreshSwitch() {
+        handler.removeCallbacks(refreshDone)
+        refreshListener?.let { (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(it) }
+        refreshListener = null
+        if (resumeAfterSwitch) {
+            resumeAfterSwitch = false
+            if (!finished) player?.play()
+        }
+    }
+
     override fun onStart() {
         super.onStart()
         visible = true
@@ -1913,6 +1992,8 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        resumeAfterSwitch = false
+        endRefreshSwitch()
         handler.removeCallbacksAndMessages(null)
         player?.removeListener(listener)
         player?.release()
