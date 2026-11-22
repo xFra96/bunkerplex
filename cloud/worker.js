@@ -12,7 +12,8 @@
 //
 // Collegamenti richiesti: database D1 come "DB". Segreto: SETUP_KEY (serve
 // solo per creare il primo amministratore). Facoltativi: TS_OAUTH_ID e
-// TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key).
+// TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key; permessi
+// «Auth Keys: write» e «Devices: Core» sull'etichetta tag:bunkerplex).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -147,6 +148,66 @@ async function checkPassword(env, user, verifier) {
 async function passwordFields(verifier) {
   const salt = randomHex(16);
   return { salt, hash: await sha256(salt + verifier) };
+}
+
+// ---- Tailscale (rete di BunkerPlex)
+
+const DEVICE_LIMIT = 4;       // dispositivi per account nella rete (100 in tutto nel piano gratuito)
+
+// Tabella dei dispositivi entrati con una chiave di questo servizio: a chi
+// appartengono e come si chiamano. Si crea da sola alla prima chiamata.
+let devicesTable = false;
+async function ensureDevices(env) {
+  if (devicesTable) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS ts_devices(host TEXT PRIMARY KEY, user_id INTEGER NOT NULL, ' +
+    'label TEXT, kind TEXT, t REAL NOT NULL)').run();
+  devicesTable = true;
+}
+
+function cleanHost(raw) {
+  const h = String(raw || '').toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{2,62}$/.test(h) ? h : '';
+}
+
+async function tsAccess(env) {
+  if (!env.TS_OAUTH_ID || !env.TS_OAUTH_SECRET) fail(404, 'Tailscale non configurato nel servizio account');
+  const form = new URLSearchParams({ client_id: env.TS_OAUTH_ID, client_secret: env.TS_OAUTH_SECRET, grant_type: 'client_credentials' });
+  const tr = await fetch('https://api.tailscale.com/api/v2/oauth/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form
+  });
+  const access = tr.ok ? (await tr.json()).access_token : '';
+  if (!access) fail(502, 'Tailscale non ha accettato le credenziali del servizio account');
+  return { access, tag: env.TS_TAG || 'tag:bunkerplex' };
+}
+
+// I dispositivi dell'account presenti adesso in Tailscale. null se Tailscale non
+// lascia leggere l'elenco (manca il permesso «Devices: Core»): allora niente limite.
+async function userDevices(env, ts, uid) {
+  const rows = (await env.DB.prepare('SELECT host, label, kind, t FROM ts_devices WHERE user_id = ?').bind(uid).all()).results;
+  const r = await fetch('https://api.tailscale.com/api/v2/tailnet/-/devices', {
+    headers: { Authorization: 'Bearer ' + ts.access }
+  });
+  if (!r.ok) return null;
+  const list = (await r.json()).devices || [];
+  const out = [];
+  for (const d of list) {
+    const hn = String(d.hostname || '').toLowerCase();
+    // Tailscale aggiunge "-1", "-2"... se il nome c'e' gia'
+    const row = rows.find((x) => hn === x.host || (hn.startsWith(x.host + '-') && /^\d+$/.test(hn.slice(x.host.length + 1))));
+    if (!row) continue;
+    out.push({
+      id: String(d.nodeId || d.id), host: row.host, hostname: hn, label: row.label || hn,
+      kind: row.kind || 'app', seen: d.lastSeen || '', online: d.connectedToControl === true, os: d.os || ''
+    });
+  }
+  return out;
+}
+
+async function tsDeleteDevice(ts, d) {
+  const r = await fetch('https://api.tailscale.com/api/v2/device/' + encodeURIComponent(d.id), {
+    method: 'DELETE', headers: { Authorization: 'Bearer ' + ts.access }
+  });
+  if (!r.ok && r.status !== 404) fail(502, 'Tailscale non ha tolto il dispositivo (errore ' + r.status + ')');
 }
 
 async function route(request, env) {
@@ -323,32 +384,76 @@ async function route(request, env) {
     }
   }
   // Tailscale dentro BunkerPlex: una chiave monouso (10 minuti) per far entrare il
-  // server che la chiede nella rete Tailscale di BunkerPlex, con l'etichetta
-  // tag:bunkerplex. La crea qui il client OAuth dell'amministratore (segreti
-  // TS_OAUTH_ID e TS_OAUTH_SECRET, permesso «Auth Keys: write» su quell'etichetta):
-  // i PC non vedono mai il segreto. Senza segreti risponde 404 e i PC restano
-  // sulla porta aperta sul router.
+  // dispositivo che la chiede (un PC, o l'app su telefono/TV fuori casa) nella rete
+  // Tailscale di BunkerPlex, con l'etichetta tag:bunkerplex. La crea qui il client
+  // OAuth dell'amministratore (segreti TS_OAUTH_ID e TS_OAUTH_SECRET, permessi
+  // «Auth Keys: write» e «Devices: Core» su quell'etichetta): i dispositivi non
+  // vedono mai il segreto. Senza segreti risponde 404 e i PC restano sulla porta
+  // aperta sul router.
+  //
+  // Ogni account ha al massimo DEVICE_LIMIT dispositivi nella rete (il piano gratuito
+  // di Tailscale ne conta 100 in tutto). Conta quelli presenti ora in Tailscale: chi
+  // ne toglie uno libera subito il posto. Al limite si risponde 409 con l'elenco, e il
+  // dispositivo nuovo chiede all'utente quale togliere (replace = id da togliere).
   if (path === '/tailscale/key' && method === 'POST') {
-    if (!env.TS_OAUTH_ID || !env.TS_OAUTH_SECRET) fail(404, 'Tailscale non configurato nel servizio account');
-    const tag = env.TS_TAG || 'tag:bunkerplex';
-    const form = new URLSearchParams({ client_id: env.TS_OAUTH_ID, client_secret: env.TS_OAUTH_SECRET, grant_type: 'client_credentials' });
-    const tr = await fetch('https://api.tailscale.com/api/v2/oauth/token', {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form
-    });
-    const access = tr.ok ? (await tr.json()).access_token : '';
-    if (!access) fail(502, 'Tailscale non ha accettato le credenziali del servizio account');
+    const b = await body(request);
+    const ts = await tsAccess(env);
+    const host = cleanHost(b.host);
+    const ephemeral = b.ephemeral === true;      // l'app: sparisce da sola quando si spegne
+    if (host) {
+      await ensureDevices(env);
+      const mine = await userDevices(env, ts, user.id);
+      if (mine) {
+        const others = mine.filter((d) => d.host !== host);
+        const replace = String(b.replace || '');
+        if (replace) {
+          const d = others.find((x) => x.id === replace);
+          if (!d) fail(404, 'Dispositivo non trovato tra i tuoi');
+          await tsDeleteDevice(ts, d);
+          await env.DB.prepare('DELETE FROM ts_devices WHERE host = ?').bind(d.host).run();
+        } else if (others.length >= DEVICE_LIMIT) {
+          throw new Reply(json({
+            detail: `Hai già ${DEVICE_LIMIT} dispositivi nella rete di BunkerPlex: togline uno per far entrare questo`,
+            limit: DEVICE_LIMIT, devices: others
+          }, 409));
+        }
+      }
+      const kind = b.kind === 'pc' ? 'pc' : 'app';
+      await env.DB.prepare('INSERT INTO ts_devices(host, user_id, label, kind, t) VALUES(?,?,?,?,?) ' +
+        'ON CONFLICT(host) DO UPDATE SET user_id = excluded.user_id, label = excluded.label, kind = excluded.kind, t = excluded.t')
+        .bind(host, user.id, String(b.label || '').slice(0, 60), kind, now()).run();
+    }
     const kr = await fetch('https://api.tailscale.com/api/v2/tailnet/-/keys', {
       method: 'POST',
-      headers: { Authorization: 'Bearer ' + access, 'Content-Type': 'application/json' },
+      headers: { Authorization: 'Bearer ' + ts.access, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        capabilities: { devices: { create: { reusable: false, ephemeral: false, preauthorized: true, tags: [tag] } } },
+        capabilities: { devices: { create: { reusable: false, ephemeral, preauthorized: true, tags: [ts.tag] } } },
         expirySeconds: 600,
         description: 'BunkerPlex'
       })
     });
     const k = kr.ok ? await kr.json() : null;
     if (!k || typeof k.key !== 'string') fail(502, 'Tailscale non ha dato la chiave (errore ' + kr.status + ')');
-    return json({ key: k.key, tag });
+    return json({ key: k.key, tag: ts.tag, limit: DEVICE_LIMIT });
+  }
+  // I dispositivi dell'account nella rete di BunkerPlex, e «Togli»
+  if (path === '/tailscale/devices' && method === 'GET') {
+    await ensureDevices(env);
+    const mine = await userDevices(env, await tsAccess(env), user.id);
+    if (!mine) fail(503, 'Al servizio account manca il permesso «Devices: Core» di Tailscale');
+    return json({ limit: DEVICE_LIMIT, devices: mine });
+  }
+  const dm = /^\/tailscale\/devices\/([A-Za-z0-9]{1,40})$/.exec(path);
+  if (dm && method === 'DELETE') {
+    await ensureDevices(env);
+    const ts = await tsAccess(env);
+    const mine = await userDevices(env, ts, user.id);
+    if (!mine) fail(503, 'Al servizio account manca il permesso «Devices: Core» di Tailscale');
+    const d = mine.find((x) => x.id === dm[1]);
+    if (!d) fail(404, 'Dispositivo non trovato tra i tuoi');
+    await tsDeleteDevice(ts, d);
+    await env.DB.prepare('DELETE FROM ts_devices WHERE host = ?').bind(d.host).run();
+    return json({ ok: true });
   }
   if (path === '/servers' && method === 'PUT') {
     await ensureServerCols(env);

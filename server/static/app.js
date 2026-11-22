@@ -365,7 +365,11 @@ function api(path, opt) {
         auth = null;
         setTimeout(render, 0);
       }
-      if (!r.ok) throw new Error(j.detail || ('Errore ' + r.status));
+      if (!r.ok) {
+        var err = new Error(j.detail || ('Errore ' + r.status));
+        err.data = j;   // es. 'missing': il disco scollegato e dove dovrebbe stare il file
+        throw err;
+      }
       return j;
     });
   });
@@ -538,19 +542,25 @@ function posterCard(x, prefix, allQ) {
   cardData[prefix + '-' + x.kind + x.id] = x;
   var isShow = x.kind === 'show';
   var href = isShow ? '#/show/' + x.id : '#/item/' + x.id;
-  var img = x.poster || x.thumb;
+  var img = small(x.poster, 342) || x.thumb;
   var badge = isShow
     ? (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge())
     : (x.watched ? seenBadge() : '');
   var sub = [x.year || '', isShow ? 'Serie' : '', stars(x, true)].filter(Boolean).join(' · ');
-  return '<a class="card poster f" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
+  return '<a class="card poster f' + (x.offline ? ' off' : '') + '" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
       (x.poster ? '' : '<span class="ph">' + esc(x.title) + '</span>') +
-      (allQ || x.quality === '4K' ? qBadge(x) : '') +
+      (x.offline ? offBadge(x) : allQ || x.quality === '4K' ? qBadge(x) : '') +
       badge + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
+}
+
+// Immagini nelle griglie: la versione leggera (le TV la decodificano in meta' tempo).
+// Solo per le immagini di questo PC; quelle degli amici restano come sono.
+function small(url, w) {
+  return url && url.indexOf('/api/image/') === 0 ? url + '?size=' + w : url;
 }
 
 // Saga: i film della stessa serie cinematografica, riuniti da soli
@@ -559,7 +569,7 @@ function sagaYears(x) {
 }
 
 function sagaCard(x, prefix) {
-  var img = x.poster || x.thumb;
+  var img = small(x.poster, 342) || x.thumb;
   var sub = [x.count + ' film' + (x.total > x.count ? ' su ' + x.total : ''), sagaYears(x)].filter(Boolean).join(' · ');
   return '<a class="card poster f" href="#/saga/' + x.id + '" data-key="' + prefix + '-collection' + x.id + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
@@ -571,6 +581,11 @@ function sagaCard(x, prefix) {
     '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
 }
 
+// Locandina di un video su un disco scollegato: piu' scura, con il nome del disco
+function offBadge(x) {
+  return x.offline ? '<span class="q offb" title="Dovrebbe trovarsi in ' + esc(x.where || '') + '">' + IC.disk + esc(x.disk || 'Non collegato') + '</span>' : '';
+}
+
 function wideCard(x, prefix) {
   cardData[prefix + '-' + x.kind + x.id] = x;
   var isEp = x.kind === 'episode';
@@ -578,11 +593,11 @@ function wideCard(x, prefix) {
   var sub = isEp ? 'S' + x.season + ' · E' + x.episode + ' · ' + esc(x.title) : (x.year || '');
   if (x.position && x.duration && !x.watched) sub += ' · mancano ' + fmtDur(x.duration - x.position);
   if (x.friend) sub += ' · ' + fromWho(x.friend, x.friend_self);
-  var img = isEp ? x.thumb : (x.backdrop || x.thumb);
-  return '<button class="card wide f" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
+  var img = isEp ? x.thumb : (small(x.backdrop, 780) || x.thumb);
+  return '<button class="card wide f' + (x.offline ? ' off' : '') + '" data-act="play" data-arg="' + x.id + '" data-key="' + prefix + '-' + x.kind + x.id + '">' +
     '<div class="art" style="--h:' + hue(title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
-      qBadge(x) + '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
+      (x.offline ? offBadge(x) : qBadge(x)) + '<span class="playico">' + IC.play + '</span>' + progressBar(x) + MORE +
     '</div>' +
     '<div class="cap"><b>' + esc(title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></button>';
 }
@@ -1037,6 +1052,7 @@ async function item(id) {
         resume ? 'mancano ' + fmtDur(x.duration - x.position) : ''
       ]) +
       '<p class="overview full">' + esc(x.overview || (x.matched || isEp || x.friend ? '' : 'Nessuna scheda trovata per questo file: prova «Correggi scheda».')) + '</p>' +
+      offlineNote(x) +
       '<div class="actions">' +
         '<button class="btn primary f" data-act="play" data-arg="' + x.id + '" data-key="play">' + IC.play +
           (resume ? 'Riprendi da ' + fmtTime(x.position) : 'Riproduci') + '</button>' +
@@ -1064,6 +1080,7 @@ async function item(id) {
 async function show(id) {
   var s = await api('/shows/' + id);
   cache.navLib = s.library_id;
+  cache.show = s;   // per il menu delle stagioni
   var q = parseQuery(location.hash);
   var up = s.up_next;
   var base = '#/lib/' + s.library_id;
@@ -1072,32 +1089,46 @@ async function show(id) {
   var season = s.seasons.filter(function (x) { return x.season === current; })[0] || s.seasons[0];
 
   var faces = castRow(s, base);
-  var tabs = s.seasons.length > 1 ? '<div class="seasons">' + s.seasons.map(function (x) {
-    return '<button class="filter f' + (x === season ? ' active' : '') + '" data-act="season" data-arg="' + s.id + ':' + x.season +
-      '" data-key="season-' + x.season + '"><b>' + (x.season === 0 ? 'Speciali' : 'Stagione ' + x.season) + '</b></button>';
-  }).join('') + '</div>' : '';
+  var many = s.seasons.length > 1;
 
+  // Episodi come su Netflix: numero grande, miniatura con ▶, titolo e durata, trama sotto.
+  // L'episodio da vedere adesso ha il fondo piu' chiaro.
   var eps = season ? season.episodes.map(function (e) {
-    return '<div class="eprow">' +
+    var started = e.position > 20 && !e.watched;
+    return '<div class="eprow' + (up && up.id === e.id ? ' cur' : '') + (e.watched ? ' seen' : '') + (e.offline ? ' off' : '') + '"' +
+        (e.offline ? ' title="Dovrebbe trovarsi in ' + esc(e.where) + '"' : '') + '>' +
       '<button class="ep f" data-act="play" data-arg="' + e.id + '" data-key="ep-' + e.id + '">' +
-        '<div class="art" style="--h:' + hue(s.title) + '"><img loading="lazy" decoding="async" src="' + e.thumb + '" alt="" onerror="this.style.display=\'none\'">' + progressBar(e) + '</div>' +
-        '<div class="body"><div class="num">Episodio ' + e.episode + (e.duration ? ' · ' + fmtDur(e.duration) : '') +
-          (e.position > 20 && !e.watched ? ' · mancano ' + fmtDur(e.duration - e.position) : '') + '</div>' +
-        '<h3>' + esc(e.title) + '</h3><p>' + esc(e.overview || '') + '</p></div>' +
+        '<span class="num">' + e.episode + '</span>' +
+        '<div class="art" style="--h:' + hue(s.title) + '"><img loading="lazy" decoding="async" src="' + e.thumb + '" alt="" onerror="this.style.display=\'none\'">' +
+          '<span class="playico">' + IC.play + '</span>' + progressBar(e) + '</div>' +
+        '<div class="head"><h3><span class="n">' + e.episode + '. </span>' + esc(e.title) + '</h3>' +
+          '<span class="dur' + (e.offline ? ' gone' : started ? ' left' : '') + '">' +
+            (e.offline ? IC.disk + 'Disco ' + esc(e.disk) + ' non collegato'
+              : started ? 'mancano ' + fmtDur(e.duration - e.position) : fmtDur(e.duration)) + '</span></div>' +
+        '<p>' + esc(e.overview || '') + '</p>' +
       '</button>' +
       '<button class="seenbtn f' + (e.watched ? ' on' : '') + '" data-act="watched" data-arg="' + e.id + ':' + (e.watched ? 0 : 1) +
-        '" data-key="seen-' + e.id + '" title="Visto / da vedere" aria-label="' + (e.watched ? 'Segna come da vedere' : 'Segna come visto') + '">' + IC.check + '</button>' +
+        '" data-key="seen-' + e.id + '" title="' + (e.watched ? 'Visto: segna come da vedere' : 'Segna come visto') +
+        '" aria-label="' + (e.watched ? 'Segna come da vedere' : 'Segna come visto') + '">' + IC.check + '</button>' +
     '</div>';
   }).join('') : '';
 
-  // Segna come vista solo la stagione aperta (con una stagione sola basta il pulsante della serie)
+  // Stagioni: un menu a tendina «Stagione 2 ▾»; con una stagione sola basta il titolo
+  var seasonName = function (n) { return n === 0 ? 'Speciali' : 'Stagione ' + n; };
   var seasonSeen = season && season.episodes.length && season.episodes.every(function (e) { return e.watched; });
-  var seasonBar = season && s.seasons.length > 1 ? '<div class="seasonbar">' +
-    '<button class="btn f" data-act="seasonwatched" data-arg="' + s.id + ':' + season.season + ':' + (seasonSeen ? 0 : 1) +
-      '" data-key="seasonseen">' + IC.check + ' ' +
-      (seasonSeen ? 'Segna ' + (season.season === 0 ? 'gli speciali' : 'la stagione ' + season.season) + ' come da vedere'
-                  : 'Segna ' + (season.season === 0 ? 'gli speciali come visti' : 'la stagione ' + season.season + ' come vista')) +
-    '</button></div>' : '';
+  var left = season ? season.episodes.filter(function (e) { return !e.watched; }).length : 0;
+  var epHead = season ? '<div class="ephead">' +
+      '<h2>Episodi</h2>' +
+      (many ? '<button class="seasonpick f" data-act="seasons" data-arg="' + s.id + ':' + season.season + '" data-key="seasonpick">' +
+        seasonName(season.season) + '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9.5 6 6 6-6"/></svg></button>' : '') +
+      '<span class="epcount">' + season.episodes.length + (season.episodes.length === 1 ? ' episodio' : ' episodi') +
+        (left && left < season.episodes.length ? ' · ' + left + ' da vedere' : '') + '</span>' +
+      // Segna come vista solo la stagione aperta (con una stagione sola basta il pulsante della serie)
+      (many ? '<button class="btn small f" data-act="seasonwatched" data-arg="' + s.id + ':' + season.season + ':' + (seasonSeen ? 0 : 1) +
+        '" data-key="seasonseen">' + IC.check +
+        (seasonSeen ? (season.season === 0 ? 'Speciali visti' : 'Stagione vista') : 'Segna ' + (season.season === 0 ? 'come visti' : 'come vista')) +
+        '</button>' : '') +
+    '</div>' : '';
 
   return '<header class="hero short">' + heroBg(s) + '<div class="in">' + cover(s) + '<div class="txt">' +
       '<h1>' + esc(s.title) + '</h1>' +
@@ -1121,7 +1152,7 @@ async function show(id) {
         (s.director ? '<div><b>Creata da</b>' + chips(directorsOf(s), base, 'director') + '</div>' : '') +
         (s.actors.length && !faces ? '<div><b>Cast</b>' + chips(s.actors, base, 'actor') + '</div>' : '') +
       '</div>' : '') +
-    '</div></div></header>' + tabs + seasonBar + '<div class="eps">' + eps + '</div>' + faces;
+    '</div></div></header>' + '<section class="eplist">' + epHead + '<div class="eps">' + eps + '</div></section>' + faces;
 }
 
 // ---------------------------------------------------------------- Saghe
@@ -1416,7 +1447,7 @@ function settingsAreas() {
   if (auth && auth.user) out.push(['account', 'Account']);
   if (auth && auth.user && auth.user.admin && !TV) out.push(['people', 'Persone']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Catalogo e schede'], ['subtitles', 'Sottotitoli'],
-    ['friends', 'Amici'], ['updates', 'Aggiornamenti'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
+    ['friends', 'Amici e dispositivi'], ['updates', 'Aggiornamenti'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
   if (!APP || TV) out.push(['apps', TV ? 'App sul telefono' : 'App per TV e telefono']);
   return out;
 }
@@ -1494,10 +1525,14 @@ function settingsRows(i, u, sh) {
     var pending = sh.accounts.filter(function (a) { return !a.approved; }).length;
     shareRequests = pending;
     markRequests();
-    rows.push({ area: 'friends', label: 'Amici', desc: 'Raccolte condivise con altre case, via Tailscale integrato',
-      value: !sh.on ? 'Spenta' : (pending ? (pending === 1 ? 'Una richiesta da approvare' : pending + ' richieste da approvare')
-        : (friends.length ? friends.length + (friends.length === 1 ? ' amico collegato' : ' amici collegati') : 'Attiva')),
-      state: pending ? 'warn' : (sh.on ? 'ok' : '') });
+    var asks = pending + (i.friend_requests || 0);
+    var online = friends.filter(function (f) { return f.online !== false; }).length;
+    rows.push({ area: 'friends', label: 'Amici e dispositivi', desc: 'Raccolte di amici e tuoi PC, anche fuori casa',
+      value: i.devices_full ? 'Troppi dispositivi: togline uno'
+        : asks ? (asks === 1 ? 'Una richiesta da accettare' : asks + ' richieste da accettare')
+        : friends.length ? online + ' di ' + friends.length + ' online'
+        : (sh.on ? 'Attiva' : 'Nessun amico'),
+      state: i.devices_full || asks ? 'warn' : (friends.length || sh.on ? 'ok' : '') });
   }
   if (u && u.enabled) {
     rows.push({ area: 'updates', label: 'Aggiornamenti', desc: 'BunkerPlex ' + i.version,
@@ -1694,7 +1729,11 @@ function networkPanel(n) {
       (n.tailnet ? esc(n.tailnet) + '<small>Tailscale integrato</small>'
         : n.friends_open ? esc(n.public) + '<small>porta aperta sul router</small>'
         : '<span class="nodot">nessun accesso da fuori</span><small>si accende in Amici</small>') + '</dd>' +
-    '</dl><p class="kvnote">Non aprire mai la ' + n.port + ' sul router: è solo per la rete di casa.</p></div>';
+    '<dt>Per i tuoi dispositivi fuori casa<small>dal browser, con Tailscale acceso sul dispositivo</small></dt><dd class="num">' +
+      (n.tailscale ? esc(n.tailscale) + '<small>porta ' + n.port + '</small>'
+        : '<span class="nodot">Tailscale non installato sul computer</span><small>l\'app non ne ha bisogno</small>') + '</dd>' +
+    '</dl><p class="kvnote">Non aprire mai la ' + n.port + ' sul router: è solo per la rete di casa e per i tuoi dispositivi su Tailscale. ' +
+    'L\'app BunkerPlex fuori casa non ne ha bisogno: raggiunge amici e tuoi PC da sola.</p></div>';
 }
 
 async function settings() {
@@ -1823,11 +1862,13 @@ async function settingsArea(area) {
 
   if (area === 'friends') {
     var sh = res[3];
-    if (!sh) return settingsShell('friends', 'Amici', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
-    var af = auth.cloud ? await api('/account-friends').catch(function () { return null; }) : null;
-    return settingsShell('friends', 'Amici',
-      'Tu e un amico con BunkerPlex guardate ciascuno le raccolte dell\'altro, anche da case diverse. Si guarda soltanto.',
-      myPcsPanel(af) + accountFriendsPanel(af, sh) + friendsPanel(sh, !!auth.cloud) +
+    if (!sh) return settingsShell('friends', 'Amici e dispositivi', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
+    var both = auth.cloud ? await Promise.all([api('/account-friends').catch(function () { return null; }),
+      api('/devices').catch(function () { return null; })]) : [null, null];
+    var af = both[0];
+    return settingsShell('friends', 'Amici e dispositivi',
+      'Le raccolte dei tuoi amici e dei tuoi altri PC, a casa e fuori. Si guarda soltanto: nessuno modifica la libreria dell\'altro.',
+      accountFriendsPanel(af, sh) + myPcsPanel(af) + devicesPanel(both[1]) + awayPanel() + friendsPanel(sh, !!auth.cloud) +
       '<div class="panel"><h2>Video degli amici</h2>' +
       '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
       '<p class="kvnote">Viaggiano sulla linea in caricamento di chi condivide: 720p va bene quasi sempre.</p></div>');
@@ -2023,6 +2064,56 @@ function myPcsPanel(af) {
     '<p class="kvnote">In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
 }
 
+// I dispositivi dell'account nella rete di BunkerPlex: PC e app fuori casa, al massimo 4.
+// Togliere libera subito il posto; se questo PC aspetta un posto, si sceglie chi esce.
+function devicesLabel(d) {
+  var kind = d.kind === 'pc' ? 'PC' : 'App';
+  var st = d.online ? dot(true) + ' collegato' : dot(false) + ' spento';
+  return { kind: kind, st: st };
+}
+
+function devicesPanel(dv) {
+  if (!dv || !dv.devices) return '';
+  var rows = dv.devices.map(function (d) {
+    var l = devicesLabel(d);
+    var btn = d.this ? '' : dv.waiting
+      ? '<button class="btn f" data-act="devreplace" data-arg="' + esc(d.id) + '" data-key="dev-' + esc(d.id) + '">Togli e fai entrare questo PC</button>'
+      : '<button class="btn danger f" data-act="devdel" data-arg="' + esc(d.id) + '" data-key="dev-' + esc(d.id) + '">Togli</button>';
+    return '<div class="folder"><div class="where"><b>' + esc(d.label) + (d.this ? ' · questo PC' : '') + '</b><small>' + l.kind + ' · ' + l.st + '</small></div>' + btn + '</div>';
+  }).join('');
+  return '<div class="panel"><h2>I tuoi dispositivi<small> · ' + dv.devices.length + ' di ' + (dv.limit || 4) + '</small></h2>' +
+    (dv.waiting ? '<p>' + dot(false) + ' Questo PC non è entrato nella rete di BunkerPlex: l\'account ha già ' + (dv.limit || 4) +
+      ' dispositivi. Scegli quale togliere.</p>' : '') +
+    (rows ? '<div class="lib">' + rows + '</div>' : '<p>Nessun dispositivo nella rete, per ora.</p>') +
+    '<p class="kvnote">I PC e le app (telefono, tablet, TV fuori casa) con cui raggiungi amici e tuoi PC. Ogni account ne ha al massimo ' +
+    (dv.limit || 4) + ': togline uno per far posto a un altro. Le app si tolgono da sole poco dopo che le chiudi.</p></div>';
+}
+
+// Fuori casa: cosa serve, in breve
+function awayPanel() {
+  return '<div class="panel"><h2>Fuori casa</h2>' +
+    '<p><b>Con l\'app</b> (telefono, tablet, TV in un\'altra casa): se in casa non c\'è un server BunkerPlex, l\'app propone gli amici e i tuoi PC accesi. ' +
+    'Entri con il tuo account e non serve installare altro: occupa uno dei tuoi posti tra i dispositivi finché è aperta.</p>' +
+    '<p><b>Dal browser</b>: serve Tailscale acceso sul dispositivo, con lo stesso account del computer, e l\'indirizzo Tailscale del PC (Panoramica → Indirizzi).</p></div>';
+}
+
+// Popup quando questo PC non entra nella rete perche' l'account ha gia' 4 dispositivi
+function openDevicesPopup() {
+  api('/devices').then(function (dv) {
+    var opts = (dv.devices || []).filter(function (d) { return !d.this; }).map(function (d) {
+      var l = devicesLabel(d);
+      return { value: d.id, label: d.label + ' · ' + l.kind + (d.online ? ' · collegato' : ' · spento') };
+    });
+    opts.push({ value: '', label: 'Non ora' });
+    openPicker('Hai già ' + (dv.limit || 4) + ' dispositivi nella rete di BunkerPlex: quale togli per far entrare questo PC?', opts, '', function (id) {
+      if (!id) return;
+      toast('Tolgo il dispositivo e faccio entrare questo PC…');
+      post('/devices/replace', { id: id }).then(function () { toast('Fatto: questo PC è nella rete di BunkerPlex'); render(); },
+        function (e) { toast(e.message); });
+    });
+  }, function () { /* servizio account non raggiungibile: resta la notifica */ });
+}
+
 function reachState(sh) {
   var pm = sh.portmap || {}, tn = sh.tailnet || {};
   if (!sh.on) return 'Condivisione spenta: da fuori non entra nessuno.';
@@ -2141,7 +2232,7 @@ function friendsPanel(sh, cloud) {
     // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
     '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
-    '<p>Fatti dare dall\'amico il suo indirizzo: lo legge qui in Impostazioni → Amici, sul suo BunkerPlex. ' +
+    '<p>Fatti dare dall\'amico il suo indirizzo: lo legge qui in Impostazioni → Amici e dispositivi, sul suo BunkerPlex. ' +
     'Il tuo viene trovato da solo quando la porta sul router è aperta; se non ci riesce, usate <b>Tailscale</b> su entrambi i PC e scrivete quegli indirizzi (vedi README).</p>' +
     '<input class="field f" style="margin-bottom:.6rem" id="fname" data-key="fname" autocomplete="off" maxlength="30" placeholder="Nome dell\'amico (come lo vedrai nel menu)">' +
     '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 93.45.12.7:' + sh.port + ')">' +
@@ -2252,7 +2343,10 @@ async function browsePage(id) {
 
 async function play(id, fromStart) {
   var p;
-  try { p = await api('/play/' + id); } catch (e) { toast(e.message); return; }
+  try { p = await api('/play/' + id); } catch (e) {
+    if (e.data && e.data.missing) missingBox(e.data.missing); else toast(e.message);
+    return;
+  }
   if (fromStart) p.start = 0;
   if (APP) { tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
@@ -3167,6 +3261,23 @@ function openPicker(title, options, current, onPick) {
   if (first) first.focus();
 }
 
+// Video su un disco scollegato (o spostato): quale disco collegare e dove dovrebbe stare il file
+function missingBox(m) {
+  openPicker(m.unplugged ? 'Il disco ' + m.disk + ' non è collegato' : 'File non trovato',
+    [{ value: 'ok', label: 'OK' }], 'ok', function () {});
+  var h = modal.querySelector('.sheet h3');
+  if (h) h.insertAdjacentHTML('afterend', '<div class="missing"><p>' +
+    (m.unplugged ? 'Collega il disco ' + esc(m.disk) + ' e riprova. Il file dovrebbe trovarsi in:'
+                 : 'Il disco c\'è, ma il file non è più al suo posto. Dovrebbe trovarsi in:') +
+    '</p><code>' + esc(m.where) + '</code></div>');
+}
+
+function offlineNote(x) {
+  if (!x.offline) return '';
+  return '<div class="offnote">' + IC.disk + '<div><b>' + (x.unplugged === false ? 'File non trovato' : 'Disco ' + esc(x.disk || '') + ' non collegato') +
+    '</b><span>Il file dovrebbe trovarsi in <code>' + esc(x.where || '') + '</code></span></div></div>';
+}
+
 function confirmBox(question, yesLabel, onYes) {
   openPicker(question, [{ value: 'no', label: 'Annulla' }, { value: 'yes', label: yesLabel }], 'no', function (answer) {
     if (answer === 'yes') onYes();
@@ -3759,8 +3870,19 @@ var actions = {
   },
   season: function (arg) {
     var parts = arg.split(':'), target = '#/show/' + parts[0] + '?season=' + parts[1];
-    focusMemory[target] = 'season-' + parts[1];
+    focusMemory[target] = 'seasonpick';
     if (target !== location.hash) location.replace(target);
+  },
+  // Menu a tendina delle stagioni, con quanti episodi ha ciascuna e quanti restano da vedere
+  seasons: function (arg) {
+    var parts = arg.split(':'), id = parts[0], current = +parts[1];
+    var s = cache.show;
+    if (!s || String(s.id) !== id) return;
+    openPicker('Stagioni', s.seasons.map(function (x) {
+      var left = x.episodes.filter(function (e) { return !e.watched; }).length;
+      return { value: x.season, label: x.season === 0 ? 'Speciali' : 'Stagione ' + x.season,
+        count: x.episodes.length + ' ep.' + (left === 0 ? ' · visti' : left < x.episodes.length ? ' · ' + left + ' da vedere' : '') };
+    }), current, function (n) { actions.season(id + ':' + n); });
   },
   opt: function (arg) {
     var st = modalState;
@@ -3819,6 +3941,16 @@ var actions = {
     post('/friends/' + n + '/refresh').then(function () {
       setTimeout(function () { libsLoadedAt = 0; render(); }, 3000);
     }, function (e) { toast(e.message); });
+  },
+  devdel: function (id) {
+    confirmBox('Togli questo dispositivo dalla rete di BunkerPlex? Per rientrare dovrà avere un posto libero.', 'Togli', function () {
+      send('DELETE', '/devices/' + id).then(function () { toast('Dispositivo tolto'); render(); }, function (e) { toast(e.message); });
+    });
+  },
+  devreplace: function (id) {
+    toast('Tolgo il dispositivo e faccio entrare questo PC…');
+    post('/devices/replace', { id: id }).then(function () { toast('Fatto: questo PC è nella rete di BunkerPlex'); render(); },
+      function (e) { toast(e.message); });
   },
   friendquality: function () {
     openPicker('Qualità dei video degli amici', QUALITIES.map(function (q) { return { value: q[0], label: q[1] }; }), friendQuality, function (q) {
@@ -4126,14 +4258,19 @@ function move(dir) {
 }
 
 // Scorrimento: morbido dove il dispositivo regge, immediato con le animazioni ridotte
+// Freccia tenuta premuta (telecomando): si salta dritti, senza scorrimento morbido.
+// Ogni nuova locandina farebbe ripartire l'animazione dall'inizio: sulle TV lente
+// le animazioni si accavallano e il catalogo scatta.
+var held = false;
+
 function scrollBox(box, pos) {
-  pos.behavior = smooth;
+  pos.behavior = held ? 'auto' : smooth;
   try { box.scrollTo(pos); }
   catch (e) {   // browser vecchi: niente opzioni
     if (pos.left !== undefined) box.scrollLeft = pos.left;
     if (pos.top !== undefined) { if (box === window) window.scrollTo(0, pos.top); else box.scrollTop = pos.top; }
   }
-  if (smooth === 'smooth') probeFrames();
+  if (pos.behavior === 'smooth') probeFrames();
 }
 
 function scrollToEl(el) {
@@ -4158,7 +4295,7 @@ function scrollToEl(el) {
   var grid = el.parentNode;   // prima riga di una griglia: si rivedono titolo e filtri
   if (grid && grid.id === 'grid' && grid.firstElementChild && el.offsetTop === grid.firstElementChild.offsetTop &&
       grid.getBoundingClientRect().top + window.pageYOffset < window.innerHeight * 0.5) { scrollBox(window, { top: 0 }); return; }
-  el.scrollIntoView({ behavior: smooth, block: 'center', inline: 'nearest' });
+  el.scrollIntoView({ behavior: held ? 'auto' : smooth, block: 'center', inline: 'nearest' });
 }
 
 // Misura quanto e' fluido lo scorrimento. Se il dispositivo perde troppi fotogrammi,
@@ -4235,6 +4372,7 @@ document.addEventListener('keydown', function (e) {
   if (dir) {
     if (typing && (dir === 'left' || dir === 'right') && t.value) return;
     e.preventDefault();
+    held = !!e.repeat;
     move(dir);
     return;
   }
@@ -4278,6 +4416,11 @@ document.addEventListener('keydown', function (e) {
 document.addEventListener('keyup', function (e) {
   var key = e.key;
   if (!key || key === 'Unidentified') key = KEYCODES[e.keyCode] || '';
+  if (held) {   // freccia rilasciata: l'ultima locandina si porta al suo posto con calma
+    held = false;
+    var a = document.activeElement;
+    if (kb && a && a.classList && a.classList.contains('f') && view.contains(a)) scrollToEl(a);
+  }
   if (key !== 'Enter' || !press) return;
   var p = press;
   press = null;
@@ -4292,10 +4435,23 @@ document.addEventListener('click', function (e) {
 
 document.addEventListener('mousedown', function () { setKb(false); });
 document.addEventListener('touchstart', function () { setKb(false); }, { passive: true });
+// Scorrimento: il lavoro si fa una volta per fotogramma, non a ogni evento. Mentre la
+// pagina scorre (rotella, dito) le locandine non reagiscono al passaggio del mouse:
+// ingrandimenti e ombre ridisegnati a ogni riga che passa sotto il puntatore sono la
+// prima causa degli scatti nello scorrimento veloce.
+var scrollTick = false, scrollIdle = 0;
 window.addEventListener('scroll', function () {
-  if (currentHash) scrollMemory[currentHash] = window.pageYOffset;
-  if (chunk && chunk.shown < chunk.list.length &&
-      window.pageYOffset + window.innerHeight * 2.5 > document.documentElement.scrollHeight) growGrid();
+  if (!kb && !scrollIdle) document.body.classList.add('scrolling');
+  clearTimeout(scrollIdle);
+  scrollIdle = setTimeout(function () { scrollIdle = 0; document.body.classList.remove('scrolling'); }, 140);
+  if (scrollTick) return;
+  scrollTick = true;
+  requestAnimationFrame(function () {
+    scrollTick = false;
+    if (currentHash) scrollMemory[currentHash] = window.pageYOffset;
+    if (chunk && chunk.shown < chunk.list.length &&
+        window.pageYOffset + window.innerHeight * 2.5 > document.documentElement.scrollHeight) growGrid();
+  });
 }, { passive: true });
 
 // Orologio in alto a destra (solo con l'aspetto da TV)
@@ -4570,12 +4726,16 @@ function activityState() {
     notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
   }
+  if (i.devices_full) {
+    notes.push({ key: 'devfull', href: '#/settings/friends', title: 'Troppi dispositivi nell\'account',
+      text: 'Questo PC non raggiunge amici e tuoi PC: togli un dispositivo in Impostazioni → Amici e dispositivi' });
+  }
   if (i.friend_requests) {
-    notes.push({ key: 'freq' + i.friend_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
+    notes.push({ key: 'freq' + i.friend_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici e dispositivi',
       title: i.friend_requests === 1 ? 'Qualcuno vuole essere tuo amico' : i.friend_requests + ' richieste di amicizia' });
   }
   if (i.share_requests) {
-    notes.push({ key: 'share' + i.share_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici',
+    notes.push({ key: 'share' + i.share_requests, href: '#/settings/friends', text: 'Accetta o rifiuta in Impostazioni → Amici e dispositivi',
       title: i.share_requests === 1 ? 'Un amico chiede di condividere le raccolte' : i.share_requests + ' richieste di condivisione' });
   }
   libs.forEach(function (l) {
@@ -4618,9 +4778,17 @@ function activityOpen() { return !modal.hidden && modal.classList.contains('corn
 
 // ---- Amici, accanto alla campanella: chi e' acceso adesso, e le sue raccolte a un clic.
 // Ci sono anche i tuoi altri PC e gli amici spenti (con le raccolte, ma senza video).
+var accountFriends = [];             // gli amici dell'account (anche quelli che non condividono)
+
 function friendsNowRows() {
   var on = friends.filter(function (f) { return f.online !== false; });
   var off = friends.filter(function (f) { return f.online === false; });
+  // Amici dell'account senza un PC collegato qui: ci sono, ma non condividono
+  var names = friends.map(function (f) { return String(f.name).toLowerCase(); });
+  var quiet = accountFriends.filter(function (f) {
+    return f.status === 'ok' && names.indexOf(String(f.username).toLowerCase()) < 0;
+  });
+  off = off.concat(quiet.map(function (f) { return { n: 'a' + f.id, name: f.username, libraries: [], quiet: true }; }));
   function rows(list, offline) {
     return list.map(function (fr) {
       var who = (fr.self ? 'Tuo PC · ' : '') + fr.name;
@@ -4631,16 +4799,16 @@ function friendsNowRows() {
           avatar(l.name) + '<span class="acttxt"><b>' + esc(l.name) + '</b><small>' + esc(n || 'raccolta') + '</small></span>' + CHEVRON + '</button>';
       }).join('');
       return '<div class="frnow' + (offline ? ' off' : '') + '"><p class="frwho"><span class="odot' + (offline ? ' off' : '') + '" aria-hidden="true"></span>' +
-        esc(who) + '<small>' + (offline ? 'spento o non raggiungibile' : 'online') + '</small></p>' +
-        (libsHtml || '<p class="actempty">Nessuna raccolta condivisa.</p>') + '</div>';
+        esc(who) + '<small>' + (fr.quiet ? 'non condivide' : offline ? 'spento o non raggiungibile' : 'online') + '</small></p>' +
+        (libsHtml || (fr.quiet ? '' : '<p class="actempty">Nessuna raccolta condivisa.</p>')) + '</div>';
     }).join('');
   }
   return '<div class="sheet actsheet" role="dialog" aria-label="Amici"><h3>Amici</h3>' +
     (on.length ? '<div class="actgroup"><h4>Online</h4>' + rows(on, false) + '</div>' : '') +
     (off.length ? '<div class="actgroup"><h4>Offline</h4>' + rows(off, true) + '</div>' : '') +
-    (friends.length ? '' : '<p class="actempty">Nessun amico collegato. Aggiungine uno per vedere le sue raccolte.</p>') +
+    (on.length || off.length ? '' : '<p class="actempty">Nessun amico, per ora. Aggiungine uno per vedere le sue raccolte.</p>') +
     '<div class="actgroup"><button class="actrow f" data-act="actgo" data-arg="#/settings/friends" data-key="frnow-add">' +
-    '<span class="acttxt"><b>Aggiungi un amico</b><small>Con il nome del suo account, in Impostazioni → Amici</small></span>' + CHEVRON + '</button></div></div>';
+    '<span class="acttxt"><b>Aggiungi un amico</b><small>Con il nome del suo account, in Impostazioni → Amici e dispositivi</small></span>' + CHEVRON + '</button></div></div>';
 }
 
 function renderFriendsButton(btn) {
@@ -4665,7 +4833,10 @@ function openFriendsNow() {
   modal.hidden = false;
   var first = modal.querySelector('.f');
   if (first) first.focus();
-  loadLibs(true).then(renderActivity, function () {});    // lo stato degli amici, fresco
+  // Lo stato degli amici, fresco; e quelli dell'account che non condividono
+  Promise.all([loadLibs(true), auth && auth.cloud ? api('/account-friends').then(function (af) {
+    accountFriends = (af && af.friends) || [];
+  }, function () {}) : null]).then(renderActivity, function () {});
 }
 
 // Appena aggiornato: un avviso una volta per dispositivo (poi resta nella campanella)
@@ -4758,6 +4929,7 @@ function pollActivity() {
   api('/info').then(function (i) {
     var wasScanning = act.info && act.info.scanning;
     act.info = i;
+    if (i.devices_full && !act.devAsked && modal.hidden) { act.devAsked = true; openDevicesPopup(); }
     if (wasScanning && !i.scanning) libsLoadedAt = 0;      // finita la lettura: raccolte e menu da rileggere
     announceUpdate(i.updated);
     var want = !i.login && (i.update || (act.upd && act.upd.phase)) && Date.now() - act.lastUpd > 15000;

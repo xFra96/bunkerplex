@@ -270,24 +270,72 @@ html.tv .art .more { display: none; }
 .letter[disabled] { color: var(--ink3); background: none; cursor: default; }
 .letter:focus { background: var(--ink); color: var(--bg); }
 
-/* ---------- Episodi ---------- */
-.seasons { display: flex; flex-wrap: wrap; padding: 0 var(--pad); margin-top: 1.4rem; }
-.seasonbar { padding: .8rem var(--pad) 0; }
-.seasonbar .btn svg { width: 1.1em; height: 1.1em; vertical-align: -.15em; }
-.eps { padding: .6rem var(--pad) 0; max-width: 78rem; }
-.eprow { display: flex; align-items: stretch; margin-bottom: .7rem; }
-.ep { flex: 1; min-width: 0; display: flex; align-items: center; text-align: left; padding: .7rem; border-radius: var(--r); background: var(--surface); }
-.ep .art { width: 15rem; flex: none; padding-top: 0; height: 8.44rem; margin-right: 1.5rem; }
-.ep .body { min-width: 0; }
-.ep .num { color: var(--ink2); font-weight: 600; font-size: .9rem; }
-.ep h3 { font-size: 1.2rem; margin: .2rem 0 .4rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ep p { color: var(--ink2); font-size: .95rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.ep:hover { background: var(--surface2); }
-.ep:focus { background: var(--ink); color: var(--bg); }
-.ep:focus p, .ep:focus .num { color: #3a4a40; }
-.seenbtn { width: 4.2rem; flex: none; margin-left: .6rem; border-radius: var(--r); background: var(--surface); color: var(--ink3); font-size: 1.5rem; display: flex; align-items: center; justify-content: center; }
-.seenbtn.on { color: var(--ok); }
-.seenbtn:focus { background: var(--ink); color: var(--bg); }
+/* ---------- Episodi (come su Netflix) ---------- */
+/* Intestazione: «Episodi», il menu della stagione e quanti ne restano; sotto, una riga per
+   episodio con numero grande, miniatura, titolo e durata, trama. Righe divise da un filo;
+   l'episodio da vedere adesso ha il fondo un po' piu' chiaro. */
+.eplist { padding: 1.6rem var(--pad) 0; max-width: 84rem; }
+.ephead { display: flex; flex-wrap: wrap; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid var(--surface2); }
+.ephead h2 { font-size: 1.6rem; font-weight: 800; letter-spacing: -.015em; margin-right: 1.4rem; }
+.seasonpick {
+  display: inline-flex; align-items: center; padding: .55rem .9rem .55rem 1.1rem; margin-right: 1.2rem;
+  border-radius: var(--r); border: 1px solid var(--ink3); background: var(--surface); font-size: 1.05rem; font-weight: 700;
+}
+.seasonpick .ic { width: 1.2em; height: 1.2em; margin-left: .8rem; }
+.seasonpick:hover { background: var(--surface2); border-color: var(--ink2); }
+.seasonpick:focus { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.epcount { color: var(--ink2); font-weight: 500; }
+.ephead .btn { margin: 0 0 0 auto; }
+.btn.small { padding: .5rem 1rem; font-size: .92rem; }
+.eps { padding: 0; }
+.eprow { display: flex; align-items: center; border-bottom: 1px solid var(--surface2); border-radius: var(--r); }
+.eprow.cur { background: var(--surface2); border-bottom-color: transparent; }
+.eprow:hover { background: var(--surface); }
+.eprow.cur:hover { background: #1d2a21; }
+.ep {
+  flex: 1; min-width: 0; text-align: left; padding: 1.4rem 0 1.4rem 0; border-radius: var(--r);
+  display: grid; grid-template-columns: 4.6rem 14rem 1fr; grid-template-rows: auto 1fr;
+  grid-template-areas: "num art head" "num art desc"; align-items: start;
+}
+.ep .num { grid-area: num; align-self: center; text-align: center; color: var(--ink2); font-size: 1.8rem; font-weight: 400; font-variant-numeric: tabular-nums; }
+.ep .art { grid-area: art; padding-top: 56.25%; margin-right: 1.4rem; }
+.ep .playico { width: 2.6rem; height: 2.6rem; margin: -1.3rem 0 0 -1.3rem; font-size: 1.1rem; border: 2px solid var(--ink); }
+.ep .head { grid-area: head; display: flex; align-items: baseline; min-width: 0; padding-top: .2rem; }
+.ep h3 { flex: 1; min-width: 0; font-size: 1.12rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ep h3 .n { display: none; }
+.ep .dur { flex: none; margin-left: 1rem; color: var(--ink2); font-size: .95rem; font-weight: 500; }
+.ep .dur.left { color: var(--accent-text); }
+.ep p { grid-area: desc; margin-top: .45rem; color: var(--ink2); font-size: .95rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.ep:hover .playico { opacity: 1; }
+/* Con frecce e telecomando: la miniatura prende il bordo chiaro, come le locandine */
+.ep:focus .art { box-shadow: 0 0 0 .22rem var(--ink); }
+.ep:focus .playico { opacity: 1; }
+.ep:focus .num, .ep:focus h3 { color: var(--ink); }
+.eprow:focus-within { background: var(--surface2); }
+.seenbtn {
+  width: 2.6rem; height: 2.6rem; flex: none; margin: 0 1rem 0 1.4rem; border-radius: 50%;
+  border: 2px solid var(--ink3); color: var(--ink3); font-size: 1.2rem; display: flex; align-items: center; justify-content: center;
+}
+.seenbtn:hover { border-color: var(--ink); color: var(--ink); }
+.seenbtn.on { border-color: var(--ok); color: var(--ok); }
+.seenbtn:focus { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.ep .dur.gone { color: var(--warn); }
+.ep .dur .ic { margin-right: .35rem; }
+.eprow.off .art img { opacity: .35; }
+
+/* Mentre la pagina scorre con rotella o dito, niente effetti al passaggio del mouse (vedi app.js) */
+body.scrolling #view { pointer-events: none; }
+
+/* ---------- Video su un disco scollegato ---------- */
+.card.off .art img { opacity: .35; }
+.art .q.offb { display: flex; align-items: center; color: var(--warn); }
+.art .q.offb .ic { margin-right: .3rem; }
+.offnote { display: flex; align-items: flex-start; margin-top: 1.1rem; padding: .8rem 1rem; max-width: 46rem; border-radius: var(--r); background: #e0a0301f; color: var(--ink2); line-height: 1.45; }
+.offnote > .ic { width: 1.5rem; height: 1.5rem; margin: .1rem .8rem 0 0; color: var(--warn); }
+.offnote b { display: block; color: var(--warn); }
+.offnote code, .missing code { color: var(--ink); font-family: Consolas, "Cascadia Mono", Menlo, monospace; font-size: .92em; word-break: break-all; }
+.missing { padding: 0 1.7rem 1rem; color: var(--ink2); line-height: 1.5; }
+.missing code { display: block; margin-top: .5rem; padding: .6rem .8rem; border-radius: var(--r); background: var(--bg); }
 
 /* ---------- Cerca / Impostazioni / moduli ---------- */
 .field { display: block; width: 100%; padding: .85rem 1.2rem; border-radius: var(--r); background: var(--surface); border: 2px solid var(--surface2); font-size: 1.15rem; outline: none; }
@@ -527,10 +575,16 @@ body:not(.kb) .filter:focus span { color: var(--ink2); }
 body:not(.kb) .filter:focus b { color: inherit; }
 body:not(.kb) .filter.active:focus b { color: var(--accent-text); }
 body:not(.kb) .chip:focus { background: var(--surface2); color: var(--ink); }
-body:not(.kb) .ep:focus { background: var(--surface); color: inherit; }
-body:not(.kb) .ep:focus p, body:not(.kb) .ep:focus .num { color: var(--ink2); }
-body:not(.kb) .seenbtn:focus { background: var(--surface); color: var(--ink3); }
-body:not(.kb) .seenbtn.on:focus { color: var(--ok); }
+body:not(.kb) .ep:focus .art { box-shadow: none; }
+body:not(.kb) .ep:focus .num { color: var(--ink2); }
+body:not(.kb) .ep:focus h3 { color: inherit; }
+body:not(.kb) .ep:focus:not(:hover) .playico { opacity: 0; }
+body:not(.kb) .eprow:focus-within { background: none; }
+body:not(.kb) .eprow.cur:focus-within { background: var(--surface2); }
+body:not(.kb) .eprow:hover { background: var(--surface); }
+body:not(.kb) .seenbtn:focus { background: none; border-color: var(--ink3); color: var(--ink3); }
+body:not(.kb) .seenbtn.on:focus { border-color: var(--ok); color: var(--ok); }
+body:not(.kb) .seasonpick:focus { background: var(--surface); color: inherit; border-color: var(--ink3); }
 body:not(.kb) .railitem:focus { background: none; color: var(--ink2); }
 body:not(.kb) .railitem.on:focus { color: var(--ink); background: var(--surface2); }
 body:not(.kb) .railitem:focus .avatar { background: var(--surface2); }
@@ -571,7 +625,20 @@ body:not(.kb) .letter:focus { background: var(--surface2); color: inherit; }
   .libhead > .avatar { width: 2.9rem; height: 2.9rem; margin-right: .9rem; font-size: 1rem; }
   .libmeta { font-size: .9rem; }
   .grid { grid-gap: 1.2rem .8rem; gap: 1.2rem .8rem; }
-  .ep .art { width: 8rem; height: 4.5rem; margin-right: .8rem; }
+  /* Episodi sul telefono, come nell'app: miniatura e titolo affiancati, trama sotto */
+  .ep { grid-template-columns: 9.5rem 1fr; grid-template-areas: "art head" "desc desc"; padding: 1rem 0 1rem .2rem; }
+  .ep .num { display: none; }
+  .ep .art { margin-right: .9rem; }
+  .ep .head { flex-direction: column; align-self: center; padding: 0; }
+  .ep h3 { flex: none; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 1rem; }
+  .ep h3 .n { display: inline; }
+  .ep .dur { margin: .25rem 0 0; font-size: .88rem; }
+  .ep p { margin-top: .7rem; font-size: .9rem; }
+  .ep .playico { opacity: 1; }
+  .eprow { align-items: flex-start; }
+  .seenbtn { width: 2.3rem; height: 2.3rem; margin: 2.2rem .2rem 0 .6rem; font-size: 1rem; }
+  .ephead h2 { font-size: 1.3rem; }
+  .ephead .btn { margin: .8rem 0 0; }
   .lib .btn { margin-left: 0; margin-right: .5rem; }
   .panel { padding: 1.2rem; }
   .inline { flex-wrap: wrap; }
@@ -626,7 +693,7 @@ body.kb .person:focus .face { box-shadow: 0 0 0 .22rem var(--ink); }
 @keyframes grow { from { transform: scaleX(0); } }
 
 /* Pagina nuova: il contenuto sale, le file e le locandine arrivano una dopo l'altra */
-#view.enter .page, #view.enter .hero .txt, #view.enter .hero .cover, #view.enter .eps, #view.enter .people { animation: rise .42s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .page, #view.enter .hero .txt, #view.enter .hero .cover, #view.enter .eplist, #view.enter .people { animation: rise .42s cubic-bezier(.2, .8, .2, 1) backwards; }
 #view.enter .hero .cover { animation-delay: .08s; }
 #view.enter .hero .bg { animation: fade .5s linear backwards; }
 #view.enter .rows .section { animation: rise .45s cubic-bezier(.2, .8, .2, 1) backwards; }

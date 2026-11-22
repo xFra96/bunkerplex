@@ -61,6 +61,8 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // Tailscale dentro l'app, per vedere gli amici da fuori casa: la compila tsnet/build.sh
+    implementation(files("libs/bpnet.aar"))
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     // Decodificatore audio interno (AC3, E-AC3, DTS, TrueHD...): la TV legge da sola
