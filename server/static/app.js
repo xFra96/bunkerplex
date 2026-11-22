@@ -54,6 +54,7 @@ var IC = {
   next: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l10.5-7.5zM17 4.5h2.5v15H17z"/></svg>',
   vol: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/></svg>',
   mute: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  shuffle: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7h3.2c2 0 3.4 1 4.6 2.8l1.4 2.4c1.2 1.8 2.6 2.8 4.6 2.8h3.2M3.5 17h3.2c1.4 0 2.5-.5 3.4-1.4M20.5 7h-3.2c-1.4 0-2.5.5-3.4 1.4M18 4.5 20.5 7 18 9.5M18 12.5l2.5 2.5-2.5 2.5"/></svg>',
   disk: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M7 14.5h4"/></svg>',
   folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>',
   bell: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5zM10 20.5h4"/></svg>'
@@ -1077,6 +1078,17 @@ async function item(id) {
 
 // ---------------------------------------------------------------- Scheda serie
 
+// Episodi tra cui pescare quello a caso: tutte le stagioni tranne gli speciali
+// (se la serie ha solo quelli, valgono loro) e niente episodi su dischi scollegati
+function shuffleEps(s) {
+  var all = [];
+  s.seasons.forEach(function (x) {
+    x.episodes.forEach(function (e) { if (!e.offline) all.push({ e: e, special: x.season === 0 }); });
+  });
+  var regular = all.filter(function (o) { return !o.special; });
+  return (regular.length ? regular : all).map(function (o) { return o.e; });
+}
+
 async function show(id) {
   var s = await api('/shows/' + id);
   cache.navLib = s.library_id;
@@ -1142,6 +1154,8 @@ async function show(id) {
       '<div class="actions">' +
         (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play">' + IC.play +
           (up.position > 20 ? 'Riprendi' : 'Riproduci') + ' S' + up.season + ' · E' + up.episode + '</button>' : '') +
+        (shuffleEps(s).length > 1 ? '<button class="btn f" data-act="randomep" data-arg="' + s.id + '" data-key="randomep">' + IC.shuffle +
+          'Episodio a caso</button>' : '') +
         (s.friend ? '' : favButton(s)) +
         '<button class="btn f" data-act="showwatched" data-arg="' + s.id + ':' + (s.watched ? 0 : 1) + '" data-key="allseen">' +
           (s.watched ? 'Segna tutta come da vedere' : 'Segna tutta come vista') + '</button>' +
@@ -3860,6 +3874,16 @@ var actions = {
 
   play: function (arg) { play(arg, false); },
   playstart: function (arg) { play(arg, true); },
+  // Episodio a caso, dall'inizio; se possibile diverso da quello da vedere adesso
+  randomep: function (id) {
+    var s = cache.show;
+    if (!s || String(s.id) !== String(id)) return;
+    var pool = shuffleEps(s), up = s.up_next;
+    var others = pool.filter(function (e) { return !up || e.id !== up.id; });
+    if (others.length) pool = others;
+    if (!pool.length) return;
+    play(pool[Math.floor(Math.random() * pool.length)].id, true);
+  },
   watched: function (arg) {
     var parts = arg.split(':');
     post('/watched/' + parts[0], { watched: parts[1] === '1' }).then(render, function (e) { toast(e.message); });
