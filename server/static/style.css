@@ -409,7 +409,10 @@ body.scrolling #view { pointer-events: none; }
 
 .ptitle { min-width: 0; margin-left: .7rem; padding-top: .25rem; }
 .ptitle b { display: block; font-size: 1.5rem; font-weight: 700; letter-spacing: -.015em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ptitle span { display: block; margin-top: .15rem; color: var(--p-ink2); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ptitle span { display: flex; align-items: center; gap: .55rem; margin-top: .15rem; color: var(--p-ink2); font-size: 1rem; white-space: nowrap; }
+.ptitle span em { min-width: 0; font-style: normal; overflow: hidden; text-overflow: ellipsis; }
+/* Qualita' accanto all'anno: come il badge delle copertine, ma in linea col testo */
+.ptitle .pq { flex: none; padding: .1em .45em; border: 1px solid currentColor; border-radius: .3em; font-style: normal; font-size: .78em; font-weight: 700; letter-spacing: .03em; line-height: 1.2; opacity: .9; }
 .pends { margin-left: auto; padding: .7rem 0 0 1.5rem; color: var(--p-ink2); font-size: .95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Bottoni: icone senza fondo, il fondo compare sotto il puntatore */

@@ -2404,7 +2404,9 @@ async function playRoute(id) {
       '<div class="pspin" aria-hidden="true"></div><div class="note" role="status"></div>' +
       '<div class="skipfx" aria-hidden="true"></div><div class="pflash" aria-hidden="true"></div>' +
       '<div class="top"><button class="pbtn" data-p="exit" data-tip="Indietro (Esc)" aria-label="Indietro">' + IC.back + '</button>' +
-        '<div class="ptitle"><b>' + esc(p.title) + '</b>' + (p.subtitle ? '<span>' + esc(p.subtitle) + '</span>' : '') + '</div>' +
+        '<div class="ptitle"><b>' + esc(p.title) + '</b>' + (p.subtitle || p.quality ? '<span>' +
+          (p.subtitle ? '<em>' + esc(p.subtitle) + '</em>' : '') + (p.quality ? '<i class="pq">' + esc(p.quality) + '</i>' : '') +
+          '</span>' : '') + '</div>' +
         '<span class="pends"></span></div>' +
       '<div class="pmid">' +
         '<button class="pbtn" data-p="back">' + skipIcon('rew') + '</button>' +
