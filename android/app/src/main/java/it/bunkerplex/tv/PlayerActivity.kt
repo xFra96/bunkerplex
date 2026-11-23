@@ -46,8 +46,6 @@ import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
@@ -102,15 +100,6 @@ class PlayerActivity : AppCompatActivity() {
     // TrueHD diventano AC3 5.1 (alla soundbar arrivano surround e bassi, non stereo);
     // "ac3" = l'audio originale questa TV non lo legge; "aac" = nemmeno l'AC3.
     private var audioOut = "tv"
-
-    // «Audio pulito»: per le 5.1 col doppiaggio tutto nel centrale e voci estranee nei
-    // laterali (es. Dragon Ball Z) si sente solo il canale centrale. Le riconosce il PC
-    // (/api/audiocheck); la scelta vale per tutta la serie.
-    private var centerOnly = CenterOnlyProcessor()
-    private var cleanAudio = false
-    private var cleanTracks = listOf<JSONObject>()   // le tracce 5.1 di questo tipo nel video
-    private var cleanAsked = false
-    private var pendingAudio = -1                    // traccia audio (0:a:N) da scegliere appena si puo'
 
     // Controllo anti-blocco
     private var lastPos = -1L
@@ -398,22 +387,10 @@ class PlayerActivity : AppCompatActivity() {
         // per l'audio che la TV non conosce subentra quello interno all'app.
         // "Audio compatibile": l'audio lo decodifica sempre l'app, per le TV la cui
         // uscita audio si inceppa dopo una pausa o un salto.
-        // Con l'audio pulito l'audio lo decodifica l'app: solo cosi' si puo' tenere il
-        // centrale (all'impianto arriva gia' decodificato, come con l'audio compatibile).
-        centerOnly = CenterOnlyProcessor().also { it.enabled = cleanAudio }
-        val processor = centerOnly
-        val renderers = object : DefaultRenderersFactory(this) {
-            override fun buildAudioSink(
-                context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean
-            ): AudioSink = DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(enableFloatOutput)
-                .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                .setAudioProcessors(arrayOf(processor))
-                .build()
-        }
+        val renderers = DefaultRenderersFactory(this)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(
-                if (audioCompat || cleanAudio) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                if (audioCompat) DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
                 else DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
             )
         // Partenza e ripresa dopo un salto appena c'e' un secondo di video pronto,
@@ -637,10 +614,6 @@ class PlayerActivity : AppCompatActivity() {
             marksTries = 0
             hideCard()
             if (d.optBoolean("marks_pending")) fetchMarks(d.optInt("id"))
-            cleanTracks = listOf()
-            cleanAsked = false
-            pendingAudio = -1
-            checkCleanAudio(d)
         }
         data = d
         readMarks(d)
@@ -795,7 +768,6 @@ class PlayerActivity : AppCompatActivity() {
             applyPendingSub()
             applyAutoSubs(tracks)
             restoreAudio(tracks)
-            applyPendingAudio(tracks)
             var hasVideo = false
             var videoOk = false
             var hasAudio = false
@@ -1610,83 +1582,6 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    // ---- Audio pulito (vedi CenterOnlyProcessor)
-
-    private fun cleanKey(): String =
-        seriesKey()?.let { "clean_show:" + data.optString("title") } ?: ("clean_item:" + data.optInt("id"))
-
-    /** Chiede al PC se il video ha una 5.1 col doppiaggio tutto nel centrale. */
-    private fun checkCleanAudio(d: JSONObject) {
-        if (remote) return
-        val id = d.optInt("id")
-        thread {
-            val found = try {
-                val list = JSONObject(Net.get(api("/api/audiocheck/$id"))).optJSONArray("center_only")
-                if (list == null) listOf() else (0 until list.length()).map { list.getJSONObject(it) }
-            } catch (_: Exception) {
-                listOf()
-            }
-            runOnUiThread {
-                if (isFinishing || data.optInt("id") != id) return@runOnUiThread
-                cleanTracks = found
-                val choice = prefs.getString(cleanKey(), null)
-                val want = found.isNotEmpty() && choice == "yes"
-                if (want != cleanAudio) {           // un altro video: l'audio pulito si accende o si spegne
-                    cleanAudio = want
-                    if (want) {                     // il lettore nuovo riparte dalla traccia predefinita
-                        val index = found.first().optInt("index")
-                        if (transcoding) serverAudio = index else pendingAudio = index
-                    }
-                    rebuildPlayer()
-                }
-                if (found.isNotEmpty() && choice == null) askCleanAudio()
-            }
-        }
-    }
-
-    private fun askCleanAudio() {
-        if (cleanAsked) return
-        cleanAsked = true
-        AlertDialog.Builder(this).setTitle("Audio pulito")
-            .setMessage(
-                "Nella traccia 5.1 di questo video il doppiaggio è tutto nel canale centrale: " +
-                    "negli altri canali a volte si sentono voci in un'altra lingua.\n\n" +
-                    "Vuoi provare l'audio pulito? Si sente solo il canale centrale, quello con le voci. " +
-                    "La scelta vale per tutta la serie e si cambia da Opzioni."
-            )
-            .setPositiveButton("Sì, provalo") { _, _ -> setCleanAudio(true) }
-            .setNegativeButton("No") { _, _ -> prefs.edit().putString(cleanKey(), "no").apply() }
-            .show()
-    }
-
-    /** Accende o spegne l'audio pulito; acceso, passa anche alla traccia 5.1 giusta. */
-    private fun setCleanAudio(on: Boolean) {
-        prefs.edit().putString(cleanKey(), if (on) "yes" else "no").apply()
-        val track = cleanTracks.firstOrNull()
-        if (on && track != null) {
-            val index = track.optInt("index")
-            rememberAudio(track.optString("title"), track.optString("lang"), track.optInt("channels"))
-            if (transcoding) serverAudio = index else pendingAudio = index
-        }
-        cleanAudio = on
-        showOsd(if (on) "Audio pulito: solo il canale centrale" else "Audio pulito disattivato", 3000)
-        rebuildPlayer()
-    }
-
-    /** Sceglie la traccia audio numero 'pendingAudio' (nell'ordine del file). */
-    private fun applyPendingAudio(tracks: Tracks) {
-        if (pendingAudio < 0 || transcoding) return
-        val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-        val g = groups.getOrNull(pendingAudio) ?: return
-        pendingAudio = -1
-        if (g.isSelected || !g.isTrackSupported(0)) return
-        val p = player ?: return
-        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
-            .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, 0))
-            .build()
-    }
-
     private fun applyPendingSub() {
         val want = pendingSubLabel ?: return
         val p = player ?: return
@@ -1734,12 +1629,6 @@ class PlayerActivity : AppCompatActivity() {
                     }
                 })
             }
-        }
-
-        if (cleanTracks.isNotEmpty()) {
-            items.add("Audio pulito (solo canale centrale):  " + (if (cleanAudio) "Sì" else "No") to {
-                setCleanAudio(!cleanAudio)
-            })
         }
 
         val texts = trackList(C.TRACK_TYPE_TEXT)
