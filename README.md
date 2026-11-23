@@ -167,6 +167,14 @@ Nel film: Opzioni → **Cerca sottotitoli su internet** → scegli la lingua e p
 
 Android TV, Google TV, Chromecast con Google TV, Fire TV Stick (Fire OS). Su Chromecast e Fire TV attiva prima le opzioni sviluppatore e consenti a «Downloader» di installare app sconosciute. Non adatti: Chromecast vecchi senza telecomando e Fire TV con Vega OS.
 
+### Guarda su: TV senza l'app (Samsung, LG, Chromecast)
+
+Sulle TV dove l'app non si installa (Samsung con Tizen, LG con webOS...) e sui Chromecast, il film lo apre il lettore della TV: nella scheda o nel player premi **Guarda su…** e scegli la TV. La TV deve essere accesa e nella rete di casa; BunkerPlex la trova da solo (le TV con DLNA e i Chromecast) e se la ricorda anche quando è spenta. Mentre trasmette, in basso c'è una barra-telecomando (pausa, ±30 secondi, salto, stop); la ripresa si salva come col player e a fine episodio parte quello dopo.
+
+Le TV con l'app BunkerPlex aperta compaiono nello stesso elenco: lì il titolo parte nel player dell'app, con tutto (24 Hz, tracce audio, sottotitoli), e dal telefono lo comandi con la stessa barra (che segue anche il passaggio all'episodio dopo).
+
+Alle TV DLNA va il file com'è (MKV, 4K, HDR compresi): solo l'audio DTS e TrueHD, che le TV di oggi non leggono, viene convertito in AC3. Al Chromecast vanno così solo gli MP4 in H.264; il resto lo converte il PC. Per ora: solo i tuoi titoli (non quelli degli amici) e i sottotitoli dentro il file (non quelli a parte).
+
 ## Amici: condividere le raccolte via Internet
 
 Due BunkerPlex in case diverse possono mostrarsi a vicenda le raccolte. **Si guarda soltanto**: nessuno tocca impostazioni, file o «visto» dell'altro. Tutto il resto continua a funzionare offline.

@@ -1025,3 +1025,33 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .tvlog .ok { color: var(--ok); } .tvlog .wait { color: var(--warn); } .tvlog .err { color: var(--warn); font-weight: 600; }
 .tvlog .spin { animation: tvblink 1.2s ease-in-out infinite; }
 @keyframes tvblink { 50% { opacity: .3; } }
+
+/* «Guarda su»: barra-telecomando in basso mentre una TV trasmette */
+#castbar {
+  --p-ink: var(--ink); --p-fill: var(--accent-text);
+  position: fixed; z-index: 45; left: calc(var(--rail) + 1rem); right: 1rem; bottom: 1rem;
+  max-width: 56rem; margin: 0 auto;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "info ctl" "line line";
+  align-items: center; gap: .35rem 1rem; padding: .7rem 1rem .6rem;
+  border-radius: .8rem; background: var(--surface2); box-shadow: 0 .6rem 2.2rem #000a; border: 1px solid #ffffff14;
+}
+#castbar[hidden] { display: none; }
+body.casting .rows { padding-bottom: calc(46vh + 7rem); }
+#castbar .cinfo { grid-area: info; display: flex; align-items: center; gap: .8rem; min-width: 0; }
+#castbar .cinfo img { flex: none; width: 2.6rem; height: 3.9rem; object-fit: cover; border-radius: .3rem; }
+#castbar .cicon { flex: none; font-size: 1.8rem; color: var(--accent-text); }
+#castbar .ctxt { min-width: 0; }
+#castbar .ctxt b { display: block; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#castbar .ctxt span { display: block; color: var(--ink2); font-size: .88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#castbar .cctl { grid-area: ctl; display: flex; align-items: center; gap: .15rem; }
+#castbar .pbtn { width: 2.6rem; height: 2.6rem; font-size: 1.3rem; }
+#castbar .pbtn.main { width: 2.9rem; height: 2.9rem; margin: 0 .2rem; font-size: 1.15rem; }
+#castbar .cline { grid-area: line; display: flex; align-items: center; gap: .8rem; }
+#castbar .cseek { flex: 1; min-width: 0; accent-color: var(--accent-text); }
+#castbar .ctime { flex: none; color: var(--ink2); font-size: .85rem; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  #castbar { left: .5rem; right: .5rem; bottom: 4.7rem; padding: .55rem .7rem .45rem; gap: .2rem .5rem; }
+  #castbar .cinfo img { width: 2.1rem; height: 3.1rem; }
+  #castbar .pbtn { width: 2.3rem; height: 2.3rem; }
+  #castbar .cctl .pbtn:not(.main):not([data-cast="stop"]) { display: none; }
+}
