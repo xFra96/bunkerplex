@@ -251,8 +251,9 @@ def current_commit():
     return str(_state().get("commit") or "")
 
 
-# Numero di versione del programma: il tag vAAAA.MM.GG(.N) che il giro su GitHub
-# mette su ogni commit di main (lo stesso nome di versione dell'APK). Si cerca
+# Numero di versione del programma: il tag v1.2 (v1.2.3) che il giro su GitHub
+# mette su ogni commit di main; fino a novembre 2026 era la data, vAAAA.MM.GG(.N).
+# L'app ha numeri suoi (tag app-v1.2), qui non contano. Si cerca
 # nello zip installato, poi nei tag della copia di sviluppo, poi su GitHub; se il
 # tag non c'e' ancora (il giro di GitHub dura qualche minuto) si riprova dopo.
 _release = {"commit": "", "version": "", "tried": 0.0}
@@ -263,24 +264,33 @@ def _local_tag(sha):
     g = PROGRAM / ".git"
     found = []
     try:
-        for f in (g / "refs" / "tags").glob("v2*"):
-            if f.read_text("ascii").strip() == sha:
+        for f in (g / "refs" / "tags").glob("v*"):
+            if _is_release(f.name) and f.read_text("ascii").strip() == sha:
                 found.append(f.name)
     except OSError:
         pass
     try:
         for line in (g / "packed-refs").read_text("ascii").splitlines():
             parts = line.split()
-            if len(parts) == 2 and parts[0] == sha and parts[1].startswith("refs/tags/v2"):
+            if len(parts) == 2 and parts[0] == sha and parts[1].startswith("refs/tags/") \
+                    and _is_release(parts[1][10:]):
                 found.append(parts[1][10:])
     except OSError:
         pass
     return _newest(found)
 
 
+def _is_release(tag):
+    parts = tag[1:].split(".")
+    return tag.startswith("v") and len(parts) >= 2 and all(p.isdigit() for p in parts)
+
+
 def _newest(tags):
+    # Le versioni a numero (1.2) vengono dopo quelle a data (2026.11.23),
+    # anche se come numero sono piu' piccole
     def key(t):
-        return [int(x) if x.isdigit() else 0 for x in t[1:].split(".")]
+        nums = [int(x) if x.isdigit() else 0 for x in t[1:].split(".")]
+        return (nums[0] < 1000, nums)
     return max(tags, key=key) if tags else ""
 
 
@@ -292,7 +302,7 @@ def _remote_tag(sha):
     for page in (1, 2, 3):
         data = json.loads(_api(cfg, f"tags?per_page=100&page={page}", tok, timeout=20))
         found = [t.get("name", "") for t in data
-                 if (t.get("commit") or {}).get("sha") == sha and str(t.get("name", "")).startswith("v2")]
+                 if (t.get("commit") or {}).get("sha") == sha and _is_release(str(t.get("name", "")))]
         if found:
             return _newest(found)
         if len(data) < 100:
@@ -312,7 +322,7 @@ def _resolve_release(sha):
 
 
 def release():
-    """Il numero di versione di questo server (es. 2026.11.23.2), oppure "" se
+    """Il numero di versione di questo server (es. 1.2), oppure "" se
     non e' ancora noto. Non aspetta mai la rete: la ricerca va in sottofondo."""
     sha = current_commit()
     if not sha:

@@ -1,13 +1,15 @@
 # A ogni push su main pubblica una versione nuova di BunkerPlex:
-#   - la release vAAAA.MM.GG (.2, .3... se nello stesso giorno ce n'e' piu' d'una),
-#     che resta per sempre: lo storico di tutti gli aggiornamenti, con le novita'
-#     divise per parte (TV, server, account...) e gli allegati di quella versione;
+#   - la release v1.0, v1.1, v1.1.1, v2.0... (numero del server, scelto da
+#     .github/versione.py in base a quanto e' cambiato), che resta per sempre:
+#     lo storico di tutti gli aggiornamenti, con le novita' divise per parte (TV, server, account...) e gli allegati di quella versione;
 #   - la release "app-tv", ricreata sull'ultima versione: da li' i server BunkerPlex
 #     prendono gli aggiornamenti e da li' si scarica la prima volta (indirizzi fissi).
 # Allegati di entrambe:
 #   - BunkerPlex.zip: il programma di quel commit, gia' con l'APK e con
 #     strumenti/versione.json (cosi' la copia scaricata sa di essere aggiornata);
-#   - BunkerPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/.
+#   - BunkerPlex.apk: l'app per la TV, ricompilata solo se e' cambiato android/
+#     (tranne android/tv, l'app nativa che ha un giro suo); ha i suoi numeri,
+#     tag app-v1.0, app-v1.1...: salgono solo quando viene ricompilata.
 #
 # Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/bunkerplex.jks
 # in base64 (vedi README, «App per la TV compilata da GitHub»). Deve essere la stessa
@@ -48,7 +50,7 @@ jobs:
         run: |
           build=1
           if git rev-parse -q --verify "refs/tags/apk-build^{commit}" > /dev/null; then
-            git diff --quiet apk-build HEAD -- android && build=0
+            git diff --quiet apk-build HEAD -- android ':(exclude)android/tv' && build=0
           fi
           [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && build=1
           # Nella release non c'e' ancora l'APK: si compila comunque
@@ -56,23 +58,23 @@ jobs:
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Ricompilo l'APK: $build"
 
-      # Numero di versione: la data in Italia, piu' un contatore se serve.
-      # Un nuovo giro sullo stesso commit (Run workflow) riusa il suo numero.
-      # Calcolato prima della compilazione: e' anche il nome di versione dell'APK,
-      # quello che la TV mostra quando propone l'aggiornamento.
+      # Numeri di versione (1.0, 1.1, 1.1.1, 2.0...), uno per il server e uno
+      # per l'app: salgono in base a quanto e' cambiato dall'ultima, o come
+      # chiesto con un'etichetta sulla PR (major/minor/patch, app-major...;
+      # regole in .github/versione.py). Un nuovo giro sullo stesso commit
+      # (Run workflow) riusa i suoi numeri.
+      # Calcolati prima della compilazione: quello dell'app e' il nome di
+      # versione dell'APK, quello che la TV mostra quando propone l'aggiornamento.
       - name: Numero di versione
         id: ver
         run: |
-          ver=$(git tag --points-at HEAD -l 'v2*' | sort -V | tail -1)
-          if [ -z "$ver" ]; then
-            day=$(TZ=Europe/Rome date +%Y.%m.%d)
-            ver="v$day"; n=1
-            while git rev-parse -q --verify "refs/tags/$ver" > /dev/null; do
-              n=$((n+1)); ver="v$day.$n"
-            done
-          fi
+          python3 .github/versione.py --test > /dev/null
+          ver=$(python3 .github/versione.py server)
+          appver=$(python3 .github/versione.py app)
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          echo "Versione: $ver"
+          echo "appver=$appver" >> "$GITHUB_OUTPUT"
+          echo "appname=${appver#app-v}" >> "$GITHUB_OUTPUT"
+          echo "Server: $ver · app (se ricompilata): $appver"
 
       # Senza segreto non si firma con una chiave diversa: lo zip si pubblica lo
       # stesso con l'APK gia' in release, e alla fine il giro risulta fallito.
@@ -125,7 +127,7 @@ jobs:
         if: steps.key.outputs.ok == '1'
         working-directory: android
         env:
-          BUNKERPLEX_VERSION: ${{ steps.ver.outputs.ver }}
+          BUNKERPLEX_VERSION: ${{ steps.ver.outputs.appname }}
         run: |
           gradle --no-daemon assembleRelease
           mkdir -p ../out
@@ -167,8 +169,8 @@ jobs:
           ls -l out
 
       # Ogni push e' una versione nuova, con un numero che resta per sempre:
-      #   - release vAAAA.MM.GG (vAAAA.MM.GG.2, .3... se nello stesso giorno ce n'e'
-      #     piu' d'una), con le novita' divise per parte del programma e i suoi
+      #   - release v1.0, v1.1, v1.1.1... (fino a novembre 2026 avevano la data,
+      #     es. v2026.11.23.6), con le novita' divise per parte del programma e i suoi
       #     allegati: e' lo storico, da li' si riscarica anche una versione vecchia;
       #   - release app-tv, ricreata ogni volta sull'ultima: il tag non cambia, cosi'
       #     gli indirizzi di download restano uguali e i server e le TV gia'
@@ -178,25 +180,36 @@ jobs:
           APK_BUILT: ${{ steps.key.outputs.ok }}
           REPO: ${{ github.repository }}
           VER: ${{ steps.ver.outputs.ver }}
+          APPVER: ${{ steps.ver.outputs.appver }}
         run: |
           ver=$VER
-          if ! git rev-parse -q --verify "refs/tags/$ver" > /dev/null; then
-            git tag "$ver" HEAD
-            git push origin "refs/tags/$ver"
-          fi
+          tags=$ver
+          [ "$APK_BUILT" = 1 ] && tags="$tags $APPVER"
+          for t in $tags; do
+            if ! git rev-parse -q --verify "refs/tags/$t" > /dev/null; then
+              git tag "$t" HEAD
+              git push origin "refs/tags/$t"
+            fi
+          done
           # Da dove partono le novita': la versione precedente o, la prima volta,
           # il commit dell'ultima app-tv
-          prev=$(git describe --tags --abbrev=0 --match 'v2*' HEAD^ 2>/dev/null || true)
+          prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || true)
           base=${prev:-$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)}
-          # Versione in cui e' stata compilata l'app per la TV che si sta pubblicando
-          if [ "$APK_BUILT" = 1 ]; then apkver=$ver
-          else apkver=$(git tag --points-at apk-build -l 'v2*' 2>/dev/null | sort -V | tail -1); fi
-          VER=$ver PREV=$prev BASE=$base APKVER=$apkver python3 - <<'EOF'
+          # Versione dell'app che si sta pubblicando e release in cui e' stata
+          # compilata (prima delle versioni app-v l'app aveva il numero della release)
+          apkrel=$(git tag --points-at apk-build -l 'v[0-9]*' 2>/dev/null | sort -V | head -1)
+          if [ "$APK_BUILT" = 1 ]; then appname=${APPVER#app-v}; apkrel=$ver
+          else
+            appname=$(git tag --points-at apk-build -l 'app-v*' 2>/dev/null | sort -V | tail -1)
+            appname=${appname#app-v}; appname=${appname:-${apkrel#v}}
+          fi
+          VER=$ver PREV=$prev BASE=$base APKVER=$apkrel APPNAME=$appname python3 - <<'EOF'
           import os, subprocess
           def git(*a):
               return subprocess.run(["git", *a], capture_output=True, text=True).stdout
           ver, prev, base = os.environ["VER"], os.environ["PREV"], os.environ["BASE"]
           apkver, repo = os.environ["APKVER"], os.environ["REPO"]
+          app = f" {os.environ['APPNAME']}" if os.environ.get("APPNAME") else ""
           built = os.environ.get("APK_BUILT") == "1"
           rng = [f"{base}..HEAD"] if base else ["-1"]
           shas = git("log", "--no-merges", "--format=%H", *rng).split() or git("log", "-1", "--format=%H").split()
@@ -212,11 +225,11 @@ jobs:
               tag = f" — _{', '.join(tags)}_" if tags else ""
               lines.append(f"- {subj}{tag} ([{sha[:7]}](https://github.com/{repo}/commit/{sha}))")
           if built:
-              apk = "**App per la TV:** ricompilata in questa versione: va aggiornata anche sulla TV."
+              apk = f"**App per la TV e i telefoni:** nuova versione{app}: va aggiornata anche sulla TV."
           elif apkver:
-              apk = f"**App per la TV:** invariata, è quella della [{apkver}](https://github.com/{repo}/releases/tag/{apkver})."
+              apk = f"**App per la TV e i telefoni:** invariata, è la{app} della [{apkver}](https://github.com/{repo}/releases/tag/{apkver})."
           else:
-              apk = "**App per la TV:** invariata rispetto alla versione precedente."
+              apk = f"**App per la TV e i telefoni:** invariata{app}."
           compare = f"\n\nTutte le modifiche: [{prev}...{ver}](https://github.com/{repo}/compare/{prev}...{ver})" if prev else ""
           news = "**Novità**\n" + "\n".join(lines) + "\n\n" + apk + compare
           install = ("Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, "
