@@ -711,6 +711,15 @@ body.kb .person:focus .face { box-shadow: 0 0 0 .22rem var(--ink); }
 #view.enter .person { animation: pop .22s cubic-bezier(.2, .8, .2, 1) backwards; }
 #view.enter .person:nth-child(2n) { animation-delay: .03s; }
 
+/* Sagome grigie mentre la pagina arriva (prima volta o rete lenta) */
+.skel { display: block; background: var(--surface2); animation: skel 1.2s ease-in-out infinite alternate; }
+.art.skel { padding-top: 150%; }
+i.skel.title { width: 18rem; max-width: 70%; height: 2.4rem; border-radius: var(--r); }
+i.skel.line { width: 28rem; max-width: 80%; height: 1rem; margin-top: .8rem; border-radius: .3rem; }
+i.skel.short { width: 14rem; }
+.section h2 i.skel.line { width: 10rem; margin: 0; }
+@keyframes skel { from { opacity: .55; } to { opacity: 1; } }
+
 /* Home: il testo dell'anteprima scivola dentro a ogni cambio, lo sfondo si assesta piano */
 .stage .info.in > * { animation: slide .34s cubic-bezier(.2, .8, .2, 1) backwards; }
 .stage .info.in > *:nth-child(2) { animation-delay: .05s; }

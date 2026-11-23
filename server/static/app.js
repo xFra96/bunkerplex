@@ -727,7 +727,7 @@ async function home() {
     return x;
   }
 
-  var rows =
+  var parts = [
     section('Continua a guardare', d.continue.map(function (x) { return wideCard(reg(x, 'cont', 'Continua a guardare'), 'cont'); })) +
     section('Prossimi episodi', d.nextup.map(function (x) { return wideCard(reg(x, 'next', 'Prossimo episodio'), 'next'); })) +
     section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine', true); })) +
@@ -736,17 +736,35 @@ async function home() {
       var note = l.friend ? fromWho(l.friend, l.friend_self) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
       var kicker = l.friend ? l.name + (l.friend_self ? ' · su ' : ' · di ') + l.friend : l.name;
       return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id, true); }), note);
-    }).join('') +
-    section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
-    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top', true); }));
+    }),
+    section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine'),
+    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top', true); }))
+  ];
+  parts = [].concat.apply([], parts).filter(Boolean);
+
+  // Prima le file in vista (e quella dove si era rimasti), subito dopo le altre:
+  // sulle TV lente la Home compare prima, invece di aspettare tutte le locandine
+  var first = 3, want = focusMemory['#/home'];
+  if (want) parts.forEach(function (html, n) { if (html.indexOf('data-key="' + want + '"') >= 0) first = Math.max(first, n + 1); });
+  var later = parts.slice(first).join('');
 
   return {
     html: '<div class="home"><div class="stage" id="stage"><div class="bg"></div><div class="bg"></div>' +
-      '<div class="shade"></div><div class="info"></div></div><div class="rows" id="rows">' + rows + '</div></div>',
+      '<div class="shade"></div><div class="info"></div></div><div class="rows" id="rows" data-later="' + later.length + ':' + hue(later) + '">' +
+      parts.slice(0, first).join('') + '</div></div>',
     mount: function () {
       stageMap = map;
       stageKey = '';
       var box = document.getElementById('rows');
+      if (later) {
+        requestAnimationFrame(function () {
+          setTimeout(function () {
+            if (!box.isConnected) return;   // nel frattempo si e' cambiata pagina
+            box.insertAdjacentHTML('beforeend', later);
+            if (!kb && cache.homeScroll) box.scrollTop = cache.homeScroll;
+          }, 0);
+        });
+      }
       if (!kb && cache.homeScroll) box.scrollTop = cache.homeScroll;
       box.addEventListener('scroll', function () { cache.homeScroll = box.scrollTop; }, { passive: true });
     }
@@ -4512,6 +4530,14 @@ function move(dir) {
     (cur.parentNode.classList.contains('row') || cur.parentNode.id === 'grid') ? cur.parentNode : null;
   var list = Array.prototype.slice.call((line || scope).querySelectorAll('.f'));
   if (scope === view && !line) list = list.concat(tops);
+  // Su e giu' in una griglia lunga: bastano le locandine vicine (qualche riga sopra e
+  // sotto) e quello che sta fuori dalla griglia, come i filtri
+  var grid = !horizontal && scope === view && cur.parentNode && cur.parentNode.id === 'grid' ? cur.parentNode : null;
+  if (grid && grid.children.length > 120) {
+    var at = Array.prototype.indexOf.call(grid.children, cur);
+    list = Array.prototype.slice.call(grid.children, Math.max(0, at - 40), at + 41)
+      .concat(list.filter(function (el) { return el.parentNode !== grid; }));
+  }
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -4840,6 +4866,23 @@ function showActiveTab() {
   row.scrollLeft += gap - (row.clientWidth - on.offsetWidth) / 2;
 }
 
+// Sagome grigie al posto della pagina che sta arrivando
+function skeleton(h) {
+  function boxes(n, cls) { var b = ''; for (var i = 0; i < n; i++) b += '<div class="card ' + cls + '"><div class="art skel"></div></div>'; return b; }
+  if (h === '#/home') {
+    return '<div class="home"><div class="stage"></div><div class="rows">' +
+      [0, 1, 2].map(function () { return '<section class="section"><h2><i class="skel line"></i></h2><div class="row">' + boxes(8, 'poster') + '</div></section>'; }).join('') +
+      '</div></div>';
+  }
+  if (/^#\/(lib\/|sagas|mylist|search)/.test(h)) {
+    return '<div class="page"><div class="toolbar"><i class="skel title"></i></div><div class="grid">' + boxes(18, 'poster') + '</div></div>';
+  }
+  if (/^#\/(show|item|saga)\//.test(h)) {
+    return '<header class="hero"><div class="in"><div class="txt"><i class="skel title"></i><i class="skel line"></i><i class="skel line"></i><i class="skel line short"></i></div></div></header>';
+  }
+  return '';
+}
+
 async function render() {
   var token = ++renderToken;
   var h = location.hash;
@@ -4854,6 +4897,15 @@ async function render() {
   }
   if (!handler) { location.replace('#/home'); return; }
 
+  // Se la pagina tarda (prima volta, rete lenta) si mostra subito la sua sagoma
+  var skel = h !== currentHash ? setTimeout(function () {
+    if (token !== renderToken) return;
+    var shape = skeleton(h);
+    if (!shape) return;
+    view.classList.remove('enter');
+    view.innerHTML = shape;
+    lastHtml = '';
+  }, 180) : 0;
   var out;
   try {
     // Il telefono che entra per la TV non deve scegliere un account per se'
@@ -4878,6 +4930,7 @@ async function render() {
     out = '<div class="page"><div class="empty center"><h2>Qualcosa non va</h2><p>' + esc(e.message) +
       '</p><div class="actions"><a class="btn f" href="#/home">Torna alla Home</a></div></div></div>';
   }
+  clearTimeout(skel);
   if (token !== renderToken) return;   // nel frattempo si e' cambiata pagina
   if (typeof out === 'string') out = { html: out };
   var samePage = currentHash === h;
