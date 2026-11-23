@@ -163,8 +163,11 @@ def save_config():
 
 
 def has_content(path):
+    # Basta il primo elemento: sui dischi condivisi con Docker (Windows, Mac) leggere
+    # tutta la cartella per sapere se e' vuota costa decine di millisecondi.
     try:
-        return path.is_dir() and any(path.iterdir())
+        with os.scandir(path) as it:
+            return next(it, None) is not None
     except OSError:
         return False
 
@@ -4038,16 +4041,23 @@ def libraries_list():
         con.close()
     out = []
     elsewhere = self_synced()
+    states = {}
+
+    def state(p):   # una volta sola per cartella: ogni controllo tocca il disco
+        if p not in states:
+            states[p] = folder_state(p)
+        return states[p]
+
     for lib in get_libraries():
         paths = files.get(lib["id"], [])
         out.append({
             "id": lib["id"], "name": lib["name"], "sync": lib.get("sync_id") or "",
             # tutta su un altro tuo PC, che la fa vedere da lì: nel menu c'è già sotto quel PC
             "remote": bool(lib.get("sync_id")) and lib["sync_id"] in elsewhere
-                      and not any(folder_state(p).get("online") for p in lib["folders"]),
+                      and not any(state(p).get("online") for p in lib["folders"]),
             "mine": lib.get("mine", True), "shared": bool(lib.get("shared")),
             "movies": movies.get(lib["id"], 0), "shows": shows.get(lib["id"], 0),
-            "folders": [dict(folder_state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
+            "folders": [dict(state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
                         for p in lib["folders"]],
             # cartelle della raccolta che stanno su un altro PC dell'account
             "missing": [m.get("display") or m.get("path") for m in lib.get("missing") or []],
@@ -4055,11 +4065,24 @@ def libraries_list():
     return out
 
 
+def slim(d):
+    """Per le griglie e la ricerca: senza trama e frase di lancio, che si leggono solo
+    nella scheda. L'elenco di una raccolta pesa quasi la meta' e la TV lo legge prima."""
+    d.pop("overview", None)
+    d.pop("tagline", None)
+    return d
+
+
 @app.get("/api/libraries/{lib_id}/items")
 def library_items(lib_id: int):
     """Tutto il contenuto di una raccolta: film e serie insieme."""
     if lib_id >= FRIEND_BASE:
         return friend_library_items(lib_id)
+    return [slim(x) for x in all_library_items(lib_id)]
+
+
+def all_library_items(lib_id):
+    """Con le trame: agli amici servono per la loro Home (l'anteprima in alto)."""
     con = db()
     try:
         out = [item_json(r) for r in con.execute(
@@ -4570,7 +4593,7 @@ async def set_fav(request: Request):
 def movies(library: int = 0):
     con = db()
     try:
-        return [item_json(r) for r in con.execute(
+        return [slim(item_json(r)) for r in con.execute(
             "SELECT * FROM items WHERE kind='movie' AND (?=0 OR library_id=?) "
             "ORDER BY title COLLATE NOCASE", (library, library))]
     finally:
@@ -4620,7 +4643,7 @@ def collection_detail(coll_id: int):
 def shows_list(library: int = 0):
     con = db()
     try:
-        return [show_json(con, r) for r in con.execute(
+        return [slim(show_json(con, r)) for r in con.execute(
             "SELECT * FROM shows WHERE (?=0 OR library_id=?) ORDER BY title COLLATE NOCASE",
             (library, library)).fetchall()]
     finally:
@@ -5889,7 +5912,7 @@ def share_libraries():
 
 @share.get("/libraries/{lib_id}/items")
 def share_library_items(lib_id: int):
-    return scrub(library_items(_own(lib_id)))
+    return scrub(all_library_items(_own(lib_id)))
 
 
 @share.get("/shows/{show_id}")
