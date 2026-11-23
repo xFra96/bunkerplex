@@ -695,26 +695,21 @@ body.kb .person:focus .face { box-shadow: 0 0 0 .22rem var(--ink); }
 @keyframes drift { from { transform: scale(1.08); } to { transform: scale(1); } }
 @keyframes grow { from { transform: scaleX(0); } }
 
-/* Pagina nuova: il contenuto sale, le file e le locandine arrivano una dopo l'altra */
-#view.enter .page, #view.enter .hero .txt, #view.enter .hero .cover, #view.enter .eplist, #view.enter .people { animation: rise .42s cubic-bezier(.2, .8, .2, 1) backwards; }
-#view.enter .hero .cover { animation-delay: .08s; }
-#view.enter .hero .bg { animation: fade .5s linear backwards; }
-#view.enter .rows .section { animation: rise .45s cubic-bezier(.2, .8, .2, 1) backwards; }
-#view.enter .rows .section:nth-child(2) { animation-delay: .07s; }
-#view.enter .rows .section:nth-child(3) { animation-delay: .14s; }
-#view.enter .rows .section:nth-child(n+4) { animation-delay: .2s; }
-#view.enter .grid .card:nth-child(-n+24) { animation: rise .38s cubic-bezier(.2, .8, .2, 1) backwards; }
-#view.enter .grid .card:nth-child(6n+2) { animation-delay: .03s; }
-#view.enter .grid .card:nth-child(6n+3) { animation-delay: .06s; }
-#view.enter .grid .card:nth-child(6n+4) { animation-delay: .09s; }
-#view.enter .grid .card:nth-child(6n+5) { animation-delay: .12s; }
-#view.enter .grid .card:nth-child(6n+6) { animation-delay: .15s; }
-#view.enter .actions .btn { animation: rise .36s cubic-bezier(.2, .8, .2, 1) backwards; animation-delay: .12s; }
-#view.enter .actions .btn:nth-child(2) { animation-delay: .17s; }
-#view.enter .actions .btn:nth-child(n+3) { animation-delay: .22s; }
-#view.enter .person { animation: pop .34s cubic-bezier(.2, .8, .2, 1) backwards; }
-#view.enter .person:nth-child(2n) { animation-delay: .06s; }
-#view.enter .person:nth-child(3n) { animation-delay: .12s; }
+/* Pagina nuova: il contenuto sale, le file e le locandine arrivano una dopo l'altra.
+   Corte e quasi senza attese: la pagina deve sembrare pronta appena si preme OK. */
+#view.enter .page, #view.enter .hero .txt, #view.enter .hero .cover, #view.enter .eplist, #view.enter .people { animation: rise .22s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .hero .cover { animation-delay: .03s; }
+#view.enter .hero .bg { animation: fade .3s linear backwards; }
+#view.enter .rows .section { animation: rise .24s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .rows .section:nth-child(2) { animation-delay: .03s; }
+#view.enter .rows .section:nth-child(n+3) { animation-delay: .06s; }
+#view.enter .grid .card:nth-child(-n+24) { animation: rise .22s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .grid .card:nth-child(6n+3), #view.enter .grid .card:nth-child(6n+4) { animation-delay: .02s; }
+#view.enter .grid .card:nth-child(6n+5), #view.enter .grid .card:nth-child(6n+6) { animation-delay: .04s; }
+#view.enter .actions .btn { animation: rise .22s cubic-bezier(.2, .8, .2, 1) backwards; animation-delay: .04s; }
+#view.enter .actions .btn:nth-child(n+2) { animation-delay: .06s; }
+#view.enter .person { animation: pop .22s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .person:nth-child(2n) { animation-delay: .03s; }
 
 /* Home: il testo dell'anteprima scivola dentro a ogni cambio, lo sfondo si assesta piano */
 .stage .info.in > * { animation: slide .34s cubic-bezier(.2, .8, .2, 1) backwards; }
@@ -726,7 +721,7 @@ body.kb .person:focus .face { box-shadow: 0 0 0 .22rem var(--ink); }
 /* Selezione: la locandina "scatta" in avanti, i pulsanti rispondono alla pressione */
 .card { transition: transform .18s cubic-bezier(.2, .9, .3, 1.25); }
 .art .bar i { transform-origin: 0 50%; }
-#view.enter .art .bar i { animation: grow .6s .25s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .art .bar i { animation: grow .4s .1s cubic-bezier(.2, .8, .2, 1) backwards; }
 .btn:active, .filter:active, .chip:active, .opt:active, .setting:active, .result:active, .letter:active { transform: scale(.96); }
 .railitem span { transition: opacity .16s linear, transform .2s cubic-bezier(.2, .8, .2, 1); transform: translateX(-.5rem); }
 #rail:hover .railitem span, #rail:focus-within .railitem span { transform: none; }

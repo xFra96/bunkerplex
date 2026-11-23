@@ -333,6 +333,10 @@ function markOffline() {
 }
 
 var device = devicePrefs();
+// Chiavette e TV con poca memoria: animazioni ridotte da subito, senza aspettare che
+// lo scorrimento perda colpi (si possono riaccendere da Impostazioni)
+if (device.slow === undefined && ((navigator.deviceMemory && navigator.deviceMemory <= 1) ||
+    (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2))) device.slow = true;
 // Aspetto da TV: dentro l'app, oppure scelto a mano per il browser di una smart TV (o con ?tv=1)
 var TVLOOK = TV || device.tv === true || /[?&]tv=1/.test(location.search);
 var smooth = 'smooth';               // 'auto' quando le animazioni sono ridotte
@@ -360,6 +364,7 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 // ---------------------------------------------------------------- utilita'
 
 function api(path, opt) {
+  if (opt && opt.method && opt.method !== 'GET') dropCached();   // qualcosa cambia: le copie salvate non valgono piu'
   return fetch('/api' + path, opt).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
       if (r.status === 503 && j.detail && !j.login && !/^\/auth\//.test(path) && !api.reloading) { api.reloading = true; location.reload(); }
@@ -376,6 +381,49 @@ function api(path, opt) {
       return j;
     });
   });
+}
+
+// Pagine gia' viste (Home, raccolte, schede): si mostrano subito con i dati
+// dell'ultima volta e intanto si chiedono quelli nuovi al server; se sono cambiati
+// la pagina si ridisegna da sola. Tornare indietro col telecomando e' immediato.
+var KEEP = /^\/(home|mylist|movies|shows|collections|libraries\/\d+\/items|items\/\d+|shows\/\d+|collections\/\d+)$/;
+var kept = { map: {}, order: [] };
+var keptRedraw = 0;
+
+function dropCached() { kept.map = {}; kept.order = []; }
+
+function keepCopy(path, text) {
+  if (!kept.map[path]) {
+    kept.order.push(path);
+    if (kept.order.length > 40) delete kept.map[kept.order.shift()];
+  }
+  kept.map[path] = { text: text, at: Date.now() };
+}
+
+function cached(path) {
+  if (!KEEP.test(path)) return api(path);
+  var hit = kept.map[path];
+  if (hit && Date.now() - hit.at < 3000) return Promise.resolve(JSON.parse(hit.text));
+  var token = renderToken, hash = location.hash;
+  var req = api(path).then(function (j) {
+    var text = JSON.stringify(j);
+    var changed = hit && kept.map[path] === hit && hit.text !== text;
+    keepCopy(path, text);
+    // Dati nuovi per la pagina che si sta guardando: si ridisegna, ma mai sotto le mani
+    // (una finestra aperta, il video, un campo in cui si scrive)
+    if (changed && token === renderToken && hash === location.hash && !keptRedraw) {
+      keptRedraw = setTimeout(function () {
+        keptRedraw = 0;
+        var a = document.activeElement;
+        if (token === renderToken && hash === location.hash && modal.hidden && !player && !press &&
+            !(a && a.tagName === 'INPUT')) render();
+      }, 50);
+    }
+    return j;
+  });
+  if (!hit) return req;
+  req.catch(function () {});
+  return Promise.resolve(JSON.parse(hit.text));
 }
 
 function send(method, path, body) {
@@ -615,7 +663,7 @@ function section(title, cards, note) {
 
 // Griglia lunga: si disegnano le prime locandine e le altre arrivano man mano che
 // si scende. Con mille titoli la pagina resta leggera anche sulle TV piu' lente.
-var CHUNK = 60;
+var CHUNK = document.documentElement.classList.contains('lite') ? 36 : 60;   // meno alla volta sui dispositivi lenti
 
 function cardKey(x, prefix) { return prefix + '-' + x.kind + x.id; }
 
@@ -667,7 +715,7 @@ function cover(x) {
 // ---------------------------------------------------------------- Home
 
 async function home() {
-  var d = await api('/home');
+  var d = await cached('/home');
   var recent = [];
   d.libraries.forEach(function (l) { recent = recent.concat(l.items); });
   if (!d.continue.length && !d.nextup.length && !recent.length) return emptyLibrary(d.has_libraries);
@@ -738,7 +786,9 @@ function paintStage(key) {
 
   var layers = el.querySelectorAll('.bg');
   var next = layers[stageFlip ? 0 : 1], prev = layers[stageFlip ? 1 : 0];
-  var img = x.backdrop || x.thumb;
+  // Sui dispositivi lenti lo sfondo grande arriva nella versione leggera: si decodifica in meta' tempo
+  var lite = document.documentElement.classList.contains('lite');
+  var img = (lite ? small(x.backdrop, 780) : x.backdrop) || x.thumb;
   if (!img) { next.classList.remove('on'); prev.classList.remove('on'); return; }
   var pre = new Image();
   pre.onload = function () {
@@ -850,7 +900,7 @@ async function libraryPage(id) {
   if (!lib) { await loadLibs(true); lib = libById(id); }
   if (!lib) throw new Error('Questa raccolta non esiste più.');
   var q = parseQuery(location.hash);
-  var all = await api('/libraries/' + lib.id + '/items');
+  var all = await cached('/libraries/' + lib.id + '/items');
   var owner = [];
   if (lib.friend) {
     owner.push(fromWho(lib.friend, lib.friend_self));
@@ -1037,7 +1087,7 @@ function setFav(kind, id, on) {
 }
 
 async function item(id) {
-  var x = await api('/items/' + id);
+  var x = await cached('/items/' + id);
   cache.navLib = x.library_id;
   var isEp = x.kind === 'episode';
   var resume = x.position > 20 && !x.watched;
@@ -1257,7 +1307,7 @@ function shuffleEps(s) {
 }
 
 async function show(id) {
-  var s = await api('/shows/' + id);
+  var s = await cached('/shows/' + id);
   cache.navLib = s.library_id;
   cache.show = s;   // per il menu delle stagioni
   var q = parseQuery(location.hash);
@@ -1340,7 +1390,7 @@ async function show(id) {
 // ---------------------------------------------------------------- Saghe
 
 async function sagasPage() {
-  var res = await Promise.all([api('/collections'), api('/info')]);
+  var res = await Promise.all([cached('/collections'), api('/info')]);
   var all = res[0], i = res[1];
   if (!all.length) {
     return '<div class="page"><div class="toolbar"><h1>Collezioni</h1></div><div class="empty">' +
@@ -1361,7 +1411,7 @@ async function sagasPage() {
 // ---------------------------------------------------------------- La mia lista
 
 async function myListPage() {
-  var all = await api('/mylist');
+  var all = await cached('/mylist');
   if (!all.length) {
     return '<div class="page"><div class="toolbar"><h1>La mia lista</h1></div><div class="empty">' +
       '<p>Qui trovi i film e le serie che metti da parte per dopo. Per aggiungerne uno apri la sua scheda e premi <b>La mia lista</b>' +
@@ -1374,7 +1424,7 @@ async function myListPage() {
 }
 
 async function sagaPage(id) {
-  var s = await api('/collections/' + id);
+  var s = await cached('/collections/' + id);
   var up = s.up_next;
   var resume = up && up.position > 20 && !up.watched;
   var missing = (s.missing || []).map(function (m) { return esc(m.title) + (m.year ? ' (' + m.year + ')' : ''); });
@@ -1404,7 +1454,7 @@ function topGenres(all) {
 // ---------------------------------------------------------------- Cerca
 
 async function search() {
-  var res = await Promise.all([api('/movies'), api('/shows'), api('/collections')]);
+  var res = await Promise.all([cached('/movies'), cached('/shows'), cached('/collections')]);
   var all = res[2].concat(res[0], res[1]).map(function (x) {
     return { x: x, hay: norm([x.title, x.original_title, x.year, x.director, (x.actors || []).join(' '), (x.genres || []).join(' ')].join(' ')) };
   });
@@ -1435,7 +1485,10 @@ async function search() {
           : '<div class="empty"><p>Nessun risultato per «' + esc(input.value) + '».</p></div>';
       }
       cache.searchRun = function (text) { input.value = text; run(); };
-      input.addEventListener('input', run);
+      // Si cerca quando si smette di scrivere per un attimo, non a ogni lettera:
+      // con tutto il catalogo da ridisegnare la tastiera della TV andava a scatti
+      var typing = 0;
+      input.addEventListener('input', function () { clearTimeout(typing); typing = setTimeout(run, 140); });
       run();
     }
   };
@@ -4453,8 +4506,12 @@ function move(dir) {
   var a = cur.getBoundingClientRect();
   var horizontal = dir === 'left' || dir === 'right';
   var cands = [];
-  var list = Array.prototype.slice.call(scope.querySelectorAll('.f'));
-  if (scope === view) list = list.concat(tops);
+  // A destra e a sinistra dentro una fila (o una griglia) si guardano solo le sue schede:
+  // misurare tutte quelle della pagina a ogni pressione rallentava le TV
+  var line = horizontal && scope === view && cur.parentNode && cur.parentNode.classList &&
+    (cur.parentNode.classList.contains('row') || cur.parentNode.id === 'grid') ? cur.parentNode : null;
+  var list = Array.prototype.slice.call((line || scope).querySelectorAll('.f'));
+  if (scope === view && !line) list = list.concat(tops);
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -4808,7 +4865,9 @@ async function render() {
     } else if (out) {
       h = '#/login';
     } else {
-      await loadLibs();
+      // Il menu delle raccolte si aggiorna in sottofondo: la pagina non lo aspetta
+      if (libsLoadedAt) loadLibs().then(function () { markRail(currentHash); }).catch(function () {});
+      else await loadLibs();
       cache.navLib = null;
       // Stessa pagina che si ridisegna: restano a schermo tante locandine quante ce n'erano
       cache.keepShown = chunk && currentHash === h ? chunk.shown : 0;
@@ -4837,7 +4896,7 @@ async function render() {
     void view.offsetWidth;
     view.classList.add('enter');
     clearTimeout(enterTimer);
-    enterTimer = setTimeout(function () { view.classList.remove('enter'); }, 900);
+    enterTimer = setTimeout(function () { view.classList.remove('enter'); }, 500);
   }
   if (out.mount) out.mount();
   markRail(h);
@@ -4878,7 +4937,7 @@ window.fpBack = function () {
   if (rail.contains(document.activeElement)) { focusView(); return true; }
   return false;
 };
-window.fpRefresh = function () { libsLoadedAt = 0; render(); };
+window.fpRefresh = function () { libsLoadedAt = 0; dropCached(); render(); };
 
 // Mentre il server legge le cartelle la pagina si aggiorna da sola quando ha finito
 setInterval(function () {
