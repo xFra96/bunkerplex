@@ -307,6 +307,90 @@ class PlayerActivity : AppCompatActivity() {
         // Da un amico, fuori casa: il video arriva gia' convertito (la sua linea in caricamento e' poca)
         open(first, null, remote && first.optInt("remote_height") > 0)
         showControls(Zone.BAR)        // all'avvio titolo ed episodio, poi si nascondono da soli
+        castId = first.optString("cast_id")
+        castName = first.optString("cast_name").ifBlank { "TV" }
+        startCastLink()
+    }
+
+    // ---- Guarda su: dal telefono si comanda questo player
+    // Il player si fa vivo col server ogni paio di secondi: dice cosa sta guardando e a
+    // che punto (la barra-telecomando del telefono lo mostra) e prende i comandi
+    // (pausa, salto, stop, un altro titolo). La ripresa la salva lui, come sempre.
+
+    private var castId = ""
+    private var castName = "TV"
+    @Volatile private var castSnap = "{}"
+    @Volatile private var castOn = false
+
+    private val castTick = object : Runnable {
+        override fun run() {
+            castSnap = castState().toString()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun castState(): JSONObject {
+        val p = player
+        val state = when {
+            p == null || isFinishing -> "stopped"
+            // Tra un episodio e l'altro (scheda dei titoli di coda, caricamento) non e' finito
+            finished || p.playbackState == Player.STATE_ENDED -> "loading"
+            p.playbackState != Player.STATE_READY -> if (p.playWhenReady) "loading" else "paused"
+            p.playWhenReady -> "playing"
+            else -> "paused"
+        }
+        return JSONObject().put("id", castId).put("name", castName).put("source", "player")
+            .put("state", state).put("item", data.optInt("id"))
+            .put("position", realPosition() / 1000.0).put("duration", durationMs() / 1000.0)
+    }
+
+    private fun startCastLink() {
+        if (castId.isEmpty() || remote || castOn) return
+        castOn = true
+        castSnap = castState().toString()
+        handler.post(castTick)
+        val url = api("/api/cast/app/poll")
+        thread {
+            while (castOn) {
+                try {
+                    val cmds = JSONObject(Net.post(url, castSnap, 8000)).optJSONArray("commands")
+                    if (cmds != null && cmds.length() > 0) {
+                        runOnUiThread { for (i in 0 until cmds.length()) castCommand(cmds.getJSONObject(i)) }
+                    }
+                    Thread.sleep(300)
+                } catch (_: Exception) {
+                    try { Thread.sleep(3000) } catch (_: InterruptedException) { }
+                }
+            }
+        }
+    }
+
+    private fun castCommand(c: JSONObject) {
+        val p = player ?: return
+        if (isFinishing) return
+        when (c.optString("cmd")) {
+            "pause" -> { p.pause(); showControls(Zone.BAR) }
+            "play" -> if (!p.playWhenReady) togglePlay()
+            "seek" -> { jumpTo((c.optDouble("to", 0.0) * 1000).toLong()); showControls(Zone.BAR) }
+            "stop" -> { report(false); finish() }
+            "load" -> {
+                val item = c.optInt("item")
+                if (item <= 0) return
+                report(false)
+                finished = true
+                hideCard()
+                p.pause()
+                playNext(item, (c.optDouble("at", 0.0) * 1000).toLong(), "Arriva dal telefono")
+            }
+        }
+    }
+
+    private fun stopCastLink() {
+        if (!castOn) return
+        castOn = false
+        handler.removeCallbacks(castTick)
+        // Ultimo segnale: il player si chiude (sul telefono la trasmissione finisce)
+        Net.postAsync(api("/api/cast/app/poll"), JSONObject(castSnap).put("state", "stopped").put("wait", 0).toString())
     }
 
     private fun buildPlayer() {
@@ -1213,13 +1297,13 @@ class PlayerActivity : AppCompatActivity() {
     private fun sagaLabel(saga: JSONObject): String =
         "«${saga.optString("title")}»" + (if (saga.optInt("year") > 0) " (${saga.optInt("year")})" else "")
 
-    private fun playNext(next: Int) {
+    private fun playNext(next: Int, startMs: Long? = 0L, message: String = "Avvio il successivo") {
         thread {
             try {
                 val info = JSONObject(Net.get(api("/api/play/$next")))
                 runOnUiThread {
                     if (!isFinishing && player != null) {
-                        Toast.makeText(this, "Avvio il successivo", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
                         // Ogni nuovo episodio riparte come la prima volta: sottotitoli spenti,
                         // salvo quelli forzati
                         autoSubs = true
@@ -1229,7 +1313,7 @@ class PlayerActivity : AppCompatActivity() {
                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                                 .build()
                         }
-                        open(info, 0L, false)
+                        open(info, startMs, false)
                     }
                 }
             } catch (_: Exception) {
@@ -1994,6 +2078,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        stopCastLink()
         resumeAfterSwitch = false
         endRefreshSwitch()
         handler.removeCallbacksAndMessages(null)

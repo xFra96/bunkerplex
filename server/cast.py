@@ -297,6 +297,110 @@ def _cast_at(ip):
     return Chromecast(ip, name or f"Chromecast {ip}", model, udn or uuid.uuid5(uuid.NAMESPACE_DNS, ip))
 
 
+# ---------------------------------------------------------------- TV con l'app
+
+class AppTv:
+    """Una TV con l'app BunkerPlex: niente da cercare, si fa viva lei ogni paio di
+    secondi (app_poll), dice cosa sta guardando e prende i comandi. Il video lo
+    apre il player dell'app, con tutto (24 Hz, tracce, sottotitoli), e la ripresa
+    la salva lui."""
+    kind = "app"
+    self_saving = True
+
+    def __init__(self, cid, name):
+        self.cid, self.name, self.model = cid, name, ""
+        self.id = f"app-{cid}"
+        self.queue = []
+        self.state = {}
+        self.seen = 0.0
+        self.player_seen = 0.0
+
+    @property
+    def online(self):
+        return time.time() - self.seen < 30
+
+    def label(self):
+        return "App BunkerPlex"
+
+    def _push(self, cmd):
+        if not self.online:
+            raise CastError(f"«{self.name}» non risponde: apri BunkerPlex sulla TV")
+        self.queue.append(cmd)
+
+    def load(self, url, media, start):
+        self.queue = []
+        self._push({"cmd": "load", "item": media["item"], "at": start if start > 5 else 0})
+
+    def pause(self):
+        self._push({"cmd": "pause"})
+
+    def play(self):
+        self._push({"cmd": "play"})
+
+    def seek(self, pos):
+        self._push({"cmd": "seek", "to": pos})
+
+    def stop(self):
+        self._push({"cmd": "stop"})
+
+    def status(self):
+        if not self.online:
+            raise CastError("TV non raggiungibile")
+        st = self.state
+        return (st.get("state") or "stopped", float(st.get("position") or 0), float(st.get("duration") or 0),
+                int(st.get("item") or 0))
+
+    def close(self):
+        pass
+
+
+async def app_poll(body, wait=2.0):
+    """La TV con l'app si fa viva: aggiorna cosa sta guardando e prende i comandi
+    (aspettandoli fino a 'wait' secondi, cosi' arrivano subito)."""
+    import asyncio
+    cid = re.sub(r"[^A-Za-z0-9_-]", "", str(body.get("id") or ""))[:40]
+    if not cid:
+        return []
+    name = str(body.get("name") or "TV").strip()[:60] or "TV"
+    with _lock:
+        d = _devices.get(f"app-{cid}")
+        if not isinstance(d, AppTv):
+            d = AppTv(cid, name)
+            _devices[d.id] = d
+        d.name = name
+        d.seen = time.time()
+        player = body.get("source") == "player"
+        if player:
+            # Il player che si chiude lo dice: da li' i comandi tornano alle pagine
+            d.player_seen = 0.0 if body.get("state") == "stopped" else time.time()
+        # Le pagine dell'app restano vive dietro al player: conta quello che dice il player
+        if player or time.time() - d.player_seen > 6:
+            d.state = {"state": str(body.get("state") or "stopped"), "position": _num(body.get("position")),
+                       "duration": _num(body.get("duration")), "item": int(_num(body.get("item")))}
+    if body.get("wait") == 0:
+        return []
+    end = time.time() + wait
+    while True:
+        with _lock:
+            # Col player aperto i comandi sono tutti suoi (anche «apri questo titolo»);
+            # senza, le pagine prendono «apri questo titolo» e aprono il player
+            player_open = time.time() - d.player_seen <= 6
+            take = [c for c in d.queue if player or (not player_open and c["cmd"] == "load")]
+            if take:
+                d.queue = [c for c in d.queue if c not in take]
+                return take
+        if time.time() >= end:
+            return []
+        await asyncio.sleep(0.2)
+
+
+def _num(v):
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 # ---------------------------------------------------------------- ricerca
 
 def _open(ip, port):
@@ -348,7 +452,8 @@ def scan(force=False):
             with _lock:
                 # Chi non risponde resta in elenco come «spenta» (una TV in standby non si vede)
                 for k, d in _devices.items():
-                    d.online = k in found or k in _sessions
+                    if not isinstance(d, AppTv):    # le TV con l'app si fanno vive da sole
+                        d.online = k in found or k in _sessions
                 for k, d in found.items():
                     if k not in _sessions:      # chi sta trasmettendo resta com'e'
                         d.online = True
@@ -378,13 +483,16 @@ def devices():
     with _lock:
         return [{"id": d.id, "name": d.name, "kind": d.kind, "label": d.label(), "model": d.model,
                  "busy": d.id in _sessions, "online": getattr(d, "online", True)}
-                for d in sorted(_devices.values(), key=lambda d: (not getattr(d, "online", True), d.name.lower()))]
+                for d in sorted(_devices.values(), key=lambda d: (not getattr(d, "online", True), d.name.lower()))
+                if d.kind != "app" or d.online]       # TV con l'app spenta o chiusa: non c'e'
 
 
 # I dispositivi trovati si ricordano (data/cast.json): anche spenti restano in elenco
 def _remember():
     out = []
     for d in _devices.values():
+        if d.kind == "app":
+            continue
         if d.kind == "dlna":
             out.append({"kind": "dlna", "ip": d.ip, "name": d.name, "model": d.model, "control": d.control})
         else:
@@ -473,6 +581,7 @@ def start(user, device_id, item_id, at=None):
     if not dev:
         raise CastError("Dispositivo non trovato: premi «Cerca di nuovo»")
     media = _hooks["media"](user, item_id, dev.kind)
+    media["item"] = item_id
     old = _sessions.get(device_id)
     if old:
         _finish(old, keep_device=True)
@@ -540,6 +649,8 @@ def control(user_id, device_id, action, to=None):
 
 
 def _save(s, ended=False):
+    if getattr(s.device, "self_saving", False):
+        return False                 # l'app sulla TV salva la ripresa da se'
     if not s.duration and not s.position:
         return False
     try:
@@ -577,7 +688,8 @@ def _watch(s):
             return
         gen = s.gen
         try:
-            state, pos, dur = s.device.status()
+            res = s.device.status()
+            state, pos, dur = res[:3]
             fails = 0
         except CastError:
             fails += 1
@@ -588,6 +700,14 @@ def _watch(s):
             continue
         if gen != s.gen:
             continue                 # nel frattempo e' partito un altro video
+        if len(res) > 3 and res[3] and res[3] != s.item and state != "stopped":
+            # L'app sulla TV e' passata a un altro titolo (episodio dopo, scelto li'): si segue
+            try:
+                media = _hooks["media"](s.user, res[3], s.device.kind)
+                media["item"] = res[3]
+                s.item, s.media, s.duration = res[3], media, float(media.get("duration") or 0)
+            except Exception:
+                pass
         if state in ("playing", "paused"):
             s.seen_playing = True
             s.state = state
@@ -612,7 +732,7 @@ def _watch(s):
                 continue
             near_end = s.duration and s.position >= s.duration * 0.9
             _finish(s, keep_device=True)
-            if near_end:
+            if near_end and not isinstance(s.device, AppTv):    # l'app passa da se' al successivo
                 _save(s, ended=True)
                 nxt = 0
                 try:

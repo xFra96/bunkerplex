@@ -1213,6 +1213,36 @@ function castControl(what, to) {
   }, function (e) { toast(e.message); castPoll(); });
 }
 
+// La TV con l'app e' a sua volta una destinazione di «Guarda su»: mentre e' aperta
+// si fa viva col server ogni paio di secondi e, se dal telefono arriva un titolo,
+// lo apre nel player dell'app (che poi prende da solo pausa, salti e stop).
+var castId = (function () {
+  if (!TV) return '';
+  try {
+    var k = localStorage.getItem('bp_cast_id');
+    if (!k) { k = Math.random().toString(36).slice(2, 10) + Date.now().toString(36); localStorage.setItem('bp_cast_id', k); }
+    return k;
+  } catch (e) { return ''; }
+})();
+
+function tvName() {
+  var m = /Android [\d.]+; ([^;)]+)/.exec(navigator.userAgent);
+  var model = m ? m[1].replace(/\s*Build\/.*$/, '').trim() : '';
+  return 'TV' + (model && !/^(wv|K)$/.test(model) ? ' · ' + model : '');
+}
+
+function castListen() {
+  if (!castId) return;
+  if (document.visibilityState !== 'visible' || !auth || !auth.user) { setTimeout(castListen, 3000); return; }
+  post('/cast/app/poll', { id: castId, name: tvName(), source: 'web', state: 'idle' }).then(function (r) {
+    (r.commands || []).forEach(function (c) {
+      if (c.cmd === 'load') { toast('Arriva dal telefono…'); play(c.item, false, c.at); }
+    });
+    setTimeout(castListen, 300);
+  }, function () { setTimeout(castListen, 5000); });
+}
+setTimeout(castListen, 2000);
+
 // Episodi tra cui pescare quello a caso: tutte le stagioni tranne gli speciali
 // (se la serie ha solo quelli, valgono loro) e niente episodi su dischi scollegati
 function shuffleEps(s) {
@@ -2491,13 +2521,16 @@ async function browsePage(id) {
 
 // ---------------------------------------------------------------- Riproduzione
 
-async function play(id, fromStart) {
+async function play(id, fromStart, at) {
   var p;
   try { p = await api('/play/' + id); } catch (e) {
     if (e.data && e.data.missing) missingBox(e.data.missing); else toast(e.message);
     return;
   }
   if (fromStart) p.start = 0;
+  if (at > 0) p.start = at;
+  // Il player dell'app TV si fa vivo col server con questo nome: dal telefono lo si comanda (Guarda su)
+  if (TV && castId) { p.cast_id = castId; p.cast_name = tvName(); }
   if (APP) { tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
   location.hash = '#/play/' + id;

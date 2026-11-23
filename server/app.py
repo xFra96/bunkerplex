@@ -8003,7 +8003,9 @@ def cast_media(user, item_id, kind):
         ext = Path(r["path"]).suffix.lower()
         vc, ac, pix = r["vcodec"] or "", r["acodec"] or "", r["pix"] or ""
         h264 = vc == "h264" and pix in ("yuv420p", "yuvj420p")
-        if kind == "dlna":
+        if kind == "app":
+            plan = {"mode": "direct"}      # l'app sulla TV apre il titolo col suo player, come sempre
+        elif kind == "dlna":
             # Le TV leggono da sole MKV, HEVC, HDR e quasi ogni audio: il file com'e'.
             # Solo DTS e TrueHD si convertono (in AC3), lasciando il video originale.
             plan = ({"mode": "transcode", "vcopy": 1, "aout": "ac3"} if ac in CAST_NO_DTS
@@ -8101,6 +8103,13 @@ async def cast_control(request: Request):
                                str(body.get("action") or ""), body.get("to"))
     except cast.CastError as ex:
         raise HTTPException(400, str(ex))
+
+
+@app.post("/api/cast/app/poll")
+async def cast_app_poll(request: Request):
+    """La TV con l'app BunkerPlex (pagine o player) si fa viva: stato e comandi."""
+    cast_user()
+    return {"commands": await cast.app_poll(await read_json(request))}
 
 
 @app.get("/api/cast/status")
