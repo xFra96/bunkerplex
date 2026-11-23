@@ -54,7 +54,7 @@ RUN mkdir -p keystore \
 # Libreria Tailscale (bpnet.aar), poi l'app
 RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build sh tsnet/build.sh
 
-RUN gradle --no-daemon assembleRelease
+RUN gradle --no-daemon :app:assembleRelease
 
 FROM scratch
 COPY --from=build /src/app/build/outputs/apk/release/app-release.apk /BunkerPlex.apk

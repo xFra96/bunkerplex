@@ -53,6 +53,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    // Player e rete in comune con l'app nativa (android/tv): stanno in android/comune
+    sourceSets["main"].java.srcDir("../comune/java")
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false

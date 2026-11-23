@@ -39,3 +39,12 @@ jobs:
       - name: Compila
         working-directory: android
         run: gradle --no-daemon assembleDebug
+
+      # App TV nativa: anche la versione ottimizzata (R8), con una chiave usa e getta
+      - name: Compila l'app TV nativa ottimizzata
+        working-directory: android
+        run: |
+          mkdir -p keystore
+          keytool -genkeypair -keystore keystore/bunkerplex.jks -alias bunkerplex -keyalg RSA -keysize 2048 \
+            -validity 1 -storepass bunkerplex -keypass bunkerplex -dname "CN=Prova"
+          gradle --no-daemon :tv:assembleRelease
