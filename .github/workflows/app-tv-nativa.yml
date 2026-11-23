@@ -1,0 +1,97 @@
+# App per la TV con interfaccia nativa (android/tv): ha release e versione sue,
+# indipendenti dal server e dall'app attuale. A ogni push su main che la tocca
+# (android/tv o il player in comune, android/comune) pubblica la release tv-vX.Y:
+# il numero lo calcola .github/versione.py dai tag tv-v precedenti.
+# Firmata con la stessa chiave dell'app attuale (segreto ANDROID_KEYSTORE_B64).
+
+name: Pubblica l'app TV nativa
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/tv/**", "android/comune/**", "android/build.gradle.kts", "android/settings.gradle.kts"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tv
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Numero di versione
+        id: ver
+        run: |
+          ver=$(python3 .github/versione.py tv)
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "Versione: $ver"
+
+      - name: Chiave di firma
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma)."
+            exit 1
+          fi
+          mkdir -p android/keystore
+          echo "$KEYSTORE_B64" | base64 -d > android/keystore/bunkerplex.jks
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.11.1"
+          cache-provider: basic
+
+      - name: Compila l'APK
+        working-directory: android
+        env:
+          BUNKERPLEX_TV_VERSION: ${{ steps.ver.outputs.ver }}
+        run: |
+          gradle --no-daemon :tv:assembleRelease
+          mkdir -p ../out
+          cp tv/build/outputs/apk/release/tv-release.apk ../out/BunkerPlexTV.apk
+          rm -f keystore/bunkerplex.jks
+          ls -l ../out/BunkerPlexTV.apk
+
+      # Release a parte, mai «latest»: quella resta del server (app-tv)
+      - name: Pubblica
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          if ! git rev-parse -q --verify "refs/tags/$VER" > /dev/null; then
+            git tag "$VER" HEAD
+            git push origin "refs/tags/$VER"
+          fi
+          prev=$(git describe --tags --abbrev=0 --match 'tv-v*' HEAD^ 2>/dev/null || true)
+          {
+            echo "**Novità**"
+            git log --no-merges --format='- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))' \
+              ${prev:+$prev..}HEAD -- android/tv android/comune | head -50
+            echo
+            echo "---"
+            echo "BunkerPlexTV.apk: BunkerPlex con interfaccia nativa per Android TV, Google TV e Fire TV."
+            echo "Si installa accanto all'app BunkerPlex, che resta disponibile."
+          } > notes.md
+          if gh release view "$VER" > /dev/null 2>&1; then
+            gh release upload "$VER" out/BunkerPlexTV.apk --clobber
+          else
+            gh release create "$VER" out/BunkerPlexTV.apk --title "BunkerPlex TV ${VER#tv-v}" \
+              --notes-file notes.md --verify-tag --latest=false
+          fi
