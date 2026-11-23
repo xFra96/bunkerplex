@@ -84,17 +84,31 @@ for page in range(1, 5):
     if len(data) < 100:
         break
 
+def make_tag(tag, sha):
+    """Tag creato da GitHub, non con git push: col token del giro un push su un
+    commit vecchio viene rifiutato (ha un workflows/apk.yml diverso)."""
+    out = run("gh", "api", f"repos/{REPO}/git/refs", "-f", f"ref=refs/tags/{tag}", "-f", f"sha={sha}", check=False)
+    if '"ref"' not in out:
+        # Ripiego: una release di passaggio crea il tag, poi si toglie (il tag resta)
+        r = api("releases", "-f", f"tag_name={tag}", "-f", f"target_commitish={sha}",
+                "-f", f"name={tag}", "-f", "make_latest=false")
+        api(f"releases/{r['id']}", "-X", "DELETE")
+    run("git", "tag", "-f", tag, sha)
+
+
 for old in todo:
     sha = sha_of(old)
     new = server[old]
-    for tag in [new] + ([app[old]] if old in app else []):
-        if not sha_of(tag):
-            run("git", "tag", tag, sha)
-            run("git", "push", "origin", f"refs/tags/{tag}")
     r = releases.get(old)
     if r:
-        api(f"releases/{r['id']}", "-X", "PATCH", "-f", f"tag_name={new}",
+        # La release si sposta sul tag nuovo: se non c'e' lo crea GitHub sul commit giusto
+        api(f"releases/{r['id']}", "-X", "PATCH", "-f", f"tag_name={new}", "-f", f"target_commitish={sha}",
             "-f", f"name=BunkerPlex {new[1:]}", "-f", f"body={body(old, r)}")
+        run("git", "tag", "-f", new, sha)
+    elif not sha_of(new):
+        make_tag(new, sha)
+    if old in app and not sha_of(app[old]):
+        make_tag(app[old], sha)
     gone = [old] + (["app-v1.0"] if old == "v1.0" and app.get(old, "app-v1.0") != "app-v1.0" else [])
     for tag in gone:
         if sha_of(tag):
