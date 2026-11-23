@@ -500,7 +500,9 @@ def init_db():
                           ("items", "marks_v INT DEFAULT 0"),
                           # Fotogrammi al secondo del video: l'app TV porta lo schermo alla stessa
                           # frequenza (dall'MKV il player non li legge). NULL: ancora da misurare
-                          ("items", "fps REAL")):
+                          ("items", "fps REAL"),
+                          # Email dell'account Google collegato all'account («Entra con Google»)
+                          ("users", "google TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -2650,7 +2652,8 @@ def mark_cloud(online):
 
 def cloud_ping():
     try:
-        accounts.call("GET", "/", timeout=6)
+        info = accounts.call("GET", "/", timeout=6)
+        cloud_status["google"] = bool(info.get("google"))   # «Entra con Google» attivo nel servizio?
         mark_cloud(True)
     except accounts.CloudError:
         mark_cloud(True)          # risponde, anche se con un errore
@@ -2722,7 +2725,9 @@ def cloud_ready():
     """Il servizio account ha gia' un amministratore? (None se non si raggiunge)"""
     if time.time() - cloud_status["at"] > 60 or cloud_status["ready"] is None:
         try:
-            cloud_status["ready"] = bool(accounts.call("GET", "/", timeout=6).get("ready"))
+            info = accounts.call("GET", "/", timeout=6)
+            cloud_status["ready"] = bool(info.get("ready"))
+            cloud_status["google"] = bool(info.get("google"))
         except Exception:
             cloud_status["ready"] = None
         cloud_status["at"] = time.time()
@@ -2780,22 +2785,25 @@ def store_user(con, cloud_user, token, ver):
     """Copia locale dell'account appena entrato (con l'impronta per entrare anche offline).
     Se l'account su questo PC non c'e' ancora e c'e' l'utente di questo PC (senza
     account), l'account prende quello con tutto quello che ha. Torna l'id."""
-    vsalt = secrets.token_hex(16)
-    vcheck = hashlib.sha256((vsalt + ver).encode()).hexdigest()
-    row = con.execute("SELECT id FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
+    row = con.execute("SELECT id, vsalt, vcheck FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
+    if ver:
+        vsalt = secrets.token_hex(16)
+        vcheck = hashlib.sha256((vsalt + ver).encode()).hexdigest()
+    else:                        # entrato con Google: resta l'ultima password usata qui (per entrare offline)
+        vsalt, vcheck = (row["vsalt"], row["vcheck"]) if row else (None, None)
     fields = (cloud_user["username"], int(cloud_user["admin"]), int(cloud_user["must_change"]),
-              token, vsalt, vcheck, time.time())
+              token, vsalt, vcheck, time.time(), cloud_user.get("google") or None)
     if not row:
         row = con.execute("SELECT id FROM users WHERE cloud_id IS NULL ORDER BY created, id LIMIT 1").fetchone()
         if row:
             link_local(con, row["id"], cloud_user["id"])
     if row:
-        con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=? "
-                    "WHERE id=?", (*fields, row["id"]))
+        con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=?, "
+                    "google=? WHERE id=?", (*fields, row["id"]))
         uid = row["id"]
     else:
         uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
-                          "cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?)",
+                          "google, cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?,?)",
                           (*fields, cloud_user["id"], time.time())).lastrowid
     con.commit()
     user_cache.clear()
@@ -3144,12 +3152,14 @@ def auth_state():
         if me:
             linked = me["cloud_id"] is not None
             user = dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=linked and bool(me["token"]),
+                        google=me["google"] or "",
                         last_sync=me["last_sync"] or 0,
                         pending=pending_changes(con, me["id"]) if linked else 0)
     finally:
         con.close()
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,
             "setup": cloud_on and SETUP_FILE.is_file() and cloud_ready() is False,
+            "google": cloud_on and bool(cloud_status.get("google")),
             "server": SERVER_NAME}
 
 
@@ -3463,6 +3473,96 @@ async def auth_pair_finish(code: str, request: Request):
     return {"ok": True, "name": u["name"]}
 
 
+# «Entra con Google». Google parla solo con il servizio account (un indirizzo fisso
+# registrato da Google): qui si chiede un codice, si mostra l'indirizzo (e il QR,
+# per la TV) e intanto si domanda al servizio se Google ha risposto. Quando si',
+# l'account entra come con la password. link: collega Google all'account di chi chiede.
+gflows = {}                      # id -> {"at", "poll", "link", "uid", "kind"}
+gflows_lock = threading.Lock()
+
+
+def user_cloud_token(uid):
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token FROM users WHERE id=?", (uid,)).fetchone()
+    finally:
+        con.close()
+    if not r or not r["token"]:
+        raise HTTPException(401, "Rientra con la password del tuo account (serve Internet) per collegare Google")
+    return r["token"]
+
+
+@app.post("/api/auth/google")
+async def auth_google_start(request: Request):
+    if not auth_on():
+        raise HTTPException(400, "Il servizio account non è configurato su questo PC")
+    body = await read_json(request)
+    kind = body.get("device") if body.get("device") in ("tv", "phone", "browser") else "browser"
+    link, token = bool(body.get("link")), None
+    u = CURRENT.get()
+    if link:
+        if u is None or not u["linked"]:
+            raise HTTPException(400, "Prima entra con un account")
+        token = user_cloud_token(u["id"])
+    res = await cloud("POST", "/google/start", {"link": link, "device": SERVER_NAME, "kind": kind}, token)
+    fid = secrets.token_urlsafe(16)
+    with gflows_lock:
+        for k in [k for k, f in gflows.items() if time.time() - f["at"] > 900]:
+            gflows.pop(k, None)
+        if len(gflows) > 50:
+            gflows.pop(min(gflows, key=lambda k: gflows[k]["at"]), None)
+        gflows[fid] = {"at": time.time(), "poll": res["poll"], "link": link, "uid": u["id"] if link else None,
+                       "kind": kind}
+    code = res["code"]
+    return {"id": fid, "url": res["url"], "short": res["short"], "code": code[:4] + "-" + code[4:],
+            "svg": qr_svg(res["url"]), "ttl": res.get("ttl", 600)}
+
+
+@app.get("/api/auth/google/{fid}")
+async def auth_google_poll(fid: str):
+    with gflows_lock:
+        f = gflows.get(fid)
+    if not f:
+        raise HTTPException(404, "Codice scaduto: ricomincia da «Entra con Google»")
+    try:
+        res = await asyncio.to_thread(accounts.call, "POST", "/google/poll", {"poll": f["poll"]}, None, 10)
+    except accounts.CloudOffline:
+        return {"done": False}               # si riprova al giro dopo
+    except accounts.CloudError as ex:
+        with gflows_lock:
+            gflows.pop(fid, None)
+        raise HTTPException(ex.status if ex.status in (400, 403, 404, 409, 429) else 502, ex.detail)
+    if not res.get("done"):
+        return {"done": False}
+    with gflows_lock:
+        gflows.pop(fid, None)
+    if f["link"]:
+        con = db(raw=True)
+        try:
+            con.execute("UPDATE users SET google=? WHERE id=?", (res["user"].get("google") or None, f["uid"]))
+            con.commit()
+        finally:
+            con.close()
+        return {"done": True, "linked": True, "google": res["user"].get("google") or ""}
+    u, token, conflicts = await complete_login(res, None, f["kind"])
+    return with_session({"done": True, "ok": True, "user": user_json(u), "conflicts": conflicts}, token)
+
+
+@app.delete("/api/auth/google")
+async def auth_google_unlink():
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        raise HTTPException(400, "Qui non sei entrato con un account")
+    await cloud("DELETE", "/google", None, user_cloud_token(u["id"]))
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET google=NULL WHERE id=?", (u["id"],))
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": True}
+
+
 # Preferenze di visione (animazioni, locandine, sottotitoli, velocita'...): nell'account
 PREF_KEYS = ("device", "player")
 
@@ -3515,8 +3615,16 @@ async def accounts_create(request: Request):
     name, password = login_fields(body)
     check_new_password(password)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
-    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver,
+    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver, "google": body.get("google") or "",
                                                 "admin": bool(body.get("admin"))}, token)
+
+
+@app.put("/api/accounts/{cloud_id}/google")
+async def accounts_google(cloud_id: int, request: Request):
+    """L'email Google con cui l'account potra' entrare (vuota: la toglie)."""
+    token = admin_token()
+    body = await read_json(request)
+    return await cloud("PUT", f"/admin/users/{cloud_id}/google", {"google": body.get("google") or ""}, token)
 
 
 @app.post("/api/accounts/{cloud_id}/password")
