@@ -493,7 +493,10 @@ def init_db():
                           # iniziale, credits_s = inizio della sigla finale; marks_v = versione del
                           # riconoscimento con cui l'episodio e' stato guardato (0: ancora da fare)
                           ("items", "intro_s REAL"), ("items", "intro_e REAL"), ("items", "credits_s REAL"),
-                          ("items", "marks_v INT DEFAULT 0")):
+                          ("items", "marks_v INT DEFAULT 0"),
+                          # Fotogrammi al secondo del video: l'app TV porta lo schermo alla stessa
+                          # frequenza (dall'MKV il player non li legge). NULL: ancora da misurare
+                          ("items", "fps REAL")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -1384,13 +1387,45 @@ state = {"scanning": False, "last_scan": 0.0, "message": ""}
 scan_lock = threading.Lock()
 
 
+def frame_rate(stream):
+    """Fotogrammi al secondo di un flusso video di ffprobe (24000/1001 -> 23.976); 0 se non si sa."""
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        try:
+            num, _, den = str(stream.get(key) or "").partition("/")
+            fps = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if 10 <= fps <= 121:
+            return round(fps, 3)
+    return 0
+
+
+def video_fps(con, r):
+    """Fps del file, misurati la prima volta che serve (i file analizzati prima non li hanno)."""
+    if r["fps"] is not None:
+        return r["fps"] or 0
+    fps = 0
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=avg_frame_rate,r_frame_rate", "-of", "json", r["path"]],
+            capture_output=True, text=True, timeout=15).stdout
+        streams = json.loads(out).get("streams") or []
+        fps = frame_rate(streams[0]) if streams else 0
+    except Exception:
+        return 0                     # disco lento o scollegato: si riprova la prossima volta
+    con.execute("UPDATE main.items SET fps=? WHERE id=?", (fps, r["id"]))   # items qui e' la vista dell'account
+    con.commit()
+    return fps
+
+
 def probe(path):
-    """Durata, codec e risoluzione del file."""
-    info = {"duration": 0, "vcodec": "", "acodec": "", "pix": "", "width": 0, "height": 0}
+    """Durata, codec, risoluzione e fps del file."""
+    info = {"duration": 0, "vcodec": "", "acodec": "", "pix": "", "width": 0, "height": 0, "fps": 0}
     try:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries",
-             "format=duration:stream=codec_type,codec_name,pix_fmt,width,height",
+             "format=duration:stream=codec_type,codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate",
              "-of", "json", path],
             capture_output=True, text=True, timeout=60).stdout
         data = json.loads(out)
@@ -1399,7 +1434,8 @@ def probe(path):
             if s.get("codec_type") == "video" and not info["vcodec"] \
                     and s.get("codec_name") not in ("mjpeg", "png"):
                 info.update(vcodec=s.get("codec_name", ""), pix=s.get("pix_fmt", ""),
-                            width=s.get("width") or 0, height=s.get("height") or 0)
+                            width=s.get("width") or 0, height=s.get("height") or 0,
+                            fps=frame_rate(s))
             elif s.get("codec_type") == "audio" and not info["acodec"]:
                 info["acodec"] = s.get("codec_name", "")
     except Exception:
@@ -1500,8 +1536,8 @@ def scan():
         for r in con.execute("SELECT id, path FROM items WHERE duration IS NULL").fetchall():
             i = probe(r["path"])
             con.execute(
-                "UPDATE items SET duration=?, vcodec=?, acodec=?, pix=?, width=?, height=? WHERE id=?",
-                (i["duration"], i["vcodec"], i["acodec"], i["pix"], i["width"], i["height"], r["id"]))
+                "UPDATE items SET duration=?, vcodec=?, acodec=?, pix=?, width=?, height=?, fps=? WHERE id=?",
+                (i["duration"], i["vcodec"], i["acodec"], i["pix"], i["width"], i["height"], i["fps"], r["id"]))
             con.commit()
 
         con.commit()
@@ -1966,6 +2002,8 @@ def play_info(con, r):
     return {"id": r["id"], "title": title, "subtitle": subtitle,
             # Qualita' del file (4K, 1080p...), nel player accanto all'anno
             "quality": quality(r),
+            # Fps del video: l'app TV ci accorda la frequenza dello schermo
+            "fps": video_fps(con, r),
             # Episodio di una serie: il player ricorda la traccia audio scelta per tutta la serie
             "show_id": r["show_id"] or 0,
             "url": f"/api/stream/{r['id']}", "transcode": f"/api/transcode/{r['id']}",
