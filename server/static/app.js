@@ -1725,7 +1725,7 @@ function settingsData() {
 }
 
 // Versioni ben visibili: quella del server (il numero della release su GitHub,
-// es. 2026.11.23.2) e quella dell'app su questa TV o telefono. Dal browser la
+// es. 1.2) e quella dell'app su questa TV o telefono. Dal browser la
 // pagina arriva dal server: la versione e' la sua.
 function serverVer(i) {
   return i.release || (i.commit ? 'commit ' + i.commit : i.version);
