@@ -54,6 +54,8 @@ var IC = {
   next: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5v15l10.5-7.5zM17 4.5h2.5v15H17z"/></svg>',
   vol: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9a4.2 4.2 0 0 1 0 6M18.6 6.4a8 8 0 0 1 0 11.2"/></svg>',
   mute: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  cast: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 8V6.5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M3.5 12a8 8 0 0 1 8 8M3.5 15.5A4.5 4.5 0 0 1 8 20M3.5 19.2v.8h.8"/></svg>',
+  stop: '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>',
   shuffle: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7h3.2c2 0 3.4 1 4.6 2.8l1.4 2.4c1.2 1.8 2.6 2.8 4.6 2.8h3.2M3.5 17h3.2c1.4 0 2.5-.5 3.4-1.4M20.5 7h-3.2c-1.4 0-2.5.5-3.4 1.4M18 4.5 20.5 7 18 9.5M18 12.5l2.5 2.5-2.5 2.5"/></svg>',
   disk: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M7 14.5h4"/></svg>',
   folder: '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7v11h17V9h-8l-2-2z"/></svg>',
@@ -1058,6 +1060,7 @@ async function item(id) {
         '<button class="btn primary f" data-act="play" data-arg="' + x.id + '" data-key="play">' + IC.play +
           (resume ? 'Riprendi da ' + fmtTime(x.position) : 'Riproduci') + '</button>' +
         (resume ? '<button class="btn f" data-act="playstart" data-arg="' + x.id + '" data-key="restart">Dall\'inizio</button>' : '') +
+        (x.friend || x.offline ? '' : castBtn(x.id)) +
         (isEp || x.friend ? '' : favButton(x)) +
         '<button class="btn f" data-act="watched" data-arg="' + x.id + ':' + (x.watched ? 0 : 1) + '" data-key="watched">' +
           (x.watched ? 'Segna come da vedere' : 'Segna come visto') + '</button>' +
@@ -1077,6 +1080,138 @@ async function item(id) {
 }
 
 // ---------------------------------------------------------------- Scheda serie
+
+// ---------------------------------------------------------------- Guarda su
+// Il video va su una TV di casa senza l'app (DLNA: Samsung, LG...; o Chromecast):
+// la apre il lettore della TV, il server la comanda (server/cast.py). Qui si
+// sceglie la TV e una barra in basso fa da telecomando finche' trasmette.
+// Dentro l'app della TV non serve: si guarda gia' li'.
+
+function canCast() { return !TV && !TVLOOK; }
+
+function castBtn(id) {
+  return canCast() && id ? '<button class="btn f" data-act="cast" data-arg="' + id + '" data-key="cast">' + IC.cast + 'Guarda su…</button>' : '';
+}
+
+var castState = { sessions: [], timer: 0, dragging: false, had: false };
+
+function castPick(id, at, done) {
+  var first = !castPick.known;
+  if (first) toast('Cerco le TV nella rete di casa…');
+  api('/cast/devices').then(function (r) {
+    castPick.known = true;
+    castDevicePicker(id, at, done, r);
+  }, function (e) { toast(e.message); });
+}
+
+function castDevicePicker(id, at, done, r) {
+  var devs = r.devices || [];
+  var opts = devs.map(function (d) {
+    return { value: d.id, label: d.name, count: d.online ? d.label + (d.busy ? ' · sta trasmettendo' : '') : 'spenta o non raggiungibile' };
+  });
+  opts.push({ value: '__scan', label: devs.length ? 'Cerca di nuovo' : 'Cerca le TV' });
+  var title = devs.length ? 'Guarda su' : (r.error || 'Nessuna TV trovata: accendila e controlla che sia nella rete di casa');
+  openPicker(title, opts, '', function (dev) {
+    if (dev === '__scan') {
+      toast('Cerco le TV nella rete di casa…');
+      api('/cast/devices?refresh=1').then(function (r2) { castDevicePicker(id, at, done, r2); }, function (e) { toast(e.message); });
+      return;
+    }
+    var d = devs.filter(function (x) { return x.id === dev; })[0];
+    toast('Mando il video a ' + (d ? d.name : 'la TV') + '…');
+    post('/cast/start', { device: dev, item: +id, at: at === null || at === undefined ? null : at }).then(function (s) {
+      castState.sessions = [s];
+      castState.had = true;
+      renderCastBar();
+      castPoll();
+      if (done) done();
+    }, function (e) { toast(e.message); });
+  });
+}
+
+function castPoll() {
+  clearTimeout(castState.timer);
+  if (!canCast()) return;
+  api('/cast/status').then(function (r) {
+    var was = castState.sessions.length;
+    castState.sessions = r.sessions || [];
+    if (was && !castState.sessions.length && castState.had) toast('Trasmissione finita');
+    castState.had = castState.sessions.length > 0;
+    renderCastBar();
+    if (castState.sessions.length) castState.timer = setTimeout(castPoll, 2000);
+  }, function () {
+    if (castState.sessions.length) castState.timer = setTimeout(castPoll, 5000);
+  });
+}
+
+function castBar() {
+  var bar = document.getElementById('castbar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'castbar';
+    bar.hidden = true;
+    document.body.appendChild(bar);
+    bar.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-cast]');
+      if (b) castControl(b.getAttribute('data-cast'));
+    });
+    bar.addEventListener('input', function (e) {
+      if (!e.target.classList.contains('cseek')) return;
+      castState.dragging = true;
+      var t = bar.querySelector('.ctime');
+      if (t) t.textContent = fmtTime(+e.target.value) + ' / ' + fmtTime(+e.target.max);
+    });
+    bar.addEventListener('change', function (e) {
+      if (!e.target.classList.contains('cseek')) return;
+      castState.dragging = false;
+      castControl('seek', +e.target.value);
+    });
+  }
+  return bar;
+}
+
+function renderCastBar() {
+  var s = castState.sessions[0];
+  var bar = castBar();
+  var hide = !s || /^#\/play\//.test(location.hash);
+  bar.hidden = hide;
+  document.body.classList.toggle('casting', !hide);
+  if (hide || castState.dragging) return;
+  var playing = s.state === 'playing';
+  var dur = s.duration || 0;
+  var state = s.state === 'loading' ? 'si apre sulla TV…' : s.state === 'paused' ? 'in pausa' : 'in onda';
+  var html = '<div class="cinfo">' +
+      (s.poster ? '<img src="' + esc(small(s.poster, 342)) + '" alt="">' : '<span class="cicon">' + IC.cast + '</span>') +
+      '<div class="ctxt"><b>' + esc(s.title) + '</b><span>' + (s.subtitle ? esc(s.subtitle) + ' · ' : '') +
+        'su ' + esc(s.device_name) + ' · ' + state + '</span></div></div>' +
+    '<div class="cctl">' +
+      '<button class="pbtn" data-cast="back" aria-label="Indietro di 30 secondi" title="Indietro di 30 secondi">' + skipIcon('rew') + '</button>' +
+      '<button class="pbtn main" data-cast="' + (playing ? 'pause' : 'play') + '" aria-label="' + (playing ? 'Pausa' : 'Riprendi') + '">' + (playing ? IC.pause : IC.play) + '</button>' +
+      '<button class="pbtn" data-cast="fwd" aria-label="Avanti di 30 secondi" title="Avanti di 30 secondi">' + skipIcon('fwd') + '</button>' +
+      '<button class="pbtn" data-cast="stop" aria-label="Ferma la trasmissione" title="Ferma">' + IC.stop + '</button>' +
+    '</div>' +
+    '<div class="cline"><input class="cseek" type="range" min="0" max="' + Math.round(dur) + '" step="1" value="' + Math.round(s.position || 0) + '"' +
+      (dur ? '' : ' disabled') + ' aria-label="Posizione"><span class="ctime num">' + fmtTime(s.position || 0) + (dur ? ' / ' + fmtTime(dur) : '') + '</span></div>';
+  bar.innerHTML = html;
+}
+
+function castControl(what, to) {
+  var s = castState.sessions[0];
+  if (!s) return;
+  var body = { device: s.device, action: what };
+  if (what === 'back' || what === 'fwd') {
+    body.action = 'seek';
+    body.to = Math.max(0, (s.position || 0) + (what === 'back' ? -30 : 30));
+  } else if (what === 'seek') body.to = to;
+  if (body.action === 'seek') s.position = body.to;
+  if (what === 'pause') s.state = 'paused';
+  if (what === 'play') s.state = 'playing';
+  renderCastBar();
+  post('/cast/control', body).then(function (r) {
+    if (r && r.stopped) { castState.sessions = []; castState.had = false; renderCastBar(); toast('Trasmissione fermata'); }
+    else castPoll();
+  }, function (e) { toast(e.message); castPoll(); });
+}
 
 // Episodi tra cui pescare quello a caso: tutte le stagioni tranne gli speciali
 // (se la serie ha solo quelli, valgono loro) e niente episodi su dischi scollegati
@@ -1154,6 +1289,7 @@ async function show(id) {
       '<div class="actions">' +
         (up ? '<button class="btn primary f" data-act="play" data-arg="' + up.id + '" data-key="play">' + IC.play +
           (up.position > 20 ? 'Riprendi' : 'Riproduci') + ' S' + up.season + ' · E' + up.episode + '</button>' : '') +
+        (up && !s.friend && !up.offline ? castBtn(up.id) : '') +
         (shuffleEps(s).length > 1 ? '<button class="btn f" data-act="randomep" data-arg="' + s.id + '" data-key="randomep">' + IC.shuffle +
           'Episodio a caso</button>' : '') +
         (s.friend ? '' : favButton(s)) +
@@ -2446,6 +2582,7 @@ async function playRoute(id) {
           (p.next ? '<button class="pbtn wide" data-p="next" data-tip="Episodio successivo (N)" aria-label="Episodio successivo">' + IC.next + '<span>Successivo</span></button>' : '') +
           (p.subs.length ? SUBS_BTN : '') +
           '<button class="pbtn" data-p="menu" data-tip="Opzioni (O)" aria-label="Opzioni">' + PIC.opts + '</button>' +
+          (canCast() && !p.friend ? '<button class="pbtn" data-p="cast" data-tip="Guarda su una TV" aria-label="Guarda su una TV">' + IC.cast + '</button>' : '') +
           (pip ? '<button class="pbtn pc" data-p="pip" data-tip="Finestra sopra le altre" aria-label="Finestra sopra le altre">' + PIC.pip + '</button>' : '') +
           '<button class="pbtn pc" data-p="fs" data-tip="Schermo intero (F)" aria-label="Schermo intero">' + PIC.fsOn + '</button>' +
         '</div></div></div>',
@@ -2975,6 +3112,11 @@ function startPlayer(p) {
     else if (name === 'menu') menu();
     else if (name === 'mute') { prefs.muted = !v.muted; savePlayerPrefs(prefs); applyLook(); }
     else if (name === 'pip') togglePip();
+    else if (name === 'cast') {
+      // Dal punto in cui sei: il video passa sulla TV e qui il player si chiude
+      v.pause();
+      castPick(p.id, pos(), function () { history.back(); });
+    }
     else if (name === 'intro') { if (st.introOn) { setIntro(false); seekTo(p.intro_end); } }
     else if (name === 'credits') watchCredits();
     else if (name === 'remain') {
@@ -3874,6 +4016,7 @@ var actions = {
 
   play: function (arg) { play(arg, false); },
   playstart: function (arg) { play(arg, true); },
+  cast: function (id) { castPick(id, null); },
   // Episodio a caso, dall'inizio; se possibile diverso da quello da vedere adesso
   randomep: function (id) {
     var s = cache.show;
@@ -4647,6 +4790,9 @@ async function render() {
 }
 
 window.addEventListener('hashchange', render);
+// «Guarda su»: se una TV sta gia' trasmettendo (avviata da qui o da un altro dispositivo), la barra-telecomando
+window.addEventListener('hashchange', function () { renderCastBar(); });
+setTimeout(castPoll, 1500);
 
 // L'app Android chiama queste due funzioni
 window.fpBack = function () {

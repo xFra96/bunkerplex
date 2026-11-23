@@ -44,6 +44,7 @@ from fastapi.staticfiles import StaticFiles
 import contextvars
 
 import accounts
+import cast
 import sigle
 import tvinstall
 import updater
@@ -2293,6 +2294,7 @@ def startup():
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
     threading.Thread(target=friends_loop, daemon=True).start()
+    cast.scan_later()     # la lista di «Guarda su» pronta quando serve
     threading.Thread(target=sync_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
@@ -2316,7 +2318,8 @@ def startup():
 
 SESSION_COOKIE = "bp_session"
 SETUP_FILE = DATA / "cloud-setup.json"       # chiave per creare il primo amministratore
-OPEN_PATHS = ("/api/auth/", "/api/share/", "/api/info")
+# /api/cast/media/: il video che apre una TV con «Guarda su» (vale solo col biglietto, vedi cast.py)
+OPEN_PATHS = ("/api/auth/", "/api/share/", "/api/info", "/api/cast/media/")
 user_cache = {}                  # impronta del gettone -> (dati dell'account, quando letti)
 settings_cache = {}              # (account, chiave) -> valore
 settings_lock = threading.Lock()
@@ -4630,11 +4633,16 @@ async def progress(item_id: int, request: Request):
     dur = float(body.get("duration") or 0)
     if item_id >= FRIEND_BASE:
         return await in_thread(friend_progress, item_id, pos, dur, bool(body.get("ended")))
+    return save_progress(item_id, pos, dur, bool(body.get("ended")))
+
+
+def save_progress(item_id, pos, dur, ended=False):
+    """Punto di ripresa dell'account (CURRENT); a fine titolo lo segna come visto."""
     con = db()
     try:
         r = get_item(con, item_id)
         dur = dur or (r["duration"] or 0)
-        finished = bool(body.get("ended")) or (dur > 0 and pos / dur > 0.93)
+        finished = ended or (dur > 0 and pos / dur > 0.93)
         # Arrivati ai titoli di coda l'episodio e' finito (come su Netflix)
         if r["credits_s"] and dur and r["credits_s"] > dur * 0.6 and pos >= r["credits_s"] - 1:
             finished = True
@@ -7962,6 +7970,167 @@ def apk_link(request: Request):
 # Installare l'app sulle TV di casa dal PC, con il debug di rete (server/tvinstall.py)
 tvinstall.setup(private_ip, apk_version, APK_PATH)
 app.include_router(tvinstall.router)
+
+
+# ---- «Guarda su»: TV DLNA (Samsung, LG...) e Chromecast, senza app (server/cast.py) ----
+
+cast_host = {"h": ""}                 # l'ultimo indirizzo di casa con cui e' stata aperta la pagina
+CAST_NO_DTS = ("dts", "truehd", "mlp")   # audio che le TV di oggi non leggono piu' (Samsung dal 2018)
+
+
+def tmdb_art(name, w=342):
+    """Locandina presa da TMDB: la TV non ha l'accesso per /api/image."""
+    m = re.match(r"(w\d+|original)_(.+)$", name or "")
+    return f"https://image.tmdb.org/t/p/w{w}/{m.group(2)}" if m else ""
+
+
+def cast_media(user, item_id, kind):
+    if item_id >= FRIEND_BASE:
+        raise cast.CastError("«Guarda su» per ora funziona con i tuoi titoli, non con quelli degli amici")
+    tok = CURRENT.set(user)
+    con = db()
+    try:
+        r = get_item(con, item_id)
+        gone = missing_file(r["path"])
+        if gone:
+            raise cast.CastError(gone["message"])
+        show = get_show(con, r["show_id"]) if r["show_id"] else None
+        title, subtitle, poster = r["title"] or "", str(r["year"] or ""), r["poster"]
+        if r["kind"] == "episode":
+            title = show["title"] if show else title
+            subtitle = f"S{r['season']} · E{r['episode']}  {r['title'] or ''}".strip()
+            poster = show["poster"] if show else None
+        ext = Path(r["path"]).suffix.lower()
+        vc, ac, pix = r["vcodec"] or "", r["acodec"] or "", r["pix"] or ""
+        h264 = vc == "h264" and pix in ("yuv420p", "yuvj420p")
+        if kind == "dlna":
+            # Le TV leggono da sole MKV, HEVC, HDR e quasi ogni audio: il file com'e'.
+            # Solo DTS e TrueHD si convertono (in AC3), lasciando il video originale.
+            plan = ({"mode": "transcode", "vcopy": 1, "aout": "ac3"} if ac in CAST_NO_DTS
+                    else {"mode": "direct"})
+        else:
+            # Chromecast: MP4/WebM con H.264 o VP9 e audio AAC; il resto si converte
+            ok = (ext in (".mp4", ".m4v", ".webm") and (h264 or vc in ("vp8", "vp9"))
+                  and ac in ("aac", "mp3", "opus", "vorbis", ""))
+            plan = {"mode": "direct"} if ok else {"mode": "transcode", "vcopy": 1 if h264 else 0, "aout": "aac"}
+        direct = plan["mode"] == "direct"
+        nxt = next_episode(con, r)
+        return {
+            "title": title, "subtitle": subtitle, "duration": r["duration"] or 0,
+            "size": os.path.getsize(r["path"]) if direct else 0,
+            "mime": (MIME.get(ext) or mimetypes.guess_type(r["path"])[0] or "video/mp4") if direct else "video/mp4",
+            "ext": ext if direct else ".mp4", "seekable": direct, "plan": plan,
+            "poster": tmdb_art(poster), "poster_path": img_url(poster) or "",
+            "resume": 0 if r["watched"] else float(r["position"] or 0),
+            "next_title": f"S{nxt['season']} · E{nxt['episode']}" if nxt else "",
+        }
+    finally:
+        con.close()
+        CURRENT.reset(tok)
+
+
+def cast_save(user, item_id, pos, dur, ended):
+    tok = CURRENT.set(user)
+    try:
+        return save_progress(item_id, pos, dur, ended)["watched"]
+    finally:
+        CURRENT.reset(tok)
+
+
+def cast_next(user, item_id):
+    tok = CURRENT.set(user)
+    con = db()
+    try:
+        nxt = next_episode(con, get_item(con, item_id))
+        return nxt["id"] if nxt else 0
+    finally:
+        con.close()
+        CURRENT.reset(tok)
+
+
+def cast_lan_ip():
+    return private_ip(cast_host["h"])
+
+
+def cast_note_host(request):
+    host = (request.headers.get("host") or "").rsplit(":", 1)[0]
+    try:
+        if ipaddress.ip_address(host).is_private and not ipaddress.ip_address(host).is_loopback:
+            cast_host["h"] = host
+    except ValueError:
+        pass
+
+
+cast.setup(cast_lan_ip, cast_media, cast_save, cast_next)
+
+
+def cast_user():
+    u = CURRENT.get()
+    if not u:
+        raise HTTPException(401, "Scegli chi guarda per continuare")
+    return u
+
+
+@app.get("/api/cast/devices")
+def cast_devices(request: Request, refresh: int = 0):
+    cast_note_host(request)
+    cast_user()
+    found = cast.scan(force=bool(refresh))
+    return {"devices": found, "error": cast._scan["error"]}
+
+
+@app.post("/api/cast/start")
+async def cast_start(request: Request):
+    cast_note_host(request)
+    u = cast_user()
+    body = await read_json(request)
+    at = body.get("at")
+    try:
+        return await in_thread(cast.start, u, str(body.get("device") or ""), int(body.get("item") or 0),
+                               None if at is None else float(at))
+    except cast.CastError as ex:
+        raise HTTPException(400, str(ex))
+
+
+@app.post("/api/cast/control")
+async def cast_control(request: Request):
+    u = cast_user()
+    body = await read_json(request)
+    try:
+        return await in_thread(cast.control, u["id"], str(body.get("device") or ""),
+                               str(body.get("action") or ""), body.get("to"))
+    except cast.CastError as ex:
+        raise HTTPException(400, str(ex))
+
+
+@app.get("/api/cast/status")
+def cast_status():
+    return {"sessions": cast.status(cast_user()["id"])}
+
+
+@app.api_route("/api/cast/media/{ticket}/{rest:path}", methods=["GET", "HEAD"])
+def cast_media_file(ticket: str, rest: str, request: Request):
+    """Il video per la TV di «Guarda su»: aperto, ma solo con il biglietto giusto."""
+    tk = cast.ticket(ticket)
+    if not tk:
+        raise HTTPException(404)
+    plan = tk["plan"]
+    direct = plan["mode"] == "direct"
+    dlna = {"contentFeatures.dlna.org": cast.dlna_flags(direct), "transferMode.dlna.org": "Streaming"}
+    if not direct and request.method == "HEAD":
+        return Response(status_code=200, media_type="video/mp4", headers=dlna)
+    tok = CURRENT.set(tk["user"])
+    try:
+        if direct:
+            resp = stream(tk["item"], request)
+        else:
+            m = re.match(r"(\d+)/", rest)
+            resp = run_transcode(tk["item"], float(m.group(1)) if m else 0.0,
+                                 plan["vcopy"], 0, aout=plan["aout"])
+    finally:
+        CURRENT.reset(tok)
+    resp.headers.update(dlna)
+    return resp
 
 
 class UIFiles(StaticFiles):
