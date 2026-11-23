@@ -1915,6 +1915,8 @@ class PlayerActivity : AppCompatActivity() {
             if (group.type != C.TRACK_TYPE_VIDEO) continue
             for (i in 0 until group.length) if (group.isTrackSelected(i)) fps = group.getTrackFormat(i).frameRate
         }
+        // Dagli MKV il player non legge i fps: li ha misurati il PC
+        if (fps < 10f) fps = data.optDouble("fps", 0.0).toFloat()
         if (fps < 10f || fabs(fps - refreshFps) < 0.01f) return
         refreshFps = fps
         @Suppress("DEPRECATION")
