@@ -58,6 +58,16 @@ jobs:
           echo "build=$build" >> "$GITHUB_OUTPUT"
           echo "Ricompilo l'APK: $build"
 
+      # Una volta sola: le release vecchie (a data) prendono i numeri nuovi
+      # (tabella in .github/versioni-storiche.json)
+      - name: Rinumera le versioni vecchie
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 .github/rinumera.py
+
       # Numeri di versione (1.0, 1.1, 1.1.1, 2.0...), uno per il server e uno
       # per l'app: salgono in base a quanto e' cambiato dall'ultima, o come
       # chiesto con un'etichetta sulla PR (major/minor/patch, app-major...;
@@ -169,7 +179,7 @@ jobs:
           ls -l out
 
       # Ogni push e' una versione nuova, con un numero che resta per sempre:
-      #   - release v1.0, v1.1, v1.1.1... (fino a novembre 2026 avevano la data,
+      #   - release v1.0, v1.1, v1.1.1... (fino a novembre 2026 avevano la data, poi rinumerate,
       #     es. v2026.11.23.6), con le novita' divise per parte del programma e i suoi
       #     allegati: e' lo storico, da li' si riscarica anche una versione vecchia;
       #   - release app-tv, ricreata ogni volta sull'ultima: il tag non cambia, cosi'
