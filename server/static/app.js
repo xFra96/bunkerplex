@@ -549,7 +549,9 @@ function posterCard(x, prefix, allQ) {
   var badge = isShow
     ? (x.unwatched ? '<span class="badge">' + x.unwatched + '</span>' : seenBadge())
     : (x.watched ? seenBadge() : '');
-  var sub = [x.year || '', isShow ? 'Serie' : '', stars(x, true)].filter(Boolean).join(' · ');
+  // Le serie hanno "Serie" in piu': il voto va su una riga sua, se no viene tagliato
+  var sub = [x.year || '', isShow ? 'Serie' : '', isShow ? '' : stars(x, true)].filter(Boolean).join(' · ');
+  var sub2 = isShow && x.rating ? '<small>' + stars(x, true) + '</small>' : '';
   return '<a class="card poster f' + (x.offline ? ' off' : '') + '" href="' + href + '" data-key="' + prefix + '-' + x.kind + x.id + '" aria-label="' + esc(x.title) + '">' +
     '<div class="art" style="--h:' + hue(x.title) + '">' +
       (img ? '<img loading="lazy" decoding="async" src="' + img + '" alt="" onerror="this.style.display=\'none\'">' : '') +
@@ -557,7 +559,7 @@ function posterCard(x, prefix, allQ) {
       (x.offline ? offBadge(x) : allQ || x.quality === '4K' ? qBadge(x) : '') +
       badge + progressBar(x) + MORE +
     '</div>' +
-    '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small></div></a>';
+    '<div class="cap"><b>' + esc(x.title) + '</b><small>' + (sub || '&nbsp;') + '</small>' + sub2 + '</div></a>';
 }
 
 // Immagini nelle griglie: la versione leggera (le TV la decodificano in meta' tempo).
