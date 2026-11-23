@@ -1671,6 +1671,40 @@ function settingsData() {
     api('/sharing').catch(function () { return null; })]);
 }
 
+// Versioni ben visibili: quella del server (il numero della release su GitHub,
+// es. 2026.11.23.2) e quella dell'app su questa TV o telefono. Dal browser la
+// pagina arriva dal server: la versione e' la sua.
+function serverVer(i) {
+  return i.release || (i.commit ? 'commit ' + i.commit : i.version);
+}
+
+function appVer() {
+  return APP ? (tvCall('getVersionName') || 'precedente') : '';
+}
+
+function appOld(i) {
+  return APP && i.apk_version > (+tvCall('getVersion') || 0);
+}
+
+function versionStrip(i, u) {
+  var srvOld = !!(u && u.enabled && u.available);
+  var chip = function (label, value, note, old) {
+    return '<div class="vchip' + (old ? ' warn' : '') + '"><small>' + esc(label) + '</small><b class="num">' + esc(value) + '</b>' +
+      (note ? '<span>' + esc(note) + '</span>' : '') + '</div>';
+  };
+  var html = chip('Server · ' + i.name, serverVer(i),
+    srvOld ? 'Aggiornamento disponibile' : (u && u.enabled && u.checked_at && !u.error && u.access !== false ? 'Aggiornato' : ''), srvOld);
+  if (APP) {
+    var old = appOld(i);
+    html += chip(TV ? 'App su questa TV' : 'App su questo dispositivo', appVer(),
+      old ? 'Sul PC c\'è la ' + (i.apk_version_name || 'più nuova') : (i.apk_version ? 'Aggiornata' : ''), old);
+  } else {
+    html += chip('Questo browser', serverVer(i), 'Stessa del server', false);
+    if (i.apk_version_name) html += chip('App per TV e telefoni', i.apk_version_name, 'Pronta sul PC', false);
+  }
+  return '<div class="versions" aria-label="Versioni installate">' + html + '</div>';
+}
+
 // Una riga della panoramica: area, nome, a cosa serve, com'e' adesso
 function settingsRows(i, u, sh) {
   var rows = [];
@@ -1717,12 +1751,13 @@ function settingsRows(i, u, sh) {
       state: i.devices_full || asks ? 'warn' : (friends.length || sh.on ? 'ok' : '') });
   }
   if (u && u.enabled) {
-    rows.push({ area: 'updates', label: 'Aggiornamenti', desc: 'BunkerPlex ' + i.version,
+    rows.push({ area: 'updates', label: 'Aggiornamenti', desc: 'Server ' + serverVer(i),
       value: u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
       state: u.error || u.access === false || u.available || u.phase ? 'warn' : 'ok' });
   }
-  var tvOld = APP && i.apk_version > (+tvCall('getVersion') || 0);
-  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo', desc: 'Preferenze di visione, collegamento al server',
+  var tvOld = appOld(i);
+  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
+    desc: APP ? 'App ' + appVer() + ' · preferenze di visione, collegamento' : 'Preferenze di visione, collegamento al server',
     value: tvOld ? 'App da aggiornare' : 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: tvOld ? 'warn' : '' });
   if (!APP || TV) {
     rows.push({ area: 'apps', label: TV ? 'App sul telefono' : 'App per TV e telefono',
@@ -1930,6 +1965,7 @@ async function settings() {
     : 'Tutto in ordine' + (s && s.state === 'ok' ? ' · ' + esc(s.text.charAt(0).toLowerCase() + s.text.slice(1)) : '');
   return '<div class="page settings"><div class="soverview">' +
     '<h1 class="stitle">Impostazioni</h1><p class="ssub' + (warn.length ? ' warn' : '') + '">' + finding + '</p>' +
+    versionStrip(res[0], res[2]) +
     '<div class="slist">' + rows.map(function (r, n) {
       return '<a class="srow f"' + (n === 0 ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
         (r.face ? face(r.face, 'mid') : '') +
@@ -2058,7 +2094,7 @@ async function settingsArea(area) {
 
   if (area === 'updates') {
     var u = res[2];
-    return settingsShell('updates', 'Aggiornamenti', 'BunkerPlex ' + esc(i.version) + ' su questo PC.' +
+    return settingsShell('updates', 'Aggiornamenti', 'Versione del server su questo PC: <b class="num">' + esc(serverVer(i)) + '</b>.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
       (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>'));
   }
@@ -2076,9 +2112,9 @@ async function settingsArea(area) {
   return settingsShell('device', TV ? 'Questa TV' : 'Questo dispositivo', '',
     devicePanel() +
     '<div class="panel"><h2>Collegamento</h2>' +
-    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Programma</dt><dd>' + esc(i.name) + ' ' + esc(i.version) + '</dd>' +
-    (APP ? '<dt>' + (TV ? 'App su questa TV' : 'App BunkerPlex') + '</dt><dd>' + esc(tvCall('getVersionName') || 'precedente') +
-      (i.apk_version > (+tvCall('getVersion') || 0) ? ' · <span class="nodot">sul PC ce n\'è una più nuova</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd>' : '') +
+    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Versione del server</dt><dd><b class="num">' + esc(serverVer(i)) + '</b> · ' + esc(i.name) + '</dd>' +
+    (APP ? '<dt>' + (TV ? 'App su questa TV' : 'App su questo dispositivo') + '</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
+      (appOld(i) ? ' · <span class="nodot">sul PC c\'è la ' + esc(i.apk_version_name || 'più nuova') + '</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd>' : '') +
     '</dl>' +
     (APP ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
       '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
