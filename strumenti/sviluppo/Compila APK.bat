@@ -22,6 +22,8 @@ if errorlevel 1 (
 
 if not exist apk mkdir apk
 copy /y "android\out\BunkerPlex.apk" "apk\BunkerPlex.apk" >nul
+rem App TV nativa (android/tv), si installa accanto all'altra
+if exist "android\out\BunkerPlexTV.apk" copy /y "android\out\BunkerPlexTV.apk" "apk\BunkerPlexTV.apk" >nul
 
 rem La chiave di firma va conservata: serve per installare gli aggiornamenti
 rem sopra la versione gia' presente sulla TV.
@@ -29,7 +31,7 @@ if not exist "android\keystore" mkdir "android\keystore"
 if not exist "android\keystore\bunkerplex.jks" copy "android\out\keystore\bunkerplex.jks" "android\keystore\bunkerplex.jks" >nul
 
 echo.
-echo Fatto: apk\BunkerPlex.apk
+echo Fatto: apk\BunkerPlex.apk e apk\BunkerPlexTV.apk (app TV nativa)
 echo Se l'app e' gia' sulla TV (dalla versione 1.3): al prossimo avvio propone
 echo da sola l'aggiornamento. Altrimenti leggi README.md o usa "Installa su TV.bat" qui accanto.
 pause
