@@ -11,13 +11,22 @@ import json
 import os
 import re
 import subprocess
+import time
 
 TABLE = json.load(open(os.path.join(os.path.dirname(__file__), "versioni-storiche.json"), encoding="utf-8"))
 REPO = os.environ["GITHUB_REPOSITORY"]
 
 
 def run(*a, check=True):
-    return subprocess.run(a, capture_output=True, text=True, check=check).stdout
+    # Un push di tag puo' essere rifiutato per un attimo (subito dopo aver tolto
+    # lo stesso nome): si riprova qualche volta prima di arrendersi
+    for attempt in range(4 if a[:2] == ("git", "push") else 1):
+        p = subprocess.run(a, capture_output=True, text=True)
+        if p.returncode == 0 or not check:
+            return p.stdout
+        print(" ".join(a), "->", p.stderr.strip(), flush=True)
+        time.sleep(5 * (attempt + 1))
+    raise SystemExit(f"Non riuscito: {' '.join(a)}")
 
 
 def api(path, *a):
