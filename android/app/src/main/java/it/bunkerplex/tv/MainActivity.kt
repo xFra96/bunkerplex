@@ -19,6 +19,7 @@ import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
@@ -81,7 +82,12 @@ class MainActivity : AppCompatActivity() {
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
+        Posters.init(this)
         web.webViewClient = object : WebViewClient() {
+            // Locandine e sfondi dalla copia salvata sulla TV (vedi Posters)
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                if (request.method == "GET") Posters.serve(request.url) else null
+
             override fun onPageFinished(view: WebView, url: String) {
                 if (clearHistoryOnLoad) {
                     clearHistoryOnLoad = false
