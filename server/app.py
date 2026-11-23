@@ -592,13 +592,18 @@ SEQUENCE = re.compile(r"^(.*?)(?<!\d)(\d{1,4})(?!\d)")
 SEQ_WORD = re.compile(r"(?:\b(?:ep|episodio|episode|puntata|parte|part|vol|n|nr)\.?)$", re.I)
 
 
-def numbered_series(folder, cache):
+SERIES_DIR = re.compile(r"\b(?:serie|series|tv|telefilm|shows?|anime|miniserie|miniseries|sceneggiati?)\b", re.I)
+
+
+def numbered_series(folder, cache, max_minutes=55):
     """Riconosce le serie numerate senza S01E01: almeno tre file della stessa
     cartella con lo stesso nome seguito da un numero ('Dragon Ball 001 ...',
     'Dragon Ball 002 ...'). Per non scambiare una saga di film ('Rocky 1, 2, 3')
-    per una serie, guarda anche la durata: gli episodi durano meno di 55 minuti.
+    per una serie, guarda anche la durata: gli episodi durano meno di 55 minuti
+    ('max_minutes': di piu' se la cartella e' dichiaratamente di serie, perche'
+    le miniserie come Band of Brothers hanno puntate di oltre un'ora).
     Restituisce {nome file: (serie, numero, resto del nome)}."""
-    key = "seq:" + str(folder)
+    key = f"seq{max_minutes}:{folder}"
     if key in cache:
         return cache[key]
     groups = {}
@@ -622,7 +627,7 @@ def numbered_series(folder, cache):
         if len(group) < 3 or len({g[2] for g in group}) < 3:
             continue
         lengths = [probe(os.path.join(str(folder), g[0]))["duration"] for g in group[:2]]
-        if all(0 < d < 55 * 60 for d in lengths):
+        if all(0 < d < max_minutes * 60 for d in lengths):
             for name, prefix, number, rest in group:
                 result[name] = (prefix, number, rest)
     cache[key] = result
@@ -666,7 +671,9 @@ def classify(path, root, cache):
             m = re.search(r"(?<!\d)(\d{1,3})(?!\d)", name)
             episode = int(m.group(1)) if m else 0
         else:
-            numbered = numbered_series(path.parent, cache).get(path.name)
+            # In una cartella di serie ('Serie TV/...') le puntate possono durare di piu'
+            in_series = any(SERIES_DIR.search(clean(p)) for p in (root.name,) + folders)
+            numbered = numbered_series(path.parent, cache, 100 if in_series else 55).get(path.name)
             if not numbered:
                 return None
             season, episode = 1, numbered[1]
@@ -684,15 +691,35 @@ def classify(path, root, cache):
             break
         else:
             title, year = parse_title(root.name)
-    elif year is None:
+    else:
         # Il nome del file non ha l'anno, ma la cartella della stessa serie si':
         # 'Dragon Ball (1986) 1080p/Dragon Ball 1x001.mkv' -> anno 1986.
         # Distingue serie omonime (Dragon Ball del 1986 da Dragon Ball Z del 1989).
+        # Se il nome nel file ha un errore di battitura rispetto alla cartella
+        # ('True Detective/True.Detectives.S02E01'), vale quello della cartella:
+        # altrimenti la stagione finisce in una serie a parte, abbinata a un'altra.
         for t, y in folder_titles(folders):
-            if y and show_key(t) == show_key(title):
-                year = y
+            if show_key(t) == show_key(title):
+                year = year or y
+                break
+            if typo_of(title, t):
+                title, year = t, year or y
                 break
     return (title.strip(" -") or title), year, season, episode, ep_title
+
+
+def typo_of(a, b):
+    """'True Detectives' e 'True Detective': stesso numero di parole e una sola
+    parola appena diversa (non un numero). 'Dragon Ball Z' e 'Dragon Ball' no."""
+    wa, wb = norm_title(a).split(), norm_title(b).split()
+    if len(wa) != len(wb) or wa == wb:
+        return False
+    diff = [(x, y) for x, y in zip(wa, wb) if x != y]
+    if len(diff) != 1:
+        return False
+    x, y = diff[0]
+    return (min(len(x), len(y)) >= 4 and not re.search(r"\d", x + y)
+            and difflib.SequenceMatcher(None, x, y).ratio() >= 0.8)
 
 
 def folder_titles(folders):
@@ -1716,6 +1743,61 @@ def split_merged_shows():
         save_config()
 
 
+def reclassify_catalog():
+    """Una volta sola, dopo il miglioramento del riconoscimento delle serie
+    (miniserie con puntate lunghe come Band of Brothers, nomi di file con un
+    errore di battitura come 'True.Detectives.S02E01'): si rilegge ogni video gia'
+    in catalogo e quelli che ora risultano altro cambiano posto. Gli id dei
+    video restano gli stessi, quindi visti e punti di ripresa non si perdono."""
+    if config.get("classifier", 1) != 3:      # prima va fatta la separazione delle serie
+        return
+    con = db()
+    missing = False
+    try:
+        show_ids = {r["folder"]: r["id"] for r in con.execute("SELECT id, folder FROM shows")}
+        show_ids.update({r["key"]: r["show_id"] for r in con.execute(
+            "SELECT key, show_id FROM aliases WHERE show_id IN (SELECT id FROM shows)")})
+        cache, touched = {}, set()
+        for it in con.execute("SELECT id, kind, path, show_id, library_id FROM items").fetchall():
+            p, root = Path(it["path"]), library_root(it["path"])
+            if root is None or not p.is_file():
+                missing = missing or root is not None
+                continue
+            ep = classify(p, root, cache)
+            if ep is None:
+                continue          # da episodio a film non succede con queste modifiche
+            title, year, season, number, ep_title = ep
+            key = show_key(title)
+            if it["kind"] == "episode" and show_ids.get(key) == it["show_id"]:
+                continue
+            if key not in show_ids:
+                show_ids[key] = con.execute(
+                    "INSERT INTO shows(folder, title, year, added_at, library_id) VALUES(?,?,?,?,?)",
+                    (key, title, year, time.time(), it["library_id"])).lastrowid
+            print(f"Riclassifico {p.name} -> «{title}» {season}x{number:02d}", flush=True)
+            con.execute(
+                "UPDATE items SET kind='episode', show_id=?, season=?, episode=?, title=?, "
+                "original_title=NULL, year=NULL, overview=NULL, tagline=NULL, poster=NULL, backdrop=NULL, "
+                "tmdb_id=NULL, genres=NULL, director=NULL, actors=NULL, people=NULL, rating=NULL, "
+                "collection_id=NULL, meta_done=0 WHERE id=?",
+                (show_ids[key], season, number, ep_title, it["id"]))
+            (IMG / f"thumb_{it['id']}.jpg").unlink(missing_ok=True)
+            touched.add(it["show_id"])
+        # Le serie rimaste senza episodi (es. 'True Detectives' del 1990) spariscono
+        for show_id in touched - {None}:
+            if not con.execute("SELECT 1 FROM items WHERE show_id=? LIMIT 1", (show_id,)).fetchone():
+                con.execute("DELETE FROM aliases WHERE show_id=?", (show_id,))
+                con.execute("DELETE FROM user_shows WHERE show_id=?", (show_id,))
+                con.execute("DELETE FROM shows WHERE id=?", (show_id,))
+        con.commit()
+    finally:
+        con.close()
+    if not missing:           # un disco scollegato: si riprova al prossimo avvio
+        with config_lock:
+            config["classifier"] = 4
+            save_config()
+
+
 def auto_relocate():
     """Su un altro PC il disco puo' avere un'altra lettera: se una cartella della
     libreria non c'e' piu' ma la stessa cartella (stesso percorso, e dentro almeno
@@ -1774,6 +1856,10 @@ def scan_loop():
         split_merged_shows()
     except Exception as ex:   # rete assente: si riprova al prossimo avvio
         print("Separazione serie non riuscita:", repr(ex), flush=True)
+    try:
+        reclassify_catalog()
+    except Exception as ex:
+        print("Riclassificazione non riuscita:", repr(ex), flush=True)
     while True:
         try:
             auto_relocate()
