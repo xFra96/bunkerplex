@@ -14,6 +14,7 @@
 // solo per creare il primo amministratore). Facoltativi: TS_OAUTH_ID e
 // TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key; permessi
 // «Auth Keys: write» e «Devices: Core» sull'etichetta tag:bunkerplex).
+// GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET: «Entra con Google» (vedi /google/start).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -103,7 +104,8 @@ async function body(request) {
 }
 
 function userJson(u) {
-  return { id: u.id, username: u.username, admin: !!u.admin, must_change: !!u.must_change };
+  return { id: u.id, username: u.username, admin: !!u.admin, must_change: !!u.must_change,
+    google: u.google_sub ? (u.google_email || 'collegato') : '', no_password: !!u.no_password };
 }
 
 async function newSession(env, user, device) {
@@ -210,6 +212,250 @@ async function tsDeleteDevice(ts, d) {
   if (!r.ok && r.status !== 404) fail(502, 'Tailscale non ha tolto il dispositivo (errore ' + r.status + ')');
 }
 
+// ---- Entra con Google
+//
+// Un solo flusso per tutti (browser, PWA, app sul telefono, TV), sul modello del
+// «device flow»: chi vuole entrare chiede qui un codice (/google/start) e ha un
+// indirizzo da aprire (/g/<codice>), sullo stesso dispositivo o, dalla TV, col QR
+// sul telefono. Lì si sceglie l'account Google; Google torna qui (/google/callback),
+// e chi aveva chiesto il codice, che intanto domanda ogni 2 secondi (/google/poll
+// con il suo segreto, che non sta nel QR), riceve il gettone dell'account.
+// Google parla solo con questo servizio: l'indirizzo da registrare è uno
+// (https://<servizio>/google/callback), qualunque sia l'indirizzo del PC di casa.
+//
+// Un account Google entra solo in un account BunkerPlex già esistente: collegato
+// da Impostazioni → Account (link) o indicato dall'amministratore con la sua email
+// (si lega al primo accesso; se l'account aveva ancora la password provvisoria,
+// quella non vale più e l'account entra con Google).
+
+const GOOGLE_TTL = 600;
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+const googleOn = (env) => !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+
+let googleCols = false;
+async function ensureGoogle(env) {
+  if (googleCols) return;
+  const cols = (await env.DB.prepare('PRAGMA table_info(users)').all()).results.map((c) => c.name);
+  if (!cols.includes('google_sub')) await env.DB.prepare('ALTER TABLE users ADD COLUMN google_sub TEXT').run();
+  if (!cols.includes('google_email')) await env.DB.prepare('ALTER TABLE users ADD COLUMN google_email TEXT').run();
+  if (!cols.includes('no_password')) await env.DB.prepare('ALTER TABLE users ADD COLUMN no_password INTEGER NOT NULL DEFAULT 0').run();
+  await env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS google_flows(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
+    'state TEXT, link_user INTEGER, device TEXT, kind TEXT, user_id INTEGER, email TEXT, error TEXT, exp REAL NOT NULL)').run();
+  googleCols = true;
+}
+
+function cleanEmail(raw) {
+  const e = String(raw || '').trim().toLowerCase();
+  if (!e) return '';
+  if (e.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) fail(400, 'Email Google non valida');
+  return e;
+}
+
+function cleanCode(raw) {
+  return String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function page(title, inner, status = 200) {
+  const html = '<!doctype html><html lang="it"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + ' · BunkerPlex</title>' +
+    '<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#060a07;' +
+    'color:#f2f5f2;font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}main{max-width:26rem;padding:2rem 1.2rem}' +
+    'h1{font-size:1.5rem;margin:0 0 .8rem}p{color:#c9d3cc}b{color:#f2f5f2}.code{font:700 1.8rem/1 ui-monospace,monospace;letter-spacing:.15em;margin:1rem 0}' +
+    'input{box-sizing:border-box;width:100%;font:700 1.4rem ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;' +
+    'padding:.7rem;border-radius:.5rem;border:1px solid #2c3a30;background:#0e1510;color:#f2f5f2;margin:.4rem 0 1rem}' +
+    '.btn{display:inline-block;border:0;border-radius:.5rem;padding:.8rem 1.3rem;font:600 1rem system-ui,sans-serif;' +
+    'background:#1a7f45;color:#fff;text-decoration:none;cursor:pointer}.err{color:#ff8f80}small{color:#9fada3}</style></head>' +
+    '<body><main>' + inner + '</main></body></html>';
+  return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' } });
+}
+
+function b64urlJson(part) {
+  const b = atob(part.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((part.length + 3) % 4));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0))));
+}
+
+async function flowByCode(env, code) {
+  const f = await env.DB.prepare('SELECT * FROM google_flows WHERE code = ?').bind(code).first();
+  return f && f.exp > now() ? f : null;
+}
+
+async function googleRoutes(request, env, url, path, method) {
+  // Informativa sulla privacy (la chiede Google per la schermata di consenso)
+  if (path === '/privacy' && method === 'GET') {
+    return page('Privacy', '<h1>BunkerPlex · Privacy</h1>' +
+      '<p>BunkerPlex è un media server personale. Questo servizio tiene solo ciò che serve agli account: ' +
+      'nome utente, un\'impronta della password (mai la password), impostazioni, visti e lista, amici e indirizzi dei propri server.</p>' +
+      '<p>Con «Entra con Google» riceve da Google soltanto l\'identificativo dell\'account e l\'indirizzo email, ' +
+      'usati unicamente per riconoscerti all\'accesso. Niente viene venduto, condiviso con terzi o usato per pubblicità.</p>' +
+      '<p>Per scollegare Google: BunkerPlex → Impostazioni → Account → Scollega Google, oppure da ' +
+      '<a href="https://myaccount.google.com/connections" style="color:#7fd6a0">myaccount.google.com</a>. ' +
+      'Per cancellare l\'account chiedi all\'amministratore del tuo BunkerPlex.</p>');
+  }
+  if (!/^\/(google|g)(\/|$)/.test(path)) return null;
+  if (!googleOn(env)) {
+    if (path.startsWith('/g')) return page('Google', '<h1>Non disponibile</h1><p>Su questo servizio account l\'accesso con Google non è attivo.</p>', 404);
+    fail(404, 'Accesso con Google non configurato nel servizio account');
+  }
+  await ensureGoogle(env);
+  const origin = url.origin;
+  const redirect = origin + '/google/callback';
+
+  // Un codice nuovo. link = collega Google all'account che chiede (serve il suo gettone)
+  if (path === '/google/start' && method === 'POST') {
+    const b = await body(request);
+    let link = null;
+    if (b.link) link = await auth(request, env);
+    await env.DB.prepare('DELETE FROM google_flows WHERE exp < ?').bind(now()).run();
+    const n = await env.DB.prepare('SELECT COUNT(*) n FROM google_flows').first('n');
+    if (n > 300) fail(429, 'Troppi accessi in corso: riprova tra qualche minuto');
+    const a = new Uint8Array(8);
+    crypto.getRandomValues(a);
+    const code = [...a].map((x) => CODE_CHARS[x % CODE_CHARS.length]).join('');
+    const poll = randomHex(32);
+    // device: il nome che avrà il gettone (il PC, o il telefono); kind: dove si vede il codice
+    const kind = ['tv', 'phone', 'browser'].includes(b.kind) ? b.kind : 'browser';
+    await env.DB.prepare('INSERT INTO google_flows(code, poll_hash, link_user, device, kind, exp) VALUES(?,?,?,?,?,?)')
+      .bind(code, await sha256(poll), link ? link.id : null, String(b.device || '').slice(0, 80), kind, now() + GOOGLE_TTL).run();
+    return json({ code, poll, url: origin + '/g/' + code, short: origin + '/g', ttl: GOOGLE_TTL });
+  }
+
+  // Chi ha chiesto il codice: finito? Il gettone si consegna una volta sola.
+  if (path === '/google/poll' && method === 'POST') {
+    const b = await body(request);
+    const ph = await sha256(String(b.poll || ''));
+    const f = await env.DB.prepare('SELECT * FROM google_flows WHERE poll_hash = ?').bind(ph).first();
+    if (!f || f.exp < now()) fail(404, 'Codice scaduto: ricomincia');
+    if (!f.user_id && !f.error) return json({ done: false });
+    await env.DB.prepare('DELETE FROM google_flows WHERE code = ?').bind(f.code).run();
+    if (f.error) fail(403, f.error);
+    const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(f.user_id).first();
+    if (!u) fail(404, 'Account non trovato');
+    if (f.link_user) return json({ done: true, linked: true, user: userJson(u) });
+    return json({ done: true, token: await newSession(env, u, f.device), user: userJson(u) });
+  }
+
+  // Toglie il collegamento con Google dall'account che chiede
+  if (path === '/google' && method === 'DELETE') {
+    const u = await auth(request, env);
+    if (u.no_password) fail(409, 'Questo account entra solo con Google: chiedi all\'amministratore una password provvisoria prima di scollegarlo');
+    await env.DB.prepare('UPDATE users SET google_sub = NULL, google_email = NULL WHERE id = ?').bind(u.id).run();
+    return json({ ok: true });
+  }
+
+  // La pagina da aprire: senza codice lo chiede; col codice dice per cosa e porta a Google
+  if ((path === '/g' || /^\/g\/[A-Za-z0-9-]{1,12}$/.test(path)) && method === 'GET') {
+    const code = cleanCode(path === '/g' ? url.searchParams.get('c') : path.slice(3));
+    if (!code) {
+      return page('Entra con Google', '<h1>Entra con Google</h1><p>Scrivi il codice che vedi sulla TV o sull\'app.</p>' +
+        '<form method="get" action="/g"><input name="c" autocomplete="off" autocapitalize="characters" maxlength="9" placeholder="XXXX-XXXX" autofocus>' +
+        '<button class="btn">Continua</button></form>');
+    }
+    const f = await flowByCode(env, code);
+    if (!f || f.user_id || f.error) {
+      return page('Codice scaduto', '<h1>Codice scaduto o sbagliato</h1><p>Sulla TV o nell\'app ricomincia da «Entra con Google»: compare un codice nuovo.</p>' +
+        '<p><a class="btn" href="/g">Scrivi un altro codice</a></p>', 404);
+    }
+    let what = 'Entri in BunkerPlex';
+    if (f.link_user) {
+      const lu = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(f.link_user).first();
+      what = 'Colleghi Google all\'account BunkerPlex <b>' + esc(lu ? lu.username : '') + '</b>';
+    }
+    const dev = { tv: 'la TV', phone: 'l\'app sul telefono', browser: 'il browser' }[f.kind] || 'il dispositivo';
+    return page('Entra con Google', '<h1>' + (f.link_user ? 'Collega Google' : 'Entra con Google') + '</h1>' +
+      '<p>' + what + ' su <b>' + esc(dev) + '</b> che mostra questo codice:</p><p class="code">' + code.slice(0, 4) + '-' + code.slice(4) + '</p>' +
+      '<p><small>Se non l\'hai chiesto tu, o il codice non è quello che vedi, chiudi questa pagina.</small></p>' +
+      '<form method="post" action="/g/' + code + '"><button class="btn">Continua con Google</button></form>');
+  }
+  const gm = /^\/g\/([A-Za-z0-9-]{1,12})$/.exec(path);
+  if (gm && method === 'POST') {
+    const code = cleanCode(gm[1]);
+    const f = await flowByCode(env, code);
+    if (!f || f.user_id || f.error) return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Entra con Google».</p>', 404);
+    const state = code + '.' + randomHex(16);
+    await env.DB.prepare('UPDATE google_flows SET state = ? WHERE code = ?').bind(await sha256(state), code).run();
+    const q = new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: redirect, response_type: 'code',
+      scope: 'openid email', state, prompt: 'select_account'
+    });
+    return Response.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + q, 303);
+  }
+
+  // Google torna qui
+  if (path === '/google/callback' && method === 'GET') {
+    const state = String(url.searchParams.get('state') || '');
+    const code = cleanCode(state.split('.')[0]);
+    const f = code ? await flowByCode(env, code) : null;
+    if (!f || !f.state || !sameString(await sha256(state), f.state) || f.user_id || f.error) {
+      return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Entra con Google» sulla TV o nell\'app.</p>', 400);
+    }
+    const end = async (error, uid, email) => {
+      await env.DB.prepare('UPDATE google_flows SET error = ?, user_id = ?, email = ?, state = NULL WHERE code = ?')
+        .bind(error || null, uid || null, email || null, code).run();
+      if (error) return page('Non riuscito', '<h1>Non riuscito</h1><p class="err">' + esc(error) + '</p>', 403);
+      return page('Fatto', '<h1>Fatto</h1><p>' + (f.link_user ? 'Google è collegato al tuo account BunkerPlex.'
+        : 'Stai entrando come <b>' + esc(f._name || '') + '</b>.') + ' Torna su BunkerPlex: ' +
+        (f.kind === 'tv' ? 'la TV entra da sola.' : 'continua da solo.') + '</p><p><small>Puoi chiudere questa pagina.</small></p>');
+    };
+    if (url.searchParams.get('error')) return end('Accesso a Google annullato');
+    const tr = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: String(url.searchParams.get('code') || ''), client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirect, grant_type: 'authorization_code'
+      })
+    });
+    const tok = tr.ok ? await tr.json() : null;
+    let id = null;
+    try { id = b64urlJson(String(tok && tok.id_token || '').split('.')[1] || ''); } catch (e) { id = null; }
+    // Il gettone arriva direttamente da Google (HTTPS): basta controllarne i campi
+    if (!id || id.aud !== env.GOOGLE_CLIENT_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(id.iss) ||
+        !(id.exp > now()) || !id.sub) {
+      return end('Google non ha confermato l\'accesso: riprova');
+    }
+    const sub = String(id.sub);
+    const email = id.email_verified ? String(id.email || '').toLowerCase() : '';
+    const owner = await env.DB.prepare('SELECT * FROM users WHERE google_sub = ?').bind(sub).first();
+
+    if (f.link_user) {
+      if (owner && owner.id !== f.link_user) return end('Questo account Google è già collegato all\'account BunkerPlex ' + owner.username);
+      await env.DB.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').bind(sub, email || null, f.link_user).run();
+      return end(null, f.link_user, email);
+    }
+    let u = owner;
+    if (!u && email) {
+      // Indicato dall'amministratore: si lega adesso
+      u = await env.DB.prepare('SELECT * FROM users WHERE google_email = ? AND google_sub IS NULL').bind(email).first();
+      if (u) {
+        if (u.must_change) {
+          // La password provvisoria non serve più (e non deve restare valida): entra con Google
+          const pw = await passwordFields(randomHex(32));
+          await env.DB.prepare('UPDATE users SET google_sub = ?, salt = ?, hash = ?, must_change = 0, no_password = 1 WHERE id = ?')
+            .bind(sub, pw.salt, pw.hash, u.id).run();
+        } else {
+          await env.DB.prepare('UPDATE users SET google_sub = ? WHERE id = ?').bind(sub, u.id).run();
+        }
+      }
+    }
+    if (!u) {
+      return end('L\'account Google ' + (email || '') + ' non è collegato a nessun account BunkerPlex. ' +
+        'Entra una volta con nome e password e collegalo da Impostazioni → Account, oppure chiedi all\'amministratore di aggiungere questa email.');
+    }
+    if (email && email !== u.google_email) {
+      await env.DB.prepare('UPDATE users SET google_email = ? WHERE id = ?').bind(email, u.id).run();
+    }
+    f._name = u.username;
+    return end(null, u.id, email);
+  }
+  return null;
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -217,7 +463,7 @@ async function route(request, env) {
 
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
-    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0 });
+    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env) });
   }
 
   // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
@@ -247,6 +493,9 @@ async function route(request, env) {
     await checkPassword(env, user, verifier);
     return json({ token: await newSession(env, user, b.device), user: userJson(user) });
   }
+
+  const g = await googleRoutes(request, env, url, path, method);
+  if (g) return g;
 
   const user = await auth(request, env);
 
@@ -512,12 +761,17 @@ async function route(request, env) {
   if (path.startsWith('/admin/')) {
     if (!user.admin) fail(403, "Solo l'amministratore può gestire gli account");
 
+    await ensureGoogle(env);
     if (path === '/admin/users' && method === 'GET') {
       const rows = await env.DB.prepare(
-        'SELECT u.id, u.username, u.admin, u.must_change, u.created, MAX(s.last_seen) last_seen, COUNT(s.token_hash) servers ' +
+        'SELECT u.id, u.username, u.admin, u.must_change, u.created, u.google_sub, u.google_email, ' +
+        'MAX(s.last_seen) last_seen, COUNT(s.token_hash) servers ' +
         'FROM users u LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id ORDER BY u.username COLLATE NOCASE'
       ).all();
-      return json({ users: rows.results.map((r) => ({ ...r, admin: !!r.admin, must_change: !!r.must_change })) });
+      return json({ users: rows.results.map((r) => {
+        const { google_sub, google_email, ...rest } = r;
+        return { ...rest, admin: !!r.admin, must_change: !!r.must_change, google: google_email || '', google_linked: !!google_sub };
+      }) });
     }
 
     if (path === '/admin/users' && method === 'POST') {
@@ -526,22 +780,39 @@ async function route(request, env) {
       const pw = await passwordFields(cleanVerifier(b.verifier));
       const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
       if (exists) fail(409, 'Esiste già un account con questo nome');
-      await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created) VALUES(?,?,?,1,?,?)')
-        .bind(username, pw.salt, pw.hash, b.admin ? 1 : 0, now()).run();
+      const gmail = cleanEmail(b.google);
+      if (gmail && await env.DB.prepare('SELECT id FROM users WHERE google_email = ?').bind(gmail).first()) {
+        fail(409, 'Questa email Google è già di un altro account');
+      }
+      await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created, google_email) VALUES(?,?,?,1,?,?,?)')
+        .bind(username, pw.salt, pw.hash, b.admin ? 1 : 0, now(), gmail || null).run();
       return json({ ok: true });
     }
 
-    const m = /^\/admin\/users\/(\d+)(\/password)?$/.exec(path);
+    const m = /^\/admin\/users\/(\d+)(\/password|\/google)?$/.exec(path);
     if (m) {
       const id = Number(m[1]);
       const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
       if (!target) fail(404, 'Account non trovato');
+      if (m[2] === '/google' && method === 'PUT') {
+        // L'email Google con cui l'account potra' entrare (si lega al primo «Entra con Google»).
+        // Vuota: toglie anche il collegamento, se l'account ha comunque una password.
+        const gmail = cleanEmail((await body(request)).google);
+        if (!gmail && target.no_password) fail(409, 'Questo account entra solo con Google: dagli prima una password provvisoria');
+        if (gmail) {
+          const other = await env.DB.prepare('SELECT id FROM users WHERE google_email = ? AND id <> ?').bind(gmail, id).first();
+          if (other) fail(409, 'Questa email Google è già di un altro account');
+        }
+        await env.DB.prepare('UPDATE users SET google_email = ?, google_sub = CASE WHEN ? = google_email THEN google_sub ELSE NULL END WHERE id = ?')
+          .bind(gmail || null, gmail, id).run();
+        return json({ ok: true });
+      }
       if (m[2] && method === 'POST') {
         // Password provvisoria nuova: al prossimo accesso va cambiata; i server collegati escono
         const b = await body(request);
         const pw = await passwordFields(cleanVerifier(b.verifier));
         await env.DB.batch([
-          env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 1, fails = 0, locked_until = 0 WHERE id = ?')
+          env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 1, fails = 0, locked_until = 0, no_password = 0 WHERE id = ?')
             .bind(pw.salt, pw.hash, id),
           env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id)
         ]);

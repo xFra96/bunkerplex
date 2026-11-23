@@ -302,7 +302,41 @@ function loginPage() {
     '<input id="p" class="f" type="password" autocomplete="current-password" placeholder="Password">' +
     '<p class="err" id="lerr"></p>' +
     '<div class="row"><button class="f primary" data-act="login">Entra</button>' +
+    (app && app.remoteGoogleStart ? '<button class="f" data-act="google">Entra con Google</button>' : '') +
     '<button class="f" data-act="ask">Indietro</button></div>');
+}
+
+// «Entra con Google»: sul telefono si apre il browser; sulla TV si apre l'indirizzo
+// dal telefono e si scrive il codice. Intanto si chiede al servizio se ha finito.
+var gflow = null;
+function googlePage(g) {
+  var addr = g.short.replace(/^https:\/\//, '');
+  return centerPage('<h1>Entra con Google</h1>' +
+    (TV ? '<p>Dal telefono apri <b>' + esc(addr) + '</b> e scrivi questo codice, poi scegli il tuo account Google:</p>'
+      : '<p>Scegli il tuo account Google nel browser, poi torna qui. Deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account sul PC).</p>' +
+        '<div class="row"><button class="f primary" data-act="gopen" autofocus>Continua con Google</button></div>' +
+        '<p class="note">Oppure da un altro dispositivo apri ' + esc(addr) + ' e scrivi il codice:</p>') +
+    '<h1 style="letter-spacing:.15em">' + esc(g.code.slice(0, 4) + '-' + g.code.slice(4)) + '</h1>' +
+    '<p class="err" id="gerr"></p>' +
+    '<div class="row"><button class="f"' + (TV ? ' autofocus' : '') + ' data-act="gback">Indietro</button></div>');
+}
+function googlePoll(g) {
+  if (gflow !== g) return;
+  bridge('remoteGooglePoll', [g.poll]).then(function (t) {
+    if (gflow !== g) return;
+    var r = JSON.parse(t);
+    if (!r.done) { setTimeout(function () { googlePoll(g); }, 2000); return; }
+    gflow = null;
+    go('friends');
+  }, function (t) {
+    if (gflow !== g) return;
+    var e;
+    try { e = JSON.parse(t); } catch (x) { e = { detail: t }; }
+    if (!e.status) { setTimeout(function () { googlePoll(g); }, 4000); return; }   // rete: si riprova
+    gflow = null;
+    var el = document.getElementById('gerr');
+    if (el) el.textContent = e.detail || 'Accesso non riuscito';
+  });
 }
 
 function loadingPage(text) {
@@ -508,6 +542,19 @@ var acts = {
       go('friends');
     }, function (m) { err.textContent = m; });
   },
+  google: function () {
+    var err = document.getElementById('lerr');
+    if (err) err.textContent = 'Un attimo…';
+    bridge('remoteGoogleStart', []).then(function (t) {
+      var g = JSON.parse(t);
+      gflow = g;
+      show(googlePage(g));
+      if (!TV && app.openUrl) app.openUrl(g.url);
+      setTimeout(function () { googlePoll(g); }, 2000);
+    }, function (m) { if (err) err.textContent = m; });
+  },
+  gopen: function () { if (gflow && app.openUrl) app.openUrl(gflow.url); },
+  gback: function () { gflow = null; go('login'); },
   logout: function () { app.remoteLogout(); proxy = ''; netReady = false; pcs = {}; go('login'); },
   lib: function (arg) { go('lib/' + arg); },
   pickdev: function (id) {

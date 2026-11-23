@@ -218,7 +218,12 @@ function accountForm(name, fixed) {
   return (fixed ? '<input type="hidden" id="lname" value="' + esc(name) + '">'
       : '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" autocomplete="username" maxlength="32" placeholder="Nome utente" value="' + esc(name || '') + '">') +
     '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login"' + (fixed ? ' data-autofocus' : '') + ' placeholder="Password">' +
-    '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button></div>';
+    '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button>' + googleButton() + '</div>';
+}
+
+// «Entra con Google» (se il servizio account lo offre)
+function googleButton() {
+  return auth && auth.google ? '<a class="btn f" href="#/google" data-key="google">Entra con Google</a>' : '';
 }
 
 // «Chi guarda?»: gli account gia' entrati su questo PC. Si entra senza password
@@ -238,7 +243,8 @@ function profilesPage() {
   }
   var more = '<div class="actions" style="margin-top:1.4rem">' +
     (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>' : '') +
-      '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' : '') +
+      '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' +
+      (mode === 'login' ? '' : googleButton()) : '') +
     (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
   return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
     '<div class="profiles">' + list + '</div>' + (body ? '<div style="margin-top:1.4rem">' + body + '</div>' : '') + more + '</div></div>';
@@ -274,6 +280,58 @@ async function tvLoginPage() {
     '<p><small>' + (inside && !auth.user.linked ? 'Quello che hai già qui passa al tuo account: visti, lista e raccolte si uniscono a quelli dell\'account.'
       : 'Se hai già usato il tuo account su questo PC non serve: torna indietro e scegli il tuo nome in «Chi guarda?».') + '</small></p>' +
     '<div class="actions"><a class="btn f" data-autofocus href="' + (inside ? '#/settings/account' : '#/home') + '" data-key="pairback">Indietro</a></div></div></div></div></div>';
+}
+
+// «Entra con Google» (link: collega Google all'account). Google si apre nel browser
+// (dentro l'app con il browser del telefono: Google non accetta le finestre delle app);
+// sulla TV si inquadra il QR col telefono. Intanto si chiede al server se ha finito.
+async function googlePage(link) {
+  var g = cache.gflow;
+  if (!g || g.link !== link || Date.now() - g.at > (g.ttl - 60) * 1000) {
+    g = await post('/auth/google', { link: link, device: devName() });
+    g.at = Date.now();
+    g.link = link;
+    cache.gflow = g;
+  }
+  var here = location.hash;
+  clearInterval(cache.gTimer);
+  cache.gTimer = setInterval(function () {
+    if (location.hash !== here) { clearInterval(cache.gTimer); return; }
+    api('/auth/google/' + g.id).then(function (r) {
+      if (!r.done) return;
+      clearInterval(cache.gTimer);
+      cache.gflow = null;
+      if (r.linked) {
+        toast('Google collegato: d\'ora in poi puoi entrare con ' + (r.google || 'Google'));
+        auth = null;
+        location.replace('#/settings/account');
+        return;
+      }
+      toast('Entrato come ' + r.user.name);
+      enterApp(r);
+    }, function (e) {
+      clearInterval(cache.gTimer);
+      cache.gflow = null;
+      if (location.hash !== here) return;
+      cache.gError = e.message;
+      render();
+    });
+  }, 2000);
+  var err = cache.gError;
+  cache.gError = '';
+  var canOpen = !APP || (tvApp && typeof tvApp.openUrl === 'function');
+  var back = link || (auth && auth.user) ? '#/settings/account' : '#/home';
+  return '<div class="page"><div class="panel login wide"><h1>' + (link ? 'Collega Google' : 'Entra con Google') + '</h1>' +
+    (err ? '<p><span class="nodot">●</span> ' + esc(err) + '</p>' : '') +
+    (TV || !canOpen ? '' : '<p>' + (link ? 'Scegli l\'account Google da collegare: poi potrai entrare con quello, senza password.'
+        : 'Scegli il tuo account Google: deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account) o indicato dall\'amministratore.') + '</p>' +
+      '<div class="actions"><button class="btn primary f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">Continua con Google</button></div>') +
+    '<div class="apkqr" style="margin-top:1rem">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
+    '<div class="apktext"><p>' + (TV || !canOpen ? 'Inquadra il QR con la fotocamera del telefono e scegli lì il tuo account Google: ' + (TV ? 'la TV' : 'questa pagina') + ' entra da sola.'
+        : 'Oppure inquadra il QR con il telefono.') + '</p>' +
+    '<p>Senza fotocamera apri <span class="num">' + esc(g.short.replace(/^https:\/\//, '')) + '</span> e scrivi il codice:</p>' +
+    '<p class="paircode num">' + esc(g.code) + '</p>' +
+    '<div class="actions"><a class="btn f"' + (TV ? ' data-autofocus' : '') + ' href="' + back + '" data-key="gback">Indietro</a></div></div></div></div></div>';
 }
 
 // Sul telefono: la pagina che apre il QR della TV
@@ -727,7 +785,7 @@ async function home() {
     return x;
   }
 
-  var rows =
+  var parts = [
     section('Continua a guardare', d.continue.map(function (x) { return wideCard(reg(x, 'cont', 'Continua a guardare'), 'cont'); })) +
     section('Prossimi episodi', d.nextup.map(function (x) { return wideCard(reg(x, 'next', 'Prossimo episodio'), 'next'); })) +
     section('La mia lista', mine.map(function (x) { return posterCard(reg(x, 'mine', 'La mia lista'), 'mine', true); })) +
@@ -736,17 +794,35 @@ async function home() {
       var note = l.friend ? fromWho(l.friend, l.friend_self) + (l.offline ? ' · non raggiungibile ora' : '') : 'aggiunti di recente';
       var kicker = l.friend ? l.name + (l.friend_self ? ' · su ' : ' · di ') + l.friend : l.name;
       return section(esc(l.name), l.items.map(function (x) { return posterCard(reg(x, 'lib' + l.id, kicker), 'lib' + l.id, true); }), note);
-    }).join('') +
-    section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine') +
-    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top', true); }));
+    }),
+    section('Collezioni', (d.collections || []).map(function (x) { return sagaCard(reg(x, 'saga', 'Collezione'), 'saga'); }), 'i film della stessa serie, in ordine'),
+    section('I più votati da vedere', d.top_movies.map(function (x) { return posterCard(reg(x, 'top', 'Da non perdere'), 'top', true); }))
+  ];
+  parts = [].concat.apply([], parts).filter(Boolean);
+
+  // Prima le file in vista (e quella dove si era rimasti), subito dopo le altre:
+  // sulle TV lente la Home compare prima, invece di aspettare tutte le locandine
+  var first = 3, want = focusMemory['#/home'];
+  if (want) parts.forEach(function (html, n) { if (html.indexOf('data-key="' + want + '"') >= 0) first = Math.max(first, n + 1); });
+  var later = parts.slice(first).join('');
 
   return {
     html: '<div class="home"><div class="stage" id="stage"><div class="bg"></div><div class="bg"></div>' +
-      '<div class="shade"></div><div class="info"></div></div><div class="rows" id="rows">' + rows + '</div></div>',
+      '<div class="shade"></div><div class="info"></div></div><div class="rows" id="rows" data-later="' + later.length + ':' + hue(later) + '">' +
+      parts.slice(0, first).join('') + '</div></div>',
     mount: function () {
       stageMap = map;
       stageKey = '';
       var box = document.getElementById('rows');
+      if (later) {
+        requestAnimationFrame(function () {
+          setTimeout(function () {
+            if (!box.isConnected) return;   // nel frattempo si e' cambiata pagina
+            box.insertAdjacentHTML('beforeend', later);
+            if (!kb && cache.homeScroll) box.scrollTop = cache.homeScroll;
+          }, 0);
+        });
+      }
       if (!kb && cache.homeScroll) box.scrollTop = cache.homeScroll;
       box.addEventListener('scroll', function () { cache.homeScroll = box.scrollTop; }, { passive: true });
     }
@@ -1725,7 +1801,7 @@ function settingsData() {
 }
 
 // Versioni ben visibili: quella del server (il numero della release su GitHub,
-// es. 2026.11.23.2) e quella dell'app su questa TV o telefono. Dal browser la
+// es. 1.2) e quella dell'app su questa TV o telefono. Dal browser la
 // pagina arriva dal server: la versione e' la sua.
 function serverVer(i) {
   return i.release || (i.commit ? 'commit ' + i.commit : i.version);
@@ -2240,6 +2316,7 @@ function accountArea(i) {
       '<p class="kvnote">Quello che hai già qui non si perde: si unisce a quello dell\'account, e per ogni voce vince la modifica più recente.</p>' +
       (auth.offline ? '<p><span class="nodot">●</span> Ora il PC non raggiunge il servizio account: per entrare serve Internet.</p>' :
         (TV ? '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvlogin">Entra dal telefono</a></div>' +
+          (auth.google ? '<div class="actions"><a class="btn f" href="#/google" data-key="tvgoogle">Entra con Google</a></div>' : '') +
           '<h2 style="margin-top:1.2rem">Oppure scrivi qui nome e password</h2>' : '') + accountForm('', false)) +
       '</div>';
     return settingsShell('account', 'Account', '', who + join);
@@ -2263,7 +2340,19 @@ function accountArea(i) {
         (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div></div>' + leave);
+      '</div>' + googlePanel(u) + '</div>' + leave);
+}
+
+// Accesso con Google dell'account: collegato o da collegare
+function googlePanel(u) {
+  if (!auth.google && !u.google) return '';
+  if (u.google) {
+    return '<h2 style="margin-top:1.2rem">Google</h2><p>Puoi entrare con <b>' + esc(u.google) + '</b>, senza password.</p>' +
+      '<div class="actions"><button class="btn f" data-act="gunlink" data-key="gunlink">Scollega Google</button></div>';
+  }
+  if (!u.online) return '';
+  return '<h2 style="margin-top:1.2rem">Google</h2><p>Collega il tuo account Google: poi su ogni PC, TV e telefono entri con quello, senza scrivere la password.</p>' +
+    '<div class="actions"><a class="btn f" href="#/google/link" data-key="glink">Collega Google</a></div>';
 }
 
 async function peopleArea() {
@@ -2282,6 +2371,7 @@ async function peopleArea() {
         (isMe ? '<span class="pill">Tu</span>' : '') +
         (a.admin ? '<span class="pill">Amministratore</span>' : '') +
         (a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
+        (a.google ? '<span class="pill">' + (a.google_linked ? 'Google · ' : 'Google (da collegare) · ') + esc(a.google) + '</span>' : '') +
         '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
           a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
       '<div class="pacts"><button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
@@ -2300,6 +2390,9 @@ async function peopleArea() {
       '<div class="joined"><input class="field f num" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '">' +
         '<button class="btn f" data-act="regenpass" data-key="regenpass">Un\'altra</button></div>' +
       '<p class="kvnote">Al primo accesso la cambierà con una sua.</p>' +
+      (auth.google ? '<label class="flabel" for="agoogle">Email Google (facoltativa)</label>' +
+        '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" placeholder="nome@gmail.com">' +
+        '<p class="kvnote">Con questa può entrare subito con «Entra con Google», senza la password provvisoria.</p>' : '') +
       '<button class="setting f" data-act="accadmin" data-key="accadmin">Può gestire gli account (amministratore)<small id="accadminv">No</small></button>' +
       '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button></div></div>');
 }
@@ -4002,6 +4095,19 @@ var actions = {
     try { sessionStorage.setItem('fpPwLater', '1'); } catch (e) { /* niente */ }
     render();
   },
+  gopen: function (url) {
+    if (APP && tvApp.openUrl) tvApp.openUrl(url);
+    else window.open(url, '_blank', 'noopener');
+  },
+  gunlink: function () {
+    confirmBox('Scollegare Google dal tuo account? Per entrare servirà di nuovo la password.', 'Sì, scollega', function () {
+      send('DELETE', '/auth/google').then(function () {
+        toast('Google scollegato');
+        auth = null;
+        render();
+      }, function (e) { toast(e.message); });
+    });
+  },
   pairsend: function (code) {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass'), pw = fieldValue('pnew');
     if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
@@ -4109,7 +4215,7 @@ var actions = {
   acccreate: function () {
     var name = fieldValue('aname').trim(), pass = fieldValue('apass').trim();
     if (!name || !pass) { toast('Scrivi nome utente e password provvisoria'); return; }
-    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin }).then(function () {
+    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin, google: fieldValue('agoogle').trim() }).then(function () {
       render().then(function () { showSecret('Account creato', name, pass); });
     }, function (e) { toast(e.message); });
   },
@@ -4512,6 +4618,14 @@ function move(dir) {
     (cur.parentNode.classList.contains('row') || cur.parentNode.id === 'grid') ? cur.parentNode : null;
   var list = Array.prototype.slice.call((line || scope).querySelectorAll('.f'));
   if (scope === view && !line) list = list.concat(tops);
+  // Su e giu' in una griglia lunga: bastano le locandine vicine (qualche riga sopra e
+  // sotto) e quello che sta fuori dalla griglia, come i filtri
+  var grid = !horizontal && scope === view && cur.parentNode && cur.parentNode.id === 'grid' ? cur.parentNode : null;
+  if (grid && grid.children.length > 120) {
+    var at = Array.prototype.indexOf.call(grid.children, cur);
+    list = Array.prototype.slice.call(grid.children, Math.max(0, at - 40), at + 41)
+      .concat(list.filter(function (el) { return el.parentNode !== grid; }));
+  }
   for (var i = 0; i < list.length; i++) {
     var el = list[i];
     if (el === cur) continue;
@@ -4780,6 +4894,12 @@ var routes = [
   [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],
   [/^#\/news$/, newsPage],
+  [/^#\/google(\/link)?$/, function (l) {
+    if (!auth.google) { location.replace('#/settings/account'); return ''; }
+    if (l && auth.user.linked) return googlePage(true);
+    if (auth.user.linked && auth.user.online) { location.replace('#/settings/account'); return ''; }
+    return googlePage(false);
+  }],
   [/^#\/tvlogin$/, function () {
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
@@ -4820,6 +4940,7 @@ async function gate() {
     }
     if (!auth.user) {
       lockScreen(true);
+      if (location.hash === '#/google' && auth.google) return googlePage(false);
       return location.hash === '#/tvlogin' && auth.cloud ? tvLoginPage() : profilesPage();
     }
   }
@@ -4840,6 +4961,23 @@ function showActiveTab() {
   row.scrollLeft += gap - (row.clientWidth - on.offsetWidth) / 2;
 }
 
+// Sagome grigie al posto della pagina che sta arrivando
+function skeleton(h) {
+  function boxes(n, cls) { var b = ''; for (var i = 0; i < n; i++) b += '<div class="card ' + cls + '"><div class="art skel"></div></div>'; return b; }
+  if (h === '#/home') {
+    return '<div class="home"><div class="stage"></div><div class="rows">' +
+      [0, 1, 2].map(function () { return '<section class="section"><h2><i class="skel line"></i></h2><div class="row">' + boxes(8, 'poster') + '</div></section>'; }).join('') +
+      '</div></div>';
+  }
+  if (/^#\/(lib\/|sagas|mylist|search)/.test(h)) {
+    return '<div class="page"><div class="toolbar"><i class="skel title"></i></div><div class="grid">' + boxes(18, 'poster') + '</div></div>';
+  }
+  if (/^#\/(show|item|saga)\//.test(h)) {
+    return '<header class="hero"><div class="in"><div class="txt"><i class="skel title"></i><i class="skel line"></i><i class="skel line"></i><i class="skel line short"></i></div></div></header>';
+  }
+  return '';
+}
+
 async function render() {
   var token = ++renderToken;
   var h = location.hash;
@@ -4854,6 +4992,15 @@ async function render() {
   }
   if (!handler) { location.replace('#/home'); return; }
 
+  // Se la pagina tarda (prima volta, rete lenta) si mostra subito la sua sagoma
+  var skel = h !== currentHash ? setTimeout(function () {
+    if (token !== renderToken) return;
+    var shape = skeleton(h);
+    if (!shape) return;
+    view.classList.remove('enter');
+    view.innerHTML = shape;
+    lastHtml = '';
+  }, 180) : 0;
   var out;
   try {
     // Il telefono che entra per la TV non deve scegliere un account per se'
@@ -4878,6 +5025,7 @@ async function render() {
     out = '<div class="page"><div class="empty center"><h2>Qualcosa non va</h2><p>' + esc(e.message) +
       '</p><div class="actions"><a class="btn f" href="#/home">Torna alla Home</a></div></div></div>';
   }
+  clearTimeout(skel);
   if (token !== renderToken) return;   // nel frattempo si e' cambiata pagina
   if (typeof out === 'string') out = { html: out };
   var samePage = currentHash === h;

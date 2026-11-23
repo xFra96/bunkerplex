@@ -19,6 +19,7 @@ import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.OnBackPressedCallback
@@ -81,7 +82,12 @@ class MainActivity : AppCompatActivity() {
         web.settings.mediaPlaybackRequiresUserGesture = false
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
+        Posters.init(this)
         web.webViewClient = object : WebViewClient() {
+            // Locandine e sfondi dalla copia salvata sulla TV (vedi Posters)
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+                if (request.method == "GET") Posters.serve(request.url) else null
+
             override fun onPageFinished(view: WebView, url: String) {
                 if (clearHistoryOnLoad) {
                     clearHistoryOnLoad = false
@@ -410,6 +416,40 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun remoteLogout() = Remote.logout(this@MainActivity)
+
+        @JavascriptInterface
+        fun remoteGoogleStart(cb: Int) {
+            thread {
+                try {
+                    done(cb, true, Remote.googleStart(this@MainActivity, isTelevision))
+                } catch (e: Exception) {
+                    done(cb, false, e.message ?: "Servizio account non raggiungibile")
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun remoteGooglePoll(poll: String, cb: Int) {
+            thread {
+                try {
+                    done(cb, true, Remote.googlePoll(this@MainActivity, poll))
+                } catch (e: Remote.CloudError) {
+                    done(cb, false, JSONObject().put("status", e.status).put("detail", e.message).toString())
+                }
+            }
+        }
+
+        /** Apre un indirizzo nel browser del dispositivo (Google non accetta l'accesso
+         *  dentro le finestre delle app). */
+        @JavascriptInterface
+        fun openUrl(url: String) = runOnUiThread {
+            if (!url.startsWith("https://")) return@runOnUiThread
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+                js("window.toastFromApp&&toastFromApp('Nessun browser per aprire Google: usa il QR')")
+            }
+        }
 
         /** Una chiamata al servizio account con il gettone dell'account. */
         @JavascriptInterface
