@@ -29,7 +29,14 @@ def sha_of(tag):
 
 
 server, app = TABLE["server"], TABLE["app"]
-todo = [old for old in server if old != server[old] and sha_of(old)]
+# La v1.0 di ieri per prima: il suo numero (e app-v1.0) passa alla release piu' vecchia
+# (la v1.0 si riconosce dal commit: dopo, v1.0 e' il nome della release piu' vecchia)
+def old_tag(t):
+    sha = sha_of(t)
+    return sha and (t != "v1.0" or sha == TABLE["v1.0_commit"])
+
+
+todo = sorted((old for old in server if old != server[old] and old_tag(old)), key=lambda t: t != "v1.0")
 if not todo:
     print("Niente da rinumerare")
     raise SystemExit
@@ -52,6 +59,14 @@ def fix(text):
     return RX.sub(lambda m: names[m[1]], text or "")
 
 
+def body(old, r):
+    text = fix(r["body"])
+    if old in app:
+        text = text.replace("**App per la TV:** ricompilata in questa versione",
+                            f"**App per la TV:** nuova versione {app[old][5:]}")
+    return text
+
+
 releases = {}
 for page in range(1, 5):
     data = api(f"releases?per_page=100&page={page}")
@@ -70,15 +85,13 @@ for old in todo:
     r = releases.get(old)
     if r:
         api(f"releases/{r['id']}", "-X", "PATCH", "-f", f"tag_name={new}",
-            "-f", f"name=BunkerPlex {new[1:]}", "-f", f"body={fix(r['body'])}")
-    run("git", "push", "origin", f":refs/tags/{old}")
-    run("git", "tag", "-d", old)
+            "-f", f"name=BunkerPlex {new[1:]}", "-f", f"body={body(old, r)}")
+    gone = [old] + (["app-v1.0"] if old == "v1.0" and app.get(old, "app-v1.0") != "app-v1.0" else [])
+    for tag in gone:
+        if sha_of(tag):
+            run("git", "push", "origin", f":refs/tags/{tag}")
+            run("git", "tag", "-d", tag)
     print(old, "->", new, app.get(old, ""))
-
-# L'app 1.0 di prima diventa la sua versione vera (stesso commit)
-if "v1.0" in app and app["v1.0"] != "app-v1.0" and sha_of("app-v1.0"):
-    run("git", "push", "origin", ":refs/tags/app-v1.0")
-    run("git", "tag", "-d", "app-v1.0")
 
 # I link alle versioni vecchie nelle note delle altre release
 for tag, r in releases.items():
