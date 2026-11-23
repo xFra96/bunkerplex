@@ -92,6 +92,26 @@ object Remote {
         return res
     }
 
+    /** «Entra con Google»: un codice da aprire nel browser (o col QR, sulla TV). */
+    fun googleStart(ctx: Context, tv: Boolean): String {
+        val body = JSONObject().put("device", (if (tv) "TV " else "Telefono ") + (Build.MODEL ?: "Android"))
+            .put("kind", if (tv) "tv" else "phone")
+        prefs(ctx).edit().remove("cloud_token").apply()
+        return call(ctx, "POST", "/google/start", body.toString())
+    }
+
+    /** Google ha risposto? Quando si', il gettone dell'account resta all'app. */
+    fun googlePoll(ctx: Context, poll: String): String {
+        val text = call(ctx, "POST", "/google/poll", JSONObject().put("poll", poll).toString())
+        val res = JSONObject(text)
+        val token = res.optString("token")
+        if (token.isNotEmpty()) {
+            prefs(ctx).edit().putString("cloud_token", token)
+                .putString("cloud_user", res.optJSONObject("user")?.optString("username") ?: "").apply()
+        }
+        return text
+    }
+
     fun logout(ctx: Context) {
         prefs(ctx).edit().remove("cloud_token").apply()
         stopNet()

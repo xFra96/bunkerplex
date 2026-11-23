@@ -10,8 +10,12 @@ CREATE TABLE IF NOT EXISTS users(
   admin INTEGER NOT NULL DEFAULT 0,
   created REAL NOT NULL,
   fails INTEGER NOT NULL DEFAULT 0,
-  locked_until REAL NOT NULL DEFAULT 0
+  locked_until REAL NOT NULL DEFAULT 0,
+  google_sub TEXT,                   -- account Google collegato («Entra con Google»)
+  google_email TEXT,                 -- la sua email (o quella indicata dall'amministratore)
+  no_password INTEGER NOT NULL DEFAULT 0 -- 1 = entra solo con Google
 );
+CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub);
 
 -- Un gettone per ogni server BunkerPlex collegato all'account (si salva solo l'impronta).
 CREATE TABLE IF NOT EXISTS sessions(
@@ -87,4 +91,19 @@ CREATE TABLE IF NOT EXISTS ts_devices(
   label TEXT,                        -- nome da mostrare (PC, Telefono Pixel 8...)
   kind TEXT,                         -- pc / app
   t REAL NOT NULL
+);
+
+-- «Entra con Google» in corso: 10 minuti. code = quello da aprire (/g/<code>), poll_hash =
+-- impronta del segreto di chi aspetta. Il Worker la crea anche da solo.
+CREATE TABLE IF NOT EXISTS google_flows(
+  code TEXT PRIMARY KEY,
+  poll_hash TEXT NOT NULL,
+  state TEXT,                        -- impronta dello stato mandato a Google
+  link_user INTEGER,                 -- collegamento a un account già entrato (NULL = accesso)
+  device TEXT,
+  kind TEXT,                         -- tv / phone / browser
+  user_id INTEGER,                   -- l'account entrato, quando Google ha risposto
+  email TEXT,
+  error TEXT,
+  exp REAL NOT NULL
 );
