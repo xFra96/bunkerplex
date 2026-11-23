@@ -785,6 +785,15 @@ body.locked #view { margin-left: 0; }
 .settings .ssub { color: var(--ink2); font-size: 1.05rem; line-height: 1.5; margin-bottom: 1.6rem; max-width: 46rem; }
 .settings .ssub.warn { color: var(--warn); }
 .soverview { padding: 0 var(--pad); max-width: calc(60rem + 2 * var(--pad)); }
+/* Versioni di server e app, sotto il titolo */
+.versions { display: flex; flex-wrap: wrap; gap: .7rem; margin: -.4rem 0 1.4rem; }
+.vchip { display: flex; flex-direction: column; gap: .1rem; min-width: 11rem; padding: .7rem 1rem; border-radius: .7rem;
+  background: var(--surface); border-left: 3px solid var(--ok); }
+.vchip.warn { border-left-color: var(--warn); }
+.vchip small { color: var(--ink2); font-size: .85rem; }
+.vchip b { font-size: 1.35rem; font-weight: 700; letter-spacing: .01em; }
+.vchip span { color: var(--ink2); font-size: .85rem; }
+.vchip.warn span { color: var(--warn); }
 .slist { background: var(--surface); border-radius: .7rem; padding: .35rem; }
 .srow { display: flex; align-items: center; gap: 1rem; min-height: 4.5rem; padding: .7rem 1rem; border-radius: var(--r); }
 .srow + .srow { border-top: 1px solid #ffffff0d; }

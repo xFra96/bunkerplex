@@ -251,6 +251,84 @@ def current_commit():
     return str(_state().get("commit") or "")
 
 
+# Numero di versione del programma: il tag vAAAA.MM.GG(.N) che il giro su GitHub
+# mette su ogni commit di main (lo stesso nome di versione dell'APK). Si cerca
+# nello zip installato, poi nei tag della copia di sviluppo, poi su GitHub; se il
+# tag non c'e' ancora (il giro di GitHub dura qualche minuto) si riprova dopo.
+_release = {"commit": "", "version": "", "tried": 0.0}
+RELEASE_RETRY = 15 * 60
+
+
+def _local_tag(sha):
+    g = PROGRAM / ".git"
+    found = []
+    try:
+        for f in (g / "refs" / "tags").glob("v2*"):
+            if f.read_text("ascii").strip() == sha:
+                found.append(f.name)
+    except OSError:
+        pass
+    try:
+        for line in (g / "packed-refs").read_text("ascii").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == sha and parts[1].startswith("refs/tags/v2"):
+                found.append(parts[1][10:])
+    except OSError:
+        pass
+    return _newest(found)
+
+
+def _newest(tags):
+    def key(t):
+        return [int(x) if x.isdigit() else 0 for x in t[1:].split(".")]
+    return max(tags, key=key) if tags else ""
+
+
+def _remote_tag(sha):
+    cfg = _config()
+    if not cfg:
+        return ""
+    tok = token()
+    for page in (1, 2, 3):
+        data = json.loads(_api(cfg, f"tags?per_page=100&page={page}", tok, timeout=20))
+        found = [t.get("name", "") for t in data
+                 if (t.get("commit") or {}).get("sha") == sha and str(t.get("name", "")).startswith("v2")]
+        if found:
+            return _newest(found)
+        if len(data) < 100:
+            break
+    return ""
+
+
+def _resolve_release(sha):
+    version = ""
+    try:
+        version = _local_tag(sha) or _remote_tag(sha)
+    except Exception as ex:
+        print("Numero di versione non letto da GitHub:", repr(ex), flush=True)
+    with _guard:
+        if _release["commit"] == sha and version:
+            _release["version"] = version[1:]
+
+
+def release():
+    """Il numero di versione di questo server (es. 2026.11.23.2), oppure "" se
+    non e' ancora noto. Non aspetta mai la rete: la ricerca va in sottofondo."""
+    sha = current_commit()
+    if not sha:
+        return ""
+    with _guard:
+        if _release["commit"] != sha:
+            st = _state()
+            known = str(st.get("version") or "") if st.get("commit") == sha else ""
+            _release.update(commit=sha, version=known.lstrip("v"), tried=0.0)
+        if _release["version"] or time.time() - _release["tried"] < RELEASE_RETRY:
+            return _release["version"]
+        _release["tried"] = time.time()
+    threading.Thread(target=_resolve_release, args=(sha,), daemon=True).start()
+    return ""
+
+
 def changes(old, new, limit=20):
     """Le novita' tra due commit, come elenco di frasi (dai messaggi dei commit)."""
     cfg = _config()
@@ -632,6 +710,8 @@ def snapshot():
         "repo": cfg["repo"] if cfg else "",
         "dev_copy": _dev_copy(),
         "installed": str(state.get("commit") or "")[:7],
+        "release": release(),
+        "commit": current_commit()[:7],
         "installed_at": str(state.get("date") or ""),
         "remote": out["remote"][:7],
         "has_token": bool(token()),

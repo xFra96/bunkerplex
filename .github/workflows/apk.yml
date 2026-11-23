@@ -138,6 +138,8 @@ jobs:
         run: gh release download "$TAG" -p BunkerPlex.apk -D out
 
       - name: Prepara BunkerPlex.zip
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
         run: |
           mkdir -p pkg
           git archive --format=tar --prefix=BunkerPlex/ HEAD | tar -x -C pkg
@@ -154,7 +156,7 @@ jobs:
                   if rel.startswith("apk\\"):
                       continue
                   files.append(rel)
-          state = {"commit": os.environ["GITHUB_SHA"],
+          state = {"commit": os.environ["GITHUB_SHA"], "version": os.environ["VER"],
                    "date": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                    "files": sorted(files)}
           with open(os.path.join(root, "strumenti", "versione.json"), "w", encoding="utf-8") as f:
