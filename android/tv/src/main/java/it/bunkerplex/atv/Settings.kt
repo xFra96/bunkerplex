@@ -83,7 +83,7 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                 }
                 Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Btn("Cambia profilo", Modifier.focusRequester(first), Ic.restart) { act.switchProfile() }
-                    Btn("Gestisci account") { act.web("#/settings/account") }
+                    Btn("Account") { act.go(Screen.Account) }
                 }
             }
 
@@ -97,6 +97,7 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                     Btn("Cambia server") { act.reset(Screen.Connect) }
                     Btn("Amici e tuoi PC") { act.remote("friends") }
                 }
+                ServerUpdate(act)
             }
 
             // ---- App
@@ -132,7 +133,7 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
 }
 
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
+fun Section(title: String, content: @Composable () -> Unit) {
     Column(
         Modifier.padding(top = 28.dp).width(760.dp).clip(RoundedCornerShape(10.dp)).background(C.surface)
             .padding(horizontal = 26.dp, vertical = 22.dp)
@@ -143,7 +144,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Line(label: String, value: String) {
+fun Line(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Txt(label, Modifier.width(180.dp), color = C.ink2)
         Txt(value, weight = FontWeight.SemiBold)
@@ -172,4 +173,81 @@ fun NewVersionScreen(act: MainActivity) {
         }
     }
     LaunchedEffect(Unit) { runCatching { fr.requestFocus() } }
+}
+
+/**
+ * Aggiornamenti del server (come Impostazioni → Aggiornamenti sul web): stato,
+ * «Aggiorna ora», «Controlla adesso» e l'aggiornamento automatico. Durante
+ * l'installazione segue il server finche' non torna su.
+ */
+@Composable
+private fun ServerUpdate(act: MainActivity) {
+    var u by remember { mutableStateOf<JSONObject?>(null) }
+    var round by remember { mutableStateOf(0) }
+    var working by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(round) {
+        u = try { withContext(Dispatchers.IO) { Api.obj("/api/update") } } catch (_: Exception) { null }
+    }
+    // Installazione in corso: si chiede ogni 3 secondi; spento e poi riacceso = fatto
+    LaunchedEffect(working) {
+        if (working != "install") return@LaunchedEffect
+        var down = false
+        while (true) {
+            kotlinx.coroutines.delay(3000)
+            val now = try { withContext(Dispatchers.IO) { Api.obj("/api/update") } } catch (_: Exception) { null }
+            if (now == null) { down = true; continue }
+            val phase = now.optString("phase")
+            if (!down && phase in listOf("installing", "checking", "pc", "restarting")) { if (phase == "restarting") down = true; continue }
+            working = null
+            u = now
+            when {
+                phase == "host" -> act.toast("Aggiornamento scaricato: per completarlo rilancia «Installa BunkerPlex» sul computer")
+                now.optString("error").isNotEmpty() -> act.toast("Aggiornamento non riuscito: ${now.optString("error")}")
+                else -> { act.toast("BunkerPlex è aggiornato"); act.refreshAll() }
+            }
+            return@LaunchedEffect
+        }
+    }
+    val x = u ?: return
+    if (!x.optBoolean("enabled")) {
+        Txt("Gli aggiornamenti automatici del server non sono configurati su questo PC.", Modifier.padding(top = 18.dp), color = C.ink3, lines = 2)
+        return
+    }
+    val phase = x.optString("phase")
+    val state = when {
+        working == "install" -> "Aggiorno BunkerPlex… di solito basta un minuto. Il server si riaccende da solo."
+        working == "check" -> "Controllo…"
+        x.optBoolean("access", true) == false && !x.isNull("access") -> "Questo PC non ha ancora l'accesso agli aggiornamenti: si dà dal PC, Impostazioni → Aggiornamenti."
+        x.optString("error").isNotEmpty() -> x.optString("error")
+        phase == "pc" -> "Aggiornamento in corso sul PC…"
+        phase == "host" -> "Aggiornamento scaricato: per completarlo rilancia «Installa BunkerPlex» sul computer."
+        x.optBoolean("available") -> "È disponibile un aggiornamento del server."
+        x.optLong("checked_at") > 0 -> "Il server è aggiornato."
+        else -> "Il primo controllo parte un paio di minuti dopo l'avvio."
+    }
+    Txt(state, Modifier.padding(top = 18.dp), color = if (x.optBoolean("available")) C.accentText else C.ink2, lines = 2)
+    fun post(path: String, body: JSONObject = JSONObject(), then: () -> Unit) {
+        Thread {
+            try {
+                Api.post(path, body)
+                act.runOnUiThread(then)
+            } catch (e: Exception) {
+                act.runOnUiThread { working = null; act.toast(e.message ?: "Non riuscito") }
+            }
+        }.start()
+    }
+    if (working == null) Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (x.optBoolean("available") && phase.isEmpty()) Btn("Aggiorna il server", primary = true) {
+            working = "install"
+            post("/api/update/install") {}
+        }
+        Btn("Controlla adesso") {
+            working = "check"
+            post("/api/update/check") { working = null; round++ }
+        }
+        val auto = x.optBoolean("auto")
+        Btn("Automatico: " + if (auto) "attivo" else "spento") {
+            post("/api/update/auto", JSONObject().put("auto", !auto)) { round++ }
+        }
+    }
 }

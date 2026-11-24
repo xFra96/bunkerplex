@@ -3411,6 +3411,15 @@ def qr_svg(url):
         return ""
 
 
+def qr_rows(url):
+    """Lo stesso QR come righe di 0 e 1: l'app TV nativa lo disegna da se'."""
+    try:
+        import segno
+        return ["".join("1" if c else "0" for c in row) for row in segno.make(url, error="m").matrix]
+    except Exception:
+        return []
+
+
 @app.post("/api/auth/pair")
 def auth_pair_start(request: Request):
     """La TV chiede un codice da mostrare."""
@@ -3426,7 +3435,7 @@ def auth_pair_start(request: Request):
     ip = private_ip(host)
     url = f"http://{ip}:{port}/#/pair/{code}" if ip else ""
     return {"code": code, "url": url, "base": f"http://{ip}:{port}" if ip else "",
-            "svg": qr_svg(url) if url else "", "ttl": PAIR_TTL}
+            "svg": qr_svg(url) if url else "", "qr": qr_rows(url) if url else [], "ttl": PAIR_TTL}
 
 
 @app.get("/api/auth/pair/{code}")
@@ -3517,7 +3526,7 @@ async def auth_google_start(request: Request):
                        "kind": kind}
     code = res["code"]
     return {"id": fid, "url": res["url"], "short": res["short"], "code": code[:4] + "-" + code[4:],
-            "svg": qr_svg(res["url"]), "ttl": res.get("ttl", 600)}
+            "svg": qr_svg(res["url"]), "qr": qr_rows(res["url"]), "ttl": res.get("ttl", 600)}
 
 
 @app.get("/api/auth/google/{fid}")
