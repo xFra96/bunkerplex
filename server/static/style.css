@@ -831,6 +831,7 @@ body.locked #view { margin-left: 0; }
 .profile .avatar { width: 4.2rem; height: 4.2rem; margin-bottom: .6rem; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 1.5rem; font-weight: 700; background: var(--bg); }
 .profile span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile:focus { background: var(--ink); color: var(--bg); }
+.profile.on { box-shadow: inset 0 0 0 2px var(--ink); }
 @media (max-width: 720px) { .panel.login { margin: 2rem 1rem 0; } }
 .panel.login.wide { max-width: 44rem; }
 

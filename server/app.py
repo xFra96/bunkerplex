@@ -389,7 +389,7 @@ _table_cols = {}
 def user_views(con, u):
     """Viste temporanee con lo stesso nome delle tabelle: in SQLite quelle
     temporanee vincono, quindi tutte le letture del catalogo valgono per l'account."""
-    uid = int(u["id"])
+    uid = int(u.get("sid") or u["id"])
     libs = ",".join(str(int(x)) for x in u["libs"]) or "-1"
     cols = {}
     for table in ("items", "shows"):
@@ -444,6 +444,10 @@ def init_db():
         tv_quick INT DEFAULT 1, created REAL, last_login REAL);
     CREATE TABLE IF NOT EXISTS user_sessions(
         token TEXT PRIMARY KEY, user_id INT, device TEXT, created REAL, last_seen REAL);
+    -- Profili dentro un account («Chi guarda?» dopo il login): ognuno con i suoi visti,
+    -- punti di ripresa e lista. In user_items / user_shows stanno con user_id = -id
+    CREATE TABLE IF NOT EXISTS profiles(
+        id INTEGER PRIMARY KEY, user_id INT, name TEXT COLLATE NOCASE, created REAL);
     -- Visti, punti di ripresa e lista di ogni account. dirty: da mandare al servizio
     CREATE TABLE IF NOT EXISTS user_items(
         user_id INT, item_id INT, position REAL DEFAULT 0, watched INT DEFAULT 0,
@@ -508,7 +512,10 @@ def init_db():
                           # Email con cui l'account entra (al posto del nome utente)
                           ("users", "email TEXT"),
                           # 1 = disattivato dall'amministratore (dalla plancia): qui non si entra
-                          ("users", "disabled INT DEFAULT 0")):
+                          ("users", "disabled INT DEFAULT 0"),
+                          # Il profilo scelto su questo dispositivo: NULL = ancora da scegliere,
+                          # 0 = quello principale (l'account), altrimenti l'id in profiles
+                          ("user_sessions", "profile INT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -2597,8 +2604,10 @@ def session_user(token):
     if not known or time.time() - known[1] > 30:
         con = db(raw=True)
         try:
-            r = con.execute("SELECT s.user_id, s.last_seen, u.id, u.name, u.admin, u.must_change, u.cloud_id "
-                            "FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? "
+            r = con.execute("SELECT s.user_id, s.last_seen, s.profile, p.id AS pid, p.name AS pname, "
+                            "u.id, u.name, u.admin, u.must_change, u.cloud_id "
+                            "FROM user_sessions s JOIN users u ON u.id=s.user_id "
+                            "LEFT JOIN profiles p ON p.id=s.profile AND p.user_id=u.id WHERE s.token=? "
                             "AND COALESCE(u.disabled, 0)=0 AND u.id=COALESCE((" + OWNER_SQL + "), u.id)",
                             (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
@@ -2613,8 +2622,11 @@ def session_user(token):
     if not r:
         return None
     linked = r["cloud_id"] is not None
+    # sid: di chi sono visti, ripresa e lista (l'account, o -id del profilo scelto)
     return {"id": r["id"], "name": r["name"], "admin": linked and bool(r["admin"]), "linked": linked,
-            "must_change": linked and bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token}
+            "must_change": linked and bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token,
+            "sid": -r["pid"] if r["pid"] else r["id"],
+            "profile": r["pid"] or (0 if r["profile"] is not None else None), "pname": r["pname"] or r["name"]}
 
 
 def share_token_of(scope):
@@ -3221,7 +3233,9 @@ def auth_state():
                         manager=can_manage(me["id"], linked and bool(me["admin"])),
                         google=me["google"] or "", email=me["email"] or "",
                         last_sync=me["last_sync"] or 0,
-                        pending=pending_changes(con, me["id"]) if linked else 0)
+                        pending=pending_changes(con, me["id"]) if linked else 0,
+                        # «Chi guarda?» dopo il login: i profili dell'account e quello scelto qui
+                        watchers=profiles_of(con, me), watcher=u.get("profile"))
     finally:
         con.close()
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,
@@ -3229,6 +3243,137 @@ def auth_state():
             "google": cloud_on and bool(cloud_status.get("google")),
             "reset": cloud_on and bool(cloud_status.get("reset")),
             "server": SERVER_NAME}
+
+
+# ---- Profili dell'account («Chi guarda?» dopo il login) ---------------------------
+# Un account puo' avere dei profili (famiglia): ognuno con i suoi visti, punti di
+# ripresa e La mia lista; raccolte, chiavi e impostazioni restano dell'account.
+# Si sceglie il profilo solo DOPO essere entrati con la password dell'account:
+# non e' mai un modo per entrare senza password. Il profilo principale (id 0) e'
+# l'account stesso e si sincronizza con lui; gli altri restano su questo server.
+
+MAX_PROFILES = 5                 # oltre al principale
+
+
+def profile_name(raw):
+    name = re.sub(r"\s+", " ", str(raw or "")).strip()
+    if not name:
+        raise HTTPException(400, "Scrivi un nome")
+    if len(name) > 24:
+        raise HTTPException(400, "Nome troppo lungo (al massimo 24 caratteri)")
+    return name
+
+
+def profiles_of(con, me):
+    """I profili dell'account: il principale (id 0, l'account) e quelli aggiunti."""
+    return [{"id": 0, "name": me["name"], "main": True}] + [
+        {"id": r["id"], "name": r["name"], "main": False}
+        for r in con.execute("SELECT id, name FROM profiles WHERE user_id=? ORDER BY created, id", (me["id"],))]
+
+
+def drop_profile_state(con, pid):
+    for table in ("user_items", "user_shows"):
+        con.execute(f"DELETE FROM {table} WHERE user_id=?", (-pid,))
+    con.execute("UPDATE user_sessions SET profile=NULL WHERE profile=?", (pid,))
+
+
+def profile_owner():
+    """L'account che chiede (gia' entrato con la password su questo dispositivo)."""
+    u = CURRENT.get()
+    if u is None or u.get("friend") or not u.get("session"):
+        raise HTTPException(401, "Entra con il tuo account per continuare")
+    return u
+
+
+def profile_name_free(con, uid, name, but=0):
+    me = con.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
+    if (me and me["name"].lower() == name.lower()) or con.execute(
+            "SELECT 1 FROM profiles WHERE user_id=? AND name=? AND id<>?", (uid, name, but)).fetchone():
+        raise HTTPException(409, "C'è già un profilo con questo nome")
+
+
+def profiles_reply(con, u, current):
+    me = con.execute("SELECT id, name FROM users WHERE id=?", (u["id"],)).fetchone()
+    return {"ok": True, "profiles": profiles_of(con, me), "current": current}
+
+
+@app.get("/api/profiles")
+def profiles_list():
+    u = profile_owner()
+    con = db(raw=True)
+    try:
+        return profiles_reply(con, u, u.get("profile"))
+    finally:
+        con.close()
+
+
+@app.post("/api/profiles")
+async def profiles_add(request: Request):
+    """Un profilo nuovo nell'account (visti, ripresa e lista partono da zero)."""
+    u = profile_owner()
+    name = profile_name((await read_json(request)).get("name"))
+    con = db(raw=True)
+    try:
+        if con.execute("SELECT COUNT(*) FROM profiles WHERE user_id=?", (u["id"],)).fetchone()[0] >= MAX_PROFILES:
+            raise HTTPException(400, f"Al massimo {MAX_PROFILES + 1} profili per account")
+        profile_name_free(con, u["id"], name)
+        con.execute("INSERT INTO profiles(user_id, name, created) VALUES(?,?,?)", (u["id"], name, time.time()))
+        con.commit()
+        return profiles_reply(con, u, u.get("profile"))
+    finally:
+        con.close()
+
+
+@app.post("/api/profiles/select")
+async def profiles_select(request: Request):
+    """Chi guarda su questo dispositivo (resta finche' non si cambia o si esce)."""
+    u = profile_owner()
+    pid = int((await read_json(request)).get("id") or 0)
+    con = db(raw=True)
+    try:
+        if pid and not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
+            raise HTTPException(404, "Questo profilo non c'è più")
+        con.execute("UPDATE user_sessions SET profile=? WHERE token=? AND user_id=?",
+                    (pid, token_hash(u["session"]), u["id"]))
+        con.commit()
+        user_cache.pop(token_hash(u["session"]), None)
+        return profiles_reply(con, u, pid)
+    finally:
+        con.close()
+
+
+@app.post("/api/profiles/{pid}/rename")
+async def profiles_rename(pid: int, request: Request):
+    u = profile_owner()
+    name = profile_name((await read_json(request)).get("name"))
+    con = db(raw=True)
+    try:
+        if not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
+            raise HTTPException(404, "Questo profilo non c'è più")
+        profile_name_free(con, u["id"], name, pid)
+        con.execute("UPDATE profiles SET name=? WHERE id=?", (name, pid))
+        con.commit()
+        user_cache.clear()
+        return profiles_reply(con, u, u.get("profile"))
+    finally:
+        con.close()
+
+
+@app.delete("/api/profiles/{pid}")
+def profiles_delete(pid: int):
+    """Toglie un profilo con i suoi visti, ripresa e lista (non tocca l'account)."""
+    u = profile_owner()
+    con = db(raw=True)
+    try:
+        if not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
+            raise HTTPException(404, "Questo profilo non c'è più")
+        drop_profile_state(con, pid)
+        con.execute("DELETE FROM profiles WHERE id=?", (pid,))
+        con.commit()
+        user_cache.clear()
+        return profiles_reply(con, u, None if u.get("profile") == pid else u.get("profile"))
+    finally:
+        con.close()
 
 
 @app.post("/api/auth/profile")
@@ -3280,6 +3425,9 @@ async def remove_local_user(uid):
         token = row["token"]
         for table in ("user_items", "user_shows", "user_settings", "cloud_state", "user_sessions"):
             con.execute(f"DELETE FROM {table} WHERE user_id=?", (uid,))
+        for p in con.execute("SELECT id FROM profiles WHERE user_id=?", (uid,)).fetchall():
+            drop_profile_state(con, p["id"])
+        con.execute("DELETE FROM profiles WHERE user_id=?", (uid,))
         con.execute("DELETE FROM users WHERE id=?", (uid,))
         con.commit()
     finally:
@@ -4948,11 +5096,14 @@ def set_state(con, item_ids, **fields):
     if u is None:
         con.executemany(f"UPDATE items SET {sets} WHERE id=?", [(*values, i) for i in item_ids])
         return
+    # Un profilo (sid negativo) resta su questo server: niente da mandare all'account
+    sid = u.get("sid") or u["id"]
     con.executemany("INSERT OR IGNORE INTO user_items(user_id, item_id) VALUES(?,?)",
-                    [(u["id"], i) for i in item_ids])
-    con.executemany(f"UPDATE user_items SET {sets}, t=?, dirty=1 WHERE user_id=? AND item_id=?",
-                    [(*values, time.time(), u["id"], i) for i in item_ids])
-    sync_soon()
+                    [(sid, i) for i in item_ids])
+    con.executemany(f"UPDATE user_items SET {sets}, t=?, dirty=? WHERE user_id=? AND item_id=?",
+                    [(*values, time.time(), int(sid > 0), sid, i) for i in item_ids])
+    if sid > 0:
+        sync_soon()
 
 
 def set_show_fav(con, show_id, fav):
@@ -4961,10 +5112,12 @@ def set_show_fav(con, show_id, fav):
         return con.execute("UPDATE shows SET fav=? WHERE id=?", (fav, show_id)).rowcount
     if not get_show(con, show_id):
         return 0
-    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) VALUES(?,?,?,?,1) "
-                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=1",
-                (u["id"], show_id, fav, time.time()))
-    sync_soon()
+    sid = u.get("sid") or u["id"]
+    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=excluded.dirty",
+                (sid, show_id, fav, time.time(), int(sid > 0)))
+    if sid > 0:
+        sync_soon()
     return 1
 
 

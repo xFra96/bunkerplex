@@ -1737,7 +1737,11 @@ function markMe() {
   var u = auth && auth.user;
   el.hidden = !u;
   if (!u) return;
-  var html = face(u.name) + '<span>' + esc(u.name) + '</span>';
+  var name = watcherName();
+  // Con piu' profili il volto porta a «Chi guarda?», come su Netflix
+  var href = hasWatchers() ? '#/chi' : '#/settings/account';
+  if (el.getAttribute('href') !== href) el.setAttribute('href', href);
+  var html = face(name) + '<span>' + esc(name) + '</span>';
   if (el.getAttribute('data-sig') !== html) {
     el.innerHTML = html;
     el.setAttribute('data-sig', html);
@@ -2409,13 +2413,13 @@ function accountArea(i) {
           (auth.google ? '<div class="actions"><a class="btn f" href="#/google" data-key="tvgoogle">Entra con Google</a></div>' : '') +
           '<h2 style="margin-top:1.2rem">Oppure scrivi qui nome e password</h2>' : '') + accountForm('', false)) +
       '</div>';
-    return settingsShell('account', 'Account', '', who + join);
+    return settingsShell('account', 'Account', '', who + watchersPanel(u) + join);
   }
 
   var relogin = u.online ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
     '<p>L\'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). ' +
     'Qui funziona tutto lo stesso; per riprendere la sincronizzazione scrivi la password.</p>' + accountForm(u.name, true) + '</div>';
-  return settingsShell('account', 'Account', '', who + relogin +
+  return settingsShell('account', 'Account', '', who + relogin + watchersPanel(u) +
     '<div class="panel"><h2>Ti segue su ogni PC</h2>' +
       '<dl class="kv">' +
         '<dt>Chiave TMDB</dt><dd>' + (i.tmdb ? 'Attiva · ' + esc(i.tmdb_hint) : '<a class="link f" href="#/settings/catalog" data-key="kv-tmdb">Non impostata</a>') + '</dd>' +
@@ -4377,6 +4381,44 @@ var actions = {
       loadAuth().then(render);
     });
   },
+  watcher: function (id) {
+    post('/profiles/select', { id: +id }).then(watcherChanged).then(function () {
+      toast('Ciao ' + watcherName());
+      location.replace('#/home');
+      render();
+    }, function (e) { toast(e.message); loadAuth().then(render); });
+  },
+  watcheradd: function () {
+    var name = fieldValue('wname').trim();
+    if (!name) { toast('Scrivi il nome del profilo'); return; }
+    post('/profiles', { name: name }).then(watcherChanged).then(function () {
+      toast('Profilo «' + name + '» aggiunto');
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  watcherrename: function (id) {
+    cache.wRename = id ? +id : null;
+    render();
+  },
+  watchersave: function (id) {
+    id = id || cache.wRename;
+    var name = fieldValue('wren').trim();
+    if (!id || !name) { toast('Scrivi il nome del profilo'); return; }
+    post('/profiles/' + id + '/rename', { name: name }).then(watcherChanged).then(function () {
+      cache.wRename = null;
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  watcherdel: function (id) {
+    var p = (auth.user.watchers || []).filter(function (x) { return String(x.id) === id; })[0];
+    confirmBox('Togliere il profilo «' + (p ? p.name : '') + '»? Si perdono i suoi visti, la sua ripresa e la sua lista. L\'account e le raccolte non si toccano.',
+      'Sì, togli il profilo', function () {
+        send('DELETE', '/profiles/' + id).then(watcherChanged).then(function () {
+          toast('Profilo tolto');
+          render();
+        }, function (e) { toast(e.message); });
+      });
+  },
   whomode: function (mode) {
     cache.whoMode = cache.whoMode === mode ? '' : mode;
     render();
@@ -5373,6 +5415,8 @@ var routes = [
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
   }],
+  // «Cambia profilo»: la scelta la mostra gate(); senza profili si torna alla Home
+  [/^#\/chi$/, function () { location.replace('#/home'); return ''; }],
   [/^#\/password$/, function () {
     return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',
       '<div class="panel">' +
@@ -5416,8 +5460,71 @@ async function gate() {
   }
   if (auth.user.must_change && !pwLater()) { lockScreen(true); return passwordPage(true); }
   if (conflicts) { lockScreen(true); return conflictsPage(); }
+  // «Chi guarda?» dei profili dell'account: dopo il login, mai al posto della password
+  if (needWatcher() || (location.hash === '#/chi' && hasWatchers())) { lockScreen(true); return watchersPage(); }
   lockScreen(false);
   return null;
+}
+
+// ---------------------------------------------------------------- Profili dell'account
+// Dentro un account ci possono essere piu' profili (famiglia): ognuno con i suoi
+// visti, punti di ripresa e La mia lista. Si sceglie dopo essere entrati con la
+// password; ogni dispositivo ricorda il suo finche' non si cambia o si esce.
+function hasWatchers() {
+  var u = auth && auth.user;
+  return !!(u && u.watchers && u.watchers.length > 1);
+}
+
+function needWatcher() {
+  return hasWatchers() && (auth.user.watcher === null || auth.user.watcher === undefined);
+}
+
+function watcherName() {
+  var u = auth && auth.user;
+  if (!u) return '';
+  var w = (u.watchers || []).filter(function (p) { return p.id === u.watcher; })[0];
+  return w ? w.name : u.name;
+}
+
+function watchersPage() {
+  var u = auth.user, cur = u.watcher;
+  var list = u.watchers.map(function (p, n) {
+    var on = p.id === cur || (cur == null && n === 0);
+    return '<button class="profile f' + (p.id === cur ? ' on' : '') + '"' + (on ? ' data-autofocus' : '') + ' data-act="watcher" data-arg="' + p.id + '" data-key="watch-' + p.id + '">' +
+      face(p.name, 'big') + '<span>' + esc(p.name) + '</span></button>';
+  }).join('');
+  return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
+    '<div class="profiles">' + list + '</div>' +
+    '<p style="margin-top:1.2rem"><small>Profili dell\'account ' + esc(u.name) + ': ognuno ha i suoi visti, la sua ripresa e la sua lista.</small></p>' +
+    '<div class="actions" style="margin-top:1rem">' +
+      (cur == null ? '' : '<a class="btn f" href="#/settings/account" data-key="watch-manage">Gestisci profili</a>') +
+      '<button class="btn f" data-act="logout" data-key="watch-logout">Esci dall\'account</button></div></div></div>';
+}
+
+function watchersPanel(u) {
+  var list = (u.watchers || []).map(function (p) {
+    var id = p.id;
+    return '<div class="folder"><div class="where">' + face(p.name) + ' <b>' + esc(p.name) + '</b><small>' +
+        (p.main ? (u.linked ? 'Profilo principale · si sincronizza con l\'account' : 'Profilo principale') : 'Solo su questo server') + (id === u.watcher ? ' · in uso qui' : '') + '</small></div>' +
+      (p.main ? '' : cache.wRename === id ? '<div class="actions"><input class="field f" id="wren" data-key="wren" data-autofocus maxlength="24" data-enter="watchersave" value="' + esc(p.name) + '">' +
+        '<button class="btn primary f" data-act="watchersave" data-arg="' + id + '" data-key="wsave-' + id + '">Salva</button>' +
+        '<button class="btn f" data-act="watcherrename" data-arg="" data-key="wcancel-' + id + '">Annulla</button></div>' :
+        '<div class="actions"><button class="btn f" data-act="watcherrename" data-arg="' + id + '" data-key="wren-' + id + '">Rinomina</button>' +
+        '<button class="btn danger f" data-act="watcherdel" data-arg="' + id + '" data-key="wdel-' + id + '">Togli</button></div>') + '</div>';
+  }).join('');
+  return '<div class="panel"><h2>Profili</h2>' +
+    '<p>Chi usa il tuo account può avere il suo profilo, con visti, ripresa e La mia lista suoi. Raccolte, chiavi e impostazioni restano dell\'account. ' +
+    'Si sceglie dopo il login, in «Chi guarda?»: la password dell\'account serve sempre.</p>' +
+    '<div class="lib">' + list + '</div>' +
+    ((u.watchers || []).length < 6 ? '<div class="actions"><input class="field f" id="wname" data-key="wname" maxlength="24" data-enter="watcheradd" placeholder="Nome del nuovo profilo">' +
+      '<button class="btn f" data-act="watcheradd" data-key="watcheradd">Aggiungi profilo</button></div>' : '') +
+    (hasWatchers() ? '<div class="actions"><a class="btn primary f" href="#/chi" data-key="watchswitch">Cambia profilo</a></div>' : '') + '</div>';
+}
+
+function watcherChanged(r) {
+  dropCached();
+  libsLoadedAt = 0;
+  return loadAuth().then(function () { markMe(); return r; });
 }
 
 // Sullo schermo stretto le aree delle impostazioni sono una fila di schede che
