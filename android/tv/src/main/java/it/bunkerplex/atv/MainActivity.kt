@@ -69,6 +69,10 @@ sealed class Screen {
     data class Password(val id: Int, val name: String) : Screen()
     data object Home : Screen()
     data class Detail(val kind: String, val id: Int) : Screen()
+    data class Library(val id: Int, val name: String) : Screen()
+    data object MyList : Screen()
+    data object Sagas : Screen()
+    data object Search : Screen()
 }
 
 /**
@@ -99,6 +103,10 @@ class MainActivity : ComponentActivity() {
                     is Screen.Password -> PasswordScreen(top)
                     Screen.Home -> HomeScreen(this@MainActivity, refresh)
                     is Screen.Detail -> DetailScreen(this@MainActivity, top, refresh)
+                    is Screen.Library -> LibraryScreen(this@MainActivity, top, refresh)
+                    Screen.MyList -> MyListScreen(this@MainActivity, refresh)
+                    Screen.Sagas -> SagasScreen(this@MainActivity, refresh)
+                    Screen.Search -> SearchScreen(this@MainActivity, refresh)
                 }
             }
         }
@@ -160,6 +168,13 @@ class MainActivity : ComponentActivity() {
 
     fun go(s: Screen) {
         stack.add(s)
+    }
+
+    /** Una voce del menu: sopra la Home, cosi' Indietro torna sempre li'. */
+    fun section(s: Screen) {
+        stack.clear()
+        stack.add(Screen.Home)
+        if (s != Screen.Home) stack.add(s)
     }
 
     fun reset(s: Screen) {
