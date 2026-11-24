@@ -316,13 +316,18 @@ fun Rail(act: MainActivity, libs: List<Pair<Int, String>>, current: String) {
             }
         }
         Spacer(Modifier.height(18.dp))
-        RailItem(Ic.home, null, null, "Home", open, current == "home", if (current == "home") here else null) {}
-        RailItem(Ic.search, null, null, "Cerca", open) { act.web("#/search") }
-        RailItem(Ic.list, null, null, "La mia lista", open) { act.web("#/mylist") }
-        RailItem(Ic.sagas, null, null, "Collezioni", open) { act.web("#/sagas") }
+        fun at(k: String) = if (current == k) here else null
+        RailItem(Ic.home, null, null, "Home", open, current == "home", at("home")) { act.section(Screen.Home) }
+        RailItem(Ic.search, null, null, "Cerca", open, current == "search", at("search")) { act.section(Screen.Search) }
+        RailItem(Ic.list, null, null, "La mia lista", open, current == "mylist", at("mylist")) { act.section(Screen.MyList) }
+        RailItem(Ic.sagas, null, null, "Collezioni", open, current == "sagas", at("sagas")) { act.section(Screen.Sagas) }
         Spacer(Modifier.height(12.dp))
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            libs.forEach { (id, name) -> RailItem(null, initials(name), null, name, open) { act.web("#/lib/$id") } }
+            libs.forEach { (id, name) ->
+                RailItem(null, initials(name), null, name, open, current == "lib$id", at("lib$id")) {
+                    act.section(Screen.Library(id, name))
+                }
+            }
         }
         Api.user?.let { u -> RailItem(null, null, u, u, open) { act.web("#/settings/account") } }
         RailItem(Ic.gear, null, null, "Impostazioni", open) { act.web("#/settings") }
