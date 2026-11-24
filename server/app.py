@@ -8085,7 +8085,7 @@ def apk_link(request: Request):
 
 
 # Installare l'app sulle TV di casa dal PC, con il debug di rete (server/tvinstall.py)
-tvinstall.setup(private_ip, apk_version, APK_PATH)
+tvinstall.setup(private_ip, apk_version, APK_PATH, VERSION)
 app.include_router(tvinstall.router)
 
 
