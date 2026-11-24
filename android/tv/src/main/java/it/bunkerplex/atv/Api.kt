@@ -30,6 +30,10 @@ object Api {
     @Volatile
     var home = ""
 
+    /** L'ultima risposta di /api/info del server raggiunto (versioni, indirizzi). */
+    @Volatile
+    var info: JSONObject? = null
+
     fun load(ctx: Context) {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         home = p.getString("server", "") ?: ""
@@ -56,6 +60,7 @@ object Api {
         val others = (p.getString("server_others", "") ?: "").split(' ').filter { it.isNotBlank() }
         for (url in (listOf(home) + others).distinct()) {
             val info = Net.info(url, if (url == home) 3000 else 6000) ?: continue
+            this.info = info
             Remote.setCloud(ctx, info.optString("cloud"))
             info.optJSONArray("addresses")?.let { list ->
                 val all = (0 until list.length()).map { Net.normalize(list.getString(it)) }.distinct()

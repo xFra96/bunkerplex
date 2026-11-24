@@ -290,7 +290,7 @@ private fun open(act: MainActivity, c: Card) {
 /**
  * Menu a sinistra, come sul web: una colonna stretta di icone che si allarga con i
  * nomi quando prende il fuoco. Sta sopra il contenuto, che non si sposta.
- * Le voci non ancora native aprono l'interfaccia web.
+ * Account e impostazioni portano alle Impostazioni native.
  */
 @Composable
 fun Rail(act: MainActivity, libs: List<Pair<Int, String>>, current: String) {
@@ -329,8 +329,10 @@ fun Rail(act: MainActivity, libs: List<Pair<Int, String>>, current: String) {
                 }
             }
         }
-        Api.user?.let { u -> RailItem(null, null, u, u, open) { act.web("#/settings/account") } }
-        RailItem(Ic.gear, null, null, "Impostazioni", open) { act.web("#/settings") }
+        Api.user?.let { u -> RailItem(null, null, u, u, open) { act.section(Screen.Settings) } }
+        RailItem(Ic.gear, null, null, "Impostazioni", open, current == "settings", at("settings")) {
+            act.section(Screen.Settings)
+        }
     }
 }
 
