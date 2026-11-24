@@ -16,7 +16,8 @@
 // «Auth Keys: write» e «Devices: Core» sull'etichetta tag:bunkerplex).
 // GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET: «Entra con Google» (vedi /google/start).
 // BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
-// con un codice via email (vedi /reset/start).
+// con un codice via email (vedi /reset/start). Trigger cron settimanale (es.
+// «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -29,6 +30,13 @@ export default {
     } catch (e) {
       if (e instanceof Reply) return e.response;
       return json({ detail: 'Errore del servizio account' }, 500);
+    }
+  },
+  // Trigger cron (una volta a settimana): Brevo spegne le chiavi API che non
+  // usa nessuno per 90 giorni, e le email di recupero possono mancare a lungo.
+  async scheduled(event, env) {
+    if (resetOn(env)) {
+      await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': env.BREVO_API_KEY, Accept: 'application/json' } });
     }
   }
 };
