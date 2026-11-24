@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS users(
   google_sub TEXT,                   -- account Google collegato («Entra con Google»)
   google_email TEXT,                 -- la sua email (o quella indicata dall'amministratore)
   no_password INTEGER NOT NULL DEFAULT 0, -- 1 = entra solo con Google
-  email TEXT                         -- per entrare con email e password (al posto del nome utente)
+  email TEXT,                        -- per entrare con email e password (al posto del nome utente)
+  disabled INTEGER NOT NULL DEFAULT 0 -- 1 = disattivato dall'amministratore: non entra da nessuna parte
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub);
 
