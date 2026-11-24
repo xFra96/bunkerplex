@@ -1197,3 +1197,159 @@ body:not(.kb) .setting:focus small { color: var(--ink); background: #ffffff12; }
   html.tv .smain .panel { padding: 1.7rem 2rem; }
   html.tv .panel h2 { font-size: 1.45rem; font-weight: 800; letter-spacing: -.015em; }
 }
+
+/* ---------- Telefono e tablet: tocco, spazi sicuri, leggibilita' ---------- */
+/* Niente doppio tocco per ingrandire sui comandi: il tocco risponde subito */
+a, button, .f { touch-action: manipulation; }
+
+/* Col mouse o col dito l'elemento col fuoco non diventa bianco (solo con frecce e telecomando) */
+body:not(.kb) .srow:focus { background: none; color: inherit; }
+body:not(.kb) .srow:focus:hover { background: var(--surface2); }
+body:not(.kb) .srow.lead:focus { background: inherit; }
+body:not(.kb) .srow:focus .stext small, body:not(.kb) .srow:focus .sval { color: var(--ink2); }
+body:not(.kb) .srow:focus .sval.warn { color: var(--warn); }
+body:not(.kb) .srow:focus .sval.ok::before { background: var(--ok); }
+body:not(.kb) .srow:focus .sval.warn::before { background: var(--warn); }
+body:not(.kb) .srow:focus .chev { stroke: var(--ink3); }
+body:not(.kb) .srow:focus .sic { color: var(--ink3); }
+body:not(.kb) .srow:focus .uface { background: hsl(var(--h) 26% 21%); color: hsl(var(--h) 62% 80%); }
+body:not(.kb) .actrow:focus { background: none; color: inherit; }
+body:not(.kb) .actrow:focus .acttxt small { color: var(--ink2); }
+body:not(.kb) .actrow:focus .chev { stroke: var(--ink3); }
+body:not(.kb) .actrow:focus .ndot { background: var(--warn); }
+body:not(.kb) .actrow:focus .actbar { background: #ffffff1f; }
+body:not(.kb) .actrow:focus .actbar i { background: var(--accent-text); }
+body:not(.kb) .actrow:hover { background: var(--surface2); }
+body:not(.kb) .actbtn:focus { background: var(--surface2); color: var(--ink); }
+body:not(.kb) .actbtn:focus .frcount { color: var(--accent-text); }
+body:not(.kb) .profile:focus { background: var(--surface2); color: inherit; }
+body:not(.kb) .profile:focus .uface { background: hsl(var(--h) 26% 21%); color: hsl(var(--h) 62% 80%); }
+body:not(.kb) a.versions:focus .vchip { background: var(--surface); color: inherit; }
+body:not(.kb) a.versions:focus .vchip small { color: var(--ink2); }
+body:not(.kb) a.versions:focus .vchip span { color: var(--ok); }
+body:not(.kb) a.versions:focus .vchip.warn span { color: var(--warn); }
+body:not(.kb) .link:focus { background: none; color: var(--accent-text); }
+
+/* Avvisi: larghi quanto il testo (non stretti a meta' schermo); il segnale offline
+   resta sotto le finestre di scelta */
+#toast { width: max-content; max-width: min(90vw, 34rem); text-align: center; }
+#offpill { z-index: 44; }
+
+/* Un valore lungo (es. lo stato dell'account) non schiaccia il nome della riga */
+.sval { flex: 0 1 auto; min-width: 0; max-width: 45%; }
+html.tv .srow > .sval { max-width: none; }
+
+/* Col dito il "passaggio sopra" resta appiccicato dopo il tocco: niente ingrandimenti,
+   una piccola pressione al tocco, e il menu delle azioni (⋯) sempre in vista
+   (su iPhone la pressione lunga non apre il menu) */
+@media (hover: none) and (pointer: coarse) {
+  html:not(.tv) body:not(.kb) .card:hover { transform: none; }
+  html:not(.tv) body:not(.kb) .card:active { transform: scale(.97); }
+  html:not(.tv) .card .playico { display: none; }
+  html:not(.tv) .art .more { opacity: 1; width: 2.2rem; height: 2.2rem; right: .35rem; bottom: .65rem; }
+  html:not(.tv) .card.wide .art .more { bottom: .6rem; }
+  html:not(.tv) .ep .playico { display: flex; }
+  html:not(.tv) .person:hover .face { box-shadow: none; }
+  html:not(.tv) .srow:hover, html:not(.tv) .setting:hover, html:not(.tv) .result:hover { background: inherit; }
+  html:not(.tv) .srow:active, html:not(.tv) .setting:active, html:not(.tv) .result:active, html:not(.tv) .actrow:active { background: var(--surface2); }
+}
+
+/* Tablet (e telefono in orizzontale): caratteri piu' grandi, menu a sinistra sempre
+   uguale con l'etichetta sotto l'icona, senza aprirsi a ogni tocco */
+@media (hover: none) and (pointer: coarse) and (min-width: 721px) {
+  html:not(.tv) { font-size: clamp(15px, 1.4vw, 18px); --rail: 5.4rem; }
+  html:not(.tv) #rail, html:not(.tv) #rail:hover, html:not(.tv) #rail:focus-within {
+    width: var(--rail); padding: .8rem .3rem calc(.8rem + env(safe-area-inset-bottom)); background: var(--bg); overflow-y: auto;
+  }
+  html:not(.tv) .brand { justify-content: center; height: 2.6rem; margin-bottom: .6rem; padding: 0; }
+  html:not(.tv) .brand span { display: none; }
+  html:not(.tv) .raillabel { height: .6rem; margin: .3rem .6rem .5rem; border-top: 1px solid var(--surface2); }
+  html:not(.tv) .raillabel span { display: none; }
+  html:not(.tv) #navlibs { flex: none; overflow: visible; }
+  html:not(.tv) .railitem { flex-direction: column; justify-content: center; height: auto; min-height: 3.7rem; margin-bottom: .2rem; padding: .35rem .1rem; }
+  html:not(.tv) .railitem svg, html:not(.tv) .railitem .avatar, html:not(.tv) .railitem .uface { width: 1.8rem; height: 1.8rem; }
+  html:not(.tv) .railitem svg { padding: .2rem; }
+  html:not(.tv) .railitem span, html:not(.tv) #rail:hover .railitem span, html:not(.tv) #rail:focus-within .railitem span {
+    opacity: 1; transform: none; max-width: 100%; margin: .2rem 0 0; padding: 0; font-size: .68rem; font-weight: 600; text-align: center;
+  }
+  html:not(.tv) .railitem.on::before { left: -.4rem; }
+  html:not(.tv) .railitem.alert::after { left: calc(50% + .35rem); top: .35rem; }
+  html:not(.tv) .card:focus { transform: none; }
+  html:not(.tv) .btn { padding: .8rem 1.4rem; }
+  html:not(.tv) .filter { padding: .6rem 1rem; }
+}
+@media (hover: none) and (pointer: coarse) and (min-width: 721px) and (max-height: 560px) {
+  html:not(.tv) .brand { display: none; }
+  html:not(.tv) .railitem { min-height: 3.2rem; }
+}
+
+/* Schermo in verticale (tablet): l'anteprima della Home e le schede usano tutta la larghezza */
+@media (orientation: portrait) and (min-width: 721px) {
+  html:not(.tv) .stage .bg { width: 100%; }
+  html:not(.tv) .stage .shade { background: linear-gradient(0deg, #060a07 6%, #060a07d9 40%, #060a0733 100%); }
+  html:not(.tv) .stage .info { width: auto; right: var(--pad); max-width: 40rem; }
+  html:not(.tv) .hero .bg { height: 70vh; }
+  html:not(.tv) .hero .bg::after { background: linear-gradient(0deg, #060a07 4%, #060a07cc 40%, #060a0740 100%); }
+  html:not(.tv) .hero { min-height: 0; padding-top: 38vh; }
+  html:not(.tv) .hero .cover { width: 11rem; margin-right: 1.8rem; }
+  html:not(.tv) .rows .card.poster { width: min(19vh, 22vw); }
+  html:not(.tv) .rows .card.wide { width: min(38vh, 40vw); }
+}
+
+/* Telefono: barra in basso a schede uguali, rispettando la barra di sistema dell'iPhone;
+   le Impostazioni vanno in alto a destra accanto alla campanella */
+@media (max-width: 720px) {
+  #rail, #rail:hover, #rail:focus-within { height: calc(4.2rem + env(safe-area-inset-bottom)); padding-bottom: calc(.3rem + env(safe-area-inset-bottom)); }
+  #navlibs { display: contents; }
+  .railitem { flex: 1 0 3.9rem; min-width: 3.9rem; margin: 0; padding: 0 .15rem; }
+  .railitem span, #rail:hover .railitem span { max-width: 100%; text-align: center; font-weight: 600; }
+  .railitem:active { background: var(--surface2); }
+  .railitem.add { display: none; }
+  .railitem.on { background: none; color: var(--accent-text); }
+  .railitem.on svg { color: var(--accent-text); }
+  .railitem.on::before { left: 30%; right: 30%; }
+  body:not(.kb) .railitem.on:focus { background: none; color: var(--accent-text); }
+  #rail .railitem[data-key="nav-settings"] {
+    position: fixed; top: .55rem; right: .8rem; z-index: 41; flex: none; width: 2.5rem; min-width: 0; height: 2.5rem; padding: 0;
+    border-radius: 999px; background: var(--surface2); color: var(--ink);
+  }
+  #rail .railitem[data-key="nav-settings"] svg { width: 1.6rem; height: 1.6rem; padding: .1rem; }
+  #rail .railitem[data-key="nav-settings"] span, #rail .railitem[data-key="nav-settings"]::before { display: none; }
+  #rail .railitem[data-key="nav-settings"].on { background: var(--accent); color: var(--accent-ink); }
+  #rail .railitem[data-key="nav-settings"].on svg { color: inherit; }
+  #activity { right: 3.8rem; }
+  #modal.corner { padding-top: 3.4rem; }
+  .rows { bottom: calc(4.2rem + env(safe-area-inset-bottom)); }
+  #view { padding-bottom: calc(6.5rem + env(safe-area-inset-bottom)); }
+  #toast { bottom: calc(5.4rem + env(safe-area-inset-bottom)); }
+  #offpill { left: 50%; right: auto; transform: translateX(-50%); bottom: calc(4.8rem + env(safe-area-inset-bottom)); white-space: nowrap; font-size: .82rem; }
+  #castbar { bottom: calc(4.7rem + env(safe-area-inset-bottom)); }
+
+  /* Filtri della raccolta su una sola riga che scorre col dito */
+  .filters { flex-wrap: nowrap; overflow-x: auto; padding-bottom: .3rem; scroll-padding: 0 var(--pad); }
+  .filters::after { content: ""; flex: none; width: 1px; }
+  .filter { flex: none; margin-bottom: 0; }
+
+  /* Impostazioni: il valore va sotto il nome invece di schiacciarlo */
+  .srow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ic txt chev" "ic val chev"; column-gap: .85rem; row-gap: .2rem; min-height: 4rem; }
+  .srow > .sic, .srow > .uface { grid-area: ic; }
+  .srow > .stext { grid-area: txt; }
+  .srow > .sval { grid-area: val; max-width: none; justify-content: flex-start; text-align: left; font-size: .9rem; }
+  .srow > .chev { grid-area: chev; }
+  .settings .stitle { font-size: 2rem; }
+  .vchip { min-width: 0; flex: 1 1 8rem; }
+
+  /* Finestre di scelta: salgono dal basso, a tutta larghezza, a portata di pollice */
+  body:not(.playing) #modal:not(.corner) { align-items: flex-end; }
+  body:not(.playing) #modal:not(.corner) .sheet {
+    width: 100%; max-width: none; max-height: 88vh; border-radius: 1rem 1rem 0 0;
+    padding-bottom: env(safe-area-inset-bottom); animation: sheetup .24s cubic-bezier(.2, .8, .2, 1);
+  }
+  body:not(.playing) #modal:not(.corner) .sheet::before { content: ""; display: block; flex: none; width: 2.6rem; height: .3rem; margin: .6rem auto 0; border-radius: 999px; background: var(--ink3); opacity: .6; }
+  .opt { padding: .95rem 1rem; }
+  /* Pulsanti dal testo lungo: vanno a capo invece di allargare la pagina */
+  .btn { max-width: 100%; white-space: normal; text-align: left; }
+  #view { overflow-x: clip; }
+}
+@keyframes sheetup { from { transform: translateY(100%); } }
+html.lite .sheet { animation: none !important; }
