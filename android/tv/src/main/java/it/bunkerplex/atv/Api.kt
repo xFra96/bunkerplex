@@ -2,6 +2,7 @@ package it.bunkerplex.atv
 
 import android.content.Context
 import it.bunkerplex.tv.Net
+import it.bunkerplex.tv.Remote
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -25,17 +26,45 @@ object Api {
 
     private const val PREFS = "bunkerplex"
 
+    /** Il server di casa scelto; base e' quello in uso (fuori casa, per esempio, l'indirizzo Tailscale dello stesso PC). */
+    @Volatile
+    var home = ""
+
     fun load(ctx: Context) {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        base = p.getString("server", "") ?: ""
+        home = p.getString("server", "") ?: ""
+        if (base.isEmpty()) base = home
         Net.session = p.getString("session", "") ?: ""
     }
 
     fun saveServer(ctx: Context, url: String) {
+        home = url
         base = url
         Net.session = ""
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString("server", url).putString("session", "").apply()
+            .putString("server", url).putString("session", "").putString("server_others", "").apply()
+    }
+
+    /**
+     * Il primo indirizzo del server che risponde: prima quello di casa, poi (fuori casa)
+     * gli altri dello stesso PC che il server stesso ha detto, come quello di Tailscale.
+     * null = nessuno: si propongono amici e tuoi PC (Tailscale dentro l'app).
+     */
+    fun reach(ctx: Context): String? {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (home.isEmpty()) return null
+        val others = (p.getString("server_others", "") ?: "").split(' ').filter { it.isNotBlank() }
+        for (url in (listOf(home) + others).distinct()) {
+            val info = Net.info(url, if (url == home) 3000 else 6000) ?: continue
+            Remote.setCloud(ctx, info.optString("cloud"))
+            info.optJSONArray("addresses")?.let { list ->
+                val all = (0 until list.length()).map { Net.normalize(list.getString(it)) }.distinct()
+                p.edit().putString("server_others", all.joinToString(" ")).apply()
+            }
+            base = url
+            return url
+        }
+        return null
     }
 
     fun saveSession(ctx: Context, token: String) {

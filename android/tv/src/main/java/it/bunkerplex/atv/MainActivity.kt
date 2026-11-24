@@ -195,6 +195,23 @@ class MainActivity : ComponentActivity() {
 
     fun session401() = reset(Screen.Who)
 
+    /** Senza server di casa: amici e tuoi PC, raggiunti con il Tailscale dentro l'app. */
+    private var remoteOffered = false
+
+    fun remote(hash: String) {
+        leftApp = true
+        startActivity(Intent(this, RemoteActivity::class.java).putExtra("hash", hash))
+    }
+
+    /** Dalla pagina degli amici: «Riprova casa» o «Scrivi l'indirizzo». */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        when (intent.getStringExtra("go")) {
+            "home" -> reset(if (Api.home.isEmpty()) Screen.Connect else Screen.Who)
+            "setup" -> reset(Screen.Connect)
+        }
+    }
+
     // ---------------------------------------------------------------- Collegamento
 
     @Composable
@@ -245,6 +262,7 @@ class MainActivity : ComponentActivity() {
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Btn("Cerca di nuovo", Modifier.focusRequester(fr), Ic.search, primary = true) { attempt++ }
                         Btn("Scrivi l'indirizzo") { manual = true }
+                        Btn("Amici e tuoi PC") { remote("friends") }
                     }
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 }
@@ -262,6 +280,16 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(attempt) {
             error = null
             try {
+                val found = withContext(Dispatchers.IO) { Api.reach(this@MainActivity) }
+                if (found == null) {
+                    error = "Il server di casa non risponde."
+                    // Fuori casa: come l'app attuale, si propongono subito amici e tuoi PC
+                    if (!remoteOffered) {
+                        remoteOffered = true
+                        remote("ask")
+                    }
+                    return@LaunchedEffect
+                }
                 val s = withContext(Dispatchers.IO) { Api.obj("/api/auth/state") }
                 val user = s.optJSONObject("user")
                 if (user != null) {
@@ -281,6 +309,7 @@ class MainActivity : ComponentActivity() {
                     val fr = remember { FocusRequester() }
                     Row(Modifier.padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Btn("Riprova", Modifier.focusRequester(fr), Ic.restart, primary = true) { attempt++ }
+                        Btn("Amici e tuoi PC") { remote("friends") }
                         Btn("Cambia server") { reset(Screen.Connect) }
                     }
                     LaunchedEffect(Unit) { fr.requestFocus() }
