@@ -77,7 +77,7 @@ fun LoginScreen(act: MainActivity, s: Screen.Login) {
     val fr = remember { FocusRequester() }
     val passFr = remember { FocusRequester() }
     fun send() {
-        if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente e password"; return }
+        if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente (o email) e password"; return }
         if (busy) return
         busy = true
         msg = "Entro…"
@@ -99,7 +99,7 @@ fun LoginScreen(act: MainActivity, s: Screen.Login) {
             Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 3,
         )
         if (s.name == null) {
-            Field(name, { name = it }, "Nome utente", Modifier.focusRequester(fr)) { runCatching { passFr.requestFocus() } }
+            Field(name, { name = it }, "Nome utente o email", Modifier.focusRequester(fr)) { runCatching { passFr.requestFocus() } }
             Box(Modifier.padding(top = 12.dp))
         }
         Field(pass, { pass = it }, "Password", Modifier.focusRequester(passFr), secret = true) { send() }
@@ -459,6 +459,8 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
                     at("quick")) {
                     run({ Api.post("/api/auth/options", JSONObject().put("tv_quick", !quick)) })
                 }
+                val email = u.optString("email")
+                if (email.isNotEmpty()) Txt("Puoi entrare anche con $email e la tua password.", Modifier.padding(top = 18.dp), color = C.ink2)
                 val google = u.optString("google")
                 if (google.isNotEmpty()) {
                     Txt("Puoi entrare con $google, senza password.", Modifier.padding(top = 18.dp), color = C.ink2)

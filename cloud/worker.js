@@ -105,7 +105,8 @@ async function body(request) {
 
 function userJson(u) {
   return { id: u.id, username: u.username, admin: !!u.admin, must_change: !!u.must_change,
-    google: u.google_sub ? (u.google_email || 'collegato') : '', no_password: !!u.no_password };
+    google: u.google_sub ? (u.google_email || 'collegato') : '', no_password: !!u.no_password,
+    email: u.email || '' };
 }
 
 async function newSession(env, user, device) {
@@ -240,6 +241,7 @@ async function ensureGoogle(env) {
   if (!cols.includes('google_sub')) await env.DB.prepare('ALTER TABLE users ADD COLUMN google_sub TEXT').run();
   if (!cols.includes('google_email')) await env.DB.prepare('ALTER TABLE users ADD COLUMN google_email TEXT').run();
   if (!cols.includes('no_password')) await env.DB.prepare('ALTER TABLE users ADD COLUMN no_password INTEGER NOT NULL DEFAULT 0').run();
+  if (!cols.includes('email')) await env.DB.prepare('ALTER TABLE users ADD COLUMN email TEXT').run();
   await env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS google_flows(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
     'state TEXT, link_user INTEGER, device TEXT, kind TEXT, user_id INTEGER, email TEXT, error TEXT, exp REAL NOT NULL)').run();
@@ -249,8 +251,25 @@ async function ensureGoogle(env) {
 function cleanEmail(raw) {
   const e = String(raw || '').trim().toLowerCase();
   if (!e) return '';
-  if (e.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) fail(400, 'Email Google non valida');
+  if (e.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) fail(400, 'Email non valida');
   return e;
+}
+
+// Email per entrare con email e password: una sola per account, e non quella di un altro
+async function emailFree(env, email, id) {
+  const other = await env.DB.prepare('SELECT id FROM users WHERE (email = ? OR google_email = ?) AND id <> ?')
+    .bind(email, email, id || 0).first();
+  if (other) fail(409, 'Questa email è già di un altro account');
+}
+
+// Il nome utente di un'email. L'impronta della password si calcola sul nome utente,
+// quindi il server di casa prima chiede questo. Per un'email sconosciuta torna un nome
+// finto ma sempre uguale: da fuori non si capisce quali email hanno un account.
+async function nameForEmail(env, email) {
+  const u = await env.DB.prepare('SELECT username FROM users WHERE email = ?').bind(email).first() ||
+    await env.DB.prepare('SELECT username FROM users WHERE google_email = ?').bind(email).first();
+  if (u) return u.username;
+  return 'x' + (await sha256('bunkerplex-email:' + (env.SETUP_KEY || env.GOOGLE_CLIENT_SECRET || '') + email)).slice(0, 15);
 }
 
 function cleanCode(raw) {
@@ -485,6 +504,13 @@ async function route(request, env) {
     return json({ token: await newSession(env, user, b.device), user: userJson(user) });
   }
 
+  // Entrare con l'email: prima il nome utente (vedi nameForEmail)
+  if (path === '/resolve' && method === 'POST') {
+    await ensureGoogle(env);
+    const b = await body(request);
+    return json({ username: await nameForEmail(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email')) });
+  }
+
   if (path === '/login' && method === 'POST') {
     const b = await body(request);
     const verifier = cleanVerifier(b.verifier);
@@ -516,6 +542,15 @@ async function route(request, env) {
       env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').bind(user.id, user.token_hash)
     ]);
     return json({ ok: true, user: userJson({ ...user, must_change: 0 }) });
+  }
+
+  // L'email con cui l'account entra (vuota: la toglie; resta il nome utente)
+  if (path === '/email' && method === 'PUT') {
+    await ensureGoogle(env);
+    const email = cleanEmail((await body(request)).email);
+    if (email) await emailFree(env, email, user.id);
+    await env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(email || null, user.id).run();
+    return json({ ok: true, user: userJson({ ...user, email }) });
   }
 
   if (user.must_change) fail(403, 'Prima cambia la password provvisoria');
@@ -764,13 +799,13 @@ async function route(request, env) {
     await ensureGoogle(env);
     if (path === '/admin/users' && method === 'GET') {
       const rows = await env.DB.prepare(
-        'SELECT u.id, u.username, u.admin, u.must_change, u.created, u.google_sub, u.google_email, ' +
+        'SELECT u.id, u.username, u.admin, u.must_change, u.created, u.google_sub, u.google_email, u.email, ' +
         'MAX(s.last_seen) last_seen, COUNT(s.token_hash) servers ' +
         'FROM users u LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id ORDER BY u.username COLLATE NOCASE'
       ).all();
       return json({ users: rows.results.map((r) => {
         const { google_sub, google_email, ...rest } = r;
-        return { ...rest, admin: !!r.admin, must_change: !!r.must_change, google: google_email || '', google_linked: !!google_sub };
+        return { ...rest, email: r.email || '', admin: !!r.admin, must_change: !!r.must_change, google: google_email || '', google_linked: !!google_sub };
       }) });
     }
 
@@ -780,20 +815,25 @@ async function route(request, env) {
       const pw = await passwordFields(cleanVerifier(b.verifier));
       const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
       if (exists) fail(409, 'Esiste già un account con questo nome');
-      const gmail = cleanEmail(b.google);
-      if (gmail && await env.DB.prepare('SELECT id FROM users WHERE google_email = ?').bind(gmail).first()) {
-        fail(409, 'Questa email Google è già di un altro account');
-      }
-      await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created, google_email) VALUES(?,?,?,1,?,?,?)')
-        .bind(username, pw.salt, pw.hash, b.admin ? 1 : 0, now(), gmail || null).run();
+      // L'email (facoltativa) vale sia per entrare con email e password sia per «Entra con Google»
+      const gmail = cleanEmail(b.email || b.google);
+      if (gmail) await emailFree(env, gmail, 0);
+      await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created, google_email, email) VALUES(?,?,?,1,?,?,?,?)')
+        .bind(username, pw.salt, pw.hash, b.admin ? 1 : 0, now(), gmail || null, gmail || null).run();
       return json({ ok: true });
     }
 
-    const m = /^\/admin\/users\/(\d+)(\/password|\/google)?$/.exec(path);
+    const m = /^\/admin\/users\/(\d+)(\/password|\/google|\/email)?$/.exec(path);
     if (m) {
       const id = Number(m[1]);
       const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
       if (!target) fail(404, 'Account non trovato');
+      if (m[2] === '/email' && method === 'PUT') {
+        const email = cleanEmail((await body(request)).email);
+        if (email) await emailFree(env, email, id);
+        await env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(email || null, id).run();
+        return json({ ok: true });
+      }
       if (m[2] === '/google' && method === 'PUT') {
         // L'email Google con cui l'account potra' entrare (si lega al primo «Entra con Google»).
         // Vuota: toglie anche il collegamento, se l'account ha comunque una password.
@@ -807,7 +847,7 @@ async function route(request, env) {
           .bind(gmail || null, gmail, id).run();
         return json({ ok: true });
       }
-      if (m[2] && method === 'POST') {
+      if (m[2] === '/password' && method === 'POST') {
         // Password provvisoria nuova: al prossimo accesso va cambiata; i server collegati escono
         const b = await body(request);
         const pw = await passwordFields(cleanVerifier(b.verifier));
