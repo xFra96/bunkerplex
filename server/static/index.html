@@ -15,7 +15,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="intro" aria-hidden="true"><div class="intro-word"><svg class="intro-mark" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a7f45"/><path d="M25 18l22 14-22 14z" fill="#ffffff"/></svg><span><b>Bunker</b>Plex</span></div></div>
+<div id="intro" aria-hidden="true"><div class="intro-glow"></div><div class="intro-box"><div class="intro-word"><span class="intro-badge"><svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a7f45"/><path class="intro-play" d="M25 18l22 14-22 14z" fill="#ffffff"/></svg></span><span class="intro-name"><b><i style="--i:0">B</i><i style="--i:1">u</i><i style="--i:2">n</i><i style="--i:3">k</i><i style="--i:4">e</i><i style="--i:5">r</i></b><i style="--i:6">P</i><i style="--i:7">l</i><i style="--i:8">e</i><i style="--i:9">x</i></span></div><i class="intro-line"></i></div></div>
 <script>
 /* Apertura: il nome compare e lascia il posto alla Home. Una volta per sessione,
    mai sui dispositivi lenti o con le animazioni ridotte. */
@@ -32,14 +32,14 @@
   function end() {
     if (done) return; done = true;
     el.className = 'out';
-    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+    setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 420);
     window.removeEventListener('keydown', skip, true);
     window.removeEventListener('click', skip, true);
   }
   function skip(e) { e.stopPropagation(); e.preventDefault(); end(); }
   window.addEventListener('keydown', skip, true);
   window.addEventListener('click', skip, true);
-  setTimeout(end, 1500);
+  setTimeout(end, 1400);
 })();
 </script>
 <nav id="rail" aria-label="Menu">
