@@ -3554,6 +3554,11 @@ async def auth_reset_finish(request: Request):
     return await finish_login(res, ver, body.get("device") or "browser")
 
 
+def pending_name(name):
+    """Nome provvisorio di un account invitato dalla plancia: al primo accesso si sceglie il suo."""
+    return bool(re.fullmatch(r"invito-[0-9a-f]{6}", str(name or ""), re.I))
+
+
 @app.post("/api/auth/password")
 async def auth_password(request: Request):
     u = CURRENT.get()
@@ -3571,19 +3576,30 @@ async def auth_password(request: Request):
         con.close()
     if not row["token"]:
         raise HTTPException(401, "Rientra con il tuo account per cambiare la password")
+    # Primo accesso di un invitato: sceglie anche il suo nome (la verifica nuova si calcola su quello)
+    name = row["name"]
+    payload = {}
+    if pending_name(row["name"]):
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(400, "Al primo accesso scegli il tuo nome (dal browser o dal telefono)")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{2,32}", name) or name.lower().startswith("invito-"):
+            raise HTTPException(400, "Nome: da 2 a 32 caratteri tra lettere, numeri, punto, trattino e trattino basso")
+        payload["new_username"] = name
     v_old = await asyncio.to_thread(accounts.verifier, row["name"], old)
-    v_new = await asyncio.to_thread(accounts.verifier, row["name"], new)
+    v_new = await asyncio.to_thread(accounts.verifier, name, new)
     try:
-        await cloud("POST", "/password", {"verifier": v_old, "new_verifier": v_new}, row["token"])
+        await cloud("POST", "/password", {"verifier": v_old, "new_verifier": v_new, **payload}, row["token"])
     except HTTPException as ex:
         if ex.status_code == 401 and "password" in str(ex.detail).lower():
-            raise HTTPException(400, "La password attuale non è giusta")
+            raise HTTPException(400, "La password provvisoria non è giusta" if row["must_change"]
+                                else "La password attuale non è giusta")
         raise
     vsalt = secrets.token_hex(16)
     con = db(raw=True)
     try:
-        con.execute("UPDATE users SET must_change=0, vsalt=?, vcheck=? WHERE id=?",
-                    (vsalt, hashlib.sha256((vsalt + v_new).encode()).hexdigest(), u["id"]))
+        con.execute("UPDATE users SET name=?, must_change=0, vsalt=?, vcheck=? WHERE id=?",
+                    (name, vsalt, hashlib.sha256((vsalt + v_new).encode()).hexdigest(), u["id"]))
         con.commit()
     finally:
         con.close()
@@ -3901,14 +3917,23 @@ async def accounts_list():
 
 @app.post("/api/accounts")
 async def accounts_create(request: Request):
+    """Invito: gli account li crea solo l'amministratore, con l'email. L'account nasce con un
+    nome provvisorio; la password provvisoria parte per email e al primo accesso la persona
+    sceglie il suo nome e la sua password."""
     token = admin_token()
     body = await read_json(request)
-    name, password = login_fields(body)
+    email = str(body.get("email") or "").strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(400, "Scrivi l'email della persona da invitare")
+    password = str(body.get("password") or "") or "-".join(secrets.token_hex(2) for _ in range(3))
     check_new_password(password)
+    name = "invito-" + secrets.token_hex(3)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
-    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver,
-                                                "email": body.get("email") or body.get("google") or "",
-                                                "admin": bool(body.get("admin"))}, token)
+    res = await cloud("POST", "/admin/users", {"username": name, "verifier": ver, "email": email,
+                                               "password": password, "admin": bool(body.get("admin"))}, token)
+    return {"ok": True, "username": name, "email": email, "mailed": bool(res.get("mailed")),
+            # Se l'email non e' partita la password la comunica l'amministratore
+            "password": None if res.get("mailed") else password}
 
 
 @app.put("/api/accounts/{cloud_id}/email")
@@ -3934,7 +3959,8 @@ async def accounts_reset(cloud_id: int, request: Request):
     name, password = login_fields(body)
     check_new_password(password)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
-    return await cloud("POST", f"/admin/users/{cloud_id}/password", {"verifier": ver}, token)
+    res = await cloud("POST", f"/admin/users/{cloud_id}/password", {"verifier": ver, "password": password}, token)
+    return {"ok": True, "mailed": bool(res.get("mailed"))}
 
 
 @app.delete("/api/accounts/{cloud_id}")

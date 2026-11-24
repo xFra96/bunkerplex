@@ -98,6 +98,10 @@ function cleanName(raw) {
   return name;
 }
 
+// Gli account invitati dall'amministratore nascono con un nome provvisorio
+// (invito-xxxxxx): al primo accesso la persona sceglie il suo, insieme alla password.
+const pendingName = (name) => /^invito-[0-9a-f]{6}$/i.test(String(name || ''));
+
 function cleanVerifier(raw) {
   const v = String(raw || '');
   if (!/^[0-9a-f]{64}$/.test(v)) fail(400, 'Richiesta non valida');
@@ -116,7 +120,7 @@ async function body(request) {
 function userJson(u) {
   return { id: u.id, username: u.username, admin: !!u.admin, must_change: !!u.must_change,
     google: u.google_sub ? (u.google_email || 'collegato') : '', no_password: !!u.no_password,
-    email: u.email || '' };
+    email: u.email || '', needs_name: pendingName(u.username) };
 }
 
 async function newSession(env, user, device) {
@@ -394,6 +398,33 @@ async function resetStart(env, email) {
       'la tua password resta quella di prima.</p>'));
 }
 
+// L'invito dell'amministratore: email e password provvisoria per il primo accesso
+async function inviteMail(env, to, from, password, again) {
+  const intro = again
+    ? 'ecco una nuova password provvisoria per il tuo account BunkerPlex.'
+    : (from ? from + ' ti ha invitato su BunkerPlex.' : 'hai un invito per BunkerPlex.');
+  await sendMail(env, to, again ? 'La tua nuova password provvisoria BunkerPlex' : 'Il tuo invito a BunkerPlex',
+    'Ciao,\n\n' + intro + ' Entra con:\n\n    Email: ' + to + '\n    Password provvisoria: ' + password +
+    '\n\nAl primo accesso ' + (again ? 'scegli una password tua.' : 'scegli il tuo nome e una password tua, poi crei il tuo profilo.') +
+    '\n\n--\nBunkerPlex · Only for bunkers',
+    mailPage(again ? 'La tua nuova password provvisoria' : 'Il tuo invito a BunkerPlex',
+      '<p style="margin:0 0 16px">Ciao,</p>' +
+      '<p style="margin:0 0 24px">' + esc(intro) + ' Entra con:</p>' +
+      '<div style="background:#f1f6f2;border:1px solid #dce7df;border-radius:10px;padding:16px 18px;font-size:15px;color:#1d2420">' +
+      '<div style="color:#5b6660;font-size:13px">Email</div><div style="margin:2px 0 12px"><b>' + esc(to) + '</b></div>' +
+      '<div style="color:#5b6660;font-size:13px">Password provvisoria</div>' +
+      '<div style="margin-top:4px;font:700 24px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:2px;color:#0f1a13">' +
+      esc(password) + '</div></div>' +
+      '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Al primo accesso ' +
+      (again ? 'scegli una password tua.' : 'scegli il tuo nome e una password tua, poi crei il tuo profilo.') + '</p>'));
+}
+
+// La password provvisoria in chiaro arriva solo per metterla nell'email: non si salva
+function tempPlain(raw) {
+  const p = String(raw || '');
+  return p.length >= 8 && p.length <= 64 ? p : '';
+}
+
 async function resetFinish(env, email, rawCode, verifier) {
   await ensureReset(env);
   const code = String(rawCode || '').replace(/\D/g, '');
@@ -569,7 +600,10 @@ async function googleRoutes(request, env, url, path, method) {
       // Indicato dall'amministratore: si lega adesso
       u = await env.DB.prepare('SELECT * FROM users WHERE google_email = ? AND google_sub IS NULL').bind(email).first();
       if (u) {
-        if (u.must_change) {
+        if (u.must_change && pendingName(u.username)) {
+          // Invitato: al primo accesso sceglie comunque nome e password (quella provvisoria e' nell'email)
+          await env.DB.prepare('UPDATE users SET google_sub = ? WHERE id = ?').bind(sub, u.id).run();
+        } else if (u.must_change) {
           // La password provvisoria non serve più (e non deve restare valida): entra con Google
           const pw = await passwordFields(randomHex(32));
           await env.DB.prepare('UPDATE users SET google_sub = ?, salt = ?, hash = ?, must_change = 0, no_password = 1 WHERE id = ?')
@@ -666,12 +700,24 @@ async function route(request, env) {
     const b = await body(request);
     await checkPassword(env, user, cleanVerifier(b.verifier));
     const pw = await passwordFields(cleanVerifier(b.new_verifier));
+    // Primo accesso di un invitato: insieme alla password sceglie il suo nome (la verifica
+    // nuova il server di casa la calcola gia' su questo nome)
+    let username = user.username;
+    if (b.new_username !== undefined && b.new_username !== null && b.new_username !== '') {
+      if (!user.must_change && !pendingName(user.username)) fail(400, 'Il nome si sceglie solo al primo accesso');
+      username = cleanName(b.new_username);
+      if (pendingName(username) || /^invito-/i.test(username)) fail(400, 'Scegli un nome tuo');
+      const other = await env.DB.prepare('SELECT id FROM users WHERE username = ? AND id <> ?').bind(username, user.id).first();
+      if (other) fail(409, 'Questo nome è già di un altro account: scegline un altro');
+    } else if (pendingName(user.username)) {
+      fail(400, 'Scegli il tuo nome');
+    }
     await env.DB.batch([
-      env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 0 WHERE id = ?').bind(pw.salt, pw.hash, user.id),
+      env.DB.prepare('UPDATE users SET username = ?, salt = ?, hash = ?, must_change = 0 WHERE id = ?').bind(username, pw.salt, pw.hash, user.id),
       // Gli altri server collegati devono rientrare con la password nuova
       env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').bind(user.id, user.token_hash)
     ]);
-    return json({ ok: true, user: userJson({ ...user, must_change: 0 }) });
+    return json({ ok: true, user: userJson({ ...user, username, must_change: 0 }) });
   }
 
   // L'email con cui l'account entra (vuota: la toglie; resta il nome utente)
@@ -941,18 +987,25 @@ async function route(request, env) {
     }
 
     if (path === '/admin/users' && method === 'POST') {
+      // Invito: gli account li crea solo l'amministratore, con l'email (obbligatoria) e un
+      // nome provvisorio; la password provvisoria parte per email e la persona al primo
+      // accesso sceglie il suo nome e la sua password.
       const b = await body(request);
+      const gmail = cleanEmail(b.email || b.google) || fail(400, 'Scrivi l\'email della persona da invitare');
       const username = cleanName(b.username);
       const pw = await passwordFields(cleanVerifier(b.verifier));
       const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
       if (exists) fail(409, 'Esiste già un account con questo nome');
-      // L'email (facoltativa) vale sia per entrare con email e password sia per «Entra con Google»
-      const gmail = cleanEmail(b.email || b.google);
-      if (gmail) await emailFree(env, gmail, 0);
+      await emailFree(env, gmail, 0);
       const admin = b.admin || b.role === 'admin';
       await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created, google_email, email) VALUES(?,?,?,1,?,?,?,?)')
-        .bind(username, pw.salt, pw.hash, admin ? 1 : 0, now(), gmail || null, gmail || null).run();
-      return json({ ok: true });
+        .bind(username, pw.salt, pw.hash, admin ? 1 : 0, now(), gmail, gmail).run();
+      const plain = tempPlain(b.password);
+      let mailed = false;
+      if (plain && resetOn(env)) {
+        try { await inviteMail(env, gmail, user.username, plain, false); mailed = true; } catch (e) { mailed = false; }
+      }
+      return json({ ok: true, mailed });
     }
 
     // Plancia: i numeri di tutta BunkerPlex, i server pubblicati e i dispositivi nella rete
@@ -1063,13 +1116,22 @@ async function route(request, env) {
       if (m[2] === '/password' && method === 'POST') {
         // Password provvisoria nuova: al prossimo accesso va cambiata; i server collegati escono
         const b = await body(request);
+        await ensureReset(env);
         const pw = await passwordFields(cleanVerifier(b.verifier));
         await env.DB.batch([
           env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 1, fails = 0, locked_until = 0, no_password = 0 WHERE id = ?')
             .bind(pw.salt, pw.hash, id),
-          env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id)
+          env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM reset_codes WHERE user_id = ?').bind(id)
         ]);
-        return json({ ok: true });
+        // Con l'email dell'account la password provvisoria parte da sola (invito rimandato)
+        const to = target.email || target.google_email;
+        const plain = tempPlain(b.password);
+        let mailed = false;
+        if (to && plain && resetOn(env)) {
+          try { await inviteMail(env, to, user.username, plain, !pendingName(target.username)); mailed = true; } catch (e) { mailed = false; }
+        }
+        return json({ ok: true, mailed });
       }
       if (!m[2] && method === 'DELETE') {
         if (id === user.id) fail(400, 'Non puoi eliminare il tuo account');
