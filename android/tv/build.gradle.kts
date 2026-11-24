@@ -39,6 +39,8 @@ android {
 
     // Player e rete in comune con l'app attuale
     sourceSets["main"].java.srcDir("../comune/java")
+    // remote.html: amici e tuoi PC fuori casa, la stessa pagina dell'app attuale
+    sourceSets["main"].assets.srcDir("../comune/assets")
 
     buildFeatures { compose = true }
     compileOptions {
@@ -61,6 +63,8 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // Tailscale dentro l'app, per amici e tuoi PC fuori casa: la compila tsnet/build.sh
+    implementation(files("../app/libs/bpnet.aar"))
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")

@@ -55,6 +55,7 @@ android {
     }
     // Player e rete in comune con l'app nativa (android/tv): stanno in android/comune
     sourceSets["main"].java.srcDir("../comune/java")
+    sourceSets["main"].assets.srcDir("../comune/assets")
 
     lint {
         checkReleaseBuilds = false

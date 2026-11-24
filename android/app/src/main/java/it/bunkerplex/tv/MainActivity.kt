@@ -317,7 +317,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Funzioni che la pagina puo' chiamare: window.BunkerPlexTV.xxx() */
-    inner class Bridge {
+    inner class Bridge : RemoteBridge(this@MainActivity, web, isTelevision) {
+
+        override fun playerStarting() {
+            cameFromPlayer = true
+        }
+
 
         @JavascriptInterface
         fun play(json: String) {
@@ -391,108 +396,6 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     js("setupError(${JSONObject.quote(url)})")
                 }
-            }
-        }
-
-        // ---- Fuori casa (remote.html): account, Tailscale dentro l'app, player
-
-        /** Risposta a una richiesta lenta della pagina: remoteDone(n, ok, testo). */
-        private fun done(cb: Int, ok: Boolean, text: String) =
-            js("window.remoteDone&&remoteDone($cb,$ok,${JSONObject.quote(text)})")
-
-        @JavascriptInterface
-        fun remoteAccount(): String = if (Remote.token(this@MainActivity).isEmpty()) "" else Remote.account(this@MainActivity)
-
-        @JavascriptInterface
-        fun remoteLogin(user: String, password: String, cb: Int) {
-            thread {
-                try {
-                    done(cb, true, Remote.login(this@MainActivity, user, password).toString())
-                } catch (e: Exception) {
-                    done(cb, false, e.message ?: "Accesso non riuscito")
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun remoteLogout() = Remote.logout(this@MainActivity)
-
-        @JavascriptInterface
-        fun remoteGoogleStart(cb: Int) {
-            thread {
-                try {
-                    done(cb, true, Remote.googleStart(this@MainActivity, isTelevision))
-                } catch (e: Exception) {
-                    done(cb, false, e.message ?: "Servizio account non raggiungibile")
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun remoteGooglePoll(poll: String, cb: Int) {
-            thread {
-                try {
-                    done(cb, true, Remote.googlePoll(this@MainActivity, poll))
-                } catch (e: Remote.CloudError) {
-                    done(cb, false, JSONObject().put("status", e.status).put("detail", e.message).toString())
-                }
-            }
-        }
-
-        /** Apre un indirizzo nel browser del dispositivo (Google non accetta l'accesso
-         *  dentro le finestre delle app). */
-        @JavascriptInterface
-        fun openUrl(url: String) = runOnUiThread {
-            if (!url.startsWith("https://")) return@runOnUiThread
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            } catch (_: Exception) {
-                js("window.toastFromApp&&toastFromApp('Nessun browser per aprire Google: usa il QR')")
-            }
-        }
-
-        /** Una chiamata al servizio account con il gettone dell'account. */
-        @JavascriptInterface
-        fun remoteCloud(method: String, path: String, body: String, cb: Int) {
-            thread {
-                try {
-                    done(cb, true, Remote.call(this@MainActivity, method, path, body.ifEmpty { null }))
-                } catch (e: Remote.CloudError) {
-                    done(cb, false, JSONObject().put("status", e.status).put("detail", e.message).toString())
-                }
-            }
-        }
-
-        /** Entra nella rete di BunkerPlex: risponde con la base del proxy locale. */
-        @JavascriptInterface
-        fun remoteNet(replace: String, cb: Int) {
-            // Al limite dei dispositivi dell'account risponde {"limit": ...}: la pagina
-            // chiede quale togliere e richiama con replace = quello scelto
-            val label = (if (isTelevision) "TV " else "Telefono ") + (Build.MODEL ?: "Android")
-            thread {
-                try {
-                    done(cb, true, Remote.startNet(this@MainActivity, replace, label))
-                } catch (e: Remote.DeviceLimit) {
-                    val lim = try { JSONObject(e.devices) } catch (_: Exception) { JSONObject() }
-                    done(cb, false, JSONObject().put("limit", lim).put("detail", e.message).toString())
-                } catch (e: Throwable) {
-                    done(cb, false, JSONObject().put("detail", e.message ?: "Tailscale non parte").toString())
-                }
-            }
-        }
-
-        @JavascriptInterface
-        fun remoteToken(hostport: String, token: String) = Remote.setToken(hostport, token)
-
-        /** Avvia un video di un PC raggiunto da fuori: base = proxy verso quel PC. */
-        @JavascriptInterface
-        fun remotePlay(base: String, json: String) {
-            runOnUiThread {
-                cameFromPlayer = true
-                startActivity(
-                    Intent(this@MainActivity, PlayerActivity::class.java)
-                        .putExtra("server", base).putExtra("remote", true).putExtra("data", json)
-                )
             }
         }
 

@@ -7,3 +7,6 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+# Tailscale dentro l'app (gomobile): classi chiamate dal codice Go
+-keep class go.** { *; }
+-keep class it.bunkerplex.bpnet.** { *; }
