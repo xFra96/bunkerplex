@@ -33,5 +33,5 @@ if not exist "android\keystore\bunkerplex.jks" copy "android\out\keystore\bunker
 echo.
 echo Fatto: apk\BunkerPlex.apk e apk\BunkerPlexTV.apk (app TV nativa)
 echo Se l'app e' gia' sulla TV (dalla versione 1.3): al prossimo avvio propone
-echo da sola l'aggiornamento. Altrimenti vedi Guida BunkerPlex.pdf o usa "Installa su TV.bat" qui accanto.
+echo da sola l'aggiornamento. Altrimenti usa "Installa su TV.bat" qui accanto.
 pause

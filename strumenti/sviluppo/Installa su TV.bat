@@ -13,7 +13,7 @@ where adb >nul 2>&1
 if errorlevel 1 set "ADB=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
 if not "%ADB%"=="adb" if not exist "%ADB%" (
   echo Su questo PC non c'e' "adb".
-  echo Usa uno degli altri metodi descritti in Guida BunkerPlex.pdf ^(app Downloader^).
+  echo In alternativa installa l'APK con l'app Downloader.
   pause
   exit /b 1
 )

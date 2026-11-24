@@ -10,17 +10,17 @@ services:
     restart: unless-stopped
     ports:
       - "32500:32500"
-      # Porta per gli amici: risponde solo a /api/share/ (vedi «Amici» in Guida BunkerPlex.pdf)
+      # Porta per gli amici: risponde solo a /api/share/
       - "32501:32501"
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANG: ${TMDB_LANG:-it-IT}
       SCAN_INTERVAL_MIN: ${SCAN_INTERVAL_MIN:-30}
-      # Servizio account: vuoto = l'indirizzo scritto in server/cloud.json (vedi «Account» in Guida BunkerPlex.pdf)
+      # Servizio account: vuoto = l'indirizzo scritto in server/cloud.json
       BUNKERPLEX_CLOUD: ${BUNKERPLEX_CLOUD:-}
       # Indirizzo del PC nella rete di casa: lo passa "Installa BunkerPlex" (serve al QR dell'app)
       BUNKERPLEX_LAN_IP: ${BUNKERPLEX_LAN_IP:-}
-      # Indirizzo Tailscale del PC, se c'e': e' quello che si da' agli amici (vedi «Amici» in Guida BunkerPlex.pdf)
+      # Indirizzo Tailscale del PC, se c'e': e' quello che si da' agli amici
       BUNKERPLEX_TAILSCALE_IP: ${BUNKERPLEX_TAILSCALE_IP:-}
       # Impronta dei file con cui e' acceso il server: la passa "Installa BunkerPlex"
       # e serve a capire se Docker va ricostruito (vedi strumenti/Impronta.ps1)
