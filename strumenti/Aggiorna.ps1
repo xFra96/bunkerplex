@@ -151,8 +151,8 @@ for ($try = 0; $try -lt 2 -and -not $remoteSha; $try++) {
             Say 'e questo PC non ha ancora l''accesso.' Yellow
         }
         Say ''
-        Say 'Incolla qui un token di GitHub di sola lettura (come crearlo: README.md,'
-        Say 'capitolo "Aggiornamenti"). Resta salvato in strumenti\github-token.txt,'
+        Say 'Incolla qui un token di GitHub di sola lettura (fine-grained, permesso'
+        Say '"Contents: Read-only"). Resta salvato in strumenti\github-token.txt,'
         Say 'quindi sul disco esterno vale per tutti i PC. Oppure premi INVIO per uscire'
         Say 'e collega questo PC con GitHub CLI: gh auth login'
         $pasted = (Read-Host 'Token').Trim()
