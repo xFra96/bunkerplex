@@ -120,6 +120,7 @@ function userJson(u) {
 }
 
 async function newSession(env, user, device) {
+  if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
   const token = randomHex(32);
   const t = now();
   await env.DB.prepare('INSERT INTO sessions(token_hash, user_id, device, created, last_seen) VALUES(?,?,?,?,?)')
@@ -135,6 +136,7 @@ async function auth(request, env) {
     'SELECT u.*, s.token_hash, s.last_seen FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'
   ).bind(th).first();
   if (!u) fail(401, 'Accesso scaduto: rientra');
+  if (u.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
   if (now() - u.last_seen > 3600) {
     await env.DB.prepare('UPDATE sessions SET last_seen = ? WHERE token_hash = ?').bind(now(), th).run();
   }
@@ -252,6 +254,7 @@ async function ensureGoogle(env) {
   if (!cols.includes('google_email')) await env.DB.prepare('ALTER TABLE users ADD COLUMN google_email TEXT').run();
   if (!cols.includes('no_password')) await env.DB.prepare('ALTER TABLE users ADD COLUMN no_password INTEGER NOT NULL DEFAULT 0').run();
   if (!cols.includes('email')) await env.DB.prepare('ALTER TABLE users ADD COLUMN email TEXT').run();
+  if (!cols.includes('disabled')) await env.DB.prepare('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0').run();
   await env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS google_flows(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
     'state TEXT, link_user INTEGER, device TEXT, kind TEXT, user_id INTEGER, email TEXT, error TEXT, exp REAL NOT NULL)').run();
@@ -904,13 +907,14 @@ async function route(request, env) {
     await ensureGoogle(env);
     if (path === '/admin/users' && method === 'GET') {
       const rows = await env.DB.prepare(
-        'SELECT u.id, u.username, u.admin, u.must_change, u.created, u.google_sub, u.google_email, u.email, ' +
+        'SELECT u.id, u.username, u.admin, u.must_change, u.created, u.google_sub, u.google_email, u.email, u.disabled, ' +
         'MAX(s.last_seen) last_seen, COUNT(s.token_hash) servers ' +
         'FROM users u LEFT JOIN sessions s ON s.user_id = u.id GROUP BY u.id ORDER BY u.username COLLATE NOCASE'
       ).all();
       return json({ users: rows.results.map((r) => {
         const { google_sub, google_email, ...rest } = r;
-        return { ...rest, email: r.email || '', admin: !!r.admin, must_change: !!r.must_change, google: google_email || '', google_linked: !!google_sub };
+        return { ...rest, email: r.email || '', admin: !!r.admin, must_change: !!r.must_change, disabled: !!r.disabled,
+          role: r.admin ? 'admin' : 'base', google: google_email || '', google_linked: !!google_sub };
       }) });
     }
 
@@ -923,12 +927,73 @@ async function route(request, env) {
       // L'email (facoltativa) vale sia per entrare con email e password sia per «Entra con Google»
       const gmail = cleanEmail(b.email || b.google);
       if (gmail) await emailFree(env, gmail, 0);
+      const admin = b.admin || b.role === 'admin';
       await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created, google_email, email) VALUES(?,?,?,1,?,?,?,?)')
-        .bind(username, pw.salt, pw.hash, b.admin ? 1 : 0, now(), gmail || null, gmail || null).run();
+        .bind(username, pw.salt, pw.hash, admin ? 1 : 0, now(), gmail || null, gmail || null).run();
       return json({ ok: true });
     }
 
-    const m = /^\/admin\/users\/(\d+)(\/password|\/google|\/email)?$/.exec(path);
+    // Plancia: i numeri di tutta BunkerPlex, i server pubblicati e i dispositivi nella rete
+    if (path === '/admin/overview' && method === 'GET') {
+      await ensureServerCols(env);
+      await ensureDevices(env);
+      const one = (sql) => env.DB.prepare(sql).first('n');
+      const [users, admins, disabled, temp, sessions, active, friends, pending, servers, devices] = await Promise.all([
+        one('SELECT COUNT(*) n FROM users'), one('SELECT COUNT(*) n FROM users WHERE admin = 1'),
+        one('SELECT COUNT(*) n FROM users WHERE disabled = 1'), one('SELECT COUNT(*) n FROM users WHERE must_change = 1'),
+        one('SELECT COUNT(*) n FROM sessions'), env.DB.prepare('SELECT COUNT(*) n FROM sessions WHERE last_seen > ?').bind(now() - 7 * 86400).first('n'),
+        one("SELECT COUNT(*) n FROM friends WHERE status = 'ok'"), one("SELECT COUNT(*) n FROM friends WHERE status = 'pending'"),
+        one('SELECT COUNT(*) n FROM servers'), one('SELECT COUNT(*) n FROM ts_devices')
+      ]);
+      const srv = (await env.DB.prepare(
+        'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.lan, s.friends, s.t FROM servers s JOIN users u ON u.id = s.user_id ' +
+        'ORDER BY s.t DESC LIMIT 200').all()).results;
+      const dev = (await env.DB.prepare(
+        'SELECT d.host, d.label, d.kind, d.t, d.user_id, u.username FROM ts_devices d LEFT JOIN users u ON u.id = d.user_id ' +
+        'ORDER BY d.t DESC LIMIT 200').all()).results;
+      const fr = (await env.DB.prepare(
+        'SELECT f.a, f.b, f.status, f.t, ua.username AS ua, ub.username AS ub FROM friends f ' +
+        'JOIN users ua ON ua.id = f.a JOIN users ub ON ub.id = f.b ORDER BY f.t DESC LIMIT 200').all()).results;
+      return json({
+        counts: { users, admins, base: users - admins, disabled, temp, sessions, active, friends, pending, servers, devices },
+        servers: srv.map((r) => ({ ...r, friends: !!r.friends })), devices: dev, friendships: fr,
+        services: { google: googleOn(env), tailscale: !!(env.TS_OAUTH_ID && env.TS_OAUTH_SECRET) }
+      });
+    }
+
+    // Accessi (attivazioni): ogni PC, TV o telefono in cui un account e' entrato
+    if (path === '/admin/sessions' && method === 'GET') {
+      const uid = Number(url.searchParams.get('user') || 0);
+      const rows = (await env.DB.prepare(
+        'SELECT s.rowid AS id, s.user_id, u.username, s.device, s.created, s.last_seen FROM sessions s ' +
+        'JOIN users u ON u.id = s.user_id ' + (uid ? 'WHERE s.user_id = ? ' : '') + 'ORDER BY s.last_seen DESC LIMIT 300'
+      ).bind(...(uid ? [uid] : [])).all()).results;
+      return json({ sessions: rows });
+    }
+    const sm2 = /^\/admin\/sessions\/(\d+)$/.exec(path);
+    if (sm2 && method === 'DELETE') {
+      const r = await env.DB.prepare('SELECT token_hash FROM sessions WHERE rowid = ?').bind(Number(sm2[1])).first();
+      if (!r) fail(404, 'Accesso non trovato');
+      if (r.token_hash === user.token_hash) fail(400, 'È l\'accesso che stai usando: esci dal tuo account invece');
+      await env.DB.prepare('DELETE FROM sessions WHERE rowid = ?').bind(Number(sm2[1])).run();
+      return json({ ok: true });
+    }
+
+    // Un server pubblicato nella rubrica (per gli amici e i PC dello stesso account)
+    const sv = /^\/admin\/servers\/(\d+)\/([A-Za-z0-9_-]{1,64})$/.exec(path);
+    if (sv && method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(Number(sv[1]), sv[2]).run();
+      return json({ ok: true });
+    }
+
+    // Un'amicizia (o una richiesta) tra due account
+    const fv = /^\/admin\/friends\/(\d+)\/(\d+)$/.exec(path);
+    if (fv && method === 'DELETE') {
+      await env.DB.prepare('DELETE FROM friends WHERE a = ? AND b = ?').bind(Number(fv[1]), Number(fv[2])).run();
+      return json({ ok: true });
+    }
+
+    const m = /^\/admin\/users\/(\d+)(\/password|\/google|\/email|\/role|\/active)?$/.exec(path);
     if (m) {
       const id = Number(m[1]);
       const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
@@ -938,6 +1003,27 @@ async function route(request, env) {
         if (email) await emailFree(env, email, id);
         await env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(email || null, id).run();
         return json({ ok: true });
+      }
+      // Ruolo: base (guarda e gestisce le sue cose) o amministratore (gestisce tutta BunkerPlex)
+      if (m[2] === '/role' && method === 'PUT') {
+        const b = await body(request);
+        const admin = b.role === 'admin' || b.admin === true;
+        if (!admin && id === user.id) fail(400, 'Non puoi toglierti il ruolo di amministratore da solo');
+        if (!admin && target.admin) {
+          const n = await env.DB.prepare('SELECT COUNT(*) n FROM users WHERE admin = 1 AND disabled = 0').first('n');
+          if (n <= 1) fail(409, 'Serve almeno un amministratore');
+        }
+        await env.DB.prepare('UPDATE users SET admin = ? WHERE id = ?').bind(admin ? 1 : 0, id).run();
+        return json({ ok: true, role: admin ? 'admin' : 'base' });
+      }
+      // Attivo / disattivato: disattivato non entra piu' da nessuna parte
+      if (m[2] === '/active' && method === 'PUT') {
+        const on = !!(await body(request)).active;
+        if (!on && id === user.id) fail(400, 'Non puoi disattivare il tuo account');
+        // Gli accessi restano: i server se ne accorgono alla prossima sincronizzazione
+        // (rispondono «disattivato») e lo fanno uscire; riattivato, riparte da dove era.
+        await env.DB.prepare('UPDATE users SET disabled = ? WHERE id = ?').bind(on ? 0 : 1, id).run();
+        return json({ ok: true, active: on });
       }
       if (m[2] === '/google' && method === 'PUT') {
         // L'email Google con cui l'account potra' entrare (si lega al primo «Entra con Google»).
