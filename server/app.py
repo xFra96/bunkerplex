@@ -2481,6 +2481,15 @@ def ensure_identity():
     con = db(raw=True)
     try:
         con.execute("DELETE FROM user_sessions WHERE user_id=0")   # vecchi ingressi «senza account»
+        if not config.get("login_per_device"):
+            # Prima si entrava scegliendo il nome, senza password, da qualunque telefono
+            # di casa: si chiudono tutti gli ingressi, ogni dispositivo rientra con la password
+            con.execute("DELETE FROM user_sessions")
+            con.execute("UPDATE users SET tv_quick=0")
+            with config_lock:
+                config["login_per_device"] = 1
+                save_config()
+            print("Ingressi chiusi: ogni dispositivo rientra con la password", flush=True)
         con.commit()
         rows = con.execute("SELECT id, cloud_id, admin FROM users ORDER BY created, id").fetchall()
         if rows:
@@ -2590,7 +2599,7 @@ def session_user(token):
         try:
             r = con.execute("SELECT s.user_id, s.last_seen, u.id, u.name, u.admin, u.must_change, u.cloud_id "
                             "FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? "
-                            "AND COALESCE(u.disabled, 0)=0",
+                            "AND COALESCE(u.disabled, 0)=0 AND u.id=COALESCE((" + OWNER_SQL + "), u.id)",
                             (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
                 con.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (time.time(), key))
@@ -2801,7 +2810,26 @@ def with_session(data, token):
     return resp
 
 
+OWNER_SQL = "SELECT id FROM users WHERE cloud_id IS NOT NULL ORDER BY created, id LIMIT 1"
+
+
+def owner_row(con):
+    """Il proprietario di questo server: il primo account entrato (None se nessuno)."""
+    return con.execute("SELECT id, name, cloud_id FROM users WHERE cloud_id IS NOT NULL "
+                       "ORDER BY created, id LIMIT 1").fetchone()
+
+
+def owner_only_error(owner):
+    return HTTPException(403, "Su questo server entra solo il suo proprietario, " + owner["name"] +
+                         ". Entra dal tuo server BunkerPlex: i video che ti condivide li vedi da lì, come amico.")
+
+
 def open_session(con, uid, device):
+    """Un ingresso nuovo per un dispositivo. Su un server con il proprietario entra
+    solo lui: gli altri vedono i suoi video come amici, dal loro server."""
+    owner = owner_row(con)
+    if owner and owner["id"] != uid:
+        raise owner_only_error(owner)
     token = secrets.token_urlsafe(32)
     con.execute("INSERT INTO user_sessions(token, user_id, device, created, last_seen) VALUES(?,?,?,?,?)",
                 (token_hash(token), uid, str(device or "")[:60], time.time(), time.time()))
@@ -2815,6 +2843,9 @@ def store_user(con, cloud_user, token, ver):
     """Copia locale dell'account appena entrato (con l'impronta per entrare anche offline).
     Se l'account su questo PC non c'e' ancora e c'e' l'utente di questo PC (senza
     account), l'account prende quello con tutto quello che ha. Torna l'id."""
+    owner = owner_row(con)
+    if owner and owner["cloud_id"] != cloud_user["id"]:
+        raise owner_only_error(owner)
     row = con.execute("SELECT id, vsalt, vcheck FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
     if ver:
         vsalt = secrets.token_hex(16)
@@ -3174,10 +3205,14 @@ def auth_state():
     offline = cloud_on and cloud_link["online"] is False
     con = db(raw=True)
     try:
+        # Con il servizio account si entra sempre con la password, da ogni dispositivo;
+        # in «Chi guarda?» c'e' solo il proprietario (gli altri non entrano qui)
+        owner = owner_row(con)
         profiles = [{"id": r["id"], "name": r["name"], "linked": r["cloud_id"] is not None,
-                     "quick": r["cloud_id"] is None or bool(r["tv_quick"])}
-                    for r in con.execute("SELECT id, name, cloud_id, tv_quick FROM users "
-                                         "WHERE COALESCE(disabled, 0)=0 ORDER BY created, id")]
+                     "quick": not cloud_on}
+                    for r in con.execute("SELECT id, name, cloud_id FROM users "
+                                         "WHERE COALESCE(disabled, 0)=0 ORDER BY created, id")
+                    if not owner or r["id"] == owner["id"]]
         me = con.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone() if u else None
         user = None
         if me:
@@ -3198,8 +3233,8 @@ def auth_state():
 
 @app.post("/api/auth/profile")
 async def auth_profile(request: Request):
-    """«Chi guarda?»: si entra in un account gia' entrato su questo PC. Senza password,
-    tranne per gli account che l'hanno chiesta (Impostazioni → Account)."""
+    """«Chi guarda?»: senza password solo quando non c'e' il servizio account (l'utente
+    di questo PC). Con gli account ogni dispositivo entra con nome e password."""
     body = await read_json(request)
     con = db(raw=True)
     try:
@@ -3208,7 +3243,7 @@ async def auth_profile(request: Request):
             raise HTTPException(404, "Questo account non c'è più su questo PC")
         if u["disabled"]:
             raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
-        if u["cloud_id"] is not None and not u["tv_quick"]:
+        if auth_on():
             raise HTTPException(403, "Questo account si apre con la sua password")
         token = open_session(con, u["id"], body.get("device") or "tv")
         con.execute("UPDATE users SET last_login=? WHERE id=?", (time.time(), u["id"]))
@@ -3443,8 +3478,9 @@ async def auth_options(request: Request):
     body = await read_json(request)
     con = db(raw=True)
     try:
-        if "tv_quick" in body:
-            con.execute("UPDATE users SET tv_quick=? WHERE id=?", (1 if body["tv_quick"] else 0, u["id"]))
+        if body.get("tv_quick"):
+            # Entrare senza password non c'e' piu': ogni dispositivo entra con la sua password
+            raise HTTPException(400, "Ogni dispositivo entra con la password dell'account")
         con.commit()
     finally:
         con.close()
