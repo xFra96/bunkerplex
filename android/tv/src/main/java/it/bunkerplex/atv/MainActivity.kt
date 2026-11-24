@@ -75,6 +75,19 @@ sealed class Screen {
     data object Search : Screen()
     data object Settings : Screen()
     data object NewVersion : Screen()
+    data object Account : Screen()
+    data class Login(val name: String?, val google: Boolean) : Screen()
+    data object Phone : Screen()
+    data class Google(val link: Boolean) : Screen()
+    data object NewPassword : Screen()
+    data class Conflicts(val json: String) : Screen()
+    class Confirm(val text: String, val yes: String, val action: () -> Unit) : Screen()
+    class Choice(val title: String, val options: List<kotlin.Pair<String, () -> Unit>>) : Screen()
+    data object Libraries : Screen()
+    data class LibName(val id: Int?, val name: String) : Screen()
+    data class Browse(val lib: Int, val libName: String, val path: String, val replace: String) : Screen()
+    data object Catalog : Screen()
+    data object Friends : Screen()
 }
 
 /**
@@ -116,6 +129,19 @@ class MainActivity : ComponentActivity() {
                     Screen.Search -> SearchScreen(this@MainActivity, refresh)
                     Screen.Settings -> SettingsScreen(this@MainActivity, refresh)
                     Screen.NewVersion -> NewVersionScreen(this@MainActivity)
+                    Screen.Account -> AccountScreen(this@MainActivity, refresh)
+                    is Screen.Login -> LoginScreen(this@MainActivity, top)
+                    Screen.Phone -> PairScreen(this@MainActivity)
+                    is Screen.Google -> GoogleScreen(this@MainActivity, top)
+                    Screen.NewPassword -> NewPasswordScreen(this@MainActivity)
+                    is Screen.Conflicts -> ConflictsScreen(this@MainActivity, top)
+                    is Screen.Confirm -> ConfirmScreen(this@MainActivity, top)
+                    is Screen.Choice -> ChoiceScreen(this@MainActivity, top)
+                    Screen.Libraries -> LibrariesScreen(this@MainActivity, refresh)
+                    is Screen.LibName -> LibNameScreen(this@MainActivity, top)
+                    is Screen.Browse -> BrowseScreen(this@MainActivity, top)
+                    Screen.Catalog -> CatalogScreen(this@MainActivity, refresh)
+                    Screen.Friends -> FriendsScreen(this@MainActivity, refresh)
                 }
             }
         }
@@ -200,6 +226,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Le schermate rileggono i dati (per esempio dopo l'aggiornamento del server). */
+    fun refreshAll() {
+        refresh++
+    }
+
     fun back() {
         if (stack.size > 1) stack.removeAt(stack.lastIndex)
     }
@@ -214,6 +245,27 @@ class MainActivity : ComponentActivity() {
                 reset(Screen.Who)
             }
         }.start()
+    }
+
+    /**
+     * Entrati con un account (nome e password, telefono o Google): prima la password
+     * nuova se era provvisoria, poi la scelta fra impostazioni diverse, poi la Home.
+     */
+    fun entered(body: String, token: String?) {
+        if (token != null) Api.saveSession(this, token)
+        val j = try { JSONObject(body) } catch (_: Exception) { JSONObject() }
+        val u = j.optJSONObject("user")
+        Api.user = u?.optString("name")?.ifEmpty { null }
+        u?.let { toast("Entrato come ${it.optString("name")}") }
+        if (j.optBoolean("offline")) toast("Entrato senza Internet: si sincronizza appena torna la rete")
+        if (u?.optBoolean("must_change") == true) { reset(Screen.NewPassword); return }
+        afterLogin(j)
+    }
+
+    fun afterLogin(j: JSONObject) {
+        val conflicts = j.optJSONArray("conflicts")
+        if (conflicts != null && conflicts.length() > 0) reset(Screen.Conflicts(conflicts.toString()))
+        else reset(Screen.Home)
     }
 
     override fun onDestroy() {
@@ -394,7 +446,7 @@ class MainActivity : ComponentActivity() {
                     }
                     msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.warn, lines = 2) }
                     Row(Modifier.padding(top = 34.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Btn("Entra con un account") { web("#/login") }
+                        if (s.optBoolean("cloud")) Btn("Entra con un account") { go(Screen.Login(null, s.optBoolean("google"))) }
                         Btn("Cambia server") { reset(Screen.Connect) }
                     }
                     LaunchedEffect(profiles.size) { if (profiles.isNotEmpty()) fr.requestFocus() }
@@ -451,11 +503,9 @@ class MainActivity : ComponentActivity() {
                     Field(password, { password = it }, "Password", Modifier.focusRequester(fr), secret = true) {
                         Thread {
                             try {
-                                val (_, token) = Api.post("/api/auth/login",
+                                val (body, token) = Api.post("/api/auth/login",
                                     JSONObject().put("username", p.name).put("password", password).put("device", "tv"))
-                                if (token != null) Api.saveSession(this@MainActivity, token)
-                                Api.user = p.name
-                                runOnUiThread { reset(Screen.Home) }
+                                runOnUiThread { entered(body, token) }
                             } catch (e: Exception) {
                                 runOnUiThread { msg = e.message }
                             }

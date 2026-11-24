@@ -93,6 +93,10 @@ object Api {
 
     fun post(path: String, body: JSONObject): Pair<String, String?> = request("POST", path, body.toString(), 30000)
 
+    /** Una chiamata qualsiasi (DELETE, GET che porta il gettone dell'ingresso...). */
+    fun call(method: String, path: String, body: JSONObject? = null): Pair<String, String?> =
+        request(method, path, body?.toString(), 30000)
+
     private fun request(method: String, path: String, body: String?, timeoutMs: Int): Pair<String, String?> {
         val c = URL(base + path).openConnection() as HttpURLConnection
         c.connectTimeout = 5000
