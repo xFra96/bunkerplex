@@ -45,6 +45,8 @@ $cfgFile = Join-Path $PSScriptRoot 'aggiornamenti.json'
 $stateFile = Join-Path $PSScriptRoot 'versione.json'
 $tokenFile = Join-Path $PSScriptRoot 'github-token.txt'
 $apkFile = Join-Path $root 'apk\BunkerPlex.apk'
+# L'app TV nativa: release a parte (tag tv-v1.0, tv-v1.1...), accanto all'altra
+$tvApkFile = Join-Path $root 'apk\BunkerPlexTV.apk'
 
 function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color }
 
@@ -185,12 +187,11 @@ if ($gitCopy) {
     $codeUpdate = (-not $state) -or ($state.commit -ne $remoteSha)
 }
 
-function Get-ApkAsset {
-    try { $release = Api "releases/tags/$apkTag" } catch { return $null }
-    $asset = $release.assets | Where-Object { $_.name -eq 'BunkerPlex.apk' } | Select-Object -First 1
+# L'asset della release, se e' piu' nuovo del file sul disco
+function Get-Newer($asset, $file) {
     if (-not $asset) { return $null }
-    if (Test-Path -LiteralPath $apkFile) {
-        $mine = Get-Item -LiteralPath $apkFile
+    if (Test-Path -LiteralPath $file) {
+        $mine = Get-Item -LiteralPath $file
         $when = $asset.updated_at
         if ($when -isnot [DateTime]) {
             $when = [DateTime]::Parse("$when", [Globalization.CultureInfo]::InvariantCulture,
@@ -199,27 +200,46 @@ function Get-ApkAsset {
         # Un APK compilato qui dopo l'ultima pubblicazione e' piu' nuovo: resta lui
         if ($mine.LastWriteTimeUtc -ge $when.ToUniversalTime()) { return $null }
         if ($asset.digest -match '^sha256:([0-9a-fA-F]{64})$') {
-            if ((Get-FileHash -LiteralPath $apkFile -Algorithm SHA256).Hash -eq $Matches[1]) { return $null }
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -eq $Matches[1]) { return $null }
         } elseif ($mine.Length -eq $asset.size) {
             return $null
         }
     }
     return $asset
 }
+
+function Get-ApkAsset {
+    try { $release = Api "releases/tags/$apkTag" } catch { return $null }
+    $asset = $release.assets | Where-Object { $_.name -eq 'BunkerPlex.apk' } | Select-Object -First 1
+    return Get-Newer $asset $apkFile
+}
+
+# L'app TV nativa: l'ultima release tv-v* (non e' mai la "latest")
+function Get-TvApkAsset {
+    try { $releases = @(Api 'releases?per_page=30') } catch { return $null }
+    foreach ($rel in $releases) {
+        if ($rel.draft -or -not "$($rel.tag_name)".StartsWith('tv-v')) { continue }
+        $asset = $rel.assets | Where-Object { $_.name -eq 'BunkerPlexTV.apk' } | Select-Object -First 1
+        if ($asset) { return Get-Newer $asset $tvApkFile }
+    }
+    return $null
+}
 $apkAsset = Get-ApkAsset
+$tvAsset = Get-TvApkAsset
 
 if ($Check) {
-    if ($codeUpdate -or $apkAsset) {
+    if ($codeUpdate -or $apkAsset -or $tvAsset) {
         $what = @()
         if ($codeUpdate) { $what += 'il programma' }
         if ($apkAsset) { $what += 'l''app per la TV' }
+        if ($tvAsset) { $what += 'l''app TV nativa' }
         Write-Output ("E' disponibile un aggiornamento di BunkerPlex (" + ($what -join ' e ') + ').')
         exit 10
     }
     exit 0
 }
 
-$nothingNew = -not $codeUpdate -and -not $apkAsset
+$nothingNew = -not $codeUpdate -and -not $apkAsset -and -not $tvAsset
 if ($nothingNew) {
     Say ''
     Say 'Da GitHub non c''e'' niente di nuovo da scaricare.' Green
@@ -356,11 +376,11 @@ function Update-Git {
     return $true
 }
 
-function Update-Apk($asset) {
-    Say 'Scarico l''app per la TV...'
-    $part = "$apkFile.nuovo"
+function Update-Apk($asset, $file = $apkFile, $label = 'l''app per la TV') {
+    Say "Scarico $label..."
+    $part = "$file.nuovo"
     try {
-        $dir = Split-Path -Parent $apkFile
+        $dir = Split-Path -Parent $file
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         Api "releases/assets/$($asset.id)" 'application/octet-stream' $part
         $got = Get-Item -LiteralPath $part
@@ -368,12 +388,12 @@ function Update-Apk($asset) {
         $stream = [System.IO.File]::OpenRead($part)
         try { $stream.Read($head, 0, 2) | Out-Null } finally { $stream.Dispose() }
         if ($got.Length -ne $asset.size -or $head[0] -ne 0x50 -or $head[1] -ne 0x4B) { throw 'file scaricato a meta''' }
-        Move-Item -LiteralPath $part -Destination $apkFile -Force -ErrorAction Stop
-        Say 'App per la TV aggiornata: al prossimo avvio la TV propone da sola di installarla.' Green
+        Move-Item -LiteralPath $part -Destination $file -Force -ErrorAction Stop
+        Say "Scaricata $($label): al prossimo avvio la TV propone da sola di installarla." Green
         return $true
     } catch {
         Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
-        Say "App per la TV non scaricata: $($_.Exception.Message)" Yellow
+        Say "Non sono riuscito a scaricare $($label): $($_.Exception.Message)" Yellow
         return $false
     }
 }
@@ -385,6 +405,7 @@ if ($codeUpdate) {
     if ($gitCopy) { $codeDone = Update-Git } else { $codeDone = Update-Files }
 }
 if ($apkAsset) { $apkOk = Update-Apk $apkAsset }
+if ($tvAsset) { $apkOk = (Update-Apk $tvAsset $tvApkFile 'l''app TV nativa') -and $apkOk }
 
 # ------------------------------------------------------------ server Docker
 # Il server gira dentro Docker con i file con cui e' stato acceso. Se non sono
