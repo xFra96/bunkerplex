@@ -19,7 +19,8 @@ l'immagine Docker (pacchetti nuovi, Dockerfile, docker-compose.yml) e riaccende
 il contenitore. Senza aiutante il server si aggiorna da solo come sopra.
 
 L'accesso al repository privato viene dal file strumenti/github-token.txt
-(un token di sola lettura). Solo libreria standard: niente dipendenze.
+(un token di sola lettura); senza token si passa dal servizio account
+(server/cloud.json), che ha il suo. Solo libreria standard: niente dipendenze.
 """
 import hashlib
 import json
@@ -384,7 +385,20 @@ def _fetch(url, accept, tok, timeout=30, dest=None):
     return None
 
 
+def _cloud():
+    try:
+        from accounts import cloud_url
+        return cloud_url()
+    except Exception:
+        return ""
+
+
 def _api(cfg, path, tok, accept="application/vnd.github+json", **kw):
+    # Senza un token proprio si passa dal servizio account, che ha l'accesso al
+    # repository privato: cosi' i PC degli amici si aggiornano senza fare niente.
+    base = _cloud() if not tok else ""
+    if base:
+        return _fetch(f"{base}/aggiornamenti/{path}", accept, "", **kw)
     return _fetch(f"https://api.github.com/repos/{cfg['repo']}/{path}", accept, tok, **kw)
 
 

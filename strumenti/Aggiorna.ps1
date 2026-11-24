@@ -106,10 +106,25 @@ function Get-Token {
 }
 $script:token = Get-Token
 
+# Senza un token proprio si passa dal servizio account (server\cloud.json), che ha
+# l'accesso al repository privato: i PC degli amici non devono configurare niente.
+function Get-Cloud {
+    if ($env:BUNKERPLEX_CLOUD) { return $env:BUNKERPLEX_CLOUD.Trim().TrimEnd('/') }
+    try {
+        $c = Get-Content -LiteralPath (Join-Path $root 'server\cloud.json') -Raw | ConvertFrom-Json
+        return "$($c.url)".Trim().TrimEnd('/')
+    } catch { return '' }
+}
+$script:cloud = Get-Cloud
+
 function Api($path, $accept = 'application/vnd.github+json', $outFile = $null) {
     $headers = @{ 'Accept' = $accept; 'X-GitHub-Api-Version' = '2022-11-28' }
     if ($script:token) { $headers['Authorization'] = "Bearer $script:token" }
-    $url = "https://api.github.com/repos/$repo/$path"
+    if (-not $script:token -and $script:cloud) {
+        $url = "$($script:cloud)/aggiornamenti/$path"
+    } else {
+        $url = "https://api.github.com/repos/$repo/$path"
+    }
     if ($outFile) {
         Invoke-WebRequest -Uri $url -Headers $headers -UserAgent 'BunkerPlex-updater' -UseBasicParsing `
             -OutFile $outFile -TimeoutSec 900 -ErrorAction Stop
