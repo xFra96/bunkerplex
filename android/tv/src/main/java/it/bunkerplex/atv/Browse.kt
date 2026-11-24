@@ -213,7 +213,7 @@ fun SearchScreen(act: MainActivity, refresh: Int) {
 
 /** Pagina con il menu a sinistra; il menu indica dove si e'. */
 @Composable
-private fun Page(act: MainActivity, current: String, content: @Composable () -> Unit) {
+fun Page(act: MainActivity, current: String, content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().padding(start = D.rail)) { content() }
         Rail(act, HomeMemory.data?.libs ?: emptyList(), current)

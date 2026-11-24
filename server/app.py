@@ -107,6 +107,8 @@ DATA_PROBLEM = data_problem()
 CONFIG_PATH = DATA / "config.json"
 SUBS_DIR = DATA / "subs"            # sottotitoli scaricati da internet, uno per lingua e video
 APK_PATH = Path(os.environ.get("APK_PATH", "/apk/BunkerPlex.apk"))
+# L'app TV nativa (release tv-v*): accanto all'altra, si aggiorna da sola dal server
+TV_APK_PATH = APK_PATH.with_name("BunkerPlexTV.apk")
 
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv",
              ".flv", ".mpg", ".mpeg", ".m2ts"}
@@ -2294,7 +2296,7 @@ class SmallAndFast:
     """Comprime elenchi e pagine (l'elenco di una raccolta pesa centinaia di KB:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
-    RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/BunkerPlex.apk",
+    RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
            "/api/share/stream", "/api/share/transcode",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
     PLAYING = ("/api/stream", "/api/transcode", "/api/progress", "/api/share/stream",
@@ -3967,7 +3969,7 @@ async def update_token(request: Request):
     return update_json()
 
 
-_apk_seen = {"stamp": None, "version": None}
+_apk_seen = {}
 
 
 def _axml_string(data, pool, index):
@@ -4023,22 +4025,24 @@ def read_apk_version(path):
     return 0, ""
 
 
-def apk_version():
+def apk_version(path=None):
     """Versione dell'APK che sta sul PC: l'app sulla TV la confronta con la
     propria per sapere se c'e' un aggiornamento. Riletta solo se il file cambia."""
+    path = path or APK_PATH
     try:
-        st = APK_PATH.stat()
+        st = path.stat()
     except OSError:
         return 0, ""
     stamp = (st.st_mtime_ns, st.st_size)
-    if _apk_seen["stamp"] != stamp:
+    seen = _apk_seen.setdefault(str(path), {"stamp": None, "version": None})
+    if seen["stamp"] != stamp:
         try:
-            version = read_apk_version(APK_PATH)
+            version = read_apk_version(path)
         except Exception as ex:   # file copiato a meta', APK rovinato...
             print("Versione APK non leggibile:", repr(ex), flush=True)
             return 0, ""
-        _apk_seen.update(stamp=stamp, version=version)
-    return _apk_seen["version"]
+        seen.update(stamp=stamp, version=version)
+    return seen["version"]
 
 
 def other_addresses():
@@ -4051,12 +4055,14 @@ def other_addresses():
 @app.get("/api/info")
 def info():
     apk_code, apk_name = apk_version()
+    tv_code, tv_name = apk_version(TV_APK_PATH)
+    tv = {"tv_apk_version": tv_code, "tv_apk_version_name": tv_name}
     if CURRENT.get() is None:
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "login": True,
                 "release": updater.release(), "commit": updater.current_commit()[:7],
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
-                "addresses": other_addresses(), "cloud": accounts.cloud_url()}
+                "addresses": other_addresses(), "cloud": accounts.cloud_url(), **tv}
     con = db()
     try:
         key = tmdb_key()
@@ -4077,7 +4083,7 @@ def info():
             "tmdb": bool(key), "tmdb_hint": ("…" + key[-4:]) if key else "",
             "subs_online": bool(os_conf()["key"]), "subs_user": os_conf()["user"],
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
-            "apk_version": apk_code, "apk_version_name": apk_name,
+            "apk_version": apk_code, "apk_version_name": apk_name, **tv,
             "update": updater.available(),
             # Richieste di amicizia arrivate all'account di chi guarda
             "friend_requests": sum(1 for f in (friends_cloud.get((CURRENT.get() or {}).get("id")) or {})
@@ -8013,6 +8019,15 @@ def apk():
         raise HTTPException(404, "APK non ancora compilato: avvia strumenti/sviluppo/'Compila APK.bat' sul PC")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
                         filename="BunkerPlex.apk")
+
+
+@app.get("/BunkerPlexTV.apk")
+def tv_apk():
+    """L'app TV nativa: la scarica lei stessa per aggiornarsi."""
+    if not TV_APK_PATH.is_file():
+        raise HTTPException(404, "App TV nativa non ancora sul PC")
+    return FileResponse(TV_APK_PATH, media_type="application/vnd.android.package-archive",
+                        filename="BunkerPlexTV.apk")
 
 
 # ---- Indirizzi del PC e QR per scaricare l'app --------------------------------

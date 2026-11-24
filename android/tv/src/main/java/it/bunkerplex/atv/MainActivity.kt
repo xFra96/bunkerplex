@@ -73,6 +73,8 @@ sealed class Screen {
     data object MyList : Screen()
     data object Sagas : Screen()
     data object Search : Screen()
+    data object Settings : Screen()
+    data object NewVersion : Screen()
 }
 
 /**
@@ -88,10 +90,15 @@ class MainActivity : ComponentActivity() {
     private var leftApp = false
     private var lastRepeat = 0L
 
+    /** Aggiornamento dell'app dal server (Update.kt). */
+    val update by lazy { Update(this) }
+    private var updateOffered = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Api.load(this)
         setupImages()
+        update.start()
         stack.add(if (Api.base.isEmpty()) Screen.Connect else Screen.Who)
         setContent {
             Box(Modifier.fillMaxSize().background(C.bg)) {
@@ -107,6 +114,8 @@ class MainActivity : ComponentActivity() {
                     Screen.MyList -> MyListScreen(this@MainActivity, refresh)
                     Screen.Sagas -> SagasScreen(this@MainActivity, refresh)
                     Screen.Search -> SearchScreen(this@MainActivity, refresh)
+                    Screen.Settings -> SettingsScreen(this@MainActivity, refresh)
+                    Screen.NewVersion -> NewVersionScreen(this@MainActivity)
                 }
             }
         }
@@ -160,6 +169,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Keys.held = false
+        update.onResume()
         if (leftApp) {
             leftApp = false
             refresh++
@@ -180,6 +190,35 @@ class MainActivity : ComponentActivity() {
     fun reset(s: Screen) {
         stack.clear()
         stack.add(s)
+        // Entrando: se sul server c'e' una versione piu' nuova dell'app, la propone (una volta)
+        if (s == Screen.Home && !updateOffered) {
+            Api.info?.let { update.read(it) }
+            if (update.available) {
+                updateOffered = true
+                stack.add(Screen.NewVersion)
+            }
+        }
+    }
+
+    fun back() {
+        if (stack.size > 1) stack.removeAt(stack.lastIndex)
+    }
+
+    /** «Cambia profilo»: si esce da chi guarda su questa TV e si torna a «Chi guarda?». */
+    fun switchProfile() {
+        Thread {
+            try { Api.post("/api/auth/logout", JSONObject()) } catch (_: Exception) {}
+            runOnUiThread {
+                Api.saveSession(this, "")
+                Api.user = null
+                reset(Screen.Who)
+            }
+        }.start()
+    }
+
+    override fun onDestroy() {
+        update.stop()
+        super.onDestroy()
     }
 
     /** Avvia il player nativo con i dati di /api/play. */

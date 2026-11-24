@@ -41,6 +41,8 @@ CFG_FILE = TOOLS / "aggiornamenti.json"
 STATE_FILE = TOOLS / "versione.json"
 TOKEN_FILE = TOOLS / "github-token.txt"
 APK_FILE = PROGRAM / "apk" / "BunkerPlex.apk"
+# L'app TV nativa: release a parte (tag tv-v1.0, tv-v1.1...), mai "latest"
+TV_APK_FILE = PROGRAM / "apk" / "BunkerPlexTV.apk"
 AGENT_FILE = TOOLS / "agente.json"
 REQUEST_FILE = TOOLS / "richiesta-aggiornamento.json"
 RESULT_FILE = TOOLS / "esito-aggiornamento.json"
@@ -67,6 +69,7 @@ _guard = threading.Lock()
 _status = {"phase": "", "access": None, "checked_at": 0, "code": False, "apk": False,
            "docker": False, "error": "", "result": "", "remote": ""}
 _asset = None
+_tv = None          # APK dell'app TV nativa da scaricare
 _last_play = 0.0
 
 
@@ -392,17 +395,12 @@ def _sha256(path):
     return h.hexdigest()
 
 
-def _apk_asset(cfg, tok):
-    """L'APK allegato alla release, se e' piu' nuovo di quello sul disco."""
-    try:
-        release = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok))
-    except Exception:
-        return None
-    asset = next((a for a in release.get("assets", []) if a.get("name") == "BunkerPlex.apk"), None)
+def _newer(asset, path):
+    """L'asset della release, se e' piu' nuovo del file sul disco."""
     if not asset:
         return None
-    if APK_FILE.is_file():
-        st = APK_FILE.stat()
+    if path.is_file():
+        st = path.stat()
         try:
             when = datetime.fromisoformat(str(asset.get("updated_at", "")).replace("Z", "+00:00"))
             if when.tzinfo is None:
@@ -414,15 +412,40 @@ def _apk_asset(cfg, tok):
             pass
         digest = str(asset.get("digest") or "")
         if digest.startswith("sha256:"):
-            if _sha256(APK_FILE).lower() == digest[7:].lower():
+            if _sha256(path).lower() == digest[7:].lower():
                 return None
         elif st.st_size == asset.get("size"):
             return None
     return asset
 
 
+def _apk_asset(cfg, tok):
+    """L'APK allegato alla release, se e' piu' nuovo di quello sul disco."""
+    try:
+        release = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok))
+    except Exception:
+        return None
+    asset = next((a for a in release.get("assets", []) if a.get("name") == "BunkerPlex.apk"), None)
+    return _newer(asset, APK_FILE)
+
+
+def _tv_asset(cfg, tok):
+    """L'APK dell'app TV nativa dall'ultima release tv-v*, se e' piu' nuovo."""
+    try:
+        releases = json.loads(_api(cfg, "releases?per_page=30", tok))
+    except Exception:
+        return None
+    for rel in releases:
+        if rel.get("draft") or not str(rel.get("tag_name", "")).startswith("tv-v"):
+            continue
+        asset = next((a for a in rel.get("assets", []) if a.get("name") == "BunkerPlexTV.apk"), None)
+        if asset:
+            return _newer(asset, TV_APK_FILE)
+    return None
+
+
 def _check():
-    global _asset
+    global _asset, _tv
     cfg = _config()
     if not cfg or not TOOLS.is_dir():
         _set(access=None, code=False, apk=False, error="", checked_at=time.time())
@@ -444,6 +467,7 @@ def _check():
         _set(error="Risposta di GitHub non valida", checked_at=time.time())
         return None
     _asset = _apk_asset(cfg, tok)
+    _tv = _tv_asset(cfg, tok)
     if _dev_copy():
         # La copia di sviluppo la aggiorna git, cioe' l'aiutante sul PC. Se il
         # commit di GitHub e' gia' qui (anche solo scaricato) non c'e' niente da fare:
@@ -453,7 +477,7 @@ def _check():
         code = _state().get("commit") != sha
     # Docker da riallineare: conta solo se c'e' l'aiutante, l'unico che puo' farlo
     docker = agent() and stale()
-    _set(access=True, code=code, apk=bool(_asset), docker=docker, error="", remote=sha,
+    _set(access=True, code=code, apk=bool(_asset or _tv), docker=docker, error="", remote=sha,
          checked_at=time.time())
     return cfg, tok, sha
 
@@ -553,9 +577,9 @@ def _install_files(cfg, tok, sha):
     return touched
 
 
-def _install_apk(cfg, tok, asset):
-    APK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    part = APK_FILE.with_name(APK_FILE.name + ".nuovo")
+def _install_apk(cfg, tok, asset, dest=APK_FILE):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".nuovo")
     try:
         _api(cfg, f"releases/assets/{asset['id']}", tok, "application/octet-stream",
              timeout=300, dest=part)
@@ -563,7 +587,7 @@ def _install_apk(cfg, tok, asset):
             head = f.read(2)
         if part.stat().st_size != asset.get("size") or head != b"PK":
             raise RuntimeError("app per la TV scaricata a metà")
-        os.replace(part, APK_FILE)
+        os.replace(part, dest)
     finally:
         part.unlink(missing_ok=True)
 
@@ -588,6 +612,8 @@ def _install():
             touched = _install_files(cfg, tok, sha)
         if _asset:
             _install_apk(cfg, tok, _asset)
+        if _tv:
+            _install_apk(cfg, tok, _tv, TV_APK_FILE)
         _set(code=False, apk=False, checked_at=time.time())
         if any(t in NEEDS_HOST for t in touched):
             _set(phase="host", result="host")
