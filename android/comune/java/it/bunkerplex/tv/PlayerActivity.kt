@@ -1,6 +1,10 @@
 package it.bunkerplex.tv
 
+import android.app.UiModeManager
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -16,11 +20,14 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Display
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -28,6 +35,10 @@ import androidx.activity.OnBackPressedCallback
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -134,6 +145,13 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var qualityView: TextView
     private lateinit var subRow: LinearLayout
     private lateinit var row: LinearLayout
+    private lateinit var barFrame: FrameLayout
+
+    /** Telefono o tablet: niente telecomando, i comandi si usano col dito (vedi "Tocco"). */
+    private val touch by lazy {
+        !((getSystemService(UI_MODE_SERVICE) as? UiModeManager)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK))
+    }
     private val rowActions = mutableListOf<() -> Unit>()
     private lateinit var floatWrap: LinearLayout
     private lateinit var nextInfo: TextView
@@ -285,6 +303,11 @@ class PlayerActivity : AppCompatActivity() {
         remote = intent.getBooleanExtra("remote", false)
         JSONObject(intent.getStringExtra("data") ?: "{}").optString("session").let { if (it.isNotEmpty()) Net.session = it }
         audioCompat = prefs.getBoolean("p_audio_compat", false)
+        if (touch) {
+            // Sul telefono il video si guarda in orizzontale e a tutto schermo
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            immersive()
+        }
         buildLayout()
         buildPlayer()
 
@@ -483,7 +506,7 @@ class PlayerActivity : AppCompatActivity() {
 
         controls = LinearLayout(this)
         controls.orientation = LinearLayout.VERTICAL
-        controls.setPadding(dp(48), 0, dp(48), dp(28))
+        controls.setPadding(dp(side()), 0, dp(side()), dp(28))
         controls.alpha = 0f
         controls.visibility = View.INVISIBLE       // invisibile ma misurato: serve la sua altezza
 
@@ -516,7 +539,7 @@ class PlayerActivity : AppCompatActivity() {
         stateIcon.gravity = Gravity.CENTER
         stateIcon.setPadding(0, 0, 0, dp(2))
         barRow.addView(stateIcon, LinearLayout.LayoutParams(dp(34), dp(26)))
-        val barFrame = FrameLayout(this)
+        barFrame = FrameLayout(this)
         bar = Bar()
         barFrame.addView(bar, FrameLayout.LayoutParams(-1, dp(26), Gravity.BOTTOM))
         scrubLabel = label(17f, true)
@@ -532,7 +555,16 @@ class PlayerActivity : AppCompatActivity() {
 
         row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        controls.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12); leftMargin = dp(34) })
+        if (touch) {
+            // Sullo schermo stretto del telefono i bottoni potrebbero non starci tutti: scorrono
+            val rowScroll = HorizontalScrollView(this)
+            rowScroll.isHorizontalScrollBarEnabled = false
+            rowScroll.isFocusable = false
+            rowScroll.addView(row)
+            controls.addView(rowScroll, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        } else {
+            controls.addView(row, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(12); leftMargin = dp(34) })
+        }
         root.addView(controls, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
 
         // In basso a destra, sopra i comandi quando ci sono: «Salta intro» e la scheda
@@ -555,7 +587,7 @@ class PlayerActivity : AppCompatActivity() {
         }
         floatWrap.addView(floatRow)
         root.addView(floatWrap, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
-            rightMargin = dp(48)
+            rightMargin = dp(side())
             bottomMargin = dp(44)
         })
 
@@ -570,6 +602,105 @@ class PlayerActivity : AppCompatActivity() {
         osdParams.bottomMargin = dp(70)
         root.addView(osd, osdParams)
         setContentView(root)
+        if (touch) setupTouch(root)
+    }
+
+    /** Margine ai lati dei comandi: largo sulla TV, stretto sul telefono. */
+    private fun side() = if (touch) 20 else 48
+
+    // ---- Tocco (telefono e tablet)
+    // Un tocco mostra o nasconde i comandi; due tocchi a sinistra o a destra saltano
+    // indietro o avanti, al centro mettono in pausa. Sulla barra si trascina per
+    // scorrere, il simbolo accanto fa pausa/play, i bottoni si toccano.
+
+    private fun immersive() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (touch && hasFocus) immersive()
+    }
+
+    private fun setupTouch(root: FrameLayout) {
+        // Fotocamera nello schermo e barre di sistema: i comandi restano dove si vedono
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, ins ->
+            val i = ins.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            controls.setPadding(dp(side()) + i.left, 0, dp(side()) + i.right, dp(16) + i.bottom)
+            (floatWrap.layoutParams as FrameLayout.LayoutParams).let {
+                it.rightMargin = dp(side()) + i.right
+                it.bottomMargin = dp(44) + i.bottom
+                floatWrap.layoutParams = it
+            }
+            ins
+        }
+
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                if (shown) hideControls() else showControls(Zone.BAR)
+                return true
+            }
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                val third = root.width / 3f
+                when {
+                    card == 2 -> Unit
+                    e.x < third -> seekBy(-stepBack())
+                    e.x > 2 * third -> seekBy(stepForward())
+                    else -> {
+                        togglePlay()
+                        showControls(Zone.BAR)
+                    }
+                }
+                return true
+            }
+        })
+        root.setOnTouchListener { _, e -> gestures.onTouchEvent(e) }
+        // Toccare i comandi (fuori dai bottoni) li tiene accesi invece di nasconderli
+        controls.setOnClickListener { showControls() }
+
+        stateIcon.setOnClickListener {
+            togglePlay()
+            showControls(Zone.BAR)
+        }
+
+        // Barra: si tocca o si trascina, il video si sposta quando si alza il dito
+        barFrame.setOnTouchListener { v, e ->
+            val d = durationMs()
+            if (d <= 0 || card == 2) return@setOnTouchListener true
+            val pad = dp(10).toFloat()
+            val w = (bar.width - 2 * pad).coerceAtLeast(1f)
+            val ms = ((e.x - pad) / w).coerceIn(0f, 1f).times(d).toLong()
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    v.parent.requestDisallowInterceptTouchEvent(true)
+                    seekAbs(ms, "")
+                    handler.removeCallbacks(applySeek)      // si aspetta che il dito si alzi
+                    showControls(Zone.BAR)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    seekAbs(ms, "")
+                    handler.removeCallbacks(applySeek)
+                    handler.post(applySeek)
+                    showControls(Zone.BAR)
+                }
+            }
+            true
+        }
+
+        for (b in listOf(creditsBtn, nextBtn, skipBtn)) {
+            b.setOnClickListener {
+                val i = floats().indexOf(b)
+                if (i < 0) return@setOnClickListener
+                floatAt = i
+                zone = Zone.FLOAT
+                pressFloat()
+            }
+        }
     }
 
     private fun label(sp: Float, bold: Boolean): TextView {
@@ -1030,6 +1161,14 @@ class PlayerActivity : AppCompatActivity() {
             val b = Pill(text, 16f)
             b.setPadding(dp(18), dp(8), dp(18), dp(8))
             row.addView(b, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(12) })
+            if (touch) {
+                val at = rowActions.size
+                b.setOnClickListener {
+                    rowAt = at
+                    lastKeyAt = SystemClock.elapsedRealtime()
+                    action()
+                }
+            }
             rowActions.add(action)
         }
         add("Audio e sottotitoli") { showAudioSubs() }
@@ -1040,6 +1179,7 @@ class PlayerActivity : AppCompatActivity() {
         else if (saga != null) add("Film successivo") { goNext(saga.optInt("id"), false) }
         add("Ricomincia") { seekAbs(0, null) }
         add("Altre opzioni") { showOptions() }
+        if (touch) add("Esci") { finish() }
         rowAt = rowAt.coerceIn(0, rowActions.size - 1)
         paintFocus()
     }
