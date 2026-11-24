@@ -506,7 +506,9 @@ def init_db():
                           # Email dell'account Google collegato all'account («Entra con Google»)
                           ("users", "google TEXT"),
                           # Email con cui l'account entra (al posto del nome utente)
-                          ("users", "email TEXT")):
+                          ("users", "email TEXT"),
+                          # 1 = disattivato dall'amministratore (dalla plancia): qui non si entra
+                          ("users", "disabled INT DEFAULT 0")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -2587,7 +2589,8 @@ def session_user(token):
         con = db(raw=True)
         try:
             r = con.execute("SELECT s.user_id, s.last_seen, u.id, u.name, u.admin, u.must_change, u.cloud_id "
-                            "FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?",
+                            "FROM user_sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? "
+                            "AND COALESCE(u.disabled, 0)=0",
                             (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
                 con.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (time.time(), key))
@@ -2750,8 +2753,9 @@ async def cloud(method, path, body=None, token=None):
 
 def user_json(u):
     linked = u["cloud_id"] is not None
-    return {"id": u["id"], "name": u["name"], "linked": linked, "admin": linked and bool(u["admin"]),
-            "must_change": linked and bool(u["must_change"])}
+    admin = linked and bool(u["admin"])
+    return {"id": u["id"], "name": u["name"], "linked": linked, "admin": admin,
+            "role": "admin" if admin else "base", "must_change": linked and bool(u["must_change"])}
 
 
 def login_fields(body, key="password"):
@@ -2824,7 +2828,7 @@ def store_user(con, cloud_user, token, ver):
             link_local(con, row["id"], cloud_user["id"])
     if row:
         con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=?, "
-                    "google=?, email=? WHERE id=?", (*fields, row["id"]))
+                    "google=?, email=?, disabled=0 WHERE id=?", (*fields, row["id"]))
         uid = row["id"]
     else:
         uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
@@ -3171,12 +3175,13 @@ def auth_state():
         profiles = [{"id": r["id"], "name": r["name"], "linked": r["cloud_id"] is not None,
                      "quick": r["cloud_id"] is None or bool(r["tv_quick"])}
                     for r in con.execute("SELECT id, name, cloud_id, tv_quick FROM users "
-                                         "ORDER BY created, id")]
+                                         "WHERE COALESCE(disabled, 0)=0 ORDER BY created, id")]
         me = con.execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone() if u else None
         user = None
         if me:
             linked = me["cloud_id"] is not None
             user = dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=linked and bool(me["token"]),
+                        manager=can_manage(me["id"], linked and bool(me["admin"])),
                         google=me["google"] or "", email=me["email"] or "",
                         last_sync=me["last_sync"] or 0,
                         pending=pending_changes(con, me["id"]) if linked else 0)
@@ -3198,6 +3203,8 @@ async def auth_profile(request: Request):
         u = con.execute("SELECT * FROM users WHERE id=?", (int(body.get("id") or 0),)).fetchone()
         if not u:
             raise HTTPException(404, "Questo account non c'è più su questo PC")
+        if u["disabled"]:
+            raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
         if u["cloud_id"] is not None and not u["tv_quick"]:
             raise HTTPException(403, "Questo account si apre con la sua password")
         token = open_session(con, u["id"], body.get("device") or "tv")
@@ -3215,33 +3222,42 @@ async def auth_profile_delete(request: Request):
     u = CURRENT.get()
     if u is None:
         raise HTTPException(401, "Scegli chi guarda per continuare")
+    await remove_local_user(u["id"])
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+async def remove_local_user(uid):
+    """Toglie un account da questo PC (l'account resta online): le sue raccolte
+    passano al primo degli altri account di qui, i video restano."""
     con = db(raw=True)
     try:
-        heir = con.execute("SELECT id FROM users WHERE id<>? ORDER BY created, id LIMIT 1", (u["id"],)).fetchone()
+        row = con.execute("SELECT token FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Questo account non c'è più su questo PC")
+        heir = con.execute("SELECT id FROM users WHERE id<>? ORDER BY created, id LIMIT 1", (uid,)).fetchone()
         if not heir:
             raise HTTPException(400, "È l'unico account di questo PC: non si può togliere")
-        token = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()["token"]
+        token = row["token"]
         for table in ("user_items", "user_shows", "user_settings", "cloud_state", "user_sessions"):
-            con.execute(f"DELETE FROM {table} WHERE user_id=?", (u["id"],))
-        con.execute("DELETE FROM users WHERE id=?", (u["id"],))
+            con.execute(f"DELETE FROM {table} WHERE user_id=?", (uid,))
+        con.execute("DELETE FROM users WHERE id=?", (uid,))
         con.commit()
     finally:
         con.close()
     with config_lock:
         for lib in config.get("libraries") or []:
-            if lib.get("owner") == u["id"]:
+            if lib.get("owner") == uid:
                 lib.update(owner=heir["id"], synced=False)
         save_config()
     user_cache.clear()
-    await asyncio.to_thread(forget_account_friends, u["id"], token)
+    await asyncio.to_thread(forget_account_friends, uid, token)
     if token:
         try:
             await asyncio.to_thread(accounts.call, "POST", "/logout", {}, token, 6)
         except Exception:
             pass
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
-    return resp
 
 
 def forget_account_friends(uid, token):
@@ -3310,6 +3326,8 @@ async def auth_login(request: Request):
             if not ok:
                 raise HTTPException(503, "Il servizio account non risponde e su questo PC non risulta "
                                          "questo accesso: controlla la connessione del PC")
+            if u["disabled"]:
+                raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
             token = open_session(con, u["id"], body.get("device"))
             con.commit()
         finally:
@@ -3705,6 +3723,149 @@ async def accounts_delete(cloud_id: int):
     return await cloud("DELETE", f"/admin/users/{cloud_id}", token=admin_token())
 
 
+# ---- Plancia di amministrazione ------------------------------------------------
+# Due ruoli per tutta BunkerPlex (li tiene il servizio account):
+# - base: guarda, gestisce le sue raccolte, la sua lista, i suoi amici;
+# - amministratore: in piu' gestisce gli account (ruoli, attivazioni, password),
+#   gli accessi di ogni PC/TV/telefono, i server pubblicati e la rete.
+# Su un singolo server le impostazioni comuni (condivisione, nome del PC, amici
+# che entrano) le cambia chi lo gestisce: il proprietario (vedi server_owner) o un
+# amministratore. L'aggiornamento resta del solo proprietario (update_owner_only).
+
+def can_manage(uid, admin):
+    owner = server_owner()
+    return owner is None or bool(admin) or uid == owner
+
+
+def manager_only():
+    u = CURRENT.get()
+    if u is None or u.get("friend") or not can_manage(u["id"], u.get("admin")):
+        raise HTTPException(403, "Solo un amministratore o il proprietario di questo server può cambiarlo")
+    return u
+
+
+@app.put("/api/accounts/{cloud_id}/role")
+async def accounts_role(cloud_id: int, request: Request):
+    token = admin_token()
+    role = "admin" if (await read_json(request)).get("role") == "admin" else "base"
+    res = await cloud("PUT", f"/admin/users/{cloud_id}/role", {"role": role}, token)
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET admin=? WHERE cloud_id=?", (int(role == "admin"), cloud_id))
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+    return res
+
+
+@app.put("/api/accounts/{cloud_id}/active")
+async def accounts_active(cloud_id: int, request: Request):
+    token = admin_token()
+    on = bool((await read_json(request)).get("active"))
+    res = await cloud("PUT", f"/admin/users/{cloud_id}/active", {"active": on}, token)
+    await asyncio.to_thread(set_disabled, cloud_id, None, not on)
+    return res
+
+
+@app.get("/api/admin/sessions")
+async def admin_sessions(user: int = 0):
+    return await cloud("GET", "/admin/sessions" + (f"?user={user}" if user else ""), token=admin_token())
+
+
+@app.delete("/api/admin/sessions/{sid}")
+async def admin_session_drop(sid: int):
+    return await cloud("DELETE", f"/admin/sessions/{sid}", token=admin_token())
+
+
+@app.delete("/api/admin/servers/{uid}/{sid}")
+async def admin_server_drop(uid: int, sid: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid):
+        raise HTTPException(400, "Richiesta non valida")
+    return await cloud("DELETE", f"/admin/servers/{uid}/{sid}", token=admin_token())
+
+
+@app.delete("/api/admin/friends/{a}/{b}")
+async def admin_friend_drop(a: int, b: int):
+    return await cloud("DELETE", f"/admin/friends/{a}/{b}", token=admin_token())
+
+
+def local_overview():
+    """Questo server: account entrati qui, accessi aperti (browser, TV, telefoni),
+    amici che entrano da fuori."""
+    owner = server_owner()
+    con = db(raw=True)
+    try:
+        users = [{"id": r["id"], "name": r["name"], "linked": r["cloud_id"] is not None,
+                  "cloud_id": r["cloud_id"], "admin": r["cloud_id"] is not None and bool(r["admin"]),
+                  "owner": r["id"] == owner, "online": bool(r["token"]), "last_login": r["last_login"] or 0,
+                  "disabled": bool(r["disabled"]),
+                  "sessions": r["n"]}
+                 for r in con.execute("SELECT u.*, (SELECT COUNT(*) FROM user_sessions s WHERE s.user_id=u.id) n "
+                                      "FROM users u ORDER BY created, id")]
+        sessions = [{"id": r["rowid"], "user_id": r["user_id"], "name": r["name"] or "", "device": r["device"] or "",
+                     "created": r["created"] or 0, "last_seen": r["last_seen"] or 0}
+                    for r in con.execute("SELECT s.rowid, s.user_id, s.device, s.created, s.last_seen, u.name "
+                                         "FROM user_sessions s LEFT JOIN users u ON u.id=s.user_id "
+                                         "ORDER BY s.last_seen DESC LIMIT 300")]
+        guests = [{"id": r["id"], "name": r["name"], "approved": bool(r["approved"]), "last_seen": r["last_seen"] or 0}
+                  for r in con.execute("SELECT id, name, approved, last_seen FROM accounts ORDER BY approved, name COLLATE NOCASE")]
+    finally:
+        con.close()
+    with config_lock:
+        nlibs = len(config.get("libraries") or [])
+    upd = updater.snapshot()
+    return {"name": pc_name(), "release": upd.get("release") or "", "update": bool(upd.get("enabled") and upd.get("available")),
+            "auto_update": auto_update(), "share": share_on(), "libraries": nlibs,
+            "users": users, "sessions": sessions, "guests": guests}
+
+
+@app.get("/api/admin/overview")
+async def admin_overview():
+    u = CURRENT.get()
+    if u is None or u.get("friend") or not u.get("admin"):
+        raise HTTPException(403, "La plancia è solo per gli amministratori")
+    out = {"server": await asyncio.to_thread(local_overview), "cloud": None, "cloud_error": ""}
+    try:
+        out["cloud"] = await cloud("GET", "/admin/overview", token=admin_token())
+    except HTTPException as ex:
+        out["cloud_error"] = ("Il servizio account va aggiornato per la plancia completa"
+                              if ex.status_code == 404 else str(ex.detail))
+    return out
+
+
+@app.delete("/api/admin/local-sessions/{sid}")
+def admin_local_session_drop(sid: int):
+    """Chiude un accesso a questo server (un browser, una TV, un telefono)."""
+    manager_only()
+    u = CURRENT.get()
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token FROM user_sessions WHERE rowid=?", (sid,)).fetchone()
+        if not r:
+            raise HTTPException(404, "Accesso non trovato")
+        if u and u.get("session") and r["token"] == token_hash(u["session"]):
+            raise HTTPException(400, "È l'accesso che stai usando adesso")
+        con.execute("DELETE FROM user_sessions WHERE rowid=?", (sid,))
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+    return {"ok": True}
+
+
+@app.delete("/api/admin/local-users/{uid}")
+async def admin_local_user_drop(uid: int):
+    """Toglie un account da questo server (l'account resta: puo' rientrare)."""
+    me = manager_only()
+    if uid == me["id"]:
+        raise HTTPException(400, "Per togliere il tuo account usa Impostazioni → Account")
+    if uid == server_owner():
+        raise HTTPException(400, "Il proprietario di questo server non si può togliere")
+    await remove_local_user(uid)
+    return {"ok": True}
+
+
 # ---- Sincronizzazione con il servizio account --------------------------------
 
 SYNC_ROWS = 40                   # righe per chiamata (limite del piano gratuito di Cloudflare)
@@ -3746,13 +3907,50 @@ def sync_loop():
             except accounts.CloudError as ex:
                 if ex.status == 401:
                     drop_cloud_token(u["id"])
+                elif ex.status == 403 and "disattivato" in str(ex.detail):
+                    set_disabled(uid=u["id"])
                 elif ex.status != 403:
                     print("Sincronizzazione account:", ex.detail, flush=True)
             except Exception as ex:
                 print("Sincronizzazione account:", repr(ex), flush=True)
 
 
+def refresh_role(uid, token):
+    """Ruolo (base / amministratore) e password provvisoria come li vede adesso il
+    servizio: un cambio fatto dalla plancia arriva qui senza dover rientrare."""
+    me = (accounts.call("GET", "/me", token=token) or {}).get("user") or {}
+    if "admin" not in me:
+        return
+    con = db(raw=True)
+    try:
+        done = con.execute("UPDATE users SET admin=?, must_change=?, disabled=0 WHERE id=? "
+                           "AND (admin<>? OR must_change<>? OR COALESCE(disabled, 0)<>0)",
+                           (int(bool(me["admin"])), int(bool(me.get("must_change"))), uid,
+                            int(bool(me["admin"])), int(bool(me.get("must_change"))))).rowcount
+        con.commit()
+    finally:
+        con.close()
+    if done:
+        user_cache.clear()
+
+
+def set_disabled(cloud_id=None, uid=None, off=True):
+    """Account disattivato (o riattivato) dalla plancia: su questo PC non si entra
+    piu', e chi ci sta dentro torna a «Chi guarda?»."""
+    con = db(raw=True)
+    try:
+        where, arg = ("cloud_id=?", cloud_id) if cloud_id is not None else ("id=?", uid)
+        con.execute(f"UPDATE users SET disabled=? WHERE {where}", (int(off), arg))
+        if off:
+            con.execute(f"DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM users WHERE {where})", (arg,))
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+
+
 def sync_user(uid, token):
+    refresh_role(uid, token)
     push_settings(uid, token)
     pull_settings(uid, token)
     sync_libraries(uid)               # raccolte dell'account qui, e quelle nuove di qui nell'account
@@ -6014,6 +6212,7 @@ def sharing_status():
 
 @app.post("/api/sharing")
 async def sharing_set(request: Request):
+    manager_only()
     body = await read_json(request)
     u = CURRENT.get()
     if body.get("on") and auth_on() and not (u and u["linked"]):
@@ -8187,6 +8386,7 @@ async def account_friends_self(request: Request):
 @app.post("/api/pc-name")
 async def set_pc_name(request: Request):
     """Il nome di questo PC per gli amici (quando un account ha piu' PC che condividono)."""
+    manager_only()
     name = re.sub(r"\s+", " ", str((await read_json(request)).get("name") or "")).strip()[:30]
     with config_lock:
         config["pc_name"] = name

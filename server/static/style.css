@@ -953,6 +953,15 @@ body:not(.kb) .snav.on:focus::before { background: var(--accent); }
 .pill { display: inline-block; flex: none; margin-right: .35rem; padding: 0 .6rem; border-radius: 999px; background: var(--surface2); color: var(--ink2); font-size: .82rem; font-weight: 600; line-height: 1.7; white-space: nowrap; vertical-align: .1em; }
 .pill.warn { background: #3a2f12; color: #f3d48a; }
 .pacts { display: flex; flex-wrap: wrap; gap: .5rem; }
+.pill.admin { background: #1d3550; color: #9fcbff; }
+.acct.off .ptext b, .acct.off .uface { opacity: .5; }
+.acct .aedit { flex-basis: 100%; margin-top: .2rem; }
+
+/* Plancia: le schede in cima */
+.atabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.2rem; }
+.atab { padding: .55rem 1.1rem; border: 0; border-radius: 999px; background: var(--surface); color: var(--ink2); font: inherit; font-weight: 600; cursor: pointer; }
+.atab.on { background: var(--ink); color: var(--bg); }
+@media (max-width: 600px) { .atabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .atab { flex: none; } }
 .pacts .btn { margin: 0; padding: .5rem 1rem; font-size: .92rem; }
 
 /* Nome e password provvisoria da comunicare */
