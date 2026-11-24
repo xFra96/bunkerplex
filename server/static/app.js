@@ -2426,8 +2426,7 @@ function accountArea(i) {
       '</dl>' +
       '<p class="kvnote">Senza Internet si continua come sempre: le modifiche si uniscono da sole al ritorno della rete.</p></div>' +
     '<div class="panel"><h2>Accesso</h2>' +
-      '<button class="setting f" data-act="tvquick" data-arg="' + (u.tv_quick ? 0 : 1) + '" data-key="tvquick">In «Chi guarda?» si entra scegliendo il tuo nome<small>' +
-        (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
+      '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Su questo server entra solo il suo proprietario: gli amici vedono i video condivisi dal loro server.</p>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
       '</div>' + emailPanel(u) + googlePanel(u) + '</div>' + peopleLink() + leave);
@@ -4540,9 +4539,6 @@ var actions = {
       location.replace('#/home');
       render();
     }, function (e) { toast(e.message); });
-  },
-  tvquick: function (arg) {
-    post('/auth/options', { tv_quick: arg === '1' }).then(function () { return loadAuth(); }).then(render, function (e) { toast(e.message); });
   },
   dropmissing: function (arg) {
     var parts = arg.split(':'), lib = libById(parts[0]);
