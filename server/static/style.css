@@ -1031,11 +1031,16 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .tvnow.ok { border-left: 3px solid var(--ok); }
 .tvnow.err { border-left: 3px solid var(--warn); color: var(--ink); }
 .tvnow .actions { margin-top: .7rem; }
-.panel h3.tvlogtitle { font-size: 1rem; margin: 1.2rem 0 .5rem; color: var(--ink2); }
-.tvlog { max-height: 14rem; overflow-y: auto; padding: .7rem .9rem; border-radius: .5rem; background: #00000033; font-size: .9rem; line-height: 1.5; }
+.tvlogtitle { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin: 1.2rem 0 .5rem; }
+.panel .tvlogtitle h3 { font-size: 1rem; margin: 0; color: var(--ink2); }
+.tvlog { max-height: 20rem; overflow-y: auto; padding: .7rem .9rem; border-radius: .5rem; background: #00000033; font-size: .9rem; line-height: 1.5; }
 .tvlog div { display: flex; gap: .7rem; color: var(--ink2); }
 .tvlog time { color: var(--ink3); flex: none; min-width: 4.3rem; }
+.tvlog span { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .tvlog .ok { color: var(--ok); } .tvlog .wait { color: var(--warn); } .tvlog .err { color: var(--warn); font-weight: 600; }
+.tvlog .dbg { color: var(--ink3); font-family: ui-monospace, Consolas, monospace; font-size: .78rem; }
+.tvlog .sep { color: var(--ink); font-weight: 600; border-top: 1px solid #ffffff1f; margin-top: .5rem; padding-top: .4rem; }
+.tvlog .sep:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .tvlog .spin { animation: tvblink 1.2s ease-in-out infinite; }
 @keyframes tvblink { 50% { opacity: .3; } }
 

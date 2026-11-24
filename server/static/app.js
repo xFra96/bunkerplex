@@ -1956,13 +1956,16 @@ function tvSteps(t) {
   }).join('') + '</ol>';
 }
 
+// Il racconto di quello che succede. Le righe "dbg" sono i comandi adb con la
+// risposta esatta: piccole e grigie, ma visibili, e finiscono in «Copia il log».
 function tvLog(t) {
   var log = t.log || [];
   if (!log.length) return '';
   return '<div class="tvlog" role="log" aria-live="polite">' + log.map(function (l) {
     var d = new Date(l.at * 1000);
     var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
-    return '<div class="' + esc(l.kind) + '"><time class="num">' + hh + '</time>' + esc(l.text) + '</div>';
+    if (l.kind === 'sep') return '<div class="sep"><time class="num">' + hh + '</time>' + esc(l.text) + '</div>';
+    return '<div class="' + esc(l.kind) + '"><time class="num">' + hh + '</time><span>' + esc(l.text) + '</span></div>';
   }).join('') + (t.phase ? '<div class="wait spin"><time></time>…</div>' : '') + '</div>';
 }
 
@@ -1971,7 +1974,10 @@ function tvNow(t, devs) {
   var msg = '', cls = '';
   if (t.phase && t.step === 'confirm') {
     cls = 'wait';
-    msg = '<b>Guarda la TV</b>: è comparsa la richiesta «Consentire il debug?». Metti la spunta su <b>Consenti sempre da questo computer</b> e premi <b>OK</b> col telecomando.';
+    msg = '<b>Guarda la TV</b>: è comparsa la richiesta «Consentire il debug?». Metti la spunta su <b>Consenti sempre da questo computer</b> e premi <b>OK</b> col telecomando.' +
+      '<p class="tvnohint"><small><b>Sulla TV non compare niente?</b> Premi il tasto <b>Home</b> del telecomando: su alcune TV (per esempio TCL) la richiesta si vede solo dalla schermata Home. ' +
+      'Se ancora niente, premi «Interrompi»; sulla TV, in Opzioni sviluppatore, scegli <b>Revoca autorizzazioni debug USB</b>, spegni e riaccendi <b>Debug USB</b> e riprova, ' +
+      'oppure usa <b>Debug wireless</b> con il codice (passi in fondo).</small></p>';
   } else if (t.phase) {
     cls = 'busy';
     msg = esc(t.message || 'Un attimo…');
@@ -1997,6 +2003,9 @@ function tvNow(t, devs) {
   } else {
     msg = 'Accendi il debug sulla TV (passi qui sotto, una volta sola), poi premi <b>Cerca le TV</b>.';
   }
+  if (t.phase) {
+    msg += '<div class="actions"><button class="btn f" data-act="tvcancel" data-key="tvcancel">Interrompi</button></div>';
+  }
   return '<div class="tvnow ' + cls + '">' + msg + '</div>';
 }
 
@@ -2006,7 +2015,7 @@ function tvGuide() {
     '<li><b>Google TV / Android TV</b>: Impostazioni → Sistema → Info → premi 7 volte su <b>Build del sistema operativo Android TV</b> (compare «Ora sei uno sviluppatore»)</li>' +
     '<li>torna in Impostazioni → Sistema → <b>Opzioni sviluppatore</b> e attiva <b>Debug USB</b> (se c\'è, anche <b>Debug di rete</b> / <b>ADB in rete</b>)</li>' +
     '<li><b>Fire TV</b>: Impostazioni → La mia Fire TV → Informazioni → premi 7 volte sul nome del dispositivo, poi Opzioni sviluppatore → <b>Debug ADB</b> attivo</li>' +
-    '<li>premi <b>Cerca le TV</b> qui sotto; quando la TV chiede «Consentire il debug?» metti la spunta su <b>Consenti sempre</b> e premi <b>OK</b></li></ol>' +
+    '<li>porta la TV sulla <b>schermata Home</b> (su alcune TV la richiesta compare solo lì), premi <b>Cerca le TV</b> qui sotto; quando la TV chiede «Consentire il debug?» metti la spunta su <b>Consenti sempre</b> e premi <b>OK</b></li></ol>' +
     '<p><small>Se la TV ha solo <b>Debug wireless</b> (con codice di associazione): aprilo, scegli «Associa dispositivo con codice» e scrivi qui sotto indirizzo:porta e codice che mostra.</small></p>' +
     '<div class="tvpair"><input class="field f num" id="tvpairaddr" data-key="tvpairaddr" placeholder="192.168.1.180:37123">' +
     '<input class="field f num" id="tvpaircode" data-key="tvpaircode" inputmode="numeric" maxlength="6" placeholder="Codice" data-enter="tvpair">' +
@@ -2027,7 +2036,10 @@ function tvPanelBody(t) {
     (t.scanned_at ? 'Cerca di nuovo' : 'Cerca le TV') + '</button>' +
     '<input class="field f num tvaddr" id="tvaddr" data-key="tvaddr" placeholder="Indirizzo della TV, es. 192.168.1.180" data-enter="tvconnect">' +
     '<button class="btn f" data-act="tvconnect" data-key="tvconnect"' + (t.phase ? ' disabled' : '') + '>Collega</button></div>';
-  if ((t.log || []).length) html += '<h3 class="tvlogtitle">Cosa sta succedendo</h3>' + tvLog(t);
+  if ((t.log || []).length) {
+    html += '<div class="tvlogtitle"><h3>Cosa sta succedendo</h3>' +
+      '<button class="btn f" data-act="tvcopylog" data-key="tvcopylog" title="Tutto il registro, con versioni e risposte di adb: incollalo a chi ti aiuta">Copia il log</button></div>' + tvLog(t);
+  }
   return html + tvGuide();
 }
 
@@ -4413,6 +4425,12 @@ var actions = {
     tvSend('pair', { target: a.trim(), code: c.trim() });
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
+  tvcancel: function () { tvSend('cancel'); },
+  tvcopylog: function () {
+    api('/tv/log').then(function (r) { return copyText(r.text || ''); }).then(function (ok) {
+      toast(ok ? 'Log copiato: incollalo in un messaggio a chi ti aiuta' : 'Non riesco a copiare il log');
+    }, function (e) { toast(e.message); });
+  },
   tvreplace: function (serial) {
     confirmBox('Togliere dalla TV la BunkerPlex che c\'è e mettere questa? Sulla TV andrà rifatto l\'accesso.', 'Sì, sostituiscila', function () {
       tvSend('install', { target: serial, replace: true });

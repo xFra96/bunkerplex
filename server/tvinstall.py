@@ -21,6 +21,7 @@ import socket
 import subprocess
 import threading
 import time
+import traceback
 import urllib.request
 import zipfile
 from collections import deque
@@ -38,17 +39,42 @@ TOOLS_DIR = Path("/tmp/bunkerplex-adb")    # dentro il contenitore: li' i file s
 
 router = APIRouter(prefix="/api/tv")
 
-_hooks = {"lan_ip": lambda host="": "", "apk_version": lambda: (None, None), "apk": None}
+_hooks = {"lan_ip": lambda host="": "", "apk_version": lambda: (None, None), "apk": None,
+          "server_version": ""}
 _lock = threading.Lock()            # un comando adb "lungo" alla volta (scansione, installazione)
 _state = {"phase": "", "message": "", "error": "", "target": "", "done_at": 0.0,
-          "scanned_at": 0.0, "found": [], "names": {}, "step": ""}
-# Il racconto di quello che succede, mostrato nella pagina (e nel log di Docker)
-_log = deque(maxlen=60)
+          "scanned_at": 0.0, "found": [], "names": {}, "step": "", "pc": ""}
+# Il racconto di quello che succede, mostrato nella pagina (e nel log di Docker).
+# Non si svuota tra un tentativo e l'altro: chi chiede aiuto copia tutto con
+# «Copia il log» (comandi adb e risposte esatte comprese, righe "dbg").
+_log = deque(maxlen=400)
+LOG_FILE = DATA / "tv.log"          # lo stesso racconto su file: resta anche dopo un riavvio
+LOG_MAX = 512 * 1024
+_log_lock = threading.Lock()
+# «Interrompi» nella pagina: il lavoro in corso si ferma al primo controllo
+_cancel = threading.Event()
+_job = {"thread": None}
 
 
-def setup(lan_ip, apk_version, apk_path):
+class Interrotto(Exception):
+    pass
+
+
+def _stopping():
+    """True se nella pagina si e' premuto «Interrompi» e siamo nel lavoro in corso
+    (la pagina che chiede lo stato usa adb da un altro thread: quello non si ferma)."""
+    return _cancel.is_set() and threading.current_thread() is _job["thread"]
+
+
+def _check_cancel():
+    if _stopping():
+        raise Interrotto()
+
+
+def setup(lan_ip, apk_version, apk_path, server_version=""):
     """Lo chiama app.py: come sapere l'IP del PC e dov'e' l'APK."""
-    _hooks.update(lan_ip=lan_ip, apk_version=apk_version, apk=Path(apk_path))
+    _hooks.update(lan_ip=lan_ip, apk_version=apk_version, apk=Path(apk_path),
+                  server_version=server_version)
 
 
 # ---------------------------------------------------------------- adb
@@ -58,9 +84,49 @@ def _set(**kw):
 
 
 def log(text, kind="info"):
-    """kind: info, wait (aspetto la TV), ok, err."""
-    _log.append({"at": time.time(), "text": text, "kind": kind})
-    print("TV:", text, flush=True)
+    """kind: info, wait (aspetto la TV), ok, err, dbg (dettagli tecnici: comandi
+    adb e risposte), sep (inizio di un tentativo)."""
+    now = time.time()
+    with _log_lock:
+        _log.append({"at": now, "text": text, "kind": kind})
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))} [{kind}] {text}\n"
+        try:
+            DATA.mkdir(parents=True, exist_ok=True)
+            if LOG_FILE.is_file() and LOG_FILE.stat().st_size > LOG_MAX:
+                keep = LOG_FILE.read_bytes()[-LOG_MAX // 2:]
+                LOG_FILE.write_bytes(keep[keep.find(b"\n") + 1:])
+            with open(LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
+    print(f"TV [{kind}]:", text, flush=True)
+
+
+def _load_log():
+    """All'avvio la pagina mostra di nuovo le ultime righe del file: dopo un riavvio
+    o un aggiornamento del server l'ultimo errore resta visibile."""
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-300:]
+    except OSError:
+        return
+    for line in lines:
+        m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) \[(\w+)\] (.*)", line)
+        if m:
+            try:
+                at = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+            except ValueError:
+                continue
+            _log.append({"at": at, "text": m.group(3), "kind": m.group(2)})
+        elif _log:                                   # seguito di una risposta su piu' righe
+            _log[-1]["text"] += "\n" + line
+
+
+_load_log()
+
+
+def _short(out, limit=1500):
+    out = (out or "").strip() or "(nessuna risposta)"
+    return out if len(out) <= limit else out[:limit] + f"… (+{len(out) - limit} caratteri)"
 
 
 def _say(text, kind="info", step=None):
@@ -116,18 +182,43 @@ def _env():
 
 
 def adb(*args, timeout=20):
-    """Esegue adb e restituisce (codice, testo)."""
-    try:
-        p = subprocess.run([_ensure_adb(), *args], capture_output=True, text=True,
-                           timeout=timeout, env=_env())
-    except subprocess.TimeoutExpired:
-        return 124, "tempo scaduto"
-    return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
+    """Esegue adb e restituisce (codice, testo). Nel lavoro in corso si puo'
+    interrompere anche a meta' (per esempio mentre copia l'APK sulla TV)."""
+    _check_cancel()
+    # Nel lavoro in corso ogni comando finisce nel log, con la risposta esatta
+    # («adb devices» no: si ripete ogni 2 secondi, si scrivono i cambi di stato)
+    traced = threading.current_thread() is _job["thread"] and args[:1] != ("devices",)
+    started = time.time()
+    p = subprocess.Popen([_ensure_adb(), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, env=_env())
+    end = started + timeout
+    while True:
+        try:
+            out, _ = p.communicate(timeout=0.5)
+            code, out = p.returncode, (out or "").strip()
+            break
+        except subprocess.TimeoutExpired:
+            stop = _stopping()
+            if stop or time.time() >= end:
+                p.kill()
+                p.communicate()
+                if stop:
+                    if traced:
+                        log(f"$ adb {' '.join(args)} → interrotto dopo {time.time() - started:.0f} s", "dbg")
+                    raise Interrotto()
+                code, out = 124, f"tempo scaduto ({timeout} s)"
+                break
+    if traced:
+        log(f"$ adb {' '.join(args)} → codice {code}, {time.time() - started:.1f} s: {_short(out)}", "dbg")
+    return code, out
 
 
 def _devices():
     """{"ip:porta": stato} dei dispositivi collegati ad adb (device, unauthorized, offline)."""
     code, out = adb("devices", timeout=15)
+    if "daemon not running" in out and threading.current_thread() is _job["thread"]:
+        # Il servizio adb si era chiuso: i collegamenti di prima (e un permesso in attesa) sono persi
+        log("Il servizio adb non era acceso: l'ho riavviato, i collegamenti di prima sono persi", "dbg")
     found = {}
     for line in out.splitlines()[1:]:
         parts = line.split()
@@ -196,13 +287,16 @@ def _scan(host_header):
     if not net:
         raise RuntimeError("Non conosco ancora l'indirizzo di questo PC nella rete di casa: "
                            "apri questa pagina con l'indirizzo del PC (es. http://192.168.1.50:32500), non con localhost")
-    _log.clear()
+    _set(pc=pc)
     _say(f"Cerco le TV con il debug acceso nella rete di casa ({net}, {net.num_addresses - 2} indirizzi)…",
          step="scan")
     hosts = [str(h) for h in net.hosts() if str(h) != pc]
     with ThreadPoolExecutor(64) as pool:
         found = [ip for ip, ok in zip(hosts, pool.map(_open, hosts)) if ok]
+    _check_cancel()
+    log(f"Porta {ADB_PORT} aperta su: {', '.join(found) or 'nessun indirizzo'}", "dbg")
     known = _devices()
+    log(f"Già noti ad adb: {', '.join(f'{k} {v}' for k, v in known.items()) or 'nessuno'}", "dbg")
     for serial in known:                   # TV gia' collegate (anche con porta diversa da 5555)
         ip = serial.split(":")[0]
         if ip not in found:
@@ -238,45 +332,81 @@ def _scan(host_header):
     return found
 
 
-def _connect_and_wait(serial, wait_s=90):
+def _connect_and_wait(serial, wait_s=120):
     """Collega la TV e aspetta che sulla TV si prema «Consenti». True se pronta."""
     state = _devices().get(serial)
+    log(f"Stato di {serial} per adb: {state or 'non collegata'}", "dbg")
     if state == "device":
         return True
+    if state == "unauthorized":
+        # Collegamento rimasto da un tentativo di prima: la TV la richiesta l'ha gia'
+        # mostrata (e magari chiusa) e non la ripropone finche' non ci si ricollega.
+        log(f"{_label(serial)} non ha ancora dato il permesso: mi ricollego, così la TV lo chiede di nuovo")
+        adb("disconnect", serial, timeout=10)
+        time.sleep(1)
+        state = None
     if state in (None, "offline"):
         _say(f"Mi collego a {_label(serial)}…", step="connect")
         _connect(serial)
         time.sleep(1)
         state = _devices().get(serial)
+        log(f"Stato di {serial} dopo il collegamento: {state or 'non collegata'}", "dbg")
     if state == "device":
         log(f"Collegata a {_label(serial)}: il permesso c'era già", "ok")
         return True
     start = time.time()
     if state == "unauthorized":
-        _say("In attesa di conferma sulla TV: sullo schermo della TV compare «Consentire il debug?». "
-             "Metti la spunta su «Consenti sempre da questo computer» e premi «OK» col telecomando.",
+        _say("In attesa di conferma sulla TV: sullo schermo della TV compare «Consentire il debug?» "
+             "(su alcune TV solo dalla schermata Home: premi il tasto Home del telecomando). "
+             "Metti la spunta su «Consenti sempre da questo computer» e premi «OK».",
              "wait", step="confirm")
     next_note = start + 15
+    retries = 0
     while state == "unauthorized" and time.time() - start < wait_s:
-        time.sleep(2)
-        state = _devices().get(serial)
+        for _ in range(4):
+            time.sleep(0.5)
+            _check_cancel()
+        was, state = state, _devices().get(serial)
+        if state != was:
+            log(f"Stato di {serial}: {was} → {state or 'non collegata'}", "dbg")
+        if state in (None, "offline") and retries < 3:
+            # Collegamento perso mentre si aspettava (TV in standby, adb riavviato...): un
+            # «OK» premuto adesso andrebbe perso, quindi ci si ricollega e la TV lo richiede
+            retries += 1
+            log(f"Collegamento con {_label(serial)} perso durante l'attesa: mi ricollego "
+                f"(tentativo {retries} di 3), la TV ripropone la richiesta", "wait")
+            try:
+                _connect(serial)
+                time.sleep(1)
+                state = _devices().get(serial)
+                log(f"Stato di {serial} dopo il nuovo collegamento: {state or 'non collegata'}", "dbg")
+            except RuntimeError as ex:
+                log(str(ex), "dbg")
         if state == "unauthorized" and time.time() >= next_note:
             left = int(wait_s - (time.time() - start))
             _say(f"Ancora in attesa della conferma sulla TV (aspetto altri {left} secondi)… "
-                 "Se la richiesta non si vede, premi Indietro sulla TV e riprova.", "wait", step="confirm")
+                 "Non compare niente? Premi il tasto Home del telecomando: su alcune TV la richiesta "
+                 "si vede solo dalla schermata Home.", "wait", step="confirm")
             next_note += 15
     if state == "device":
         log("Permesso dato: la TV è collegata", "ok")
         return True
     if state == "unauthorized":
-        raise RuntimeError("Sulla TV non è stato dato il permesso in tempo: premi di nuovo il pulsante qui e, "
-                           "quando sulla TV compare la richiesta, scegli «Consenti sempre» e «OK»")
-    raise RuntimeError(f"{_label(serial)} non risponde: è accesa e con il debug attivo?")
+        raise RuntimeError(f"Sulla TV non è stato dato il permesso in {wait_s} secondi (adb la vede ancora "
+                           "«unauthorized»). Se la richiesta «Consentire il debug?» non è comparsa: porta la TV "
+                           "sulla schermata Home (tasto Home del telecomando) e riprova: su alcune TV, per esempio "
+                           "TCL, compare solo lì. Se ancora niente: sulla TV, in Opzioni sviluppatore, scegli "
+                           "«Revoca autorizzazioni debug USB», spegni e riaccendi «Debug USB» e riprova, oppure "
+                           "usa «Debug wireless» con il codice di associazione (passi qui sotto)")
+    raise RuntimeError(f"{_label(serial)} non risponde (stato per adb: {state or 'non collegata'}): "
+                       "è accesa e con il debug attivo?")
 
 
 def _connect(target):
     code, out = adb("connect", target, timeout=15)
-    if "connected" not in out or "cannot" in out or "failed" in out:
+    if "failed to authenticate" in out:
+        pass        # adb 34: la TV c'e' ma non ha ancora dato il permesso, la richiesta e' sullo schermo
+    elif "connected" not in out or "cannot" in out or "failed" in out:
         if "refused" in out:
             why = "la TV risponde ma il debug è spento"
         elif "timed out" in out or "No route" in out or code == 124:
@@ -290,7 +420,6 @@ def _connect(target):
 
 
 def _connect_job(target):
-    _log.clear()
     _connect_and_wait(target)
     _set(step="install")
     log("Ora premi «Installa l'app» qui sotto", "ok")
@@ -341,6 +470,10 @@ def _install(serial, replace):
     log(f"Fatto: BunkerPlex è aperta su {_label(serial)} e trova il server da sola", "ok")
 
 
+PHASES = {"scan": "Cerca le TV", "connect": "Collega", "pair": "Associa con codice",
+          "install": "Installa l'app"}
+
+
 def _run(phase, target, fn, *args):
     if not _lock.acquire(blocking=False):
         raise HTTPException(409, "Sto già lavorando su una TV: aspetta un attimo")
@@ -348,10 +481,17 @@ def _run(phase, target, fn, *args):
     def job():
         try:
             _set(phase=phase, target=target, error="", message="")
+            log(f"{PHASES.get(phase, phase)}{' · ' + target if target else ''}", "sep")
             fn(*args)
             _set(message="", done_at=time.time(), last=phase)
+        except Interrotto:
+            _set(error="", message="", done_at=time.time(), last=phase, step="")
+            log("Interrotto: puoi riprovare quando vuoi", "err")
         except Exception as ex:
             err = str(ex) or repr(ex)
+            if not isinstance(ex, (RuntimeError, HTTPException)):
+                log("Errore imprevisto:\n" + traceback.format_exc(), "dbg")
+                err = f"Errore imprevisto ({type(ex).__name__}: {ex}): copia il log e mandalo a chi ti aiuta"
             _set(error=err, message="", done_at=time.time(), last=phase)
             log("Sulla TV c'è una BunkerPlex con firma diversa: va tolta prima (pulsante qui sotto)"
                 if err == "INCOMPATIBILE" else err, "err")
@@ -359,7 +499,10 @@ def _run(phase, target, fn, *args):
             _set(phase="")
             _lock.release()
 
-    threading.Thread(target=job, daemon=True, name=f"tv-{phase}").start()
+    _cancel.clear()
+    th = threading.Thread(target=job, daemon=True, name=f"tv-{phase}")
+    _job["thread"] = th
+    th.start()
 
 
 # ---------------------------------------------------------------- API
@@ -383,7 +526,7 @@ def _status():
     out = {"phase": _state["phase"], "message": _state["message"], "error": _state["error"],
            "target": _state["target"], "last": _state.get("last", ""), "done_at": _state["done_at"],
            "scanned_at": _state["scanned_at"], "adb": bool(_adb_path()), "step": _state["step"],
-           "log": list(_log)[-40:],
+           "log": list(_log)[-80:],
            "apk": bool(_hooks["apk"] and _hooks["apk"].is_file()), "apk_version": code, "devices": []}
     if not out["adb"] and not _state["scanned_at"]:
         return out
@@ -434,6 +577,59 @@ async def tv_pair(request: Request):
     if target.endswith(":0"):
         raise HTTPException(400, "Scrivi anche la porta di associazione, es. 192.168.1.180:37123")
     _run("pair", target, _pair, target, code)
+    return _status()
+
+
+def _report(host_header=""):
+    lines = ["BunkerPlex · registro dell'installazione sulla TV",
+             f"Copiato il {time.strftime('%Y-%m-%d %H:%M:%S')} (ora del server, fuso {time.strftime('%Z %z')}: "
+             "è anche l'ora delle righe qui sotto)"]
+    try:
+        code, name = _hooks["apk_version"]()
+        apk = _hooks["apk"]
+        size = f", {apk.stat().st_size / 1_048_576:.1f} MB" if apk and apk.is_file() else ", file assente"
+        lines.append(f"Server {_hooks['server_version'] or '?'} · app per la TV sul PC: "
+                     f"{name or '?'} (versionCode {code or '?'}{size})")
+        pc = _state["pc"] or _hooks["lan_ip"](host_header)
+        net = _subnet(pc) if pc else None
+        lines.append(f"PC nella rete di casa: {pc or 'sconosciuto'}" + (f" (cerco in {net})" if net else "")
+                     + f" · {platform.system()} {platform.machine()}")
+        if _adb_path():
+            _, ver = adb("version", timeout=5)
+            lines.append("adb: " + " · ".join(x.strip() for x in ver.splitlines()[:2]))
+            key = DATA / "home" / ".android" / "adbkey.pub"
+            lines.append("Chiave adb: " + (
+                f"c'è (creata il {time.strftime('%Y-%m-%d %H:%M', time.localtime(key.stat().st_mtime))})"
+                if key.is_file() else "non ancora creata"))
+            devs = _devices()
+            lines.append("Dispositivi per adb adesso: " + (", ".join(f"{k} {v}" for k, v in devs.items()) or "nessuno"))
+        else:
+            lines.append("adb: non ancora presente")
+        lines.append(f"Stato: {_state['phase'] or 'fermo'} · passo {_state['step'] or '-'}"
+                     + (f" · ultimo errore: {_state['error']}" if _state["error"] else ""))
+    except Exception as ex:
+        lines.append(f"(intestazione incompleta: {ex!r})")
+    lines.append("─" * 60)
+    try:
+        body = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-400:]
+    except OSError:
+        body = []
+    if not body:
+        body = [f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(x['at']))} [{x['kind']}] {x['text']}"
+                for x in list(_log)]
+    return "\n".join(lines + (body or ["(ancora niente)"])) + "\n"
+
+
+@router.get("/log")
+def tv_log(request: Request):
+    return {"text": _report(request.headers.get("host", ""))}
+
+
+@router.post("/cancel")
+def tv_cancel():
+    if _state["phase"]:
+        _cancel.set()
+        log("Interrompo…", "wait")
     return _status()
 
 
