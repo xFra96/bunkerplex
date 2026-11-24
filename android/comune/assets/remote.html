@@ -352,9 +352,63 @@ function pcCard(pc) {
       (n ? '<small>' + esc(n) + '</small>' : '') + '</button>';
   }).join('');
   if (!off && pc.checked && !pc.libs.length) libs = '<p class="note">Nessuna raccolta condivisa.</p>';
+  var upd = pc.self && pc.online && pc.checked
+    ? '<div class="row left" style="margin-top:.6rem"><button class="f small" data-act="pcupd" data-arg="' + pc.key + '">' +
+      (pc.updating ? 'Aggiornamento in corso…' : 'Aggiorna il server') + '</button></div>' : '';
   return '<div class="pc' + (off ? ' off' : '') + '"><div class="pchead"><span class="dot"></span>' +
     esc(pc.self ? pc.name : pc.ownerName + ' · ' + pc.name) + '<small>' + esc(state) + '</small></div>' +
-    (libs ? '<div class="libs">' + libs + '</div>' : '') + '</div>';
+    (libs ? '<div class="libs">' + libs + '</div>' : '') + upd + '</div>';
+}
+
+// Aggiorna un tuo PC da fuori casa: lo permette solo il PC stesso, e solo al suo
+// padrone (gli amici non vedono il pulsante, e un PC non tuo risponde di no)
+function updateErr(pc, e) {
+  if (e.status === 403) return 'Solo il proprietario di ' + pc.name + ' può aggiornarlo';
+  if (e.status === 404) return pc.name + ' ha una versione di prima: aggiornalo una volta da casa';
+  return e.offline ? pc.name + ' non risponde' : e.message;
+}
+
+function updatePc(pc) {
+  if (pc.updating) { toast(pc.name + ' si sta aggiornando'); return; }
+  toast('Controllo gli aggiornamenti di ' + pc.name + '…');
+  share(pc, '/update/check', { method: 'POST', body: {}, timeout: 40000 }).then(function (u) {
+    if (!u.enabled) { toast('Su ' + pc.name + ' gli aggiornamenti non sono configurati'); return; }
+    if (u.phase === 'pc' || u.phase === 'installing' || u.phase === 'restarting') { watchPc(pc); return; }
+    if (u.error) { toast(pc.name + ': ' + u.error); return; }
+    if (!u.available) { toast(pc.name + ' è aggiornato' + (u.release ? ' (versione ' + u.release + ')' : '')); return; }
+    var what = u.code && u.apk ? ' (programma e app per la TV)' : u.apk ? ' (app per la TV)' : '';
+    if (!window.confirm('Su ' + pc.name + ' c\'è un aggiornamento' + what + '. Installarlo adesso? Il server si riaccende da solo: se qualcuno sta guardando, si interrompe.')) return;
+    return share(pc, '/update/install', { method: 'POST', body: {}, timeout: 20000 }).then(function () { watchPc(pc); });
+  }).catch(function (e) { toast(updateErr(pc, e)); });
+}
+
+// Segue l'aggiornamento finche' il PC non torna su (anche 10 minuti se si ricostruisce Docker)
+function watchPc(pc) {
+  pc.updating = true;
+  if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true);
+  toast('Aggiorno ' + pc.name + '… torna disponibile in qualche minuto');
+  var down = false, tries = 0;
+  function done(msg) {
+    pc.updating = false;
+    toast(msg);
+    loadPc(pc).then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
+  }
+  function tick() {
+    tries++;
+    share(pc, '/update', { timeout: 8000 }).then(function (u) {
+      if (u.phase === 'restarting') down = true;
+      if (u.phase === 'pc' || u.phase === 'installing' || u.phase === 'checking' || u.phase === 'restarting') { setTimeout(tick, 4000); return; }
+      if (u.phase === 'host') { done('Aggiornamento scaricato: per completarlo rilancia «Installa BunkerPlex» sul PC'); return; }
+      if (u.error) { done('Aggiornamento non riuscito: ' + u.error); return; }
+      if (!down && tries < 3) { setTimeout(tick, 4000); return; }
+      done(pc.name + ' è aggiornato' + (u.release ? ' (versione ' + u.release + ')' : ''));
+    }, function () {
+      down = true;
+      if (tries > 200) { done(pc.name + ' non risponde ancora: riprova tra poco'); return; }
+      setTimeout(tick, 4000);
+    });
+  }
+  setTimeout(tick, 3000);
 }
 
 function friendsPage() {
@@ -557,6 +611,7 @@ var acts = {
   gback: function () { gflow = null; go('login'); },
   logout: function () { app.remoteLogout(); proxy = ''; netReady = false; pcs = {}; go('login'); },
   lib: function (arg) { go('lib/' + arg); },
+  pcupd: function (arg) { var pc = pcs[arg]; if (pc && pc.self) updatePc(pc); },
   pickdev: function (id) {
     var done = pickDevice.done;
     pickDevice.done = null;

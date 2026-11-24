@@ -216,7 +216,9 @@ function Get-ApkAsset {
 
 # L'app TV nativa: l'ultima release tv-v* (non e' mai la "latest")
 function Get-TvApkAsset {
-    try { $releases = @(Api 'releases?per_page=30') } catch { return $null }
+    # PowerShell 5 restituisce l'elenco JSON come un oggetto solo: passandolo nel
+    # tubo si torna a una release per volta (senza, si guardava solo la prima)
+    try { $releases = @(Api 'releases?per_page=30' | ForEach-Object { $_ }) } catch { return $null }
     foreach ($rel in $releases) {
         if ($rel.draft -or -not "$($rel.tag_name)".StartsWith('tv-v')) { continue }
         $asset = $rel.assets | Where-Object { $_.name -eq 'BunkerPlexTV.apk' } | Select-Object -First 1

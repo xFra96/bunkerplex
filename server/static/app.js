@@ -2283,7 +2283,8 @@ async function settingsArea(area) {
           (appOld(i) ? ' · <span class="nodot">sul PC c\'è la ' + esc(i.apk_version_name || 'più nuova') + '</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd></dl>' +
         '<div class="actions"><button class="btn' + (appOld(i) ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">' +
           (appOld(i) ? 'Aggiorna l\'app' : 'Controlla aggiornamenti') + '</button></div></div>' : '') +
-      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '<h2>Server</h2>') : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>'));
+      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '<h2>Server</h2>') : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>') +
+      changelogPanel(u));
   }
 
   if (area === 'apps') {
@@ -2473,13 +2474,40 @@ function whenSeen(sec) {
 // BunkerPlex; se il servizio account non lo offre, la porta aperta sul router
 // I tuoi altri PC (stesso account): le loro raccolte si vedono da qui, prima
 // dalla rete di casa e, fuori casa, da Tailscale.
+var myPcNames = {};
+
+// Aggiorna un altro tuo PC passando da questo (rete di casa o Tailscale): decide
+// quel PC, e lo permette solo se lì il padrone sei tu
+function updateMyPc(n) {
+  var name = myPcNames[n] || 'il tuo altro PC';
+  toast('Controllo gli aggiornamenti di ' + name + '…');
+  post('/my-pcs/' + n + '/update/check').then(function (u) {
+    if (u.old) { toast(name + ' ha una versione di prima: aggiornalo una volta da lì'); return; }
+    if (u.can_update === false) { toast('Solo il proprietario di ' + name + ' può aggiornarlo'); return; }
+    if (!u.enabled) { toast('Su ' + name + ' gli aggiornamenti non sono configurati'); return; }
+    if (u.phase === 'pc' || u.phase === 'installing' || u.phase === 'restarting') { toast(name + ' si sta già aggiornando'); return; }
+    if (u.error) { toast(name + ': ' + u.error); return; }
+    if (!u.available) { toast(name + ' è aggiornato' + (u.release ? ' (versione ' + u.release + ')' : '')); return; }
+    openPicker('Su ' + name + ' c\'è un aggiornamento' + updateWhat(u) + '. Installarlo adesso? Il server si riaccende da solo: se qualcuno sta guardando un film, si interrompe.',
+      [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
+        if (answer !== 'yes') return;
+        post('/my-pcs/' + n + '/update/install').then(function () {
+          toast('Aggiornamento avviato su ' + name + ': torna disponibile in qualche minuto');
+        }, function (e) { toast(e.message); });
+      });
+  }, function (e) { toast(e.message); });
+}
+
 function myPcsPanel(af) {
   if (!af || !af.linked || af.supported === false || !af.mine) return '';
   var rows = af.mine.map(function (m) {
     var st = m.online === false ? dot(false) + ' ' + esc(m.error || 'spento o non raggiungibile')
       : m.online ? dot(true) + ' collegato' + (m.route === 'lan' ? ' dalla rete di casa' : m.route === 'tailscale' ? ' da Tailscale' : '')
         : 'collegamento in corso…';
-    return '<div class="folder"><div class="where"><b>' + esc(m.name || 'Il tuo altro PC') + '</b><small>' + st + '</small></div></div>';
+    myPcNames[m.n] = m.name || 'il tuo altro PC';
+    var upd = m.online && m.n != null
+      ? '<button class="btn f" data-act="pcupd" data-arg="' + m.n + '" data-key="pcupd-' + m.n + '">Aggiorna il server</button>' : '';
+    return '<div class="folder"><div class="where"><b>' + esc(m.name || 'Il tuo altro PC') + '</b><small>' + st + '</small></div>' + upd + '</div>';
   }).join('');
   var state = !af.self_reach ? 'Spento: da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
     : af.reachable ? 'Attivo: ogni PC dove sei entrato vede le raccolte degli altri accesi'
@@ -3892,6 +3920,23 @@ function updateTime(seconds) {
   } catch (e) { return ''; }
 }
 
+// Le novita' delle ultime 5 release del server, la piu' nuova prima
+function changelogPanel(u) {
+  var list = (u && u.changelog) || [];
+  if (!list.length) return '';
+  var rows = list.map(function (r) {
+    var here = u.release && r.version === u.release;
+    var d = '';
+    try { d = r.date ? new Date(r.date + 'T12:00:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' }) : ''; } catch (e) { d = r.date || ''; }
+    return '<div class="folder"><div class="where"><b>Versione <span class="num">' + esc(r.version) + '</span>' +
+      (here ? ' · installata' : '') + '</b><small>' + esc(d) + '</small>' +
+      (r.changes && r.changes.length ? '<ul style="margin:.4rem 0 0 1.1rem;padding:0">' + r.changes.map(function (c) {
+        return '<li>' + esc(c) + '</li>';
+      }).join('') + '</ul>' : '') + '</div></div>';
+  }).join('');
+  return '<div class="panel"><h2>Novità delle ultime versioni</h2><div class="lib">' + rows + '</div></div>';
+}
+
 function updatePanel(u) {
   if (!u || !u.enabled) return '';
   var state;
@@ -3914,16 +3959,17 @@ function updatePanel(u) {
           (u.dev_copy ? ' (questa è la copia di sviluppo: il programma lo aggiorna git).' : '.')
         : (u.dev_copy ? ' Questa è la copia di sviluppo e l\'aiutante sul PC è spento: da qui arriva solo l\'app per la TV. Rilancia «Installa BunkerPlex» sul computer per riaccenderlo.'
                       : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Installa BunkerPlex».')) + '</p>' +
-    (u.access === false
+    (u.can_update === false ? '<p>' + dot(false) + ' Solo il proprietario di questo server può aggiornarlo.</p>' : '') +
+    (u.access === false && u.can_update !== false
       ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
             : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (su GitHub: Settings → Developer settings → Fine-grained tokens, permesso Contents: Read-only). Resta salvato sul disco di BunkerPlex.</p>' +
               '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
       : '') +
     '<div class="actions" style="margin-top:0">' +
-      (u.available && !u.phase ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
+      (u.available && !u.phase && u.can_update !== false ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
       '<button class="btn f" data-act="updcheck" data-key="updcheck">Controlla adesso</button>' +
-      '<button class="btn f" data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto">Aggiornamento automatico: ' + (u.auto ? 'attivo' : 'spento') + '</button>' +
+      (u.can_update !== false ? '<button class="btn f" data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto">Aggiornamento automatico: ' + (u.auto ? 'attivo' : 'spento') + '</button>' : '') +
     '</div></div>';
 }
 
@@ -3974,7 +4020,7 @@ function checkServerUpdate() {
     // Aggiornamento gia' in corso (partito da un altro dispositivo, o il server si
     // e' appena riacceso a meta' lavoro): si segue fino alla fine
     if (u.phase === 'pc' && !player && modal.hidden && !/^#\/play/.test(location.hash)) { watchServerUpdate(); return; }
-    if (!u.enabled || !u.available || u.phase) return;
+    if (!u.enabled || !u.available || u.phase || u.can_update === false) return;
     var sig = u.remote + (u.apk ? '+tv' : '');
     if (serverUpdateLater === sig) return;
     // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
@@ -4145,6 +4191,7 @@ var actions = {
     if (name === 'no') { go(); return; }
     confirmBox('Togliere ' + name + ' dai tuoi amici? Non vedrete più le raccolte l\'uno dell\'altro.', 'Sì, togli', go);
   },
+  pcupd: function (arg) { updateMyPc(+arg); },
   afself: function (arg) {
     toast(arg === '1' ? 'Collego i tuoi PC…' : 'Scollego i tuoi PC…');
     post('/account-friends/self', { on: arg === '1' }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
