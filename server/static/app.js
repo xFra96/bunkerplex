@@ -377,15 +377,24 @@ function phonePairPage(code) {
     '<p style="margin-top:1rem"><small>Il tuo account è già su questo PC? Allora sulla TV basta sceglierlo in «Chi guarda?».</small></p></div></div>';
 }
 
+// Account invitato dalla plancia: ha ancora il nome provvisorio, al primo accesso sceglie il suo
+function needsName() {
+  return !!(auth && auth.user && /^invito-[0-9a-f]{6}$/i.test(auth.user.name || ''));
+}
+
 function passwordPage(forced) {
-  return '<div class="page"><div class="panel login"><h1>' + (forced ? 'Scegli la tua password' : 'Cambia password') + '</h1>' +
-    (forced ? '<p>Il tuo account ha una password provvisoria. Scegline una tua: varrà su tutti i PC e le TV. Finché non lo fai funziona tutto, ma non si sincronizza.</p>'
+  var naming = forced && needsName();
+  return '<div class="page"><div class="panel login"><h1>' + (naming ? 'Benvenuto su BunkerPlex' : forced ? 'Scegli la tua password' : 'Cambia password') + '</h1>' +
+    (naming ? '<p>Sei entrato con l\'invito. Scegli il tuo nome e una password tua: varranno su tutti i PC, telefoni e TV. Poi crei il tuo profilo.</p>' +
+      '<input class="field f" style="margin-bottom:.6rem" id="pname" data-key="pname" data-autofocus maxlength="32" autocomplete="username" autocapitalize="none" placeholder="Il tuo nome (lettere, numeri, punto, trattino)">'
+      : forced ? '<p>Il tuo account ha una password provvisoria. Scegline una tua: varrà su tutti i PC e le TV. Finché non lo fai funziona tutto, ma non si sincronizza.</p>'
       : '<p>Gli altri PC dove sei entrato ti chiederanno la password nuova.</p>') +
-    '<input class="field f" style="margin-bottom:.6rem" id="pold" data-key="pold" data-autofocus type="password" autocomplete="current-password" placeholder="' + (forced ? 'Password provvisoria' : 'Password attuale') + '">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="pold" data-key="pold"' + (naming ? '' : ' data-autofocus') + ' type="password" autocomplete="current-password" placeholder="' + (naming ? 'Password provvisoria (dall\'email)' : forced ? 'Password provvisoria' : 'Password attuale') + '">' +
     '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
     '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="changepw" placeholder="Ripeti la password nuova">' +
     '<div class="actions"><button class="btn primary f" data-act="changepw" data-arg="' + (forced ? '1' : '') + '" data-key="changepw">Salva</button>' +
-    (forced ? '<button class="btn f" data-act="pwlater" data-key="pwlater">Più tardi</button>' : '<button class="btn f" data-act="goback" data-key="cancel">Annulla</button>') +
+    (naming ? '<button class="btn f" data-act="logout" data-key="pwlogout">Esci</button>'
+      : forced ? '<button class="btn f" data-act="pwlater" data-key="pwlater">Più tardi</button>' : '<button class="btn f" data-act="goback" data-key="cancel">Annulla</button>') +
     '</div></div></div>';
 }
 
@@ -1779,13 +1788,14 @@ function copyText(text) {
 }
 
 // Dopo aver creato un account (o dato una nuova password): nome e password da comunicare
-function showSecret(title, name, pass) {
-  cache.secret = 'Nome utente: ' + name + '\nPassword provvisoria: ' + pass;
+function showSecret(title, name, pass, label) {
+  label = label || 'Nome utente';
+  cache.secret = label + ': ' + name + '\nPassword provvisoria: ' + pass;
   modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
   modal.innerHTML = '<div class="sheet secret"><h3>' + esc(title) + '</h3>' +
     '<div class="secretbody">' + face(name, 'big') +
-      '<dl><dt>Nome utente</dt><dd>' + esc(name) + '</dd><dt>Password provvisoria</dt><dd class="pw num">' + esc(pass) + '</dd></dl></div>' +
-    '<p class="secretnote">Comunicala tu. Al primo accesso ' + esc(name) + ' sceglierà una password sua.</p>' +
+      '<dl><dt>' + esc(label) + '</dt><dd>' + esc(name) + '</dd><dt>Password provvisoria</dt><dd class="pw num">' + esc(pass) + '</dd></dl></div>' +
+    '<p class="secretnote">Comunicala tu. Al primo accesso ' + (label === 'Email' ? 'sceglierà il suo nome e' : esc(name) + ' sceglierà') + ' una password sua.</p>' +
     '<div class="actions"><button class="btn primary f" data-act="copysecret" data-key="copysecret">Copia nome e password</button>' +
     '<button class="btn f" data-act="closemodal" data-key="closesecret">Fatto</button></div></div>';
   modal.hidden = false;
@@ -2533,13 +2543,16 @@ async function adminArea() {
     var me = auth.user.name.toLowerCase();
     var rows = list.map(function (a) {
       var isMe = a.username.toLowerCase() === me;
-      return '<div class="acct' + (a.disabled ? ' off' : '') + '">' + face(a.username, 'mid') +
-        '<div class="ptext"><b>' + esc(a.username) + '</b>' +
+      var invited = /^invito-[0-9a-f]{6}$/i.test(a.username);
+      var title = invited ? (a.email || a.username) : a.username;
+      return '<div class="acct' + (a.disabled ? ' off' : '') + '">' + face(title, 'mid') +
+        '<div class="ptext"><b>' + esc(title) + '</b>' +
           (isMe ? '<span class="pill">Tu</span>' : '') +
           '<span class="pill' + (a.admin ? ' admin' : '') + '">' + (a.admin ? 'Amministratore' : 'Base') + '</span>' +
           (a.disabled ? '<span class="pill warn">Disattivato</span>' : '') +
-          (a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
-          (a.email && a.email !== a.google ? '<span class="pill">' + esc(a.email) + '</span>' : '') +
+          (invited ? '<span class="pill warn">Invitato · non ha ancora fatto il primo accesso</span>'
+            : a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
+          (a.email && a.email !== a.google && !invited ? '<span class="pill">' + esc(a.email) + '</span>' : '') +
           (a.google ? '<span class="pill">' + (a.google_linked ? 'Google · ' : 'Google (da collegare) · ') + esc(a.google) + '</span>' : '') +
           '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
             a.servers + (a.servers === 1 ? ' accesso aperto' : ' accessi aperti') + ' · creato il ' + when(a.created) + '</small></div>' +
@@ -2547,8 +2560,8 @@ async function adminArea() {
           (isMe ? '' : '<button class="btn f" data-act="accrole" data-arg="' + a.id + '" data-key="accrole-' + a.id + '">' + (a.admin ? 'Rendi base' : 'Rendi amministratore') + '</button>' +
             '<button class="btn f" data-act="accactive" data-arg="' + a.id + '" data-key="accact-' + a.id + '">' + (a.disabled ? 'Riattiva' : 'Disattiva') + '</button>') +
           '<button class="btn f" data-act="accemail" data-arg="' + a.id + '" data-key="acce-' + a.id + '">Email</button>' +
-          '<button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
-          (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">Elimina</button>') +
+          '<button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">' + (invited ? 'Rimanda l\'invito' : 'Nuova password provvisoria') + '</button>' +
+          (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">' + (invited ? 'Annulla invito' : 'Elimina') + '</button>') +
         '</div>' +
         (cache.editEmail === a.id ? '<div class="joined aedit"><input class="field f" id="acmail-' + a.id + '" data-key="acmail-' + a.id + '" type="email" autocapitalize="none" maxlength="120" placeholder="Vuota per toglierla" value="' + esc(a.email || '') + '" data-enter="accemailsave">' +
           '<button class="btn f" data-act="accemailsave" data-arg="' + a.id + '" data-key="acmails-' + a.id + '">Salva</button></div>' : '') +
@@ -2558,18 +2571,14 @@ async function adminArea() {
     body = '<div class="panel"><p><b>Base</b>: guarda, gestisce le sue raccolte, la sua lista e i suoi amici. ' +
         '<b>Amministratore</b>: in più gestisce tutta BunkerPlex da questa plancia. Un account <b>disattivato</b> non entra più da nessuna parte finché non lo riattivi.</p></div>' +
       '<div class="panel accts">' + rows + '</div>' +
-      '<div class="panel"><h2>Nuovo account</h2>' +
-        '<label class="flabel" for="aname">Nome utente</label>' +
-        '<input class="field f" style="margin-bottom:1rem" id="aname" data-key="aname" autocomplete="off" maxlength="32" placeholder="Lettere, numeri, punto, trattino">' +
-        '<label class="flabel" for="apass">Password provvisoria</label>' +
-        '<div class="joined"><input class="field f num" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '">' +
-          '<button class="btn f" data-act="regenpass" data-key="regenpass">Un\'altra</button></div>' +
-        '<p class="kvnote">Al primo accesso la cambierà con una sua.</p>' +
-        '<label class="flabel" for="agoogle">Email (facoltativa)</label>' +
-          '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it">' +
-          '<p class="kvnote">Può entrare con questa al posto del nome utente' + (auth.google ? '; se è un account Google, anche con «Entra con Google», senza la password provvisoria' : '') + '.</p>' +
+      '<div class="panel"><h2>Invita una persona</h2>' +
+        '<p>Gli account li crei solo tu da qui. ' + (auth.reset ? 'All\'email arriva una password provvisoria' : 'Ti mostro una password provvisoria da comunicare') +
+          ': al primo accesso la persona sceglie il suo nome e la sua password, poi crea il suo profilo.</p>' +
+        '<label class="flabel" for="agoogle">Email</label>' +
+          '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it" data-enter="acccreate">' +
+          '<p class="kvnote">Entrerà con questa' + (auth.google ? ' (se è un account Google, anche con «Entra con Google»)' : '') + '.</p>' +
         '<button class="setting f" data-act="accadmin" data-key="accadmin">Ruolo<small id="accadminv">Base</small></button>' +
-        '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button></div></div>';
+        '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Manda l\'invito</button></div></div>';
   }
 
   if (tab === 'access') {
@@ -2649,49 +2658,6 @@ async function adminArea() {
   }
 
   return settingsShell('admin', 'Plancia', 'Gestisci tutta BunkerPlex. Sei <b>amministratore</b>.', tabs + body);
-}
-
-async function peopleArea() {
-  if (!auth || !auth.user || !auth.user.admin) throw new Error('Solo l\'amministratore può gestire gli account.');
-  var list;
-  try { list = await api('/accounts'); } catch (e) {
-    return settingsShell('people', 'Persone', '', '<div class="panel"><p><span class="nodot">●</span> ' + esc(e.message) + '</p></div>');
-  }
-  cache.accounts = list;
-  var me = auth.user.name.toLowerCase();
-  var waiting = list.filter(function (a) { return a.must_change; }).length;
-  var rows = list.map(function (a) {
-    var isMe = a.username.toLowerCase() === me;
-    return '<div class="acct">' + face(a.username, 'mid') +
-      '<div class="ptext"><b>' + esc(a.username) + '</b>' +
-        (isMe ? '<span class="pill">Tu</span>' : '') +
-        (a.admin ? '<span class="pill">Amministratore</span>' : '') +
-        (a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
-        (a.email && a.email !== a.google ? '<span class="pill">' + esc(a.email) + '</span>' : '') +
-        (a.google ? '<span class="pill">' + (a.google_linked ? 'Google · ' : 'Google (da collegare) · ') + esc(a.google) + '</span>' : '') +
-        '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
-          a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
-      '<div class="pacts"><button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">Nuova password provvisoria</button>' +
-        (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">Elimina</button>') +
-      '</div></div>';
-  }).join('');
-  cache.newAdmin = false;
-  return settingsShell('people', 'Persone',
-    list.length + (list.length === 1 ? ' account' : ' account') + (waiting ? ' · ' + waiting + (waiting === 1 ? ' deve ancora scegliere la sua password' : ' devono ancora scegliere la loro password') : '') +
-      '. Ognuno ha le sue raccolte, impostazioni, visti e lista.',
-    '<div class="panel accts">' + rows + '</div>' +
-    '<div class="panel"><h2>Nuovo account</h2>' +
-      '<label class="flabel" for="aname">Nome utente</label>' +
-      '<input class="field f" style="margin-bottom:1rem" id="aname" data-key="aname" autocomplete="off" maxlength="32" placeholder="Lettere, numeri, punto, trattino">' +
-      '<label class="flabel" for="apass">Password provvisoria</label>' +
-      '<div class="joined"><input class="field f num" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '">' +
-        '<button class="btn f" data-act="regenpass" data-key="regenpass">Un\'altra</button></div>' +
-      '<p class="kvnote">Al primo accesso la cambierà con una sua.</p>' +
-      '<label class="flabel" for="agoogle">Email (facoltativa)</label>' +
-        '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it">' +
-        '<p class="kvnote">Può entrare con questa al posto del nome utente' + (auth.google ? '; se è un account Google, anche con «Entra con Google», senza la password provvisoria' : '') + '.</p>' +
-      '<button class="setting f" data-act="accadmin" data-key="accadmin">Può gestire gli account (amministratore)<small id="accadminv">No</small></button>' +
-      '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button></div></div>');
 }
 
 // Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte.
@@ -4547,11 +4513,15 @@ var actions = {
   },
   changepw: function (forced) {
     var old = fieldValue('pold'), pw = fieldValue('pnew');
+    var naming = forced && needsName(), name = naming ? fieldValue('pname').trim() : '';
+    if (naming && !name) { toast('Scegli il tuo nome'); return; }
     if (!old || !pw) { toast('Scrivi la password attuale e quella nuova'); return; }
     if (pw !== fieldValue('pnew2')) { toast('Le due password nuove non sono uguali'); return; }
     toast('Salvo…');
-    post('/auth/password', { old: old, new: pw }).then(function (r) {
-      toast('Password cambiata');
+    post('/auth/password', naming ? { old: old, new: pw, name: name } : { old: old, new: pw }).then(function (r) {
+      toast(naming ? 'Fatto, ' + name + '! Ora crea il tuo profilo' : 'Password cambiata');
+      // Invitato: dal nome e dalla password si passa al pannello Profili per creare il suo
+      if (naming) location.replace('#/settings/account');
       if (forced) return enterApp(r);
       history.back();
     }, function (e) { toast(e.message); });
@@ -4696,19 +4666,28 @@ var actions = {
     post('/pc-name', { name: fieldValue('pcname') }).then(function () { toast('Nome salvato'); render(); }, function (e) { toast(e.message); });
   },
   acccreate: function () {
-    var name = fieldValue('aname').trim(), pass = fieldValue('apass').trim();
-    if (!name || !pass) { toast('Scrivi nome utente e password provvisoria'); return; }
-    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin, email: fieldValue('agoogle').trim() }).then(function () {
-      render().then(function () { showSecret('Account creato', name, pass); });
+    var email = fieldValue('agoogle').trim(), pass = tempPassword();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { toast('Scrivi l\'email della persona da invitare'); return; }
+    toast('Mando l\'invito…');
+    post('/accounts', { email: email, password: pass, admin: !!cache.newAdmin }).then(function (r) {
+      render().then(function () {
+        if (r && r.mailed) toast('Invito mandato a ' + email);
+        else showSecret('Invito creato', email, pass, 'Email');
+      });
     }, function (e) { toast(e.message); });
   },
   accreset: function (id) {
     var a = (cache.accounts || []).filter(function (x) { return String(x.id) === String(id); })[0];
     if (!a) return;
-    confirmBox('Dare a «' + a.username + '» una nuova password provvisoria? Uscirà da tutti i PC.', 'Sì, nuova password', function () {
+    var invited = /^invito-[0-9a-f]{6}$/i.test(a.username), who = invited ? (a.email || a.username) : a.username;
+    confirmBox(invited ? 'Rimandare l\'invito a ' + who + ' con una nuova password provvisoria?'
+      : 'Dare a «' + a.username + '» una nuova password provvisoria? Uscirà da tutti i PC.', invited ? 'Sì, rimanda' : 'Sì, nuova password', function () {
       var pass = tempPassword();
-      post('/accounts/' + a.id + '/password', { username: a.username, password: pass }).then(function () {
-        render().then(function () { showSecret('Nuova password provvisoria', a.username, pass); });
+      post('/accounts/' + a.id + '/password', { username: a.username, password: pass }).then(function (r) {
+        render().then(function () {
+          if (r && r.mailed) toast('Password provvisoria mandata a ' + (a.email || a.google));
+          else showSecret(invited ? 'Invito' : 'Nuova password provvisoria', invited ? who : a.username, pass, invited ? 'Email' : 'Nome utente');
+        });
       }, function (e) { toast(e.message); });
     });
   },
@@ -5458,7 +5437,7 @@ async function gate() {
       return location.hash === '#/tvlogin' && auth.cloud ? tvLoginPage() : profilesPage();
     }
   }
-  if (auth.user.must_change && !pwLater()) { lockScreen(true); return passwordPage(true); }
+  if (auth.user.must_change && (needsName() || !pwLater())) { lockScreen(true); return passwordPage(true); }
   if (conflicts) { lockScreen(true); return conflictsPage(); }
   // «Chi guarda?» dei profili dell'account: dopo il login, mai al posto della password
   if (needWatcher() || (location.hash === '#/chi' && hasWatchers())) { lockScreen(true); return watchersPage(); }
