@@ -223,6 +223,7 @@ private fun ServerUpdate(act: MainActivity) {
         x.optString("error").isNotEmpty() -> x.optString("error")
         phase == "pc" -> "Aggiornamento in corso sul PC…"
         phase == "host" -> "Aggiornamento scaricato: per completarlo rilancia «Installa BunkerPlex» sul computer."
+        !x.optBoolean("can_update", true) -> "Solo il proprietario di questo server può aggiornarlo."
         x.optBoolean("available") -> "È disponibile un aggiornamento del server."
         x.optLong("checked_at") > 0 -> "Il server è aggiornato."
         else -> "Il primo controllo parte un paio di minuti dopo l'avvio."
@@ -239,7 +240,8 @@ private fun ServerUpdate(act: MainActivity) {
         }.start()
     }
     if (working == null) Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (x.optBoolean("available") && phase.isEmpty()) Btn("Aggiorna il server", primary = true) {
+        val mine = x.optBoolean("can_update", true)
+        if (mine && x.optBoolean("available") && phase.isEmpty()) Btn("Aggiorna il server", primary = true) {
             working = "install"
             post("/api/update/install") {}
         }
@@ -248,8 +250,25 @@ private fun ServerUpdate(act: MainActivity) {
             post("/api/update/check") { working = null; round++ }
         }
         val auto = x.optBoolean("auto")
-        Btn("Automatico: " + if (auto) "attivo" else "spento") {
+        if (mine) Btn("Automatico: " + if (auto) "attivo" else "spento") {
             post("/api/update/auto", JSONObject().put("auto", !auto)) { round++ }
+        }
+    }
+    // Le novita' delle ultime 5 versioni del server, la piu' nuova prima
+    val log = x.optJSONArray("changelog")
+    if (log != null && log.length() > 0) {
+        Txt("Novità delle ultime versioni", Modifier.padding(top = 26.dp), size = 18.sp, weight = FontWeight.Bold)
+        val here = x.optString("release")
+        for (i in 0 until log.length()) {
+            val r = log.optJSONObject(i) ?: continue
+            val v = r.optString("version")
+            Txt("Versione $v" + (if (v == here) " · installata" else "") +
+                    (r.optString("date").takeIf { it.length == 10 }?.let { " · " + it.substring(8) + "/" + it.substring(5, 7) + "/" + it.substring(0, 4) } ?: ""),
+                Modifier.padding(top = 12.dp), color = C.ink, weight = FontWeight.Bold)
+            val ch = r.optJSONArray("changes")
+            if (ch != null) for (j in 0 until ch.length()) {
+                Txt("• " + ch.optString(j), Modifier.padding(top = 4.dp, start = 12.dp), color = C.ink2, lines = 3)
+            }
         }
     }
 }

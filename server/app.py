@@ -3935,10 +3935,46 @@ def update_notice():
     return {"to": str(n.get("to") or "")[:7], "at": n.get("at"), "changes": n.get("changes") or []}
 
 
-def update_json():
+# ---- Chi aggiorna il server ----------------------------------------------------
+# Solo il padrone del server: il primo account entrato su questo PC (quello che ha
+# preso il posto di «Casa»). Gli altri account di casa vedono lo stato ma non
+# lanciano l'installazione; gli amici non arrivano mai qui. Senza account
+# (solo «Casa») decide chi e' davanti al server, come prima.
+# Fuori casa il padrone aggiorna dalle app passando dalla porta 32501 (vedi
+# /api/share/update): vale solo il suo biglietto «da te a te», e solo se su
+# questo PC e' lui il padrone. Un suo account entrato sul PC di un amico non
+# basta per aggiornare il server dell'amico.
+
+def server_owner():
+    """L'id del padrone di questo server, o None se non c'e' ancora nessun account."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id FROM users WHERE cloud_id IS NOT NULL ORDER BY created, id LIMIT 1").fetchone()
+    finally:
+        con.close()
+    return r["id"] if r else None
+
+
+def can_update(uid):
+    owner = server_owner()
+    return owner is None or uid == owner
+
+
+def update_json(uid=None):
     out = updater.snapshot()
     out["auto"] = auto_update()
+    out["changelog"] = updater.changelog()
+    if uid is None:
+        u = CURRENT.get()
+        uid = u["id"] if u is not None and not u.get("friend") else -1
+    out["can_update"] = can_update(uid)
     return out
+
+
+def update_owner_only():
+    u = CURRENT.get()
+    if u is None or u.get("friend") or not can_update(u["id"]):
+        raise HTTPException(403, "Solo il proprietario di questo server può aggiornarlo")
 
 
 @app.get("/api/update")
@@ -3954,6 +3990,7 @@ def update_check():
 
 @app.post("/api/update/install")
 def update_install():
+    update_owner_only()
     if not updater.start_install():
         raise HTTPException(409, "C'è già un aggiornamento in corso")
     return update_json()
@@ -3961,6 +3998,7 @@ def update_install():
 
 @app.post("/api/update/auto")
 async def update_auto(request: Request):
+    update_owner_only()
     body = await read_json(request)
     with config_lock:
         config["auto_update"] = bool(body.get("auto"))
@@ -3971,6 +4009,7 @@ async def update_auto(request: Request):
 @app.post("/api/update/token")
 async def update_token(request: Request):
     """Salva il token di sola lettura per il repository privato (dopo averlo provato)."""
+    update_owner_only()
     body = await read_json(request)
     if not await asyncio.to_thread(updater.set_token, str(body.get("token") or "")):
         raise HTTPException(400, "Con questo token GitHub non dà accesso al repository degli aggiornamenti")
@@ -5687,7 +5726,7 @@ def share_guard(request: Request):
     if not known or time.time() - known[2] > 30:
         con = db()
         try:
-            r = con.execute("SELECT a.id, a.approved, a.last_seen, a.cloud_from, u.cloud_id FROM share_sessions s "
+            r = con.execute("SELECT a.id, a.approved, a.last_seen, a.cloud_from, a.profile, u.cloud_id FROM share_sessions s "
                             "JOIN accounts a ON a.id=s.account LEFT JOIN users u ON u.id=a.profile "
                             "WHERE s.token=?", (key,)).fetchone()
             if r and r["approved"] and time.time() - (r["last_seen"] or 0) > 300:
@@ -5700,7 +5739,7 @@ def share_guard(request: Request):
         if len(share_tokens) > 500:
             share_tokens.clear()
         mine = bool(r["cloud_from"]) and r["cloud_from"] == r["cloud_id"]     # un altro PC dello stesso account
-        known = share_tokens[key] = (r["id"], bool(r["approved"]), time.time(), mine)
+        known = share_tokens[key] = (r["id"], bool(r["approved"]), time.time(), mine, r["profile"] if mine else None)
         if r["approved"]:
             friend_nudge(r["id"])
     if not known[1]:
@@ -5708,6 +5747,7 @@ def share_guard(request: Request):
     if not known[3] and not share_on():
         raise HTTPException(403, "La condivisione è spenta su questo server")
     request.state.share_account = known[0]
+    request.state.share_self = known[4]     # un altro PC (o l'app) dello stesso account: il suo profilo qui
 
 
 def friend_nudge(account):
@@ -5803,6 +5843,36 @@ async def share_login(request: Request):
             con.close()
 
     return await in_thread(work)
+
+
+@app.get("/api/share/update")
+def share_update_status(request: Request):
+    """Aggiornamento del server visto da fuori casa (app o un altro tuo PC):
+    solo per il padrone di questo server, con il suo biglietto «da te a te»."""
+    return update_json(share_update_owner(request))
+
+
+@app.post("/api/share/update/check")
+def share_update_check(request: Request):
+    uid = share_update_owner(request)
+    updater.check()
+    return update_json(uid)
+
+
+@app.post("/api/share/update/install")
+def share_update_install(request: Request):
+    uid = share_update_owner(request)
+    if not updater.start_install():
+        raise HTTPException(409, "C'è già un aggiornamento in corso")
+    return update_json(uid)
+
+
+def share_update_owner(request):
+    share_guard(request)
+    uid = getattr(request.state, "share_self", None)
+    if uid is None or server_owner() != uid:
+        raise HTTPException(403, "Solo il proprietario di questo server può aggiornarlo")
+    return uid
 
 
 @app.post("/api/share/ticket")
@@ -7840,6 +7910,58 @@ def friend_ticket_login(f):
         raise FriendDown("risposta non valida")
     f["token"] = got["token"]
     friend_set(f["n"], token=got["token"])
+
+
+def self_pc(n):
+    """Un altro PC del tuo account (collegamento «I tuoi PC»), o 404."""
+    f = friend_by_n(n)
+    u = CURRENT.get()
+    if not f or not f.get("self") or u is None or f.get("owner") != u["id"]:
+        raise HTTPException(404, "PC non trovato")
+    return f
+
+
+def self_pc_json(f, path, body=None, timeout=8):
+    if not f.get("token"):
+        friend_ticket_login(f)
+    try:
+        return friend_json(f, path, timeout, body)
+    except FriendDown as ex:
+        if ex.code != 401:
+            raise
+        friend_ticket_login(f)           # gettone non piu' valido: biglietto nuovo
+        return friend_json(f, path, timeout, body)
+
+
+def self_pc_update(n, action=""):
+    """Aggiornamento di un altro tuo PC, chiesto da qui: risponde lui, e solo se
+    su quel PC sei tu il padrone (altrimenti can_update e' falso)."""
+    f = self_pc(n)
+    try:
+        return self_pc_json(f, "/update" + ("/" + action if action else ""), {} if action else None,
+                            timeout=20 if action == "check" else 8)
+    except HTTPException as ex:
+        if ex.status_code == 404:        # quel PC ha una versione di prima: da qui non si aggiorna
+            return {"can_update": False, "enabled": False, "old": True}
+        raise
+    except FriendDown as ex:
+        if ex.code == 403:
+            return {"can_update": False, "enabled": False}
+        if ex.code == 404:
+            return {"can_update": False, "enabled": False, "old": True}
+        raise HTTPException(409 if ex.code == 409 else 502, str(ex))
+
+
+@app.get("/api/my-pcs/{n}/update")
+async def my_pc_update(n: int):
+    return await in_thread(self_pc_update, n)
+
+
+@app.post("/api/my-pcs/{n}/update/{action}")
+async def my_pc_update_action(n: int, action: str):
+    if action not in ("check", "install"):
+        raise HTTPException(404, "Azione sconosciuta")
+    return await in_thread(self_pc_update, n, action)
 
 
 def profile_token():

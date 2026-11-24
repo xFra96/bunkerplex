@@ -658,9 +658,17 @@ def _follow_agent(rid, started, asked):
                     if r.get("ok"):
                         _set(result="ok", code=False, apk=False, docker=False)
                         try:
-                            _check()
-                        except Exception:
-                            pass
+                            found = _check()
+                            # Un'app che l'aiutante non ha scaricato (es. uno script
+                            # vecchio sul PC) la prende il server: l'avviso non resta fisso
+                            if found and (_asset or _tv):
+                                if _asset:
+                                    _install_apk(found[0], found[1], _asset)
+                                if _tv:
+                                    _install_apk(found[0], found[1], _tv, TV_APK_FILE)
+                                _check()
+                        except Exception as ex:
+                            print("App dopo l'aiutante non scaricate:", repr(ex), flush=True)
                     else:
                         _set(error=str(r.get("message") or "Aggiornamento non riuscito sul PC"))
                     return
@@ -733,6 +741,70 @@ def set_token(tok):
 
 def available():
     return bool(_status["code"] or _status["apk"] or _status["docker"])
+
+
+# Le novita' delle ultime release del server (tag v1.2...), lette dalle note che
+# il giro su GitHub scrive in ogni release: si mostrano nella pagina degli
+# aggiornamenti. Si rileggono ogni mezz'ora, mai piu' di una lettura alla volta.
+CHANGELOG_COUNT = 5
+CHANGELOG_EVERY = 30 * 60
+_changelog = {"at": 0.0, "items": []}
+_changelog_lock = threading.Lock()
+
+
+def _release_lines(body):
+    """Le righe di «Novita'» di una release, senza autore, aree e link al commit."""
+    out = []
+    for line in str(body or "").splitlines():
+        line = line.strip()
+        if not line.startswith("- "):
+            continue
+        line = line[2:].split(" — _", 1)[0]
+        line = line.split(" ([", 1)[0].strip()
+        while line.endswith(")") and " (#" in line:          # (#51): il numero della PR
+            line = line[:line.rindex(" (#")].rstrip()
+        if line and line not in out:
+            out.append(line)
+    return out[:12]
+
+
+def _read_changelog():
+    cfg = _config()
+    if not cfg:
+        return []
+    data = json.loads(_api(cfg, "releases?per_page=40", token(), timeout=15))
+    rels = {}
+    for r in data if isinstance(data, list) else []:
+        tag = str(r.get("tag_name") or "")
+        if r.get("draft") or not _is_release(tag):
+            continue
+        rels[tag] = {"version": tag[1:], "date": str(r.get("published_at") or "")[:10],
+                     "changes": _release_lines(r.get("body"))}
+    tags = list(rels)
+    out = []
+    while tags and len(out) < CHANGELOG_COUNT:
+        t = _newest(tags)
+        tags.remove(t)
+        out.append(rels[t])
+    return out
+
+
+def changelog():
+    """Le ultime 5 release del server (la piu' nuova prima). Mai un errore: se
+    GitHub non risponde resta l'elenco di prima."""
+    if time.time() - _changelog["at"] < CHANGELOG_EVERY:
+        return _changelog["items"]
+    if not _changelog_lock.acquire(blocking=False):
+        return _changelog["items"]
+    try:
+        _changelog["items"] = _read_changelog()
+        _changelog["at"] = time.time()
+    except Exception as ex:
+        _changelog["at"] = time.time() - CHANGELOG_EVERY + 120     # si riprova tra 2 minuti
+        print("Novita' delle release non lette:", repr(ex), flush=True)
+    finally:
+        _changelog_lock.release()
+    return _changelog["items"]
 
 
 def snapshot():
