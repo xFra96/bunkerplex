@@ -216,7 +216,7 @@ function accountForm(name, fixed) {
       '<div class="actions"><button class="btn primary f" data-act="setup" data-key="setup">Crea l\'account</button></div>';
   }
   return (fixed ? '<input type="hidden" id="lname" value="' + esc(name) + '">'
-      : '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" autocomplete="username" maxlength="32" placeholder="Nome utente" value="' + esc(name || '') + '">') +
+      : '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" autocomplete="username" autocapitalize="none" maxlength="120" placeholder="Nome utente o email" value="' + esc(name || '') + '">') +
     '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login"' + (fixed ? ' data-autofocus' : '') + ' placeholder="Password">' +
     '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button>' + googleButton() + '</div>';
 }
@@ -344,7 +344,7 @@ function phonePairPage(code) {
   var needNew = cache.pairNeedNew === code;
   return '<div class="page"><div class="panel login"><h1>Entra sulla TV</h1>' +
     '<p>Scrivi nome e password del tuo account: la TV entra da sola. Codice della TV: <b class="num">' + esc(code) + '</b></p>' +
-    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" data-autofocus autocomplete="username" maxlength="32" placeholder="Nome utente" value="' + esc(fieldValue('lname')) + '">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" data-autofocus autocomplete="username" autocapitalize="none" maxlength="120" placeholder="Nome utente o email" value="' + esc(fieldValue('lname')) + '">' +
     '<input class="field f" style="margin-bottom:.6rem" id="lpass" data-key="lpass" type="password" autocomplete="current-password"' + (needNew ? '' : ' data-enter="pairsend"') + ' placeholder="' + (needNew ? 'Password provvisoria' : 'Password') + '" value="' + esc(fieldValue('lpass')) + '">' +
     (needNew ? '<p>La password è provvisoria: scegline una tua, varrà su tutti i PC e le TV.</p>' +
       '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
@@ -2395,7 +2395,7 @@ function accountArea(i) {
         (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div>' + googlePanel(u) + '</div>' + peopleLink() + leave);
+      '</div>' + emailPanel(u) + googlePanel(u) + '</div>' + peopleLink() + leave);
 }
 
 // Persone (solo l'amministratore, non dalla TV): si apre da qui, non sta nel menu
@@ -2404,6 +2404,17 @@ function peopleLink() {
   return '<div class="panel"><h2>Persone</h2>' +
     '<p>Chi può entrare in BunkerPlex: account nuovi, password provvisorie, accesso con Google.</p>' +
     '<div class="actions"><a class="btn f" href="#/settings/people" data-key="people">Gestisci le persone</a></div></div>';
+}
+
+// Email dell'account: per entrare con email e password al posto del nome utente
+function emailPanel(u) {
+  if (!u.online && !u.email) return '';
+  var head = '<h2 style="margin-top:1.2rem">Email</h2>' +
+    (u.email ? '<p>Puoi entrare anche con <b>' + esc(u.email) + '</b> e la tua password.</p>'
+      : '<p>Aggiungi la tua email: poi su ogni PC, TV e telefono entri con email e password, oltre che col nome utente.</p>');
+  if (!u.online || TV) return head;
+  return head + '<div class="joined"><input class="field f" id="uemail" data-key="uemail" type="email" autocomplete="email" autocapitalize="none" maxlength="120" placeholder="nome@esempio.it" value="' + esc(fieldValue('uemail') || u.email || '') + '">' +
+    '<button class="btn f" data-act="emailsave" data-key="emailsave">Salva</button></div>';
 }
 
 // Accesso con Google dell'account: collegato o da collegare
@@ -2434,6 +2445,7 @@ async function peopleArea() {
         (isMe ? '<span class="pill">Tu</span>' : '') +
         (a.admin ? '<span class="pill">Amministratore</span>' : '') +
         (a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
+        (a.email && a.email !== a.google ? '<span class="pill">' + esc(a.email) + '</span>' : '') +
         (a.google ? '<span class="pill">' + (a.google_linked ? 'Google · ' : 'Google (da collegare) · ') + esc(a.google) + '</span>' : '') +
         '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
           a.servers + (a.servers === 1 ? ' PC collegato' : ' PC collegati') + '</small></div>' +
@@ -2453,9 +2465,9 @@ async function peopleArea() {
       '<div class="joined"><input class="field f num" id="apass" data-key="apass" autocomplete="off" value="' + tempPassword() + '">' +
         '<button class="btn f" data-act="regenpass" data-key="regenpass">Un\'altra</button></div>' +
       '<p class="kvnote">Al primo accesso la cambierà con una sua.</p>' +
-      (auth.google ? '<label class="flabel" for="agoogle">Email Google (facoltativa)</label>' +
-        '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" placeholder="nome@gmail.com">' +
-        '<p class="kvnote">Con questa può entrare subito con «Entra con Google», senza la password provvisoria.</p>' : '') +
+      '<label class="flabel" for="agoogle">Email (facoltativa)</label>' +
+        '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it">' +
+        '<p class="kvnote">Può entrare con questa al posto del nome utente' + (auth.google ? '; se è un account Google, anche con «Entra con Google», senza la password provvisoria' : '') + '.</p>' +
       '<button class="setting f" data-act="accadmin" data-key="accadmin">Può gestire gli account (amministratore)<small id="accadminv">No</small></button>' +
       '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Crea account</button></div></div>');
 }
@@ -4121,7 +4133,7 @@ var actions = {
   // --- account
   login: function () {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
-    if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
+    if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
     toast('Entro…');
     post('/auth/login', { username: name, password: pass, device: devName() }).then(enterApp, function (e) {
       toast(e.message);
@@ -4208,6 +4220,15 @@ var actions = {
     if (APP && tvApp.openUrl) tvApp.openUrl(url);
     else window.open(url, '_blank', 'noopener');
   },
+  emailsave: function () {
+    var email = fieldValue('uemail').trim();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('Email non valida'); return; }
+    send('PUT', '/auth/email', { email: email }).then(function (j) {
+      toast(j.email ? 'Ora puoi entrare anche con ' + j.email : 'Email tolta');
+      auth = null;
+      render();
+    }, function (e) { toast(e.message); });
+  },
   gunlink: function () {
     confirmBox('Scollegare Google dal tuo account? Per entrare servirà di nuovo la password.', 'Sì, scollega', function () {
       send('DELETE', '/auth/google').then(function () {
@@ -4219,7 +4240,7 @@ var actions = {
   },
   pairsend: function (code) {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass'), pw = fieldValue('pnew');
-    if (!name || !pass) { toast('Scrivi nome utente e password'); return; }
+    if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
     if (cache.pairNeedNew === code) {
       if (!pw) { toast('Scegli la password nuova'); return; }
       if (pw !== fieldValue('pnew2')) { toast('Le due password nuove non sono uguali'); return; }
@@ -4324,7 +4345,7 @@ var actions = {
   acccreate: function () {
     var name = fieldValue('aname').trim(), pass = fieldValue('apass').trim();
     if (!name || !pass) { toast('Scrivi nome utente e password provvisoria'); return; }
-    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin, google: fieldValue('agoogle').trim() }).then(function () {
+    post('/accounts', { username: name, password: pass, admin: !!cache.newAdmin, email: fieldValue('agoogle').trim() }).then(function () {
       render().then(function () { showSecret('Account creato', name, pass); });
     }, function (e) { toast(e.message); });
   },

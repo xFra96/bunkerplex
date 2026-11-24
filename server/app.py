@@ -504,7 +504,9 @@ def init_db():
                           # frequenza (dall'MKV il player non li legge). NULL: ancora da misurare
                           ("items", "fps REAL"),
                           # Email dell'account Google collegato all'account («Entra con Google»)
-                          ("users", "google TEXT")):
+                          ("users", "google TEXT"),
+                          # Email con cui l'account entra (al posto del nome utente)
+                          ("users", "email TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -2760,6 +2762,26 @@ def login_fields(body, key="password"):
     return name, password
 
 
+async def login_name(name):
+    """Si entra con il nome utente o con l'email. L'impronta della password si calcola
+    sul nome utente: per un'email lo chiede prima al servizio (senza Internet: l'email
+    di un account gia' entrato su questo PC)."""
+    if "@" not in name:
+        return name
+    try:
+        return (await asyncio.to_thread(accounts.call, "POST", "/resolve", {"email": name}))["username"]
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (400, 429) else 502, ex.detail)
+    except accounts.CloudOffline:
+        con = db(raw=True)
+        try:
+            r = con.execute("SELECT name FROM users WHERE cloud_id IS NOT NULL AND email=?",
+                            (name.lower(),)).fetchone()
+        finally:
+            con.close()
+        return r["name"] if r else name
+
+
 def check_new_password(password):
     if len(password) < 8:
         raise HTTPException(400, "La password deve avere almeno 8 caratteri")
@@ -2794,18 +2816,19 @@ def store_user(con, cloud_user, token, ver):
     else:                        # entrato con Google: resta l'ultima password usata qui (per entrare offline)
         vsalt, vcheck = (row["vsalt"], row["vcheck"]) if row else (None, None)
     fields = (cloud_user["username"], int(cloud_user["admin"]), int(cloud_user["must_change"]),
-              token, vsalt, vcheck, time.time(), cloud_user.get("google") or None)
+              token, vsalt, vcheck, time.time(), cloud_user.get("google") or None,
+              (cloud_user.get("email") or "").lower() or None)
     if not row:
         row = con.execute("SELECT id FROM users WHERE cloud_id IS NULL ORDER BY created, id LIMIT 1").fetchone()
         if row:
             link_local(con, row["id"], cloud_user["id"])
     if row:
         con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=?, "
-                    "google=? WHERE id=?", (*fields, row["id"]))
+                    "google=?, email=? WHERE id=?", (*fields, row["id"]))
         uid = row["id"]
     else:
         uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
-                          "google, cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          "google, email, cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                           (*fields, cloud_user["id"], time.time())).lastrowid
     con.commit()
     user_cache.clear()
@@ -3154,7 +3177,7 @@ def auth_state():
         if me:
             linked = me["cloud_id"] is not None
             user = dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=linked and bool(me["token"]),
-                        google=me["google"] or "",
+                        google=me["google"] or "", email=me["email"] or "",
                         last_sync=me["last_sync"] or 0,
                         pending=pending_changes(con, me["id"]) if linked else 0)
     finally:
@@ -3269,6 +3292,7 @@ async def auth_login(request: Request):
     senza account, se c'e' (vedi store_user); altrimenti nasce la sua copia."""
     body = await read_json(request)
     name, password = login_fields(body)
+    name = await login_name(name)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
@@ -3457,6 +3481,7 @@ async def auth_pair_finish(code: str, request: Request):
         return {"ok": True, "name": p["name"]}
     body = await read_json(request)
     name, password = login_fields(body)
+    name = await login_name(name)
     new = str(body.get("new") or "")
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
@@ -3499,7 +3524,7 @@ def user_cloud_token(uid):
     finally:
         con.close()
     if not r or not r["token"]:
-        raise HTTPException(401, "Rientra con la password del tuo account (serve Internet) per collegare Google")
+        raise HTTPException(401, "Rientra con la password del tuo account (serve Internet)")
     return r["token"]
 
 
@@ -3574,6 +3599,24 @@ async def auth_google_unlink():
     return {"ok": True}
 
 
+@app.put("/api/auth/email")
+async def auth_email(request: Request):
+    """La propria email per entrare con email e password (vuota: la toglie)."""
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        raise HTTPException(400, "Qui non sei entrato con un account")
+    body = await read_json(request)
+    res = await cloud("PUT", "/email", {"email": str(body.get("email") or "").strip()}, user_cloud_token(u["id"]))
+    email = (res.get("user") or {}).get("email") or ""
+    con = db(raw=True)
+    try:
+        con.execute("UPDATE users SET email=? WHERE id=?", (email.lower() or None, u["id"]))
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": True, "email": email}
+
+
 # Preferenze di visione (animazioni, locandine, sottotitoli, velocita'...): nell'account
 PREF_KEYS = ("device", "player")
 
@@ -3626,8 +3669,17 @@ async def accounts_create(request: Request):
     name, password = login_fields(body)
     check_new_password(password)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
-    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver, "google": body.get("google") or "",
+    return await cloud("POST", "/admin/users", {"username": name, "verifier": ver,
+                                                "email": body.get("email") or body.get("google") or "",
                                                 "admin": bool(body.get("admin"))}, token)
+
+
+@app.put("/api/accounts/{cloud_id}/email")
+async def accounts_email(cloud_id: int, request: Request):
+    """L'email con cui l'account entra al posto del nome utente (vuota: la toglie)."""
+    token = admin_token()
+    body = await read_json(request)
+    return await cloud("PUT", f"/admin/users/{cloud_id}/email", {"email": body.get("email") or ""}, token)
 
 
 @app.put("/api/accounts/{cloud_id}/google")
