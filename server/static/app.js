@@ -399,11 +399,26 @@ if (device.slow === undefined && ((navigator.deviceMemory && navigator.deviceMem
 var TVLOOK = TV || device.tv === true || /[?&]tv=1/.test(location.search);
 var smooth = 'smooth';               // 'auto' quando le animazioni sono ridotte
 
+// Locandine in dissolvenza: un'immagine si mostra quando e' arrivata (html.imgfade in
+// style.css). L'evento load non risale, ma si prende in fase di cattura per tutte.
+document.addEventListener('load', function (e) {
+  if (e.target && e.target.tagName === 'IMG') e.target.classList.add('imgok');
+}, true);
+
+function markLoadedImages(root) {
+  var imgs = root.getElementsByTagName('img');
+  for (var i = 0; i < imgs.length; i++) if (imgs[i].complete) imgs[i].classList.add('imgok');
+}
+
+// «La mia lista» e «Visto»: dopo la conferma il pulsante fa un piccolo scatto (.popped)
+var popKeys = [];
+
 function applyDevice() {
   var root = document.documentElement;
   var lite = device.anim === 'lite' || (device.anim !== 'full' && !!device.slow);
   smooth = lite ? 'auto' : 'smooth';
   root.classList.toggle('lite', lite);
+  root.classList.toggle('imgfade', !lite);      // locandine in dissolvenza (style.css)
   root.classList.toggle('tv', TVLOOK);
   root.classList.toggle('bigposters', device.posters === 'big');
   document.body.classList.toggle('tv', TVLOOK);
@@ -1158,6 +1173,7 @@ function favButton(x) {
 function setFav(kind, id, on) {
   return post('/fav', { kind: kind, id: +id, fav: !!on }).then(function () {
     toast(on ? 'Aggiunto alla tua lista' : 'Tolto dalla tua lista');
+    popKeys = ['fav'];
     render();
   }, function (e) { toast(e.message); });
 }
@@ -1753,15 +1769,22 @@ function showSecret(title, name, pass) {
 // Ogni area ha la sua vista (#/settings/<area>) con il suo nome come titolo.
 // La panoramica (#/settings) dice com'e' messa ogni area e cosa va guardato.
 
+// Le aree nel menu delle impostazioni. Poche voci, per il telecomando:
+// - Persone (solo amministratore) si apre da Account;
+// - Aggiornamenti (server e app di questo dispositivo) dalle versioni in cima alla Panoramica;
+// - Sottotitoli stanno in «Schede e sottotitoli»; sulla TV il QR per il telefono in «Questa TV».
+// Le vecchie pagine (#/settings/subtitles, #/settings/apps sulla TV) rimandano a quelle nuove.
 function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account']);
-  if (auth && auth.user && auth.user.admin && !TV) out.push(['people', 'Persone']);
-  out.push(['libraries', 'Raccolte'], ['catalog', 'Catalogo e schede'], ['subtitles', 'Sottotitoli'],
-    ['friends', 'Amici e dispositivi'], ['updates', 'Aggiornamenti'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
-  if (!APP || TV) out.push(['apps', TV ? 'App sul telefono' : 'App per TV e telefono']);
+  out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
+    ['friends', 'Amici e dispositivi'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
+  if (!APP) out.push(['apps', 'App per TV e telefono']);
   return out;
 }
+
+// Aree che si aprono ma non stanno nel menu
+var SETTINGS_HIDDEN = ['people', 'updates'];
 
 var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
 var ICON_FRIENDS = '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5M15.5 5.6a3.2 3.2 0 0 1 0 6M17.5 14.4c1.6.6 2.7 2.2 3 4.6"/></svg>';
@@ -1791,7 +1814,9 @@ function settingsShell(area, title, sub, body) {
   }).join('');
   return '<div class="page settings"><div class="sgrid">' +
     '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home">' + sicon('home') + '<span>Panoramica</span></a>' + nav + '</nav>' +
-    '<div class="smain"><a class="sup f" href="#/settings" data-key="sup">' + IC.back + 'Impostazioni</a>' +
+    // Persone si apre da Account: si torna li'
+    '<div class="smain"><a class="sup f" href="' + (area === 'people' ? '#/settings/account' : '#/settings') + '" data-key="sup">' + IC.back +
+      (area === 'people' ? 'Account' : 'Impostazioni') + '</a>' +
     '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
 }
 
@@ -1831,7 +1856,9 @@ function versionStrip(i, u) {
     html += chip('Questo browser', serverVer(i), 'Stessa del server', false);
     if (i.apk_version_name) html += chip('App per TV e telefoni', i.apk_version_name, 'Pronta sul PC', false);
   }
-  return '<div class="versions" aria-label="Versioni installate">' + html + '</div>';
+  // Tutto il riquadro e' il pulsante per Aggiornamenti: col telecomando e' una pressione sola
+  return '<a class="versions f" href="#/settings/updates" data-key="versions" aria-label="Versioni installate: apri Aggiornamenti">' + html +
+    '<span class="vgo">Aggiornamenti' + CHEVRON + '</span></a>';
 }
 
 // Una riga della panoramica: area, nome, a cosa serve, com'e' adesso
@@ -1845,9 +1872,6 @@ function settingsRows(i, u, sh) {
     rows.push({ area: 'account', face: auth.user.name, label: auth.user.name,
       desc: 'Su questo PC, senza account', value: auth.cloud ? 'Entra con un account' : s.text, state: '' });
   }
-  if (auth && auth.user && auth.user.admin && !TV) {
-    rows.push({ area: 'people', label: 'Persone', desc: 'Chi può entrare, password provvisorie', value: 'Gestisci', state: '' });
-  }
   var off = 0, films = 0, series = 0, away = 0;
   libs.forEach(function (l) {
     films += l.movies || 0;
@@ -1860,12 +1884,10 @@ function settingsRows(i, u, sh) {
     value: off ? (off === 1 ? 'Una cartella non raggiungibile' : off + ' cartelle non raggiungibili')
       : (libs.length ? libs.length + (libs.length === 1 ? ' raccolta' : ' raccolte') : 'Nessuna raccolta'),
     state: off || !libs.length ? 'warn' : 'ok' });
-  rows.push({ area: 'catalog', label: 'Catalogo e schede',
-    desc: films + ' film · ' + series + ' serie · ' + i.episodes + ' episodi',
+  rows.push({ area: 'catalog', label: 'Schede e sottotitoli',
+    desc: films + ' film · ' + series + ' serie · ' + i.episodes + ' episodi · sottotitoli da internet ' + (i.subs_online ? 'attivi' : 'non attivi'),
     value: i.scanning ? 'Lettura in corso…' : (i.tmdb ? 'Schede attive' : 'Schede non attive'),
     state: i.scanning ? '' : (i.tmdb ? 'ok' : 'warn') });
-  rows.push({ area: 'subtitles', label: 'Sottotitoli', desc: 'Da internet, con OpenSubtitles',
-    value: i.subs_online ? 'Attivi' : 'Non attivi', state: i.subs_online ? 'ok' : '' });
   if (sh) {
     var pending = sh.accounts.filter(function (a) { return !a.approved; }).length;
     shareRequests = pending;
@@ -1879,18 +1901,22 @@ function settingsRows(i, u, sh) {
         : (sh.on ? 'Attiva' : 'Nessun amico'),
       state: i.devices_full || asks ? 'warn' : (friends.length || sh.on ? 'ok' : '') });
   }
-  if (u && u.enabled) {
-    rows.push({ area: 'updates', label: 'Aggiornamenti', desc: 'Server ' + serverVer(i),
-      value: u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
-      state: u.error || u.access === false || u.available || u.phase ? 'warn' : 'ok' });
-  }
+  // Aggiornamenti: non e' una riga dell'elenco (si apre dalle versioni in cima),
+  // ma serve alla riga di stato della Panoramica («Da guardare: ...»)
   var tvOld = appOld(i);
+  if ((u && u.enabled) || tvOld) {
+    var srvWarn = !!(u && u.enabled && (u.error || u.access === false || u.available || u.phase));
+    rows.push({ area: 'updates', label: 'Aggiornamenti', hidden: true,
+      value: tvOld ? 'App da aggiornare'
+        : u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
+      state: tvOld || srvWarn ? 'warn' : 'ok' });
+  }
   rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
-    desc: APP ? 'App ' + appVer() + ' · preferenze di visione, collegamento' : 'Preferenze di visione, collegamento al server',
-    value: tvOld ? 'App da aggiornare' : 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: tvOld ? 'warn' : '' });
-  if (!APP || TV) {
-    rows.push({ area: 'apps', label: TV ? 'App sul telefono' : 'App per TV e telefono',
-      desc: TV ? 'Il QR per scaricarla sul telefono Android' : 'Installa sulla TV dal PC, app sul telefono', value: 'Installa', state: '' });
+    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono' : 'Preferenze di visione, collegamento al server',
+    value: 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: '' });
+  if (!APP) {
+    rows.push({ area: 'apps', label: 'App per TV e telefono',
+      desc: 'Installa sulla TV dal PC, app sul telefono, indirizzo di questo PC', value: 'Installa', state: '' });
   }
   return rows;
 }
@@ -2078,11 +2104,19 @@ async function tvPanel() {
   return '<div class="panel" id="tvpanel"><h2>Installa sulla TV dal PC</h2>' + tvPanelBody(t) + '</div>';
 }
 
-function networkPanel(n) {
+// Indirizzi del PC, ognuno dove serve: quello di casa in «App per TV e telefono»
+// (lo usano TV e telefoni), quelli da fuori casa in «Amici e dispositivi»
+function lanPanel(n) {
   if (!n) return '';
-  return '<div class="panel"><h2>Indirizzi di questo PC</h2><dl class="kv">' +
+  return '<div class="panel"><h2>Indirizzo di questo PC</h2><dl class="kv">' +
     '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
       (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Installa BunkerPlex»</small>') + '</dd>' +
+    '</dl></div>';
+}
+
+function networkPanel(n) {
+  if (!n) return '';
+  return '<div class="panel" id="addresses"><h2>Indirizzi per fuori casa</h2><dl class="kv">' +
     '<dt>Per gli amici<small>da fuori casa, solo la porta ' + n.friends_port + '</small></dt><dd class="num">' +
       (n.tailnet ? esc(n.tailnet) + '<small>Tailscale integrato</small>'
         : n.friends_open ? esc(n.public) + '<small>porta aperta sul router</small>'
@@ -2095,9 +2129,7 @@ function networkPanel(n) {
 }
 
 async function settings() {
-  var res = await Promise.all([settingsData(), api('/network').catch(function () { return null; })]);
-  var net = res[1];
-  res = res[0];
+  var res = await settingsData();
   var rows = settingsRows(res[0], res[2], res[3]);
   var warn = rows.filter(function (r) { return r.state === 'warn'; });
   var s = syncState();
@@ -2107,21 +2139,48 @@ async function settings() {
   return '<div class="page settings"><div class="soverview">' +
     '<h1 class="stitle">Impostazioni</h1><p class="ssub' + (warn.length ? ' warn' : '') + '">' + finding + '</p>' +
     versionStrip(res[0], res[2]) +
-    '<div class="slist">' + rows.map(function (r, n) {
-      return '<a class="srow f"' + (n === 0 ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
-        (r.face ? face(r.face, 'mid') : '') +
+    '<div class="slist">' + rows.filter(function (r) { return !r.hidden; }).map(function (r, n) {
+      // L'account (con la sua faccia) in testa; le altre righe con l'icona della loro area
+      return '<a class="srow f' + (r.face ? ' lead' : '') + '"' + (n === 0 ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
+        (r.face ? face(r.face, 'mid') : sicon(r.area)) +
         '<span class="stext"><b>' + esc(r.label) + '</b><small>' + esc(r.desc) + '</small></span>' +
         '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' + CHEVRON + '</a>';
-    }).join('') + '</div>' + networkPanel(net) + '</div></div>';
+    }).join('') + '</div></div></div>';
+}
+
+// Sottotitoli da internet (OpenSubtitles): un riquadro di «Schede e sottotitoli»
+function subsPanel(i, inAccount) {
+  return '<div class="panel" id="subtitles"><h2>Sottotitoli da internet</h2>' +
+    '<p>' + (i.subs_online
+      ? dot(true) + ' Attivi' + (i.subs_user ? ' con l\'account ' + esc(i.subs_user) : ' senza account (pochi download al giorno)') + ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
+      : 'Non attivi. Con una chiave gratuita di OpenSubtitles scarichi i sottotitoli in italiano o in altre lingue dalle Opzioni del film.') + '</p>' +
+    '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
+      'Nome utente e password sono facoltativi ma alzano il limite di download giornaliero. ' +
+      (inAccount ? 'Restano nel tuo account: li ritrovi su ogni PC dove entri.' : 'Restano solo su questo PC.') +
+      (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
+    '<label class="flabel" for="oskey">Chiave API</label>' +
+    '<input class="field f" style="margin-bottom:1rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
+      (i.subs_online ? 'Lascia vuoto per tenere quella di adesso' : 'Chiave API OpenSubtitles') + '">' +
+    '<label class="flabel" for="osuser">Nome utente (facoltativo)</label>' +
+    '<input class="field f" style="margin-bottom:1rem" id="osuser" data-key="osuser" autocomplete="off" value="' + esc(i.subs_user || '') + '">' +
+    '<label class="flabel" for="ospass">Password (facoltativa)</label>' +
+    '<input class="field f" id="ospass" data-key="ospass" type="password" autocomplete="new-password" data-enter="saveos" placeholder="' +
+      (i.subs_user ? 'Lascia vuoto per tenere quella di adesso' : '') + '">' +
+    '<div class="actions"><button class="btn primary f" data-act="saveos" data-key="saveos">Salva</button>' +
+      (i.subs_online ? '<button class="btn danger f" data-act="saveos" data-arg="remove" data-key="osremove">Disattiva</button>' : '') +
+    '</div></div>';
 }
 
 async function settingsArea(area) {
   if (area === 'people') return peopleArea();
+  // Pagine accorpate: i vecchi indirizzi (link, segnalibri) portano a quelle nuove
+  if (area === 'subtitles') { location.replace('#/settings/catalog'); return ''; }
+  if (area === 'apps' && TV) { location.replace('#/settings/device'); return ''; }
   var res = await settingsData();
   var i = res[0];
   var inAccount = !!(auth && auth.user && auth.user.linked);
   var manyAccounts = !!(auth && auth.profiles && auth.profiles.length > 1);
-  var known = settingsAreas().some(function (a) { return a[0] === area; });
+  var known = SETTINGS_HIDDEN.indexOf(area) >= 0 || settingsAreas().some(function (a) { return a[0] === area; });
   if (!known) { location.replace('#/settings'); return ''; }
 
   if (area === 'account') return accountArea(i);
@@ -2174,7 +2233,7 @@ async function settingsArea(area) {
   }
 
   if (area === 'catalog') {
-    return settingsShell('catalog', 'Catalogo e schede', i.tmdb
+    return settingsShell('catalog', 'Schede e sottotitoli', i.tmdb
       ? dot(true) + ' Locandine, trame, cast, generi e voti si scaricano da soli' + (i.tmdb_hint ? ' (chiave ' + esc(i.tmdb_hint) + ')' : '') + '.'
       : dot(false) + ' Schede non attive: i film compaiono con un fotogramma, senza trama né cast.',
       '<div class="panel"><div class="stats">' +
@@ -2194,40 +2253,21 @@ async function settingsArea(area) {
         (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
       '<div class="inline"><input class="field f" id="tmdbkey" data-key="tmdbkey" data-enter="savekey" autocomplete="off" placeholder="' +
         (i.tmdb ? 'Nuova chiave API (per cambiarla)' : 'Chiave API TMDB') + '">' +
-      '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>');
-  }
-
-  if (area === 'subtitles') {
-    return settingsShell('subtitles', 'Sottotitoli', i.subs_online
-      ? dot(true) + ' Attivi' + (i.subs_user ? ' con l\'account ' + esc(i.subs_user) : ' senza account (pochi download al giorno)') + ': nel film apri Opzioni → «Cerca sottotitoli su internet».'
-      : 'Non attivi. Con una chiave gratuita di OpenSubtitles scarichi i sottotitoli in italiano o in altre lingue dalle Opzioni del film.',
-      '<div class="panel"><h2>OpenSubtitles</h2>' +
-      '<p>Crea un account su <b>opensubtitles.com</b>, poi Profilo → «API consumers» → crea una chiave e incollala qui. ' +
-        'Nome utente e password sono facoltativi ma alzano il limite di download giornaliero. ' +
-        (inAccount ? 'Restano nel tuo account: li ritrovi su ogni PC dove entri.' : 'Restano solo su questo PC.') +
-        (TV ? ' È più comodo farlo dal PC: apri <b>http://' + esc(location.host) + '</b> nel browser.' : '') + '</p>' +
-      '<label class="flabel" for="oskey">Chiave API</label>' +
-      '<input class="field f" style="margin-bottom:1rem" id="oskey" data-key="oskey" autocomplete="off" placeholder="' +
-        (i.subs_online ? 'Lascia vuoto per tenere quella di adesso' : 'Chiave API OpenSubtitles') + '">' +
-      '<label class="flabel" for="osuser">Nome utente (facoltativo)</label>' +
-      '<input class="field f" style="margin-bottom:1rem" id="osuser" data-key="osuser" autocomplete="off" value="' + esc(i.subs_user || '') + '">' +
-      '<label class="flabel" for="ospass">Password (facoltativa)</label>' +
-      '<input class="field f" id="ospass" data-key="ospass" type="password" autocomplete="new-password" data-enter="saveos" placeholder="' +
-        (i.subs_user ? 'Lascia vuoto per tenere quella di adesso' : '') + '">' +
-      '<div class="actions"><button class="btn primary f" data-act="saveos" data-key="saveos">Salva</button>' +
-        (i.subs_online ? '<button class="btn danger f" data-act="saveos" data-arg="remove" data-key="osremove">Disattiva</button>' : '') +
-      '</div></div>');
+      '<button class="btn f" data-act="savekey" data-key="savekey">Salva</button></div></div>' +
+      subsPanel(i, inAccount));
   }
 
   if (area === 'friends') {
     var sh = res[3];
     if (!sh) return settingsShell('friends', 'Amici e dispositivi', '', '<div class="panel"><p>La condivisione con gli amici non risponde in questo momento.</p></div>');
-    var both = auth.cloud ? await Promise.all([api('/account-friends').catch(function () { return null; }),
-      api('/devices').catch(function () { return null; })]) : [null, null];
+    var both = await Promise.all([
+      auth.cloud ? api('/account-friends').catch(function () { return null; }) : null,
+      auth.cloud ? api('/devices').catch(function () { return null; }) : null,
+      api('/network').catch(function () { return null; })]);
     var af = both[0];
     return settingsShell('friends', 'Amici e dispositivi',
       'Le raccolte dei tuoi amici e dei tuoi altri PC, a casa e fuori. Si guarda soltanto: nessuno modifica la libreria dell\'altro.',
-      accountFriendsPanel(af, sh) + myPcsPanel(af) + devicesPanel(both[1]) + awayPanel() + friendsPanel(sh, !!auth.cloud) +
+      accountFriendsPanel(af, sh) + myPcsPanel(af) + devicesPanel(both[1]) + awayPanel() + networkPanel(both[2]) + friendsPanel(sh, !!auth.cloud) +
       '<div class="panel"><h2>Video degli amici</h2>' +
       '<button class="setting f" data-act="friendquality" data-key="friendquality">Qualità<small>' + esc(labelOf(QUALITIES, friendQuality).split(' (')[0]) + '</small></button>' +
       '<p class="kvnote">Viaggiano sulla linea in caricamento di chi condivide: 720p va bene quasi sempre.</p></div>');
@@ -2237,29 +2277,31 @@ async function settingsArea(area) {
     var u = res[2];
     return settingsShell('updates', 'Aggiornamenti', 'Versione del server su questo PC: <b class="num">' + esc(serverVer(i)) + '</b>.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
-      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '') : '<div class="panel"><p>Gli aggiornamenti automatici non sono configurati su questo PC.</p></div>'));
+      // Nell'app: anche l'app di questo dispositivo si aggiorna da qui (un posto solo per gli aggiornamenti)
+      (APP ? '<div class="panel"><h2>' + (TV ? 'App su questa TV' : 'App su questo dispositivo') + '</h2>' +
+        '<dl class="kv"><dt>Versione</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
+          (appOld(i) ? ' · <span class="nodot">sul PC c\'è la ' + esc(i.apk_version_name || 'più nuova') + '</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd></dl>' +
+        '<div class="actions"><button class="btn' + (appOld(i) ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">' +
+          (appOld(i) ? 'Aggiorna l\'app' : 'Controlla aggiornamenti') + '</button></div></div>' : '') +
+      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '<h2>Server</h2>') : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>'));
   }
 
   if (area === 'apps') {
-    if (TV) {
-      return settingsShell('apps', 'App sul telefono', 'Sul telefono Android BunkerPlex si usa anche come app, con tutte le funzioni.',
-        await apkPanel('Scaricala sul telefono'));
-    }
+    var net = await api('/network').catch(function () { return null; });
     return settingsShell('apps', 'App per TV e telefono', 'L\'app per TV e telefoni Android arriva da questo PC e poi si aggiorna da sola.',
-      installPanel() + await tvPanel() + await apkPanel('App Android per il telefono'));
+      installPanel() + await tvPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
   }
 
   // Questo dispositivo: preferenze di visione e collegamento al server
+  // (versioni e aggiornamento dell'app stanno in Aggiornamenti; sulla TV anche il QR per il telefono)
   return settingsShell('device', TV ? 'Questa TV' : 'Questo dispositivo', '',
     devicePanel() +
     '<div class="panel"><h2>Collegamento</h2>' +
-    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '</dd><dt>Versione del server</dt><dd><b class="num">' + esc(serverVer(i)) + '</b> · ' + esc(i.name) + '</dd>' +
-    (APP ? '<dt>' + (TV ? 'App su questa TV' : 'App su questo dispositivo') + '</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
-      (appOld(i) ? ' · <span class="nodot">sul PC c\'è la ' + esc(i.apk_version_name || 'più nuova') + '</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd>' : '') +
-    '</dl>' +
-    (APP ? '<div class="actions"><button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button>' +
-      '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button></div>' : '') +
-    '</div>');
+    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '<small>' + esc(i.name) + '</small></dd></dl>' +
+    (APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
+      '<a class="btn f" href="#/settings/updates" data-key="dev-upd">Versioni e aggiornamenti</a></div>' : '') +
+    '</div>' +
+    (TV ? await apkPanel('App sul telefono') : ''));
 }
 
 // ---------------------------------------------------------------- App sul telefono (PWA)
@@ -2352,7 +2394,15 @@ function accountArea(i) {
         (u.tv_quick ? 'Sì, senza password' : 'No, serve la password') + '</small></button>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div>' + googlePanel(u) + '</div>' + leave);
+      '</div>' + googlePanel(u) + '</div>' + peopleLink() + leave);
+}
+
+// Persone (solo l'amministratore, non dalla TV): si apre da qui, non sta nel menu
+function peopleLink() {
+  if (!auth || !auth.user || !auth.user.admin || TV) return '';
+  return '<div class="panel"><h2>Persone</h2>' +
+    '<p>Chi può entrare in BunkerPlex: account nuovi, password provvisorie, accesso con Google.</p>' +
+    '<div class="actions"><a class="btn f" href="#/settings/people" data-key="people">Gestisci le persone</a></div></div>';
 }
 
 // Accesso con Google dell'account: collegato o da collegare
@@ -2470,7 +2520,7 @@ function awayPanel() {
   return '<div class="panel"><h2>Fuori casa</h2>' +
     '<p><b>Con l\'app</b> (telefono, tablet, TV in un\'altra casa): se in casa non c\'è un server BunkerPlex, l\'app propone gli amici e i tuoi PC accesi. ' +
     'Entri con il tuo account e non serve installare altro: occupa uno dei tuoi posti tra i dispositivi finché è aperta.</p>' +
-    '<p><b>Dal browser</b>: serve Tailscale acceso sul dispositivo, con lo stesso account del computer, e l\'indirizzo Tailscale del PC (Panoramica → Indirizzi).</p></div>';
+    '<p><b>Dal browser</b>: serve Tailscale acceso sul dispositivo, con lo stesso account del computer, e l\'indirizzo Tailscale del PC (qui sotto, «Indirizzi per fuori casa»).</p></div>';
 }
 
 // Popup quando questo PC non entra nella rete perche' l'account ha gia' 4 dispositivi
@@ -4271,7 +4321,10 @@ var actions = {
   },
   watched: function (arg) {
     var parts = arg.split(':');
-    post('/watched/' + parts[0], { watched: parts[1] === '1' }).then(render, function (e) { toast(e.message); });
+    post('/watched/' + parts[0], { watched: parts[1] === '1' }).then(function () {
+      popKeys = ['watched', 'seen-' + parts[0]];
+      return render();
+    }, function (e) { toast(e.message); });
   },
   filter: openFilter,
   clearfilters: function (libId) {
@@ -4691,6 +4744,16 @@ function move(dir) {
 // Ogni nuova locandina farebbe ripartire l'animazione dall'inizio: sulle TV lente
 // le animazioni si accavallano e il catalogo scatta.
 var held = false;
+// Sulle TV lente le ripetizioni della freccia tenuta si accodano e il fuoco continua a
+// correre dopo che si e' lasciato il tasto: si scartano quelle rimaste in attesa troppo a
+// lungo o arrivate troppo ravvicinate, cosi' il fuoco si ferma quando ci si ferma.
+var lastMove = 0;
+function keyLate(e) {   // da quanto aspetta il tasto (timeStamp: dall'avvio, o in ms dal 1970 sui browser vecchi)
+  var t = e.timeStamp;
+  if (!t) return 0;
+  var now = t > 1e12 ? Date.now() : (window.performance && performance.now ? performance.now() : 0);
+  return now ? now - t : 0;
+}
 
 function scrollBox(box, pos) {
   pos.behavior = held ? 'auto' : smooth;
@@ -4800,7 +4863,12 @@ document.addEventListener('keydown', function (e) {
   var dir = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[key];
   if (dir) {
     if (typing && (dir === 'left' || dir === 'right') && t.value) return;
-    e.preventDefault();
+    e.preventDefault();   // anche per le ripetizioni scartate: niente scorrimento del browser
+    var now = Date.now();
+    // (quelle in ritardo si scartano solo se il fuoco si e' mosso da poco: anche sulla TV
+    // piu' lenta, a tasto tenuto, il fuoco avanza almeno ogni 150 ms)
+    if (e.repeat && TVLOOK && (now - lastMove < 40 || (keyLate(e) > 40 && now - lastMove < 150))) return;
+    lastMove = now;
     held = !!e.repeat;
     move(dir);
     return;
@@ -5058,6 +5126,9 @@ async function render() {
   stageKey = '';
   view.classList.remove('enter');
   view.innerHTML = out.html;
+  markLoadedImages(view);            // gia' pronte (dalla cache): subito, senza dissolvenza
+  popKeys.forEach(function (k) { var p = byKey(k); if (p && view.contains(p)) p.classList.add('popped'); });
+  popKeys = [];
   if (!samePage) {   // pagina nuova: entra con un movimento breve (solo opacita' e spostamento)
     void view.offsetWidth;
     view.classList.add('enter');
@@ -5222,7 +5293,7 @@ function activityState() {
   var s = syncState();
   if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
   if (APP && i.apk_version > (+tvCall('getVersion') || 0)) {
-    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → ' + (TV ? 'Questa TV' : 'Questo dispositivo'), href: '#/settings/device' });
+    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
   return { ops: ops, notes: notes };
 }

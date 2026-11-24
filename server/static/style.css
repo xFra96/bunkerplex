@@ -557,12 +557,49 @@ html.tv .player .phint { display: inline; }
 #toast { position: fixed; left: 50%; bottom: 2.5rem; transform: translate(-50%, 2rem); z-index: 60; max-width: 90vw; padding: .8rem 1.4rem; border-radius: var(--r); background: var(--ink); color: var(--bg); font-weight: 700; opacity: 0; transition: opacity .16s, transform .16s; pointer-events: none; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-/* ---------- Apertura ---------- */
-#intro { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: var(--bg); display: flex; align-items: center; justify-content: center; transition: opacity .3s linear; }
+/* ---------- Apertura ----------
+   Circa 1,4 s piu' l'uscita: alone verde, il marchio entra con un rimbalzo e il
+   triangolo si accende, le lettere salgono una dopo l'altra, un riflesso passa sul
+   marchio, una linea si allunga sotto il nome; poi tutto si allarga e sfuma nella Home.
+   Solo opacita' e trasformazioni; mai sui dispositivi lenti (lo script in index.html). */
+#intro { position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999; background: var(--bg); display: flex; align-items: center; justify-content: center; overflow: hidden; transition: opacity .38s linear; }
 #intro.out { opacity: 0; pointer-events: none; }
-.intro-word { font-size: 5rem; font-weight: 400; letter-spacing: -.03em; animation: intro-in .7s ease-out both; }
+.intro-glow {
+  position: absolute; top: 50%; left: 50%; width: 84vmin; height: 84vmin; margin: -42vmin 0 0 -42vmin; border-radius: 50%;
+  background: radial-gradient(closest-side, #1a7f4573, #1a7f4529 55%, #1a7f4500);
+  animation: intro-glow 1.3s cubic-bezier(.2, .7, .3, 1) both;
+}
+#intro.out .intro-glow { animation: intro-glow-out .4s cubic-bezier(.4, 0, 1, 1) both; }
+.intro-box { position: relative; display: flex; flex-direction: column; align-items: center; transition: transform .4s cubic-bezier(.4, 0, .2, 1); }
+#intro.out .intro-box { transform: scale(1.1); }
+.intro-word { display: flex; align-items: center; font-size: 5rem; font-weight: 400; letter-spacing: -.03em; line-height: 1.1; }
 .intro-word b { font-weight: 800; }
-@keyframes intro-in { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
+.intro-badge {
+  position: relative; display: block; flex: none; width: 1em; height: 1em; margin-right: .28em; border-radius: 22%; overflow: hidden;
+  animation: intro-mark .6s cubic-bezier(.2, .9, .3, 1.35) both;
+}
+.intro-badge svg { display: block; width: 100%; height: 100%; }
+.intro-play { transform-origin: 34px 32px; animation: intro-play .45s .28s cubic-bezier(.2, .9, .3, 1.5) both; }
+/* Il riflesso: una striscia chiara che attraversa il marchio (tagliata dai suoi bordi) */
+.intro-badge::after {
+  content: ""; position: absolute; top: -15%; bottom: -15%; left: 0; width: 42%;
+  background: linear-gradient(90deg, #ffffff00, #ffffff8c, #ffffff00);
+  animation: intro-sheen .5s .88s cubic-bezier(.4, 0, .2, 1) both;
+}
+.intro-name { display: block; white-space: nowrap; }
+.intro-name i { display: inline-block; font-style: normal; animation: intro-letter .42s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(.22s + var(--i) * .035s); }
+.intro-line {
+  display: block; width: 100%; height: .18rem; margin-top: 1.5rem; border-radius: .2rem;
+  background: linear-gradient(90deg, #4cbf7f00, var(--accent-text), #4cbf7f00);
+  animation: intro-line 1s .32s cubic-bezier(.4, 0, .2, 1) both;
+}
+@keyframes intro-glow { 0% { opacity: 0; transform: scale(.5); } 45% { opacity: 1; } 100% { opacity: .8; transform: scale(1.06); } }
+@keyframes intro-glow-out { from { opacity: .8; transform: scale(1.06); } to { opacity: 0; transform: scale(1.7); } }
+@keyframes intro-mark { 0% { opacity: 0; transform: scale(.3) rotate(-14deg); } 55% { opacity: 1; } 100% { opacity: 1; transform: none; } }
+@keyframes intro-play { from { opacity: 0; transform: scale(.2) translateX(-6px); } }
+@keyframes intro-sheen { from { transform: translateX(-160%) skewX(-20deg); } to { transform: translateX(320%) skewX(-20deg); } }
+@keyframes intro-letter { from { opacity: 0; transform: translateY(.38em); } }
+@keyframes intro-line { 0% { opacity: 1; transform: scaleX(0); } 70% { opacity: 1; } 100% { opacity: 0; transform: scaleX(1); } }
 
 /* ---------- Con il mouse o il dito: niente elemento "selezionato" ---------- */
 /* La selezione chiara serve a chi usa frecce e telecomando; col mouse basta il passaggio sopra. */
@@ -743,10 +780,42 @@ i.skel.short { width: 14rem; }
 .opt:nth-child(2) { animation-delay: .03s; } .opt:nth-child(3) { animation-delay: .06s; }
 .opt:nth-child(4) { animation-delay: .09s; } .opt:nth-child(n+5) { animation-delay: .12s; }
 
-/* Apertura: il marchio entra, poi il nome */
-.intro-mark { width: 5rem; height: 5rem; margin-right: 1.4rem; animation: pop .5s cubic-bezier(.2, .9, .3, 1.3) both; }
-#intro .intro-word { display: flex; align-items: center; animation: none; }
-#intro .intro-word span { animation: slide .5s .18s cubic-bezier(.2, .8, .2, 1) both; }
+/* Locandine e foto in dissolvenza quando l'immagine e' arrivata, invece di comparire
+   di colpo a meta' disegno. html.imgfade c'e' solo senza animazioni ridotte; la classe
+   .imgok la mette app.js all'evento load (subito, se l'immagine era gia' pronta).
+   Non .in: c'e' gia' .hero .in, che renderebbe la locandina della scheda "relative". */
+html.imgfade .art img, html.imgfade .face img { opacity: 0; transition: opacity .3s linear; }
+html.imgfade .art img.imgok, html.imgfade .face img.imgok { opacity: 1; }
+
+/* Telecomando: sulla locandina scelta passa un riflesso di luce. Il pezzo in piu' esiste
+   solo sulla locandina col fuoco (uno alla volta) e parte dopo un attimo, cosi'
+   scorrendo veloce con le frecce non si accende su ogni locandina. */
+body.kb .card:focus .art::after {
+  content: ""; position: absolute; top: -10%; bottom: -10%; left: 0; width: 40%; z-index: 3; pointer-events: none;
+  background: linear-gradient(90deg, #ffffff00, #ffffff40, #ffffff00);
+  animation: sheen .7s .16s cubic-bezier(.45, .05, .35, 1) both;
+}
+@keyframes sheen { from { transform: translateX(-170%) skewX(-18deg); } to { transform: translateX(330%) skewX(-18deg); } }
+
+/* «La mia lista» e «Visto»: la conferma fa un piccolo scatto (classe .popped da app.js) */
+.btn.popped, .seenbtn.popped { animation: press .36s cubic-bezier(.2, .9, .3, 1.4); }
+.btn.popped .ic, .seenbtn.popped .ic { animation: tick .42s cubic-bezier(.2, .9, .3, 1.6); }
+@keyframes press { 0% { transform: scale(.9); } 55% { transform: scale(1.1); } }
+@keyframes tick { 0% { opacity: 0; transform: scale(.2) rotate(-30deg); } 60% { opacity: 1; transform: scale(1.3); } }
+
+/* Impostazioni: il menu dell'area resta fermo, entrano solo titolo, righe e pannelli,
+   uno dopo l'altro (pochi elementi, attese brevissime) */
+#view.enter .page.settings { animation: none; }
+#view.enter .smain > *, #view.enter .soverview > *, #view.enter .slist .srow:nth-child(-n+14) { animation: rise .24s cubic-bezier(.2, .8, .2, 1) backwards; }
+#view.enter .soverview > .slist { animation: none; }
+#view.enter .smain > :nth-child(n+3), #view.enter .soverview > :nth-child(n+3) { animation-delay: .03s; }
+#view.enter .smain > :nth-child(n+4), #view.enter .soverview > :nth-child(n+5) { animation-delay: .06s; }
+#view.enter .smain > :nth-child(n+5) { animation-delay: .09s; }
+#view.enter .slist .srow:nth-child(n+3) { animation-delay: .02s; }
+#view.enter .slist .srow:nth-child(n+5) { animation-delay: .04s; }
+#view.enter .slist .srow:nth-child(n+7) { animation-delay: .06s; }
+#view.enter .slist .srow:nth-child(n+9) { animation-delay: .08s; }
+
 
 @media (max-width: 720px) { .railitem span, #rail:hover .railitem span { transform: none; } }
 html.lite *, html.lite *::before, html.lite *::after { transition: none !important; animation: none !important; }
@@ -798,6 +867,14 @@ body.locked #view { margin-left: 0; }
 .vchip b { font-size: 1.35rem; font-weight: 700; letter-spacing: .01em; }
 .vchip span { color: var(--ink2); font-size: .85rem; }
 .vchip.warn span { color: var(--warn); }
+/* Le versioni aprono Aggiornamenti: tutto il riquadro e' un pulsante (una pressione col telecomando) */
+a.versions { color: inherit; text-decoration: none; align-items: stretch; }
+.versions .vgo { display: flex; align-items: center; gap: .3rem; padding: 0 .4rem; color: var(--ink2); font-size: .9rem; font-weight: 600; }
+a.versions:hover .vchip { background: var(--surface2); }
+a.versions:focus .vchip { background: var(--ink); color: var(--bg); }
+a.versions:focus .vchip small, a.versions:focus .vchip span { color: var(--bg); }
+a.versions:focus .vgo { color: var(--ink); }
+a.versions:focus .vgo .chev { stroke: var(--ink); }
 .slist { background: var(--surface); border-radius: .7rem; padding: .35rem; }
 .srow { display: flex; align-items: center; gap: 1rem; min-height: 4.5rem; padding: .7rem 1rem; border-radius: var(--r); }
 .srow + .srow { border-top: 1px solid #ffffff0d; }
@@ -890,19 +967,21 @@ body:not(.kb) .snav.on:focus::before { background: var(--accent); }
 .num { font-variant-numeric: tabular-nums; }
 
 @media (max-width: 1100px) {
-  /* Schermo stretto: le aree diventano una fila di schede che scorre, sempre in vista */
-  .sgrid { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; }
-  .scol { position: relative; top: auto; flex-direction: row; gap: .4rem; overflow-x: auto; margin: 0 calc(-1 * var(--pad)); padding: 0 var(--pad) .2rem; scroll-padding: 0 var(--pad); }
-  .snav, .snav.home { flex: none; min-height: 2.6rem; margin: 0; padding: .3rem .95rem .3rem .75rem; border-radius: 999px; background: var(--surface); gap: .5rem; }
-  .snav.on { background: var(--accent); color: var(--accent-ink); }
-  .snav.on::before { display: none; }
-  .snav.on .sic, .snav.on:hover .sic { color: var(--accent-ink); }
-  .snav.on:hover { background: var(--accent); }
-  body:not(.kb) .snav:focus { background: var(--surface); }
-  body:not(.kb) .snav.on:focus { background: var(--accent); color: var(--accent-ink); }
-  body:not(.kb) .snav.on:focus .sic { color: var(--accent-ink); }
-  .sic { width: 1.15rem; height: 1.15rem; }
-  .snav .uface { width: 1.4rem; height: 1.4rem; font-size: .7rem; }
+  /* Schermo stretto: le aree diventano una fila di schede che scorre, sempre in vista.
+     Non sulla TV: in rem ha lo spazio della 1280x720 e la colonna delle aree regge,
+     mentre a 960x540 la fila finirebbe sotto i pulsanti in alto a destra */
+  html:not(.tv) .sgrid { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; }
+  html:not(.tv) .scol { position: relative; top: auto; flex-direction: row; gap: .4rem; overflow-x: auto; margin: 0 calc(-1 * var(--pad)); padding: 0 var(--pad) .2rem; scroll-padding: 0 var(--pad); }
+  html:not(.tv) .snav, html:not(.tv) .snav.home { flex: none; min-height: 2.6rem; margin: 0; padding: .3rem .95rem .3rem .75rem; border-radius: 999px; background: var(--surface); gap: .5rem; }
+  html:not(.tv) .snav.on { background: var(--accent); color: var(--accent-ink); }
+  html:not(.tv) .snav.on::before { display: none; }
+  html:not(.tv) .snav.on .sic, html:not(.tv) .snav.on:hover .sic { color: var(--accent-ink); }
+  html:not(.tv) .snav.on:hover { background: var(--accent); }
+  html:not(.tv) body:not(.kb) .snav:focus { background: var(--surface); }
+  html:not(.tv) body:not(.kb) .snav.on:focus { background: var(--accent); color: var(--accent-ink); }
+  html:not(.tv) body:not(.kb) .snav.on:focus .sic { color: var(--accent-ink); }
+  html:not(.tv) .sic { width: 1.15rem; height: 1.15rem; }
+  html:not(.tv) .snav .uface { width: 1.4rem; height: 1.4rem; font-size: .7rem; }
 }
 @media (max-width: 720px) {
   .srow { gap: .8rem; padding: .7rem .6rem; }
@@ -1072,4 +1151,49 @@ body.casting .rows { padding-bottom: calc(46vh + 7rem); }
   #castbar .cinfo img { width: 2.1rem; height: 3.1rem; }
   #castbar .pbtn { width: 2.3rem; height: 2.3rem; }
   #castbar .cctl .pbtn:not(.main):not([data-cast="stop"]) { display: none; }
+}
+
+/* ---------- Impostazioni: niente filetti né barrette, più leggibili ---------- */
+.settings .stitle { font-size: 2.4rem; font-weight: 800; letter-spacing: -.025em; }
+.vchip { border-left: 0; }
+.vchip b { font-size: 1.45rem; font-weight: 800; letter-spacing: -.01em; }
+.vchip span { display: flex; align-items: center; gap: .45rem; color: var(--ok); font-weight: 600; }
+.vchip span::before { content: ""; width: .5rem; height: .5rem; flex: none; border-radius: 50%; background: currentColor; }
+.vchip.warn span { color: var(--warn); }
+.srow + .srow { border-top: 0; }
+.srow .sic { width: 1.5rem; height: 1.5rem; color: var(--ink3); }
+.srow:focus .sic { color: var(--bg); }
+.srow.lead .uface { width: 3.4rem; height: 3.4rem; font-size: 1.45rem; }
+.srow.lead .stext b { font-size: 1.35rem; font-weight: 800; letter-spacing: -.01em; }
+.kv dt, .kv dd { border-top: 0; padding: .75rem .9rem; }
+.kv dt:nth-of-type(odd), .kv dd:nth-of-type(odd) { background: #ffffff07; }
+.kv dt { border-radius: var(--r) 0 0 var(--r); }
+.kv dd { border-radius: 0 var(--r) var(--r) 0; }
+.folder { border-top: 0; margin-top: .4rem; padding: .65rem .8rem; border-radius: var(--r); background: var(--surface); }
+.lib { padding-bottom: .9rem; }
+.setting small { color: var(--ink); background: #ffffff12; padding: .2rem .75rem; border-radius: 999px; }
+.setting:focus small { background: #060a071f; color: var(--bg); }
+body:not(.kb) .setting:focus small { color: var(--ink); background: #ffffff12; }
+@media (max-width: 720px) {
+  .kv dt { border-radius: var(--r) var(--r) 0 0; padding-bottom: .2rem; }
+  .kv dd { border-radius: 0 0 var(--r) var(--r); padding-top: 0; }
+}
+/* ---------- TV: in rem lo spazio è sempre lo stesso (1rem = 1,5vw) ---------- */
+@media (min-width: 721px) {
+  html.tv .sgrid { grid-template-columns: 13rem minmax(0, 1fr); gap: 2rem; }
+  /* Panoramica: due colonne di righe, l'account in testa su tutta la larghezza */
+  html.tv .slist { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem .6rem; }
+  html.tv .srow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "ic txt chev" "ic val chev"; column-gap: 1rem; row-gap: .25rem; min-height: 5.2rem; padding: .9rem 1.1rem; }
+  html.tv .srow > .sic, html.tv .srow > .uface { grid-area: ic; }
+  html.tv .srow > .stext { grid-area: txt; }
+  html.tv .srow > .sval { grid-area: val; justify-content: flex-start; text-align: left; }
+  html.tv .srow > .chev { grid-area: chev; }
+  html.tv .srow.lead { grid-column: 1 / -1; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "ic txt val chev"; background: var(--surface2); }
+  html.tv .srow.lead:focus { background: var(--ink); }
+  html.tv .srow.lead > .sval { justify-content: flex-end; }
+  html.tv .stext b { font-size: 1.2rem; }
+  html.tv .stext small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  html.tv .setting { padding: 1rem 1.2rem; font-size: 1.08rem; }
+  html.tv .smain .panel { padding: 1.7rem 2rem; }
+  html.tv .panel h2 { font-size: 1.45rem; font-weight: 800; letter-spacing: -.015em; }
 }
