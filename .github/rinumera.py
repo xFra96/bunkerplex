@@ -17,6 +17,15 @@ TABLE = json.load(open(os.path.join(os.path.dirname(__file__), "versioni-storich
 REPO = os.environ["GITHUB_REPOSITORY"]
 
 
+class Negato(Exception):
+    """GitHub non da' il permesso al token del giro (HTTP 403): creare un tag su un
+    commit vecchio, che ha un .github/workflows diverso, chiede il permesso
+    «workflows», che il GITHUB_TOKEN non puo' avere. Riprovare non serve."""
+
+
+DENIED = ("Resource not accessible by integration", "HTTP 403", "refusing to allow a GitHub App")
+
+
 def run(*a, check=True):
     # Un push di tag puo' essere rifiutato per un attimo (subito dopo aver tolto
     # lo stesso nome): si riprova qualche volta prima di arrendersi
@@ -24,7 +33,9 @@ def run(*a, check=True):
         p = subprocess.run(a, capture_output=True, text=True)
         if p.returncode == 0 or not check:
             return p.stdout
-        print(" ".join(a), "->", p.stderr.strip(), flush=True)
+        print(" ".join(a[:4]), "->", p.stderr.strip(), flush=True)
+        if any(d in p.stderr for d in DENIED):
+            raise Negato(p.stderr.strip())
         time.sleep(5 * (attempt + 1))
     raise SystemExit(f"Non riuscito: {' '.join(a)}")
 
@@ -96,7 +107,7 @@ def make_tag(tag, sha):
     run("git", "tag", "-f", tag, sha)
 
 
-for old in todo:
+def renumber(old):
     sha = sha_of(old)
     new = server[old]
     r = releases.get(old)
@@ -115,6 +126,22 @@ for old in todo:
             run("git", "push", "origin", f":refs/tags/{tag}")
             run("git", "tag", "-d", tag)
     print(old, "->", new, app.get(old, ""))
+
+
+done = 0
+for old in todo:
+    try:
+        renumber(old)
+        done += 1
+    except Negato:
+        # Senza permesso si ferma qui, senza bloccare la pubblicazione della versione
+        # nuova (il numero nuovo non dipende dai vecchi tag a data, versione.py li
+        # ignora). Le altre restano col nome vecchio: si finiscono lanciando questo
+        # script dal PC con un token che ha il permesso «workflow» (gh auth login).
+        print(f"::warning::Rinumerazione ferma a {old}: il token del giro non può creare tag sui "
+              f"commit vecchi (permesso «workflows»). Fatte {done}, ne restano {len(todo) - done}. "
+              "La versione nuova si pubblica lo stesso.", flush=True)
+        raise SystemExit
 
 # I link alle versioni vecchie nelle note delle altre release
 for tag, r in releases.items():
