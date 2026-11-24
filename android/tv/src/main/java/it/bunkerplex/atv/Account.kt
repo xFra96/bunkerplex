@@ -30,6 +30,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -109,8 +110,81 @@ fun LoginScreen(act: MainActivity, s: Screen.Login) {
             if (s.name == null) Btn("Entra dal telefono") { act.go(Screen.Phone) }
             if (s.google && s.name == null) Btn("Entra con Google") { act.go(Screen.Google(false)) }
         }
+        Row(Modifier.padding(top = 14.dp)) {
+            Btn("Password dimenticata?") { act.go(Screen.Reset(if ("@" in name) name.trim() else "")) }
+        }
     }
     AutoFocus(if (s.name == null) fr else passFr)
+}
+
+// ---------------------------------------------------------------- Password dimenticata
+
+/** Un codice all'email dell'account, poi la password nuova: si entra subito. */
+@Composable
+fun ResetScreen(act: MainActivity, s: Screen.Reset) {
+    var email by remember { mutableStateOf(s.email) }
+    var sent by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var pass2 by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val fr = remember { FocusRequester() }
+    val passFr = remember { FocusRequester() }
+    val pass2Fr = remember { FocusRequester() }
+    fun work(text: String, job: () -> Unit) {
+        if (busy) return
+        busy = true
+        msg = text
+        Thread {
+            try { job() } catch (e: Exception) { act.runOnUiThread { msg = e.message; busy = false } }
+        }.start()
+    }
+    fun sendCode() {
+        if (!email.contains("@")) { msg = "Scrivi l'email del tuo account"; return }
+        work("Mando il codice…") {
+            Api.post("/api/auth/reset/start", JSONObject().put("email", email.trim()))
+            act.runOnUiThread { sent = true; busy = false; msg = null; code = "" }
+        }
+    }
+    fun finish() {
+        val digits = code.filter { it.isDigit() }
+        if (digits.length != 6) { msg = "Il codice ha 6 cifre: lo trovi nell'email"; return }
+        if (pass.length < 8) { msg = "La password nuova deve avere almeno 8 caratteri"; return }
+        if (pass != pass2) { msg = "Le due password nuove non sono uguali"; return }
+        work("Salvo…") {
+            val (body, token) = Api.post("/api/auth/reset/finish", JSONObject().put("email", email.trim())
+                .put("code", digits).put("password", pass).put("device", "tv"))
+            act.runOnUiThread { act.entered(body, token) }
+        }
+    }
+    Center {
+        Title("Password dimenticata", size = 32.sp, lines = 1)
+        if (!sent) {
+            Txt("Scrivi l'email del tuo account: ti mando un codice per scegliere una password nuova.",
+                Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 3)
+            Field(email, { email = it }, "Email", Modifier.focusRequester(fr), keyboard = KeyboardType.Email) { sendCode() }
+        } else {
+            Txt("Se $email è l'email di un account, ti è arrivato un codice di 6 cifre (guarda anche nella posta indesiderata). Vale 15 minuti.",
+                Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 4)
+            Field(code, { code = it }, "Codice", Modifier.focusRequester(fr), keyboard = KeyboardType.Number) { runCatching { passFr.requestFocus() } }
+            Box(Modifier.padding(top = 12.dp))
+            Field(pass, { pass = it }, "Password nuova (almeno 8 caratteri)", Modifier.focusRequester(passFr), secret = true) { runCatching { pass2Fr.requestFocus() } }
+            Box(Modifier.padding(top = 12.dp))
+            Field(pass2, { pass2 = it }, "Ripeti la password nuova", Modifier.focusRequester(pass2Fr), secret = true) { finish() }
+        }
+        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
+        Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (!sent) Btn("Mandami il codice", primary = true) { sendCode() }
+            else {
+                Btn("Salva ed entra", primary = true) { finish() }
+                Btn("Mandalo di nuovo") { sent = false }
+            }
+        }
+    }
+    LaunchedEffect(sent) {
+        repeat(5) { if (runCatching { fr.requestFocus() }.isSuccess) return@LaunchedEffect; withFrameNanos { } }
+    }
 }
 
 // ---------------------------------------------------------------- QR
