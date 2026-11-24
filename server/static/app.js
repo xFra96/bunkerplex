@@ -2515,7 +2515,7 @@ function accountFriendsPanel(af, sh) {
       '<div class="actions"><a class="btn f" href="#/settings/account" data-key="af-login">Entra con un account</a></div></div>';
   }
   if (af.supported === false) {
-    return head + '<p><span class="nodot">●</span> Il servizio account va aggiornato per gli amici dell\'account (vedi README → Servizio account).</p></div>';
+    return head + '<p><span class="nodot">●</span> Il servizio account va aggiornato per gli amici dell\'account (vedi Guida BunkerPlex.pdf, appendice → Servizio account).</p></div>';
   }
   var list = af.friends || [];
   var row = function (f, right, small) {
@@ -2609,7 +2609,7 @@ function friendsPanel(sh, cloud) {
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
     '<h2 style="margin-top:1.4rem">Manda una richiesta</h2>' +
     '<p>Fatti dare dall\'amico il suo indirizzo: lo legge qui in Impostazioni → Amici e dispositivi, sul suo BunkerPlex. ' +
-    'Il tuo viene trovato da solo quando la porta sul router è aperta; se non ci riesce, usate <b>Tailscale</b> su entrambi i PC e scrivete quegli indirizzi (vedi README).</p>' +
+    'Il tuo viene trovato da solo quando la porta sul router è aperta; se non ci riesce, usate <b>Tailscale</b> su entrambi i PC e scrivete quegli indirizzi.</p>' +
     '<input class="field f" style="margin-bottom:.6rem" id="fname" data-key="fname" autocomplete="off" maxlength="30" placeholder="Nome dell\'amico (come lo vedrai nel menu)">' +
     '<input class="field f" style="margin-bottom:.6rem" id="furl" data-key="furl" autocomplete="off" placeholder="Indirizzo dell\'amico (es. 93.45.12.7:' + sh.port + ')">' +
     '<input class="field f" style="margin-bottom:.6rem" id="fmy" data-key="fmy" autocomplete="off" value="' + esc(sh.address) + '" placeholder="Il tuo indirizzo (si riempie da solo se la porta è aperta)">' +
@@ -3866,7 +3866,7 @@ function updatePanel(u) {
                       : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Installa BunkerPlex».')) + '</p>' +
     (u.access === false
       ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
-            : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (come crearlo: README, «Per chi lo modifica»). Resta salvato sul disco di BunkerPlex.</p>' +
+            : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (su GitHub: Settings → Developer settings → Fine-grained tokens, permesso Contents: Read-only). Resta salvato sul disco di BunkerPlex.</p>' +
               '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
       : '') +

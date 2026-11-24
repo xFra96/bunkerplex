@@ -6518,7 +6518,7 @@ def portmap_loop():
 # di Windows, il doppio router o l'operatore senza indirizzo pubblico. Tra due PC
 # il traffico e' diretto quando si puo' (altrimenti passa dai relay di Tailscale),
 # sempre cifrato; sopra resta la porta 32501 in HTTPS con l'impronta ricordata.
-# Nella rete di BunkerPlex le regole (vedi README) lasciano passare solo la 32501.
+# Nella rete di BunkerPlex le regole (vedi Guida BunkerPlex.pdf, appendice) lasciano passare solo la 32501.
 # Gira solo se serve: quando questo PC condivide o ha amici dell'account.
 
 TS_DIR = DATA / "tailscale"
