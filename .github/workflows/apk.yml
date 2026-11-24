@@ -12,7 +12,7 @@
 #     tag app-v1.0, app-v1.1...: salgono solo quando viene ricompilata.
 #
 # Serve il segreto ANDROID_KEYSTORE_B64: la chiave di firma android/keystore/bunkerplex.jks
-# in base64 (vedi «Guida BunkerPlex.pdf», appendice «App e release»). Deve essere la stessa
+# in base64. Deve essere la stessa
 # con cui e' firmata l'app gia' installata, se no la TV rifiuta l'aggiornamento:
 # per questo, se il segreto manca, la compilazione si ferma invece di crearne una nuova.
 
@@ -95,7 +95,7 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "::warning::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma): l'app per la TV non viene ricompilata. Vedi Guida BunkerPlex.pdf, appendice «App e release»."
+            echo "::warning::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma): l'app per la TV non viene ricompilata."
             echo "ok=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi

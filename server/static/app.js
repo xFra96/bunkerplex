@@ -2565,7 +2565,7 @@ function accountFriendsPanel(af, sh) {
       '<div class="actions"><a class="btn f" href="#/settings/account" data-key="af-login">Entra con un account</a></div></div>';
   }
   if (af.supported === false) {
-    return head + '<p><span class="nodot">●</span> Il servizio account va aggiornato per gli amici dell\'account (vedi Guida BunkerPlex.pdf, appendice → Servizio account).</p></div>';
+    return head + '<p><span class="nodot">●</span> Il servizio account va aggiornato per gli amici dell\'account.</p></div>';
   }
   var list = af.friends || [];
   var row = function (f, right, small) {
