@@ -2658,6 +2658,7 @@ def cloud_ping():
     try:
         info = accounts.call("GET", "/", timeout=6)
         cloud_status["google"] = bool(info.get("google"))   # «Entra con Google» attivo nel servizio?
+        cloud_status["reset"] = bool(info.get("reset"))     # «Password dimenticata?» attivo?
         mark_cloud(True)
     except accounts.CloudError:
         mark_cloud(True)          # risponde, anche se con un errore
@@ -2732,6 +2733,7 @@ def cloud_ready():
             info = accounts.call("GET", "/", timeout=6)
             cloud_status["ready"] = bool(info.get("ready"))
             cloud_status["google"] = bool(info.get("google"))
+            cloud_status["reset"] = bool(info.get("reset"))
         except Exception:
             cloud_status["ready"] = None
         cloud_status["at"] = time.time()
@@ -3185,6 +3187,7 @@ def auth_state():
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,
             "setup": cloud_on and SETUP_FILE.is_file() and cloud_ready() is False,
             "google": cloud_on and bool(cloud_status.get("google")),
+            "reset": cloud_on and bool(cloud_status.get("reset")),
             "server": SERVER_NAME}
 
 
@@ -3315,6 +3318,38 @@ async def auth_login(request: Request):
         finally:
             con.close()
         return with_session({"ok": True, "user": user_json(u), "offline": True}, token)
+    return await finish_login(res, ver, body.get("device") or "browser")
+
+
+def reset_email(body):
+    email = str(body.get("email") or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(400, "Scrivi l'email del tuo account")
+    return email
+
+
+@app.post("/api/auth/reset/start")
+async def auth_reset_start(request: Request):
+    """«Password dimenticata?»: il servizio account manda un codice all'email dell'account."""
+    email = reset_email(await read_json(request))
+    await cloud("POST", "/reset/start", {"email": email})
+    return {"ok": True}
+
+
+@app.post("/api/auth/reset/finish")
+async def auth_reset_finish(request: Request):
+    """Codice dell'email + password nuova: si entra subito con quella."""
+    body = await read_json(request)
+    email = reset_email(body)
+    code = re.sub(r"\D", "", str(body.get("code") or ""))
+    if len(code) != 6:
+        raise HTTPException(400, "Il codice ha 6 cifre: lo trovi nell'email")
+    password = str(body.get("password") or "")
+    check_new_password(password)
+    name = await login_name(email)
+    ver = await asyncio.to_thread(accounts.verifier, name, password)
+    res = await cloud("POST", "/reset/finish", {"email": email, "code": code, "verifier": ver,
+                                                "device": SERVER_NAME})
     return await finish_login(res, ver, body.get("device") or "browser")
 
 

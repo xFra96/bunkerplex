@@ -15,6 +15,8 @@
 // TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key; permessi
 // «Auth Keys: write» e «Devices: Core» sull'etichetta tag:bunkerplex).
 // GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET: «Entra con Google» (vedi /google/start).
+// BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
+// con un codice via email (vedi /reset/start).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -300,6 +302,88 @@ function b64urlJson(part) {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, (c) => c.charCodeAt(0))));
 }
 
+// ---- Password dimenticata: un codice di 6 cifre via email (Brevo)
+//
+// /reset/start {email} manda il codice all'email dell'account (risponde sempre ok,
+// cosi' da fuori non si capisce quali email hanno un account). /reset/finish
+// {email, code, verifier} controlla il codice e mette la password nuova: il server
+// di casa calcola la verifica sul nome utente, che prima chiede a /resolve.
+
+const RESET_TTL = 900;        // il codice vale 15 minuti
+const RESET_TRIES = 5;        // codici sbagliati prima che scada
+const RESET_GAP = 60;         // un'email al minuto al massimo per account
+
+const resetOn = (env) => !!env.BREVO_API_KEY;
+
+let resetTable = false;
+async function ensureReset(env) {
+  if (resetTable) return;
+  await ensureGoogle(env);
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS reset_codes(user_id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL, ' +
+    'exp REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent REAL NOT NULL)').run();
+  resetTable = true;
+}
+
+async function userForEmail(env, email) {
+  return await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email).first() ||
+    await env.DB.prepare('SELECT * FROM users WHERE google_email = ?').bind(email).first();
+}
+
+async function sendMail(env, to, subject, text, html) {
+  const r = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': env.BREVO_API_KEY, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ sender: { name: 'BunkerPlex', email: env.MAIL_FROM || 'bunkerplex@outlook.it' },
+      to: [{ email: to }], subject, textContent: text, htmlContent: html })
+  });
+  if (!r.ok) fail(502, 'Non riesco a mandare l\'email adesso: riprova tra poco');
+}
+
+async function resetStart(env, email) {
+  await ensureReset(env);
+  const user = await userForEmail(env, email);
+  if (!user) return;
+  const old = await env.DB.prepare('SELECT sent FROM reset_codes WHERE user_id = ?').bind(user.id).first();
+  if (old && now() - old.sent < RESET_GAP) return;
+  const a = new Uint32Array(1);
+  crypto.getRandomValues(a);
+  const code = String(a[0] % 1000000).padStart(6, '0');
+  await env.DB.prepare('INSERT OR REPLACE INTO reset_codes(user_id, code_hash, exp, tries, sent) VALUES(?,?,?,0,?)')
+    .bind(user.id, await sha256(user.id + ':' + code), now() + RESET_TTL, now()).run();
+  const shown = code.slice(0, 3) + ' ' + code.slice(3);
+  await sendMail(env, email, 'Il tuo codice BunkerPlex: ' + shown,
+    'Ciao ' + user.username + ',\n\nper scegliere una password nuova scrivi questo codice in BunkerPlex: ' + shown +
+    '\n\nVale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.\n\nBunkerPlex',
+    '<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1d2420;max-width:28rem">' +
+    '<p>Ciao <b>' + esc(user.username) + '</b>,</p><p>per scegliere una password nuova scrivi questo codice in BunkerPlex:</p>' +
+    '<p style="font:700 2rem/1 ui-monospace,monospace;letter-spacing:.15em;margin:1.2rem 0">' + shown + '</p>' +
+    '<p>Vale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.</p>' +
+    '<p style="color:#6b766f">BunkerPlex</p></div>');
+}
+
+async function resetFinish(env, email, rawCode, verifier) {
+  await ensureReset(env);
+  const code = String(rawCode || '').replace(/\D/g, '');
+  const bad = () => fail(400, 'Codice sbagliato o scaduto: chiedine uno nuovo');
+  const user = await userForEmail(env, email);
+  if (!user || code.length !== 6) bad();
+  const row = await env.DB.prepare('SELECT * FROM reset_codes WHERE user_id = ?').bind(user.id).first();
+  if (!row || row.exp < now() || row.tries >= RESET_TRIES) bad();
+  if (!sameString(await sha256(user.id + ':' + code), row.code_hash)) {
+    await env.DB.prepare('UPDATE reset_codes SET tries = tries + 1 WHERE user_id = ?').bind(user.id).run();
+    bad();
+  }
+  const pw = await passwordFields(verifier);
+  await env.DB.batch([
+    env.DB.prepare('UPDATE users SET salt = ?, hash = ?, must_change = 0, fails = 0, locked_until = 0, no_password = 0 WHERE id = ?')
+      .bind(pw.salt, pw.hash, user.id),
+    // Con la password nuova gli altri server collegati devono rientrare
+    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+    env.DB.prepare('DELETE FROM reset_codes WHERE user_id = ?').bind(user.id)
+  ]);
+  return { ...user, must_change: 0, no_password: 0 };
+}
+
 async function flowByCode(env, code) {
   const f = await env.DB.prepare('SELECT * FROM google_flows WHERE code = ?').bind(code).first();
   return f && f.exp > now() ? f : null;
@@ -482,7 +566,7 @@ async function route(request, env) {
 
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
-    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env) });
+    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env) });
   }
 
   // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
@@ -517,6 +601,19 @@ async function route(request, env) {
     const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(String(b.username || '').trim()).first();
     if (!user) fail(401, 'Nome utente o password sbagliati');
     await checkPassword(env, user, verifier);
+    return json({ token: await newSession(env, user, b.device), user: userJson(user) });
+  }
+
+  // Password dimenticata (vedi resetStart)
+  if (path === '/reset/start' && method === 'POST') {
+    if (!resetOn(env)) fail(404, 'Il recupero della password non è attivo nel servizio account');
+    await resetStart(env, cleanEmail((await body(request)).email) || fail(400, 'Scrivi l\'email'));
+    return json({ ok: true });
+  }
+  if (path === '/reset/finish' && method === 'POST') {
+    if (!resetOn(env)) fail(404, 'Il recupero della password non è attivo nel servizio account');
+    const b = await body(request);
+    const user = await resetFinish(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'), b.code, cleanVerifier(b.verifier));
     return json({ token: await newSession(env, user, b.device), user: userJson(user) });
   }
 

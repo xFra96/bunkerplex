@@ -218,7 +218,31 @@ function accountForm(name, fixed) {
   return (fixed ? '<input type="hidden" id="lname" value="' + esc(name) + '">'
       : '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" autocomplete="username" autocapitalize="none" maxlength="120" placeholder="Nome utente o email" value="' + esc(name || '') + '">') +
     '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login"' + (fixed ? ' data-autofocus' : '') + ' placeholder="Password">' +
-    '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button>' + googleButton() + '</div>';
+    '<div class="actions"><button class="btn primary f" data-act="login" data-key="login">Entra</button>' + googleButton() + '</div>' +
+    (auth.reset ? '<p style="margin-top:.8rem"><a class="f" href="#/reset" data-key="forgot">Password dimenticata?</a></p>' : '');
+}
+
+// «Password dimenticata?»: un codice all'email dell'account, poi la password nuova
+function resetPage() {
+  var r = cache.reset || { email: fieldValue('lname').indexOf('@') > 0 ? fieldValue('lname').trim() : '' };
+  cache.reset = r;
+  var back = auth && auth.user ? '#/settings/account' : '#/home';
+  var head = '<div class="page"><div class="panel login"><h1>Password dimenticata</h1>';
+  if (!r.sent) {
+    return head + '<p>Scrivi l\'email del tuo account: ti mando un codice per scegliere una password nuova.</p>' +
+      '<input class="field f" id="remail" data-key="remail" data-autofocus type="email" autocomplete="email" autocapitalize="none" maxlength="120"' +
+      ' data-enter="resetsend" placeholder="Email" value="' + esc(r.email || '') + '">' +
+      '<div class="actions"><button class="btn primary f" data-act="resetsend" data-key="resetsend">Mandami il codice</button>' +
+      '<a class="btn f" href="' + back + '" data-key="resetback">Indietro</a></div>' +
+      '<p style="margin-top:1rem"><small>Vale l\'email impostata in Impostazioni → Account (o quella data dall\'amministratore).</small></p></div></div>';
+  }
+  return head + '<p>Se <b>' + esc(r.email) + '</b> è l\'email di un account, ti è arrivato un codice di 6 cifre (guarda anche nella posta indesiderata). Vale 15 minuti.</p>' +
+    '<input class="field f num" style="margin-bottom:.6rem" id="rcode" data-key="rcode" data-autofocus inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Codice">' +
+    '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+    '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="resetdone" placeholder="Ripeti la password nuova">' +
+    '<div class="actions"><button class="btn primary f" data-act="resetdone" data-key="resetdone">Salva ed entra</button>' +
+    '<button class="btn f" data-act="resetagain" data-key="resetagain">Mandalo di nuovo</button>' +
+    '<a class="btn f" href="' + back + '" data-key="resetback">Indietro</a></div></div></div>';
 }
 
 // «Entra con Google» (se il servizio account lo offre)
@@ -4229,6 +4253,32 @@ var actions = {
       render();
     }, function (e) { toast(e.message); });
   },
+  resetsend: function () {
+    var email = (fieldValue('remail') || (cache.reset && cache.reset.email) || '').trim();
+    if (email.indexOf('@') < 1) { toast('Scrivi l\'email del tuo account'); return; }
+    toast('Mando il codice…');
+    post('/auth/reset/start', { email: email }).then(function () {
+      cache.reset = { email: email, sent: true };
+      toast('Codice mandato: guarda la tua email');
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  resetagain: function () {
+    cache.reset = { email: cache.reset && cache.reset.email };
+    actions.resetsend();
+  },
+  resetdone: function () {
+    var r = cache.reset || {}, code = fieldValue('rcode').replace(/\D/g, ''), pw = fieldValue('pnew');
+    if (code.length !== 6) { toast('Il codice ha 6 cifre: lo trovi nell\'email'); return; }
+    if (!pw) { toast('Scegli la password nuova'); return; }
+    if (pw !== fieldValue('pnew2')) { toast('Le due password nuove non sono uguali'); return; }
+    toast('Salvo…');
+    post('/auth/reset/finish', { email: r.email, code: code, password: pw, device: devName() }).then(function (res) {
+      cache.reset = null;
+      toast('Password cambiata: sei entrato');
+      return enterApp(res);
+    }, function (e) { toast(e.message); });
+  },
   gunlink: function () {
     confirmBox('Scollegare Google dal tuo account? Per entrare servirà di nuovo la password.', 'Sì, scollega', function () {
       send('DELETE', '/auth/google').then(function () {
@@ -5054,6 +5104,10 @@ var routes = [
     if (auth.user.linked && auth.user.online) { location.replace('#/settings/account'); return ''; }
     return googlePage(false);
   }],
+  [/^#\/reset$/, function () {
+    if (!auth.reset) { location.replace('#/settings/account'); return ''; }
+    return resetPage();
+  }],
   [/^#\/tvlogin$/, function () {
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
@@ -5095,6 +5149,7 @@ async function gate() {
     if (!auth.user) {
       lockScreen(true);
       if (location.hash === '#/google' && auth.google) return googlePage(false);
+      if (location.hash === '#/reset' && auth.reset) return resetPage();
       return location.hash === '#/tvlogin' && auth.cloud ? tvLoginPage() : profilesPage();
     }
   }
