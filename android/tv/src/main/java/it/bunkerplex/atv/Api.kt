@@ -19,6 +19,10 @@ object Api {
     @Volatile
     var base = ""
 
+    /** Chi sta guardando (il nome nel menu a sinistra). */
+    @Volatile
+    var user: String? = null
+
     private const val PREFS = "bunkerplex"
 
     fun load(ctx: Context) {
@@ -91,12 +95,23 @@ object Api {
 data class Card(
     val id: Int,
     val kind: String,          // movie, show, episode, collection
-    val title: String,
+    val title: String,         // per gli episodi: il nome della serie
     val subtitle: String,
     val poster: String?,
     val wide: String?,         // immagine orizzontale (fotogramma o sfondo)
+    val backdrop: String?,     // sfondo dell'anteprima (per gli episodi quello della serie)
     val progress: Float,       // 0..1, punto di ripresa
     val watched: Boolean,
+    val overview: String,
+    val year: Int,
+    val yearTo: Int,
+    val duration: Double,
+    val position: Double,
+    val rating: Double,
+    val quality: String,
+    val genres: List<String>,
+    val episodeLine: String,   // «S8 · E3 · Titolo» per gli episodi
+    val hue: Int,              // tinta del riquadro finche' non c'e' l'immagine
 ) {
     companion object {
         fun from(j: JSONObject): Card {
@@ -105,10 +120,13 @@ data class Card(
             val pos = j.optDouble("position", 0.0)
             val title: String
             val sub: String
+            var epLine = ""
             when (kind) {
                 "episode" -> {
                     title = j.optString("show_title").ifEmpty { j.optString("title") }
-                    sub = "S${j.optInt("season")} · E${j.optInt("episode")}  ${j.optString("title")}".trim()
+                    epLine = listOf("S${j.optInt("season")} · E${j.optInt("episode")}", j.optString("title"))
+                        .filter { it.isNotBlank() }.joinToString(" · ")
+                    sub = epLine
                 }
                 "show" -> {
                     title = j.optString("title")
@@ -124,12 +142,24 @@ data class Card(
                     sub = j.optInt("year").takeIf { it > 0 }?.toString() ?: ""
                 }
             }
+            val watched = j.optBoolean("watched")
             return Card(
                 id = j.optInt("id"), kind = kind, title = title, subtitle = sub,
                 poster = j.str("poster"),
                 wide = if (kind == "episode") j.str("thumb") ?: j.str("backdrop") else j.str("backdrop") ?: j.str("thumb"),
-                progress = if (dur > 0 && pos > 20 && !j.optBoolean("watched")) (pos / dur).toFloat().coerceIn(0f, 1f) else 0f,
-                watched = j.optBoolean("watched"),
+                backdrop = j.str("backdrop") ?: j.str("thumb"),
+                progress = if (dur > 0 && pos > 20 && !watched) (pos / dur).toFloat().coerceIn(0f, 1f) else 0f,
+                watched = watched,
+                overview = j.optString("overview"),
+                year = j.optInt("year"),
+                yearTo = j.optInt("year_to"),
+                duration = dur,
+                position = if (watched) 0.0 else pos,
+                rating = j.optDouble("rating", 0.0).takeIf { !it.isNaN() } ?: 0.0,
+                quality = j.optString("quality"),
+                genres = j.optJSONArray("genres").strings(),
+                episodeLine = epLine,
+                hue = hue(title),
             )
         }
     }

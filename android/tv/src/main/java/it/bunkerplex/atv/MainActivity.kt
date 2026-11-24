@@ -2,19 +2,27 @@ package it.bunkerplex.atv
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
+import android.view.KeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -33,8 +41,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -72,6 +82,7 @@ class MainActivity : ComponentActivity() {
     /** Cresce al ritorno dal player o dalla vista web: le schermate ricaricano i dati. */
     private var refresh by mutableIntStateOf(0)
     private var leftApp = false
+    private var lastRepeat = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,6 +102,33 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Freccia tenuta premuta: il telecomando manda una ripetizione ogni ~50 ms. Su una
+     * chiavetta lenta si accodano e il fuoco continua a correre dopo il rilascio; qui
+     * passa al massimo una ripetizione ogni 70 ms e le altre si scartano.
+     * Con il tasto tenuto lo scorrimento segue piu' da vicino (vedi Scroll.kt).
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (event.action == KeyEvent.ACTION_UP) {
+                    Keys.held = false
+                } else if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount > 0) {
+                    Keys.held = true
+                    val now = SystemClock.uptimeMillis()
+                    // Troppo ravvicinata, o rimasta in coda mentre l'app era indietro (ma il
+                    // fuoco si e' mosso da poco: anche sulla chiavetta piu' lenta, a tasto
+                    // tenuto, avanza almeno ogni 150 ms)
+                    val late = now - event.eventTime > 60
+                    if (now - lastRepeat < 70 || (late && now - lastRepeat < 150)) return true
+                    lastRepeat = now
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     /** Immagini: cache in memoria contenuta (le chiavette hanno poca RAM) e su disco. */
@@ -113,6 +151,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        Keys.held = false
         if (leftApp) {
             leftApp = false
             refresh++
@@ -181,9 +220,13 @@ class MainActivity : ComponentActivity() {
         }
 
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(560.dp)) {
-                Txt("BunkerPlex", size = 34.sp, bold = true, color = C.accentLight)
-                Txt(status, Modifier.padding(top = 16.dp, bottom = 24.dp), color = C.dim, lines = 3)
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(600.dp)) {
+                Logo(72.dp)
+                Row(Modifier.padding(top = 20.dp)) {
+                    Txt("Bunker", size = 34.sp, weight = FontWeight.ExtraBold)
+                    Txt("Plex", size = 34.sp)
+                }
+                Txt(status, Modifier.padding(top = 14.dp, bottom = 28.dp), size = 18.sp, color = C.ink2, lines = 3)
                 if (manual) {
                     var error by remember { mutableStateOf<String?>(null) }
                     val fr = remember { FocusRequester() }
@@ -195,12 +238,12 @@ class MainActivity : ComponentActivity() {
                             else runOnUiThread { error = "A $url non risponde BunkerPlex" }
                         }.start()
                     }
-                    error?.let { Txt(it, Modifier.padding(top = 10.dp), color = C.dim) }
+                    error?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 } else if (!searching) {
                     val fr = remember { FocusRequester() }
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Btn("Cerca di nuovo", Modifier.focusRequester(fr), primary = true) { attempt++ }
+                        Btn("Cerca di nuovo", Modifier.focusRequester(fr), Ic.search, primary = true) { attempt++ }
                         Btn("Scrivi l'indirizzo") { manual = true }
                     }
                     LaunchedEffect(Unit) { fr.requestFocus() }
@@ -220,7 +263,11 @@ class MainActivity : ComponentActivity() {
             error = null
             try {
                 val s = withContext(Dispatchers.IO) { Api.obj("/api/auth/state") }
-                if (s.optJSONObject("user") != null) reset(Screen.Home) else state = s
+                val user = s.optJSONObject("user")
+                if (user != null) {
+                    Api.user = user.optString("name").ifEmpty { null }
+                    reset(Screen.Home)
+                } else state = s
             } catch (e: Exception) {
                 error = "Non riesco a raggiungere BunkerPlex (${Api.base})."
             }
@@ -229,56 +276,79 @@ class MainActivity : ComponentActivity() {
         when {
             error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Txt(error!!, size = 20.sp, lines = 3)
+                    Logo(48.dp, Modifier.padding(bottom = 22.dp))
+                    Txt(error!!, size = 20.sp, weight = FontWeight.SemiBold, lines = 3)
                     val fr = remember { FocusRequester() }
                     Row(Modifier.padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Btn("Riprova", Modifier.focusRequester(fr), primary = true) { attempt++ }
+                        Btn("Riprova", Modifier.focusRequester(fr), Ic.restart, primary = true) { attempt++ }
                         Btn("Cambia server") { reset(Screen.Connect) }
                     }
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 }
             }
-            s == null -> Centered("Un momento…")
-            else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Txt("Chi guarda?", size = 30.sp, bold = true)
+            // In attesa: solo il logo, al suo posto (niente scritte che compaiono e spariscono)
+            s == null -> Box(Modifier.fillMaxSize().padding(top = 40.dp), contentAlignment = Alignment.TopCenter) {
+                Wordmark()
+            }
+            else -> Box(Modifier.fillMaxSize()) {
+                Box(Modifier.align(Alignment.TopCenter).padding(top = 40.dp)) { Wordmark() }
+                Column(Modifier.align(Alignment.Center).padding(top = 30.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Title("Chi guarda?", size = 40.sp, lines = 1)
                     var msg by remember { mutableStateOf<String?>(null) }
                     val profiles = s.optJSONArray("profiles").objects()
                     val fr = remember { FocusRequester() }
-                    LazyRow(Modifier.padding(top = 30.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        items(profiles, key = { it.optInt("id") }) { p ->
-                            val first = p === profiles.first()
-                            Focusable(if (first) Modifier.focusRequester(fr) else Modifier, onClick = {
-                                val id = p.optInt("id")
-                                if (!p.optBoolean("quick")) go(Screen.Password(id, p.optString("name")))
-                                else Thread {
-                                    try {
-                                        val (_, token) = Api.post("/api/auth/profile", JSONObject().put("id", id).put("device", "tv"))
-                                        if (token != null) Api.saveSession(this@MainActivity, token)
-                                        runOnUiThread { reset(Screen.Home) }
-                                    } catch (e: Exception) {
-                                        runOnUiThread { msg = e.message }
-                                    }
-                                }.start()
-                            }) { f ->
-                                Column(
-                                    Modifier.background(if (f) C.accent else C.card).padding(24.dp).width(140.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Box(Modifier.clip(RoundedCornerShape(50)).background(C.panel).padding(20.dp)) {
-                                        Txt(p.optString("name").take(1).uppercase(), size = 34.sp, bold = true)
-                                    }
-                                    Txt(p.optString("name"), Modifier.padding(top = 12.dp), size = 18.sp)
-                                }
+                    Nearest {
+                        LazyRow(
+                            Modifier.padding(top = 34.dp),
+                            contentPadding = PaddingValues(horizontal = 40.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(36.dp),
+                        ) {
+                            items(profiles, key = { it.optInt("id") }) { p ->
+                                val first = p === profiles.first()
+                                Profile(p, if (first) Modifier.focusRequester(fr) else Modifier) { m -> msg = m }
                             }
                         }
                     }
-                    msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.dim) }
-                    Row(Modifier.padding(top = 30.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.warn, lines = 2) }
+                    Row(Modifier.padding(top = 34.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Btn("Entra con un account") { web("#/login") }
                         Btn("Cambia server") { reset(Screen.Connect) }
                     }
                     LaunchedEffect(profiles.size) { if (profiles.isNotEmpty()) fr.requestFocus() }
+                }
+            }
+        }
+    }
+
+    /** Un profilo di «Chi guarda?»: volto grande con la sua tinta, nome, lucchetto se chiede la password. */
+    @Composable
+    private fun Profile(p: JSONObject, modifier: Modifier, onError: (String?) -> Unit) {
+        val name = p.optString("name")
+        val quick = p.optBoolean("quick")
+        FocusBox(modifier, onClick = {
+            val id = p.optInt("id")
+            if (!quick) go(Screen.Password(id, name))
+            else Thread {
+                try {
+                    val (body, token) = Api.post("/api/auth/profile", JSONObject().put("id", id).put("device", "tv"))
+                    if (token != null) Api.saveSession(this@MainActivity, token)
+                    Api.user = try { JSONObject(body).optJSONObject("user")?.optString("name") } catch (_: Exception) { null } ?: name
+                    runOnUiThread { reset(Screen.Home) }
+                } catch (e: Exception) {
+                    runOnUiThread { onError(e.message) }
+                }
+            }.start()
+        }) { f ->
+            Column(Modifier.width(150.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(132.dp).lift(f, 1.08f).ring(f, CircleShape, 4.dp).padding(8.dp)) {
+                    Face(name, 116.dp)
+                }
+                Row(Modifier.padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Txt(name, size = 19.sp, color = if (f) C.ink else C.ink2, weight = if (f) FontWeight.Bold else FontWeight.SemiBold)
+                    if (!quick) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(Ic.lock, if (f) C.ink else C.ink3, 16.dp)
+                    }
                 }
             }
         }
@@ -291,14 +361,17 @@ class MainActivity : ComponentActivity() {
         val fr = remember { FocusRequester() }
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(Modifier.width(520.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Txt("Password di ${p.name}", size = 26.sp, bold = true)
-                Box(Modifier.padding(top = 24.dp)) {
+                Face(p.name, 96.dp)
+                Title(p.name, Modifier.padding(top = 18.dp), size = 30.sp, lines = 1)
+                Txt("Scrivi la password", Modifier.padding(top = 6.dp), color = C.ink2)
+                Box(Modifier.padding(top = 26.dp)) {
                     Field(password, { password = it }, "Password", Modifier.focusRequester(fr), secret = true) {
                         Thread {
                             try {
                                 val (_, token) = Api.post("/api/auth/login",
                                     JSONObject().put("username", p.name).put("password", password).put("device", "tv"))
                                 if (token != null) Api.saveSession(this@MainActivity, token)
+                                Api.user = p.name
                                 runOnUiThread { reset(Screen.Home) }
                             } catch (e: Exception) {
                                 runOnUiThread { msg = e.message }
@@ -306,7 +379,7 @@ class MainActivity : ComponentActivity() {
                         }.start()
                     }
                 }
-                msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.dim, lines = 2) }
+                msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
             }
         }
         LaunchedEffect(Unit) { fr.requestFocus() }
@@ -324,15 +397,19 @@ fun Field(
     keyboard: KeyboardType = KeyboardType.Text,
     onDone: () -> Unit,
 ) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(8.dp)
     Box(
-        Modifier.width(480.dp).clip(RoundedCornerShape(8.dp)).background(C.card).padding(14.dp)
+        Modifier.width(480.dp).clip(shape).background(if (focused) C.surface2 else C.surface)
+            .border(2.dp, if (focused) C.ink else C.surface2, shape)
+            .padding(horizontal = 18.dp, vertical = 15.dp)
     ) {
-        if (value.isEmpty()) Txt(hint, color = C.dim)
+        if (value.isEmpty()) Txt(hint, size = 18.sp, color = C.ink3)
         BasicTextField(
-            value, onChange, modifier.width(452.dp),
+            value, onChange, modifier.width(440.dp).onFocusChanged { focused = it.isFocused },
             singleLine = true,
-            textStyle = TextStyle(color = C.text, fontSize = 18.sp),
-            cursorBrush = SolidColor(C.accentLight),
+            textStyle = TextStyle(color = C.ink, fontSize = 18.sp),
+            cursorBrush = SolidColor(C.accentText),
             visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
             keyboardOptions = KeyboardOptions(
                 keyboardType = if (secret) KeyboardType.Password else keyboard, imeAction = ImeAction.Done
