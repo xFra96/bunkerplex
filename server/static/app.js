@@ -2344,6 +2344,9 @@ async function settingsArea(area) {
 var installEvt = null;
 var STANDALONE = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
 var IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// Safari (e ogni browser su iPhone, che sotto e' Safari): la conversione arriva in HLS
+var HLS = !APP && (IOS || (/Safari\//.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Android|Edg|OPR|Firefox/.test(navigator.userAgent))) &&
+  !!document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
 window.addEventListener('beforeinstallprompt', function (e) {
   e.preventDefault();
   installEvt = e;
@@ -3160,6 +3163,7 @@ function startPlayer(p) {
   // Se questo dispositivo sa decodificare il video originale (es. H.265), il PC lo
   // copia cosi' com'e' invece di ricodificarlo: quasi nessun lavoro per il processore.
   st.vcopy = canDecode(v, p.vcodec, p.bits);
+  st.hlsId = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   document.body.classList.add('playing');
 
   function pos() { return st.transcoding ? st.offset + v.currentTime : v.currentTime; }
@@ -3283,7 +3287,10 @@ function startPlayer(p) {
     var id = ++st.loadId;
     if (st.transcoding) {
       st.offset = at;
-      v.src = p.transcode + '?start=' + at.toFixed(1) + (st.vcopy ? '&vcopy=1' : '') + (st.audio ? '&audio=' + st.audio : '');
+      var q = '?start=' + at.toFixed(1) + (st.vcopy ? '&vcopy=1' : '') + (st.audio ? '&audio=' + st.audio : '');
+      // Safari (iPhone, iPad, Mac) non legge un MP4 senza lunghezza: lo stesso flusso in HLS
+      v.src = HLS ? p.transcode.replace('/api/transcode/', '/api/hls/') + '/' + st.hlsId + '-' + id + '/index.m3u8' + q
+        : p.transcode + q;
       tracks();
       setNote(CONVERTING);
     } else if (!st.loaded) {
@@ -3663,6 +3670,7 @@ function startPlayer(p) {
       // Schermo intero su tutta la pagina: cosi' restano visibili menu e avvisi
       if (document.fullscreenElement) document.exitFullscreen();
       else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen();
+      else if (v.webkitEnterFullscreen) v.webkitEnterFullscreen();     // iPhone: solo il video, col player di sistema
     } else if (name === 'subs' && p.subs.length) {
       st.sub = st.sub + 1 >= p.subs.length ? -1 : st.sub + 1;
       showSubs();

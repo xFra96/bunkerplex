@@ -2300,10 +2300,10 @@ class SmallAndFast:
     """Comprime elenchi e pagine (l'elenco di una raccolta pesa centinaia di KB:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
-    RAW = ("/api/stream", "/api/transcode", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
+    RAW = ("/api/stream", "/api/transcode", "/api/hls/", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
            "/api/share/stream", "/api/share/transcode",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
-    PLAYING = ("/api/stream", "/api/transcode", "/api/progress", "/api/share/stream",
+    PLAYING = ("/api/stream", "/api/transcode", "/api/hls/", "/api/progress", "/api/share/stream",
                "/api/share/transcode")
 
     def __init__(self, inner):
@@ -2416,7 +2416,7 @@ def startup():
 SESSION_COOKIE = "bp_session"
 SETUP_FILE = DATA / "cloud-setup.json"       # chiave per creare il primo amministratore
 # /api/cast/media/: il video che apre una TV con «Guarda su» (vale solo col biglietto, vedi cast.py)
-OPEN_PATHS = ("/api/auth/", "/api/share/", "/api/info", "/api/cast/media/")
+OPEN_PATHS = ("/api/auth/", "/api/share/", "/api/info", "/api/cast/media/", "/api/hls/")
 user_cache = {}                  # impronta del gettone -> (dati dell'account, quando letti)
 settings_cache = {}              # (account, chiave) -> valore
 settings_lock = threading.Lock()
@@ -5913,6 +5913,161 @@ def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0, aout=""):
 
     return StreamingResponse(body(), media_type="video/mp4",
                              headers={"Cache-Control": "no-store"})
+
+
+# ---- iPhone e iPad: la conversione arriva in HLS -----------------------------
+# Safari su iPhone non riproduce un MP4 di cui non conosce la lunghezza (vuole
+# poterlo chiedere a pezzi, con Range), quindi il flusso di /api/transcode non
+# gli va. Per lui lo stesso flusso viene tagliato in pezzi da 4-10 secondi
+# (HLS, il formato di Apple): un secondo ffmpeg copia senza ricodificare,
+# quindi il lavoro per il PC e' lo stesso. Per spostarsi il player chiede una
+# nuova sessione con un altro 'start', come per l'MP4.
+# Indirizzi: /api/hls/<id>/<player>-<n>/index.m3u8?start=... e i pezzi accanto.
+# <player> e' casuale per ogni finestra del player: una sessione nuova dello
+# stesso player chiude la precedente (niente conversioni dimenticate accese).
+HLS_DIR = Path(os.environ.get("HLS_DIR", "/tmp/bunkerplex-hls"))
+HLS_TOK = re.compile(r"^([A-Za-z0-9]{8,32})-\d{1,6}$")
+HLS_FILE = re.compile(r"^(index\.m3u8|init\.mp4|s(\d{5})\.m4s)$")
+HLS_MAX = 4                      # sessioni insieme sul PC (la piu' vecchia lascia il posto)
+HLS_IDLE_RUN = 300               # secondi senza richieste: conversione ferma e pezzi cancellati
+HLS_IDLE_DONE = 1800             # ...quando ha gia' finito occupa solo disco
+HLS_BEHIND = 90                  # pezzi gia' visti da tenere (dietro all'ultimo chiesto)
+HLS_DISK = 3 * 1024 ** 3         # oltre questo per sessione si cancellano i pezzi vecchi
+hls_sessions = {}                # (id, tok) -> sessione
+hls_janitor = None
+
+
+def hls_stop(key):
+    s = hls_sessions.pop(key, None)
+    if not s:
+        return
+    if s["task"]:
+        s["task"].cancel()
+    try:
+        s["proc"].kill()
+    except (ProcessLookupError, AttributeError):
+        pass
+    shutil.rmtree(s["dir"], ignore_errors=True)
+
+
+def hls_prune(s):
+    """Pezzi gia' visti da un pezzo: via, se la sessione occupa troppo disco."""
+    try:
+        files = sorted(s["dir"].glob("s*.m4s"))
+        if sum(f.stat().st_size for f in files) < HLS_DISK:
+            return
+        for f in files:
+            m = HLS_FILE.match(f.name)
+            if m and int(m.group(2)) < s["last"] - HLS_BEHIND:
+                f.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+async def hls_clean_loop():
+    while True:
+        await asyncio.sleep(20)
+        now = time.monotonic()
+        for key, s in list(hls_sessions.items()):
+            done = s["proc"].returncode is not None
+            if now - s["seen"] > (HLS_IDLE_DONE if done else HLS_IDLE_RUN):
+                hls_stop(key)
+            else:
+                await asyncio.to_thread(hls_prune, s)
+
+
+async def hls_start(item_id, tok, start, vcopy, audio):
+    global hls_janitor
+    if hls_janitor is None:
+        shutil.rmtree(HLS_DIR, ignore_errors=True)        # avanzi di prima dell'avvio
+        hls_janitor = asyncio.get_running_loop().create_task(hls_clean_loop())
+    player = HLS_TOK.match(tok).group(1)
+    for key, s in list(hls_sessions.items()):
+        if s["player"] == player:
+            hls_stop(key)
+    while len(hls_sessions) >= HLS_MAX:
+        hls_stop(min(hls_sessions, key=lambda k: hls_sessions[k]["seen"]))
+    # Lo stesso flusso MP4 di sempre (anche dai PC degli amici), con audio AAC
+    src = await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
+    if not isinstance(src, StreamingResponse):
+        raise HTTPException(502, "Il video non arriva")
+    d = HLS_DIR / f"{item_id}-{tok}"
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    # -readrate: si taglia poco piu' veloce di quanto si guarda, cosi' il disco non si
+    # riempie con tutto il film (e il PC non lavora per pezzi che nessuno vedra').
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-readrate", "1.5", "-readrate_initial_burst", "60",
+           "-i", "pipe:0", "-map", "0", "-c", "copy",
+           "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event",
+           "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+           "-hls_segment_filename", str(d / "s%05d.m4s"),
+           "-hls_flags", "independent_segments+temp_file", str(d / "index.m3u8")]
+    proc = await asyncio.create_subprocess_exec(*cmd, stdin=subprocess.PIPE,
+                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    s = {"proc": proc, "dir": d, "player": player, "seen": time.monotonic(), "last": 0, "task": None}
+
+    async def pump():
+        it = src.body_iterator
+        try:
+            async for chunk in it:
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            if hasattr(it, "aclose"):
+                await it.aclose()         # ferma la conversione (o il collegamento con l'amico)
+
+    s["task"] = asyncio.get_running_loop().create_task(pump())
+    hls_sessions[(item_id, tok)] = s
+    return s
+
+
+@app.get("/api/hls/{item_id}/{tok}/{name}")
+async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0):
+    m = HLS_FILE.match(name)
+    if not HLS_TOK.match(tok) or not m:
+        raise HTTPException(404)
+    key = (item_id, tok)
+    s = hls_sessions.get(key)
+    if s is None:
+        if name != "index.m3u8":
+            raise HTTPException(404, "Sessione finita")
+        # Aprirne una vuole chi e' entrato; poi basta l'indirizzo, che e' casuale
+        # (il player di Safari non sempre manda il cookie a ogni pezzo).
+        if CURRENT.get() is None:
+            raise HTTPException(401, "Scegli chi guarda per continuare")
+        s = await hls_start(item_id, tok, start, vcopy, audio)
+    s["seen"] = time.monotonic()
+    path = s["dir"] / name
+    if name == "index.m3u8":
+        # La prima volta si aspetta il primo pezzo (la conversione parte da zero)
+        for _ in range(600):
+            try:
+                text = path.read_text()
+            except OSError:
+                text = ""
+            if "#EXTINF" in text:
+                # Finche' la conversione va avanti la lista e' «in diretta»: senza
+                # questa riga Safari partirebbe dagli ultimi pezzi invece che dall'inizio.
+                if "#EXT-X-START" not in text:
+                    text = text.replace("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
+                return Response(text, media_type="application/vnd.apple.mpegurl",
+                                headers={"Cache-Control": "no-store"})
+            if s["proc"].returncode is not None or hls_sessions.get(key) is not s:
+                break
+            await asyncio.sleep(0.1)
+        hls_stop(key)
+        raise HTTPException(502, "Conversione non riuscita")
+    if m.group(2):
+        s["last"] = max(s["last"], int(m.group(2)))
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-store"})
 
 
 # --------------------------------------------------------------------------
