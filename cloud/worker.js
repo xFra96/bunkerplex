@@ -350,6 +350,25 @@ async function sendMail(env, to, subject, text, html) {
   if (!r.ok) fail(502, 'Non riesco a mandare l\'email adesso: riprova tra poco');
 }
 
+// Il modello delle email: una scheda bianca, il nome in alto e la firma in fondo.
+// Tabelle e stili in linea, perche' i programmi di posta ignorano il resto.
+function mailPage(preview, inner) {
+  const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+  return '<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<meta name="color-scheme" content="light"><title>BunkerPlex</title></head>' +
+    '<body style="margin:0;padding:0;background:#eef1ef">' +
+    '<div style="display:none;max-height:0;overflow:hidden;opacity:0">' + esc(preview) + '</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef1ef"><tr><td align="center" style="padding:40px 16px">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px">' +
+    '<tr><td style="padding:0 4px 18px;font:700 20px/1 ' + font + ';letter-spacing:-.3px;color:#0f1a13">' +
+    '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#1a7f45;margin-right:8px;vertical-align:1px"></span>BunkerPlex</td></tr>' +
+    '<tr><td style="background:#ffffff;border-radius:14px;border:1px solid #e1e6e2;padding:36px 32px;font:16px/1.55 ' + font + ';color:#1d2420">' +
+    inner + '</td></tr>' +
+    '<tr><td style="padding:20px 4px 0;font:13px/1.5 ' + font + ';color:#7d8882">' +
+    '<b style="color:#4a554f">BunkerPlex</b> · Only for bunkers</td></tr>' +
+    '</table></td></tr></table></body></html>';
+}
+
 async function resetStart(env, email) {
   await ensureReset(env);
   const user = await userForEmail(env, email);
@@ -363,13 +382,16 @@ async function resetStart(env, email) {
     .bind(user.id, await sha256(user.id + ':' + code), now() + RESET_TTL, now()).run();
   const shown = code.slice(0, 3) + ' ' + code.slice(3);
   await sendMail(env, email, 'Il tuo codice BunkerPlex: ' + shown,
-    'Ciao ' + user.username + ',\n\nper scegliere una password nuova scrivi questo codice in BunkerPlex: ' + shown +
-    '\n\nVale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.\n\nBunkerPlex',
-    '<div style="font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1d2420;max-width:28rem">' +
-    '<p>Ciao <b>' + esc(user.username) + '</b>,</p><p>per scegliere una password nuova scrivi questo codice in BunkerPlex:</p>' +
-    '<p style="font:700 2rem/1 ui-monospace,monospace;letter-spacing:.15em;margin:1.2rem 0">' + shown + '</p>' +
-    '<p>Vale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.</p>' +
-    '<p style="color:#6b766f">BunkerPlex</p></div>');
+    'Ciao ' + user.username + ',\n\nper scegliere una password nuova scrivi questo codice in BunkerPlex:\n\n    ' + shown +
+    '\n\nVale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.' +
+    '\n\n--\nBunkerPlex · Only for bunkers',
+    mailPage('Il tuo codice è ' + shown,
+      '<p style="margin:0 0 16px">Ciao <b>' + esc(user.username) + '</b>,</p>' +
+      '<p style="margin:0 0 24px">per scegliere una password nuova scrivi questo codice in BunkerPlex:</p>' +
+      '<div style="background:#f1f6f2;border:1px solid #dce7df;border-radius:10px;padding:18px 0;text-align:center;' +
+      'font:700 34px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:8px;color:#0f1a13">' + shown + '</div>' +
+      '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Vale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: ' +
+      'la tua password resta quella di prima.</p>'));
 }
 
 async function resetFinish(env, email, rawCode, verifier) {
