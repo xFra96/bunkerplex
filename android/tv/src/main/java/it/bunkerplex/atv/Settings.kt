@@ -117,13 +117,15 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                 status?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.ink2, lines = 2) }
             }
 
-            // ---- Il resto
-            Section("Altro") {
-                Txt("Raccolte, sottotitoli, amici e le altre impostazioni del server.", color = C.ink2, lines = 2)
+            // ---- Le impostazioni del server
+            Section("Server e raccolte") {
+                Txt("Raccolte, schede, sottotitoli, amici e dispositivi di questo PC.", color = C.ink2, lines = 2)
                 Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Btn("Altre impostazioni", icon = Ic.gear) { act.web("#/settings") }
-                    Btn("Esci dall'app") { act.finish() }
+                    Btn("Raccolte") { act.go(Screen.Libraries) }
+                    Btn("Schede e sottotitoli") { act.go(Screen.Catalog) }
+                    Btn("Amici e dispositivi") { act.go(Screen.Friends) }
                 }
+                Row(Modifier.padding(top = 14.dp)) { Btn("Esci dall'app") { act.finish() } }
             }
         }
     }

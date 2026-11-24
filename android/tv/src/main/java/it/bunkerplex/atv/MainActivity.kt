@@ -82,6 +82,12 @@ sealed class Screen {
     data object NewPassword : Screen()
     data class Conflicts(val json: String) : Screen()
     class Confirm(val text: String, val yes: String, val action: () -> Unit) : Screen()
+    class Choice(val title: String, val options: List<kotlin.Pair<String, () -> Unit>>) : Screen()
+    data object Libraries : Screen()
+    data class LibName(val id: Int?, val name: String) : Screen()
+    data class Browse(val lib: Int, val libName: String, val path: String, val replace: String) : Screen()
+    data object Catalog : Screen()
+    data object Friends : Screen()
 }
 
 /**
@@ -130,6 +136,12 @@ class MainActivity : ComponentActivity() {
                     Screen.NewPassword -> NewPasswordScreen(this@MainActivity)
                     is Screen.Conflicts -> ConflictsScreen(this@MainActivity, top)
                     is Screen.Confirm -> ConfirmScreen(this@MainActivity, top)
+                    is Screen.Choice -> ChoiceScreen(this@MainActivity, top)
+                    Screen.Libraries -> LibrariesScreen(this@MainActivity, refresh)
+                    is Screen.LibName -> LibNameScreen(this@MainActivity, top)
+                    is Screen.Browse -> BrowseScreen(this@MainActivity, top)
+                    Screen.Catalog -> CatalogScreen(this@MainActivity, refresh)
+                    Screen.Friends -> FriendsScreen(this@MainActivity, refresh)
                 }
             }
         }
