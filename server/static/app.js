@@ -401,8 +401,69 @@ var FRIEND_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy
 var PLUS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 
 function authShell(inner, wide) {
-  return '<div class="auth"><div class="authcard' + (wide ? ' wide' : '') + '">' +
+  // wide: piu' largo; 'grid': largo per la griglia dei server
+  return '<div class="auth"><div class="authcard' + (wide ? ' wide' : '') + (wide === 'grid' ? ' grid' : '') + '">' +
     '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + inner + '</div></div>';
+}
+
+// ---- Scelta del server: card in griglia, divise in sezioni, con la ricerca quando sono tante.
+// La usano la PWA centrale (cServersPage) e il server di casa (serversPage).
+var SRV_FIND_FROM = 7;          // da quante card compare «Cerca»
+
+function srvHue(text) {
+  var h = 0;
+  String(text || '').split('').forEach(function (c) { h = (h * 31 + c.charCodeAt(0)) % 360; });
+  return h;
+}
+
+// c: {act, arg, key, name, sub, icon, off, on, first, local}
+function srvCard(c) {
+  var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
+  return '<button class="srv f' + (c.off ? ' off' : '') + (c.on ? ' on' : '') + '"' + (c.first ? ' data-autofocus' : '') +
+    ' data-act="' + c.act + '" data-arg="' + esc(c.arg) + '" data-key="' + esc(c.key) + '"' +
+    ' data-find="' + esc((c.name + ' ' + (c.find || '')).toLowerCase()) + '">' +
+    '<span class="srvart" style="--h:' + srvHue(c.name) + '"><span class="srvini">' + esc(initial) + '</span>' +
+      '<span class="srvbadge">' + c.icon + '</span>' +
+      '<i class="srvdot' + (c.off ? '' : ' live') + '" title="' + (c.off ? 'Non raggiungibile' : 'Acceso') + '"></i>' +
+      (c.local ? '<span class="srvtag">In casa</span>' : '') + '</span>' +
+    '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small></span></button>';
+}
+
+// sections: [{title, cards: [html], extra: html}]; total = numero di card (per la ricerca)
+function srvGrid(sections, total) {
+  var find = total >= SRV_FIND_FROM
+    ? '<input class="field srvfind f" id="srvfind" data-key="srvfind" type="search" autocomplete="off" spellcheck="false" placeholder="Cerca un server o un amico">'
+    : '';
+  return find + sections.map(function (s) {
+    if (!s.cards.length && !s.extra) return '';
+    return '<section class="srvsec"><h2>' + esc(s.title) + (s.cards.length ? ' <span>' + s.cards.length + '</span>' : '') + '</h2>' +
+      '<div class="srvgrid">' + s.cards.join('') + (s.extra || '') + '</div></section>';
+  }).join('') + '<p class="authnote srvnone" hidden>Nessun server o amico con questo nome.</p>';
+}
+
+// La ricerca: nasconde le card che non c'entrano (e le sezioni rimaste vuote)
+function srvMount() {
+  var input = document.getElementById('srvfind');
+  if (!input) return;
+  function run() {
+    var q = input.value.trim().toLowerCase();
+    var any = false;
+    view.querySelectorAll('.srvsec').forEach(function (sec) {
+      var shown = 0;
+      sec.querySelectorAll('.srv[data-find]').forEach(function (b) {
+        var ok = !q || b.getAttribute('data-find').indexOf(q) >= 0;
+        b.hidden = !ok;
+        if (ok) shown++;
+      });
+      sec.querySelectorAll('.srv.add, .srvadd').forEach(function (b) { b.hidden = !!q; });
+      sec.hidden = !!q && !shown;
+      if (shown) any = true;
+    });
+    var none = view.querySelector('.srvnone');
+    if (none) none.hidden = !q || any;
+  }
+  input.addEventListener('input', run);
+  run();
 }
 
 function googleWide() {
@@ -495,31 +556,31 @@ async function serversPage() {
     cache.srvData = data;
   }
   var cur = currentServer();
-  function card(arg, ico, name, sub, on, first) {
+  function card(arg, ico, name, sub, on, first, find) {
     var off = on === false;
-    return '<button class="srv f' + (off ? ' off' : '') + (cur === arg ? ' on' : '') + '"' + (first ? ' data-autofocus' : '') +
-      ' data-act="' + (off ? 'srvoff' : 'srvpick') + '" data-arg="' + esc(arg) + '" data-key="srv-' + esc(arg) + '">' +
-      '<span class="srvico">' + ico + '</span><span class="srvtxt"><b>' + esc(name) + '</b><small>' + sub + '</small></span>' +
-      '<i class="srvdot' + (off ? '' : ' live') + '"></i></button>';
+    return srvCard({ act: off ? 'srvoff' : 'srvpick', arg: arg, key: 'srv-' + arg, name: name, sub: sub, icon: ico,
+      off: off, on: cur === arg, first: first, find: find });
   }
-  var html = card('here', SRV_ICON, auth.pc || 'Questo server',
-    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Il tuo server · questo PC', true, true);
+  var mine = [card('here', SRV_ICON, auth.pc || 'Questo server',
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Questo PC', true, true)];
   data.mine.forEach(function (m) {
     if (!m.n) return;
-    html += card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Il tuo PC · spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true);
+    mine.push(card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true));
   });
+  var friends = [];
   var waiting = [];
   data.friends.forEach(function (f) {
     if (f.status === 'received') { waiting.push(f); return; }
     if (f.status !== 'ok') return;
     var servers = (f.servers || []).filter(function (s) { return s.n; });
     if (!servers.length) {
-      html += card('none', FRIEND_ICON, f.username, 'nessun server acceso', false);
+      friends.push(card('none', FRIEND_ICON, f.username, 'Nessun server acceso', false));
       return;
     }
     servers.forEach(function (s) {
-      html += card('f' + s.n, FRIEND_ICON, f.username + (servers.length > 1 && s.name ? ' · ' + s.name : ''),
-        s.online === false ? 'Amico · non raggiungibile ora' : 'Amico' + (s.name && servers.length === 1 ? ' · ' + esc(s.name) : ''), s.online === false ? false : true);
+      friends.push(card('f' + s.n, FRIEND_ICON, servers.length > 1 && s.name ? s.name : f.username,
+        (servers.length > 1 ? 'di ' + esc(f.username) : (s.name ? esc(s.name) : 'Amico')) + (s.online === false ? ' · non raggiungibile' : ''),
+        s.online === false ? false : true, false, f.username + ' ' + (s.name || '')));
     });
   });
   var add = '';
@@ -527,16 +588,17 @@ async function serversPage() {
     add = cache.srvAdd
       ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="srvaddsend" placeholder="Nome dell\'account del tuo amico">' +
         '<button class="btn primary f" data-act="srvaddsend" data-key="srvaddsend">Invia</button></div>'
-      : '<button class="srv add f" data-act="srvadd" data-key="srvadd"><span class="srvico">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account: vedrai i suoi server accesi</small></span></button>';
+      : '<button class="srv add f" data-act="srvadd" data-key="srvadd"><span class="srvart">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account</small></span></button>';
   }
   var req = waiting.map(function (f) {
     return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
       '<button class="btn primary f" data-act="srvaccept" data-arg="' + f.id + '" data-key="srvacc-' + f.id + '">Accetta</button></div>';
   }).join('');
-  return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server' + (u.guest ? '' : ': il tuo e quelli dei tuoi amici') + '</p>' +
-    req + '<div class="srvlist">' + html + add + '</div>' +
+  return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server' + (u.guest ? '' : ': il tuo e quelli dei tuoi amici') + '</p>' +
+    req + srvGrid([{ title: u.guest ? 'Server' : 'I tuoi server', cards: mine },
+      { title: 'Amici', cards: friends, extra: add }], mine.length + friends.length) +
     (data.error ? '<p class="authnote">Amici non raggiungibili ora: riprova tra poco.</p>' : '') +
-    '<button class="authlink f" data-act="logout" data-key="srvlogout">Esci da ' + esc(u.name) + '</button>', true);
+    '<button class="authlink f" data-act="logout" data-key="srvlogout">Esci da ' + esc(u.name) + '</button>', 'grid'), mount: srvMount };
 }
 
 // Sul telefono (o sul PC): la pagina che apre il QR o il codice della TV
@@ -1054,42 +1116,40 @@ async function cServersPage() {
       '<button class="btn primary f" data-act="crefresh" data-key="crefresh">Riprova</button>' +
       '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>', true);
   }
-  function card(s, i) {
+  var mine = [], theirs = [];
+  list.forEach(function (s, i) {
     var off = s.online === false;
     var friend = s.role === 'friend';
     var sub = friend ? 'di ' + esc(s.owner.username) : 'Il tuo server';
-    sub += off ? ' · spento o non raggiungibile' : s.local ? ' · in casa' : (s.online ? ' · acceso' : '');
-    return '<button class="srv f' + (off ? ' off' : '') + (C.sid === s.sid ? ' on' : '') + '"' + (i === 0 ? ' data-autofocus' : '') +
-      ' data-act="cpick" data-arg="' + i + '" data-key="csrv-' + esc(s.sid) + '-' + (friend ? s.owner.id : 0) + '">' +
-      '<span class="srvico">' + (friend ? FRIEND_ICON : SRV_ICON) + '</span><span class="srvtxt"><b>' + esc(s.name || 'PC') + '</b><small>' + sub + '</small></span>' +
-      '<i class="srvdot' + (off ? '' : ' live') + '"></i></button>';
-  }
-  var html = list.map(card).join('');
+    sub += off ? ' · non raggiungibile' : (!s.local && s.online ? ' · acceso' : '');
+    (friend ? theirs : mine).push(srvCard({ act: 'cpick', arg: i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
+      name: s.name || 'PC', sub: sub, icon: friend ? FRIEND_ICON : SRV_ICON, off: off, on: C.sid === s.sid,
+      first: i === 0, local: !!s.local, find: friend ? s.owner.username : '' }));
+  });
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
   var friends = C.friends || [];
   friends.forEach(function (f) {
     if (f.status !== 'ok' || list.some(function (s) { return s.role === 'friend' && s.owner.id === f.id; })) return;
-    html += '<button class="srv f off" data-act="cnoshare" data-arg="' + esc(f.username) + '" data-key="cfr-' + f.id + '">' +
-      '<span class="srvico">' + FRIEND_ICON + '</span><span class="srvtxt"><b>' + esc(f.username) + '</b><small>Amico · nessun server condiviso acceso</small></span>' +
-      '<i class="srvdot"></i></button>';
+    theirs.push(srvCard({ act: 'cnoshare', arg: f.username, key: 'cfr-' + f.id, name: f.username,
+      sub: 'Nessun server condiviso acceso', icon: FRIEND_ICON, off: true }));
   });
-  html += cache.cAdd
+  var add = cache.cAdd
     ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="caddsend" placeholder="Nome dell\'account del tuo amico">' +
       '<button class="btn primary f" data-act="caddsend" data-key="caddsend">Invia</button></div>'
-    : '<button class="srv add f" data-act="cadd" data-key="cadd"><span class="srvico">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account: vedrai i suoi server accesi</small></span></button>';
+    : '<button class="srv add f" data-act="cadd" data-key="cadd"><span class="srvart">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account</small></span></button>';
   var req = friends.filter(function (f) { return f.status === 'received'; }).map(function (f) {
     return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
       '<button class="btn f" data-act="cdecline" data-arg="' + f.id + '" data-key="cdec-' + f.id + '">Rifiuta</button>' +
       '<button class="btn primary f" data-act="caccept" data-arg="' + f.id + '" data-key="cacc-' + f.id + '">Accetta</button></div>';
   }).join('');
   var sent = friends.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
-  return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
+  return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
     (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
-    '<div class="srvlist">' + html + '</div>' +
+    srvGrid([{ title: 'I tuoi server', cards: mine }, { title: 'Amici', cards: theirs, extra: add }], mine.length + theirs.length) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
-    '<button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
-    '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button>', true);
+    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
+    '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
 // Nell'app Android senza servizio account (niente Internet): la ricerca del server
