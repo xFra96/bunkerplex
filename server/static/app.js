@@ -2541,7 +2541,7 @@ async function settingsArea(area) {
   if (area === 'apps') {
     var net = await api('/network').catch(function () { return null; });
     return settingsShell('apps', 'App per TV e telefono', 'L\'app per TV e telefoni Android arriva da questo PC e poi si aggiorna da sola.',
-      installPanel() + await tvPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
+      await publicPanel() + installPanel() + await tvPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
   }
 
   // Questo dispositivo: preferenze di visione e collegamento al server
@@ -2580,6 +2580,31 @@ window.addEventListener('appinstalled', function () {
 });
 if (!APP && window.isSecureContext && 'serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(function () {});
+}
+
+// Da ovunque: BunkerPlex su un indirizzo https pubblico (Tailscale Funnel, vedi
+// /api/public). Col QR iPhone e iPad (o qualsiasi telefono) lo aprono e lo
+// mettono sulla schermata Home: funziona in casa e fuori, sempre con il login.
+async function publicPanel() {
+  var p = await api('/public').catch(function () { return null; });
+  if (!p || !p.available || TVLOOK) return '';
+  var manage = auth && auth.user && auth.user.linked && !auth.user.guest;
+  var body;
+  if (p.on && p.url) {
+    body = '<div class="apkqr"><div class="qrtile" role="img" aria-label="Codice QR per aprire BunkerPlex da ovunque">' + p.svg + '</div>' +
+      '<div class="apktext"><p>Inquadra il QR con la fotocamera del telefono: si apre BunkerPlex, anche fuori casa. ' +
+      (IOS ? 'In Safari tocca <b>Condividi</b> → <b>Aggiungi alla schermata Home</b>' : 'Poi dal menu del browser scegli <b>Installa app</b> o <b>Aggiungi a schermata Home</b>') +
+      ': diventa un\'app, con il login del tuo account.</p><p class="apkurl num">' + esc(p.url) + '</p></div></div>';
+  } else if (p.wanted) {
+    body = '<p>' + (p.error ? '<span class="nodot">●</span> ' + esc(p.error) : 'Preparo l\'indirizzo pubblico…') + '</p>';
+    if (!p.error) setTimeout(function () { if (/^#\/settings\/apps/.test(location.hash)) render(); }, 5000);
+  } else {
+    body = '<p>Accendilo per usare BunkerPlex da qualsiasi telefono o browser, anche fuori casa e su iPhone, senza installare niente: ' +
+      'un indirizzo https fisso, con un QR da inquadrare. Si entra sempre con nome e password.</p>';
+  }
+  return '<div class="panel"><h2>Da ovunque</h2>' + body +
+    (manage ? '<div class="actions"><button class="btn' + (p.wanted ? '' : ' primary') + ' f" data-act="publictoggle" data-arg="' + (p.wanted ? 0 : 1) + '" data-key="publictoggle">' +
+      (p.wanted ? 'Spegni l\'indirizzo pubblico' : 'Accendi l\'indirizzo pubblico') + '</button></div>' : '') + '</div>';
 }
 
 function installPanel() {
@@ -5205,6 +5230,12 @@ var actions = {
     openPicker('Qualità dei video degli amici', QUALITIES.map(function (q) { return { value: q[0], label: q[1] }; }), friendQuality, function (q) {
       post('/friends/quality', { quality: q }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
     });
+  },
+  publictoggle: function (arg) {
+    post('/public', { on: arg === '1' }).then(function () {
+      toast(arg === '1' ? 'Accendo l\'indirizzo pubblico…' : 'Indirizzo pubblico spento');
+      render();
+    }, function (e) { toast(e.message); });
   },
   sharetoggle: function (arg) {
     post('/sharing', { on: arg === '1' }).then(function () {

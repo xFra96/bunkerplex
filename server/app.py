@@ -2331,7 +2331,7 @@ def sigle_loop():
 # API
 # --------------------------------------------------------------------------
 
-app = FastAPI(title="BunkerPlex", docs_url=None, redoc_url=None)
+app = FastAPI(title="BunkerPlex", docs_url=None, redoc_url=None, openapi_url=None)
 
 
 class SmallAndFast:
@@ -2433,6 +2433,7 @@ def startup():
     threading.Thread(target=sync_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
+        threading.Thread(target=public_listener, daemon=True).start()
         threading.Thread(target=portmap_loop, daemon=True).start()
         threading.Thread(target=tailnet_loop, daemon=True).start()
 
@@ -2743,6 +2744,10 @@ class AuthGate:
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
+        if (scope.get("server") or ("", 0))[1] == PUBLIC_PORT and (scope["type"] != "http" or not auth_on()):
+            # Da Internet solo con gli account (e i loro login): mai il PC aperto a tutti
+            await self._reply(send, 403, "Non disponibile")
+            return
         if scope["type"] != "http" or DATA_PROBLEM:
             await self.inner(scope, receive, send)
             return
@@ -2756,7 +2761,9 @@ class AuthGate:
             finally:
                 CURRENT.reset(ctx)
             return
-        if tailnet_proc["p"] and (scope.get("client") or ("",))[0] in ("127.0.0.1", "::1"):
+        # La porta interna dell'indirizzo pubblico (Funnel) arriva anche lei da 127.0.0.1
+        from_funnel = (scope.get("server") or ("", 0))[1] == PUBLIC_PORT
+        if tailnet_proc["p"] and not from_funnel and (scope.get("client") or ("",))[0] in ("127.0.0.1", "::1"):
             # Dentro il contenitore nessuno apre la 32500 da 127.0.0.1: chi arriva cosi'
             # viene dalla rete Tailscale, dove agli amici spetta solo la 32501
             await self._reply(send, 403, "Non disponibile")
@@ -7257,6 +7264,91 @@ def share_listener():
         print("Porta per gli amici non disponibile:", SHARE_PORT, ex, flush=True)
 
 
+# ---- Da ovunque: BunkerPlex su un indirizzo https pubblico (Tailscale Funnel) ----
+# Il proprietario lo accende in Impostazioni → App: il Tailscale del contenitore
+# pubblica https://bunkerplex-<id>.<rete>.ts.net, e quell'indirizzo porta a una
+# porta interna (PUBLIC_PORT, solo 127.0.0.1) con tutto BunkerPlex. Il login resta
+# obbligatorio come in casa (AuthGate); serve per la web app di iPhone e iPad (e
+# per qualsiasi browser) fuori casa, senza installare niente.
+# La rete di BunkerPlex deve permetterlo: nella policy di Tailscale l'attributo
+# "funnel" per tag:bunkerplex e i certificati HTTPS accesi (pagina DNS).
+PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "32502") or 0)
+public = {"on": False, "url": "", "error": "", "at": 0.0}
+
+
+def public_wanted():
+    return bool(PUBLIC_PORT) and bool((config.get("public") or {}).get("on"))
+
+
+def public_listener():
+    if not PUBLIC_PORT:
+        return
+    try:
+        import uvicorn
+        uvicorn.run(app, host="127.0.0.1", port=PUBLIC_PORT, lifespan="off", log_level="warning",
+                    proxy_headers=False)
+    except BaseException as ex:
+        print("Porta per l'indirizzo pubblico non disponibile:", PUBLIC_PORT, ex, flush=True)
+
+
+def public_sync():
+    """Accende o spegne il Funnel come chiesto (dentro tailnet_loop, Tailscale acceso)."""
+    want = public_wanted()
+    try:
+        st = json.loads(tailnet_cli("funnel", "status", "--json", timeout=15).stdout or "{}")
+    except (ValueError, OSError, subprocess.SubprocessError):
+        st = {}
+    active = any(st.get("AllowFunnel") or {})
+    if want and not active:
+        out = tailnet_cli("funnel", "--bg", "--yes", f"http://127.0.0.1:{PUBLIC_PORT}", timeout=60)
+        if out.returncode:
+            msg = (out.stderr or out.stdout or "").strip()
+            if "funnel" in msg.lower() and ("not enabled" in msg.lower() or "nodeattr" in msg.lower()
+                                             or "login.tailscale.com" in msg):
+                msg = "La rete di BunkerPlex non permette ancora l'indirizzo pubblico (Funnel): va acceso nella policy di Tailscale"
+            elif "https" in msg.lower() and "cert" in msg.lower():
+                msg = "Nella rete di BunkerPlex mancano i certificati HTTPS (Tailscale → DNS → HTTPS Certificates)"
+            public.update(on=False, url="", error=msg[:300], at=time.time())
+            return
+        active = True
+    elif not want and active:
+        tailnet_cli("serve", "reset", timeout=30)
+        active = False
+    url = ""
+    if active:
+        try:
+            me = json.loads(tailnet_cli("status", "--json", "--peers=false", timeout=15).stdout or "{}")
+            name = str((me.get("Self") or {}).get("DNSName") or "").rstrip(".")
+            if re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+", name):
+                url = "https://" + name
+        except (ValueError, OSError, subprocess.SubprocessError):
+            pass
+    public.update(on=active, url=url, error="" if active or not want else public["error"], at=time.time())
+
+
+@app.get("/api/public")
+def public_state():
+    url = public["url"] if public["on"] else ""
+    return {"wanted": public_wanted(), "on": bool(url), "url": url, "error": public["error"],
+            "svg": qr_svg(url) if url else "", "available": bool(PUBLIC_PORT) and auth_on(),
+            "tailnet": tailnet_on()}
+
+
+@app.post("/api/public")
+async def public_set(request: Request):
+    u = manager_only()
+    body = await read_json(request)
+    on = bool(body.get("on"))
+    if on and not (u and u.get("linked")):
+        raise HTTPException(403, "Per l'indirizzo pubblico entra con un account (Impostazioni → Account)")
+    with config_lock:
+        config.setdefault("public", {})["on"] = on
+        save_config()
+    public.update(error="")
+    tailnet_wake.set()
+    return {"ok": True, "wanted": on}
+
+
 # ---- Lato di chi guarda: collegamento con il server dell'amico -------------
 
 friend_status = {}               # posto dell'amico -> {online, tried, error, synced}
@@ -7668,6 +7760,8 @@ def tailnet_on():
 def tailnet_wanted():
     if os.environ.get("BUNKERPLEX_TAILSCALE", "1") == "0" or not auth_on():
         return False
+    if public_wanted():
+        return True
     if tailnet["supported"] is False and time.time() - tailnet["at"] < 6 * 3600:
         return False                 # il servizio account non da' chiavi: si riprova piu' tardi
     sh = config.get("share") or {}
@@ -7827,8 +7921,11 @@ def tailnet_loop():
                 state, ip = tailnet_check()
                 tailnet.update(state=state, ip=ip if state == "Running" else "", error="", at=time.time())
                 wait = 60 if tailnet_on() else 20
+                if tailnet_on():
+                    public_sync()
             elif tailnet_proc["p"]:
                 tailnet_stop()
+                public.update(url="", on=False)
         except Exception as ex:
             msg = str(ex) if isinstance(ex, (FriendDown, OSError)) else repr(ex)
             tailnet.update(state="", ip="", error=msg[:200], at=time.time())
