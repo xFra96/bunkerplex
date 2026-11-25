@@ -1,6 +1,6 @@
 # BunkerPlex — nuova architettura (proposta)
 
-Stato: **proposta; fatta la fase 0** (vedi §5).
+Stato: **fatte le fasi 0 e 1** (vedi §5 e §7).
 Decisioni già prese:
 - il servizio centrale diventa una **PWA universale** (telefono, tablet, PC, iPhone/iPad);
 - l'**app TV nativa resta**;
@@ -193,7 +193,7 @@ Ogni fase lascia tutto funzionante; le app esistenti continuano a lavorare fino 
 | Fase | Contenuto | Tocca |
 |---|---|---|
 | 0 ✅ | Correzioni subito: scrittura dei server solo dal server stesso (anche in forma provvisoria), furto dei dispositivi Tailscale, controlli mancanti sul server, `GET /friends` con una sola query, `schema.sql` allineato. Tag `pre-pwa`. App iOS tolta. | `cloud/`, `server/` |
-| 1 | Cloud: credenziale del server e associazione con codice, presenza, `GET /servers`, gettoni firmati, dispositivi e scadenze. Server: accetta i gettoni firmati **accanto** alle sessioni di oggi, heartbeat. | `cloud/`, `server/` |
+| 1 ✅ | Cloud: credenziale del server (associazione con codice rimandata alla fase 3, oggi la prende il server con il gettone del proprietario), presenza, `GET /servers`, gettoni firmati, dispositivi e scadenze. Server: accetta i gettoni firmati **accanto** alle sessioni di oggi, heartbeat. | `cloud/`, `server/` |
 | 2 | Dominio, DNS e certificati; ingresso HTTPS unico con API completa per ruolo; CORS; URL firmati per i media. Prova da browser. | `cloud/`, `server/` |
 | 3 | PWA: `app.js` nei due modi, login sul cloud, lista dal cloud, collegamento diretto, selezione server invariata, admin e notifiche dalla PWA. Pubblicata dal Worker. | `server/static/`, `cloud/` |
 | 4 | App TV: login sul cloud, lista dal cloud, collegamento diretto. | `android/tv`, `android/comune` |
@@ -208,3 +208,43 @@ Ogni fase lascia tutto funzionante; le app esistenti continuano a lavorare fino 
 3. **Profili "Chi guarda?"**: oggi solo locali al PC; portarli nel cloud (uguali ovunque) o lasciarli per server.
 4. **Visti dei contenuti degli amici**: solo nel cloud per titolo TMDB (proposta) o anche sul server dell'amico.
 5. **Modalità senza account** (utente "Casa" senza cloud): mantenerla o richiedere sempre l'account.
+
+---
+
+## 7. Fatto nella fase 1 (ramo `fase-1`)
+
+Nessun cambiamento visibile: le app e il sito di oggi funzionano come prima. Il nuovo serve a PWA e TV (fasi 3 e 4).
+
+### Servizio account (`cloud/worker.js`, prove in `cloud/test_worker.mjs`)
+
+| Rotta | Chi | Cosa fa |
+|---|---|---|
+| `POST /servers/:sid/claim` | sessione del proprietario | Il server prende la sua credenziale (`s_<sid>_<segreto>`). Riprenderla quando c'è già: solo una sessione di tipo `server`, o se il server tace da 10 minuti. Un altro account: mai (409). |
+| `POST /server/heartbeat` | credenziale del server | Presenza e indirizzi (`url` da fuori, `lan` di casa, `pin`, `friends`, `version`). Scrive la riga di `servers`. |
+| `GET /server/me` | credenziale del server | Sid e proprietario. |
+| `POST /server/verify` | credenziale del server | Verifica un gettone d'accesso (per i server senza `cryptography`); ricontrolla l'amicizia. |
+| `DELETE /server` | credenziale del server | Il server esce dall'account. |
+| `GET /servers` | sessione | Propri server e quelli condivisi dagli amici: `online` (presenza negli ultimi 10 minuti, `null` = server di prima), `role`, `owner`, `addresses` (`lan` solo per i propri), `pin`. |
+| `POST /servers/:sid/access` | sessione | Gettone d'accesso ES256, 12 ore: `{sub, name, sid, own, role: owner/friend, exp, jti}`. Per un server di un amico si passa `owner`. |
+| `POST /servers/:sid/forget` | sessione | Toglie un proprio server dall'elenco (anche spento). |
+| `GET /keys` | nessuna | Chiave pubblica (JWK) per verificare i gettoni. |
+| `GET /devices`, `DELETE /devices/:id` | sessione | Dispositivi dell'account con il tipo (`server`, `pwa`, `tv`, `app`, `browser`); togliere uno. |
+
+Inoltre:
+- `kind` nelle sessioni (da `/login`, `/setup`, `/reset/finish`, Google); una sessione non usata per 180 giorni scade.
+- Con la credenziale, `PUT /servers` e `DELETE /servers/:sid` con il gettone di un utente rispondono 409: i dati del server li scrive solo lui.
+- `GET /friends` (app di prima) mostra solo i server con un indirizzo da fuori.
+- Nuova tabella `server_creds`; chiave dei gettoni in `kv` (`access`). Il Worker le crea da solo.
+
+### Server (`server/app.py`, prove in `server/test_access.py`)
+
+- Entra nel servizio account come sessione di tipo `server`.
+- Presenza (`presence_v2`): prende la credenziale con il gettone del proprietario, manda la presenza a ogni giro di sincronizzazione (3 minuti), la riprende se non vale più, esce dall'account se cambia proprietario o se il proprietario viene tolto dal PC. Con il servizio account di prima (404) resta `PUT /servers`.
+- Gettoni d'accesso (`access_claims`): verifica la firma con `GET /keys` se c'è `cryptography` (aggiunto a `requirements.txt`: serve ricostruire Docker), altrimenti `POST /server/verify`.
+  - `Authorization: Bearer <gettone>` con `role: owner` → API complete come il proprietario (`AuthGate`).
+  - `POST /api/share/access {token}` → ingresso per amici (e altri dispositivi dello stesso account) come `/api/share/ticket`, senza biglietto.
+
+### Pubblicazione
+
+1. Prima il Worker su Cloudflare (le tabelle nuove si creano da sole).
+2. Poi il ramo su `main`: i server si aggiornano da soli; dove l'aiutante ricostruisce Docker arriva anche `cryptography`.

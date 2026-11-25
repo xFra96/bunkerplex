@@ -14,6 +14,7 @@ import hmac
 import http.client
 import io
 import ipaddress
+import base64
 import json
 import math
 import mimetypes
@@ -2965,6 +2966,10 @@ class AuthGate:
             await self._reply(send, 403, "Non disponibile")
             return
         user = session_user(session_token(scope))
+        if user is None:
+            bearer = bearer_of(scope)
+            if bearer:                   # gettone d'accesso del servizio account (vedi access_user)
+                user = await asyncio.to_thread(access_user, bearer)
         ctx = CURRENT.set(user)
         try:
             if path.startswith("/api/") and not path.startswith(OPEN_PATHS) and user is None:
@@ -3767,6 +3772,15 @@ def forget_account_friends(uid, token):
         had = (config.get("presence") or {}).pop(str(uid), None)
         if had:
             save_config()
+    cred = server_cred()
+    if cred:
+        con = db(raw=True)
+        try:
+            others = con.execute("SELECT 1 FROM users WHERE cloud_id=? AND id<>?", (cred["owner"], uid)).fetchone()
+        finally:
+            con.close()
+        if not others:               # era il proprietario: il server esce dall'account
+            drop_server_cred()
     if had and token:
         try:
             accounts.call("DELETE", f"/servers/{pc_id()}", token=token, timeout=6)
@@ -3787,7 +3801,7 @@ async def auth_setup(request: Request):
         raise HTTPException(400, "Su questo PC non c'è la chiave per creare l'amministratore")
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     res = await cloud("POST", "/setup", {"setup_key": key, "username": name, "verifier": ver,
-                                         "device": SERVER_NAME})
+                                         "device": SERVER_NAME, "kind": "server"})
     SETUP_FILE.unlink(missing_ok=True)
     cloud_status["at"] = 0.0
     return await finish_login(res, ver, body.get("device") or "browser")
@@ -3803,7 +3817,7 @@ async def auth_login(request: Request):
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
-                                      {"username": name, "verifier": ver, "device": SERVER_NAME})
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
     except accounts.CloudError as ex:
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
@@ -3855,7 +3869,7 @@ async def auth_reset_finish(request: Request):
     name = await login_name(email)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     res = await cloud("POST", "/reset/finish", {"email": email, "code": code, "verifier": ver,
-                                                "device": SERVER_NAME})
+                                                "device": SERVER_NAME, "kind": "server"})
     return await finish_login(res, ver, body.get("device") or "browser")
 
 
@@ -4097,7 +4111,7 @@ async def auth_pair_finish(code: str, request: Request):
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
-                                      {"username": name, "verifier": ver, "device": SERVER_NAME})
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
         if res["user"].get("must_change"):
             if not new:
                 raise HTTPException(409, "La password è provvisoria: scegline una tua")
@@ -7388,32 +7402,176 @@ async def share_ticket(request: Request):
             raise HTTPException(403, "Questo PC non si fa raggiungere dagli altri tuoi PC")
     elif not (friends_shared(p["id"]) and share_on()):
         raise HTTPException(404, "Su questo server quell'account non condivide")
+    return await in_thread(lambda: share_account_token(who, p["id"]))
 
-    def work():
-        con = db(raw=True)
+
+def share_account_token(who, profile):
+    """Ingresso (gettone /api/share) per un account amico, o per un altro PC o app dello
+    stesso account, dopo un biglietto o un gettone d'accesso del servizio account."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id FROM accounts WHERE cloud_from=? AND profile=?", (who["id"], profile)).fetchone()
+        if r:
+            account = r["id"]
+            con.execute("UPDATE accounts SET approved=1 WHERE id=?", (account,))
+        else:
+            base = "@" + re.sub(r"[^\w.\-]", "", str(who.get("username") or ""))[:24]
+            name, i = base, 1
+            while con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+                i += 1
+                name = f"{base} {i}"
+            salt = secrets.token_bytes(16)   # nessuna password: si entra solo con i biglietti
+            account = con.execute(
+                "INSERT INTO accounts(name, salt, hash, approved, created, cloud_from, profile) "
+                "VALUES(?,?,?,1,?,?,?)", (name, salt, password_hash(secrets.token_urlsafe(24), salt),
+                                          time.time(), who["id"], profile)).lastrowid
+        token = new_session(con, account)
+        con.commit()
+        return {"ok": True, "token": token, "approved": True, "server": pc_name()}
+    finally:
+        con.close()
+
+
+@app.post("/api/share/access")
+async def share_access(request: Request):
+    """Come /api/share/ticket, ma con un gettone d'accesso del servizio account
+    (POST /servers/<sid>/access): firmato, si controlla qui (vedi access_claims)."""
+    if not share_open():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    body = await read_json(request)
+    c = await asyncio.to_thread(access_claims, str(body.get("token") or ""))
+    if not c:
+        raise HTTPException(403, "Gettone non valido o scaduto")
+    con = db(raw=True)
+    try:
+        p = con.execute("SELECT id FROM users WHERE cloud_id=?", (c["own"],)).fetchone()
+    finally:
+        con.close()
+    if not p:
+        raise HTTPException(404, "Su questo server quell'account non c'è")
+    who = {"id": int(c["sub"]), "username": str(c.get("name") or "")}
+    if who["id"] == c["own"]:
+        if not self_reach(p["id"]):
+            raise HTTPException(403, "Questo PC non si fa raggiungere dagli altri tuoi PC")
+    elif c["role"] != "friend" or not (friends_shared(p["id"]) and share_on()):
+        raise HTTPException(404, "Su questo server quell'account non condivide")
+    return await in_thread(lambda: share_account_token(who, p["id"]))
+
+
+# ---- Gettoni d'accesso del servizio account ----------------------------------------
+# Firmati ES256 dal servizio account (POST /servers/<sid>/access), validi poche ore,
+# solo per questo server (sid). Si controllano qui con la chiave pubblica (GET /keys)
+# se c'e' il pacchetto cryptography; nelle immagini Docker di prima lo fa il servizio
+# account (POST /server/verify, con la credenziale del server).
+
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+except ImportError:
+    ec = None
+
+access_keys = {"at": 0.0, "keys": {}}
+access_seen = {}                 # impronta del gettone -> (dati, scadenza)
+
+
+def b64url(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def access_key(kid):
+    """La chiave pubblica del servizio account con quel kid (None se non c'e' o se
+    manca cryptography). Una chiave nuova si va a prendere al massimo una volta al minuto."""
+    if ec is None or not kid:
+        return None
+    if kid not in access_keys["keys"] and time.time() - access_keys["at"] > 60:
+        access_keys["at"] = time.time()
         try:
-            r = con.execute("SELECT id FROM accounts WHERE cloud_from=? AND profile=?", (who["id"], p["id"])).fetchone()
-            if r:
-                account = r["id"]
-                con.execute("UPDATE accounts SET approved=1 WHERE id=?", (account,))
-            else:
-                base = "@" + re.sub(r"[^\w.\-]", "", str(who.get("username") or ""))[:24]
-                name, i = base, 1
-                while con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
-                    i += 1
-                    name = f"{base} {i}"
-                salt = secrets.token_bytes(16)   # nessuna password: si entra solo con i biglietti
-                account = con.execute(
-                    "INSERT INTO accounts(name, salt, hash, approved, created, cloud_from, profile) "
-                    "VALUES(?,?,?,1,?,?,?)", (name, salt, password_hash(secrets.token_urlsafe(24), salt),
-                                              time.time(), who["id"], p["id"])).lastrowid
-            token = new_session(con, account)
-            con.commit()
-            return {"ok": True, "token": token, "approved": True, "server": pc_name()}
-        finally:
-            con.close()
+            res = accounts.call("GET", "/keys", timeout=6)
+            keys = {}
+            for k in res.get("keys") or []:
+                if isinstance(k, dict) and k.get("kty") == "EC" and k.get("crv") == "P-256" and k.get("kid"):
+                    x, y = (int.from_bytes(b64url(k[c]), "big") for c in ("x", "y"))
+                    keys[str(k["kid"])] = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1()).public_key()
+            access_keys["keys"] = keys
+        except Exception:
+            pass
+    return access_keys["keys"].get(kid)
 
-    return await in_thread(work)
+
+def access_claims(token):
+    """I dati di un gettone d'accesso valido per questo server, o None."""
+    if not token or len(token) > 2000 or token.count(".") != 2:
+        return None
+    key = token_hash(token)
+    hit = access_seen.get(key)
+    if hit and hit[1] > time.time():
+        return hit[0]
+    try:
+        h, p, s = token.split(".")
+        head, claims, sig = json.loads(b64url(h)), json.loads(b64url(p)), b64url(s)
+    except Exception:
+        return None
+    if not isinstance(head, dict) or not isinstance(claims, dict) or head.get("alg") != "ES256":
+        return None
+    exp = claims.get("exp")
+    if (claims.get("iss") != "bunkerplex" or claims.get("sid") != pc_id() or claims.get("role") not in ("owner", "friend")
+            or not isinstance(exp, (int, float)) or exp < time.time() or not str(claims.get("sub") or "").isdigit()):
+        return None
+    cred = server_cred()
+    owner = cred["owner"] if cred else cloud_id_of(server_owner())
+    if owner is None or claims.get("own") != owner:
+        return None
+    pub = access_key(str(head.get("kid") or ""))
+    if pub is not None:
+        if len(sig) != 64:
+            return None
+        try:
+            pub.verify(encode_dss_signature(int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")),
+                       (h + "." + p).encode(), ec.ECDSA(hashes.SHA256()))
+        except InvalidSignature:
+            return None
+    else:
+        if not cred:
+            return None
+        try:
+            res = accounts.call("POST", "/server/verify", {"token": token}, cred["secret"], timeout=8)
+        except Exception:
+            return None
+        if (res.get("claims") or {}).get("jti") != claims.get("jti"):
+            return None
+    if len(access_seen) > 500:
+        access_seen.clear()
+    access_seen[key] = (claims, exp)
+    return claims
+
+
+def bearer_of(scope):
+    for k, v in scope.get("headers") or ():
+        if k == b"authorization":
+            m = re.fullmatch(r"Bearer\s+([\w-]+\.[\w-]+\.[\w-]+)", v.decode("latin-1").strip())
+            return m.group(1) if m else ""
+    return ""
+
+
+def access_user(token):
+    """Il proprietario di questo server entrato con un gettone d'accesso (come una
+    sessione: stesse raccolte e permessi), o None."""
+    c = access_claims(token)
+    if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
+        return None
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id, name, admin, must_change FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0 "
+                        "AND id=(" + OWNER_SQL + ")", (c["own"],)).fetchone()
+    finally:
+        con.close()
+    if not r:
+        return None
+    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]), "linked": True, "guest": False,
+            "must_change": bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": "",
+            "sid": r["id"], "profile": None, "pname": r["name"], "access": True}
 
 
 @app.get("/api/sharing")
@@ -9387,7 +9545,108 @@ def lan_url():
     return f"https://{ip}:{SHARE_PORT}"
 
 
+# ---- Credenziale del server e presenza -------------------------------------------
+# Il server ha una credenziale sua nel servizio account, presa una volta con il
+# gettone del proprietario (POST /servers/<sid>/claim). Con quella manda presenza e
+# indirizzi a ogni giro di sincronizzazione (POST /server/heartbeat) e fa verificare
+# i gettoni d'accesso (vedi access_claims). Con il servizio account di prima (404)
+# resta tutto come prima: PUT /servers con il gettone del proprietario.
+# Vedi docs/architettura.md.
+
+CRED_KEY = "server_cred"
+cloud_v2 = {"on": None, "error": ""}      # on: None = non si sa ancora, False = servizio di prima
+
+
+def server_cred():
+    with config_lock:
+        c = config.get(CRED_KEY)
+    return dict(c) if isinstance(c, dict) and c.get("secret") else None
+
+
+def set_server_cred(cred):
+    with config_lock:
+        if cred:
+            config[CRED_KEY] = cred
+        else:
+            config.pop(CRED_KEY, None)
+        save_config()
+
+
+def cloud_id_of(uid):
+    if uid is None:
+        return None
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT cloud_id FROM users WHERE id=?", (uid,)).fetchone()
+    finally:
+        con.close()
+    return r["cloud_id"] if r else None
+
+
+def claim_cred(token):
+    res = accounts.call("POST", f"/servers/{pc_id()}/claim", {"name": pc_name()}, token)
+    owner = res.get("owner") or {}
+    secret = str(res.get("credential") or "")
+    if not re.fullmatch(r"s_[0-9a-f]{8}_[0-9a-f]{64}", secret) or not isinstance(owner.get("id"), int):
+        raise accounts.CloudError(502, "Risposta non valida dal servizio account")
+    cred = {"secret": secret, "owner": owner["id"], "owner_name": str(owner.get("username") or "")}
+    set_server_cred(cred)
+    return cred
+
+
+def drop_server_cred():
+    """Il server esce dall'account (cambio di proprietario, account tolto dal PC)."""
+    cred = server_cred()
+    if cred:
+        try:
+            accounts.call("DELETE", "/server", token=cred["secret"], timeout=6)
+        except Exception:
+            pass
+    set_server_cred(None)
+
+
+def heartbeat_body(uid):
+    friends = bool(friends_shared(uid) and share_on())
+    pin = share_tls["pin"] if share_tls["on"] else ""
+    return {"name": pc_name(), "url": presence_url() if (friends or self_reach(uid)) else "",
+            "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION}
+
+
+def presence_v2(uid, token):
+    """Presenza con la credenziale del server. False = va fatta come prima (PUT /servers)."""
+    if cloud_v2["on"] is False or uid != server_owner():
+        return False
+    me = cloud_id_of(uid)
+    cred = server_cred()
+    try:
+        if cred and cred["owner"] != me:
+            drop_server_cred()                       # il PC ha cambiato proprietario
+            cred = None
+        if not cred:
+            cred = claim_cred(token)
+        body = heartbeat_body(uid)
+        try:
+            accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+        except accounts.CloudError as ex:
+            if ex.status != 401:
+                raise
+            set_server_cred(None)                    # credenziale persa o ripresa: si riprende
+            cred = claim_cred(token)
+            accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+    except accounts.CloudError as ex:
+        if ex.status == 404:                         # servizio account di prima
+            cloud_v2.update(on=False, error="")
+            return False
+        cloud_v2.update(on=True, error=ex.detail)
+        print("Presenza nel servizio account:", ex.detail, flush=True)
+        return True
+    cloud_v2.update(on=True, error="")
+    return True
+
+
 def publish_presence(uid, token):
+    if presence_v2(uid, token):
+        return
     want = None
     friends = friends_shared(uid) and share_on()
     if (friends or self_reach(uid)) and presence_url():

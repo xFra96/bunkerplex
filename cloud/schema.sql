@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   user_id INTEGER NOT NULL,
   device TEXT,
   created REAL NOT NULL,
-  last_seen REAL NOT NULL
+  last_seen REAL NOT NULL,           -- dopo 180 giorni senza usarla scade
+  kind TEXT                          -- server / pwa / tv / app / browser (NULL = di prima)
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 
@@ -77,6 +78,19 @@ CREATE TABLE IF NOT EXISTS servers(
   token_hash TEXT,                   -- sessione del PC che l'ha registrato: solo lui lo aggiorna
   PRIMARY KEY(user_id, sid)
 );
+
+-- Credenziale di ogni server (si salva l'impronta del segreto): con questa il server
+-- manda presenza e indirizzi (/server/heartbeat). owner_id = account del proprietario.
+CREATE TABLE IF NOT EXISTS server_creds(
+  sid TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL,
+  secret_hash TEXT NOT NULL,
+  name TEXT,
+  version TEXT,
+  created REAL NOT NULL,
+  last_seen REAL NOT NULL DEFAULT 0  -- ultima presenza: acceso se recente (10 minuti)
+);
+CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id);
 
 -- Biglietti per entrare dal server di un amico: 5 minuti, una volta sola (si salva l'impronta).
 CREATE TABLE IF NOT EXISTS tickets(
@@ -154,7 +168,7 @@ CREATE TABLE IF NOT EXISTS notice_prefs(
   v TEXT
 );
 
--- Valori del servizio (chiavi VAPID delle web push...).
+-- Valori del servizio (chiavi VAPID delle web push, chiave dei gettoni d'accesso 'access').
 CREATE TABLE IF NOT EXISTS kv(
   k TEXT PRIMARY KEY,
   v TEXT

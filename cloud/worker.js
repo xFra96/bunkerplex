@@ -20,6 +20,8 @@
 // «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
 // Notifiche su telefoni e tablet: tutto da solo, tabelle e chiavi VAPID nel database
 // (vedi «BunkerPlex Avvisi», /notices e /avvisi).
+// Server come risorsa (credenziale propria, presenza, GET /servers, gettoni d'accesso
+// firmati, chiave in kv): vedi «Server come risorsa» e docs/architettura.md.
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -86,6 +88,282 @@ async function serverWriter(env, user, sid) {
   }
 }
 
+// ---- Server come risorsa: credenziale propria, presenza, gettoni d'accesso
+//
+// Ogni server BunkerPlex ha una credenziale sua (server_creds), legata al suo id
+// (sid) e all'account del proprietario. La ottiene una volta con il gettone del
+// proprietario (POST /servers/:sid/claim) e poi parla da solo: presenza e
+// indirizzi (POST /server/heartbeat). Chi vuole entrare in un server chiede qui un
+// gettone firmato (POST /servers/:sid/access, ES256, 12 ore) che il server
+// verifica da solo con la chiave pubblica (GET /keys) o, se non sa farlo, qui
+// (POST /server/verify). Vedi docs/architettura.md.
+
+const SESSION_KINDS = ['server', 'pwa', 'tv', 'app', 'browser'];
+const SESSION_IDLE = 180 * 86400;   // una sessione non usata per 180 giorni scade
+const ONLINE_SECONDS = 600;         // presenza: acceso se si e' fatto sentire negli ultimi 10 minuti
+const ACCESS_TTL = 12 * 3600;       // durata di un gettone d'accesso a un server
+const RECLAIM_IDLE = 600;           // ri-presa della credenziale da un'altra sessione: solo se il server tace da 10 minuti
+
+const sessionKind = (k) => (SESSION_KINDS.includes(k) ? k : null);
+
+let sessionCols = false;
+async function ensureSessionCols(env) {
+  if (sessionCols) return;
+  const cols = (await env.DB.prepare('PRAGMA table_info(sessions)').all()).results.map((c) => c.name);
+  if (!cols.includes('kind')) await env.DB.prepare('ALTER TABLE sessions ADD COLUMN kind TEXT').run();
+  sessionCols = true;
+}
+
+let credTable = false;
+async function ensureCreds(env) {
+  if (credTable) return;
+  await ensureServerCols(env);
+  await env.DB.batch([
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS server_creds(sid TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, ' +
+      'secret_hash TEXT NOT NULL, name TEXT, version TEXT, created REAL NOT NULL, last_seen REAL NOT NULL DEFAULT 0)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+  ]);
+  credTable = true;
+}
+
+// La credenziale di un server: "Bearer s_<sid>_<64 hex>"
+async function authServer(request, env) {
+  const m = /^Bearer s_([0-9a-f]{8})_([0-9a-f]{64})$/.exec(request.headers.get('Authorization') || '');
+  if (!m) fail(401, 'Credenziale del server mancante');
+  await ensureCreds(env);
+  const c = await env.DB.prepare('SELECT * FROM server_creds WHERE sid = ?').bind(m[1]).first();
+  if (!c || !sameString(c.secret_hash, await sha256(m[2]))) fail(401, 'Credenziale del server non valida: va ripresa');
+  const owner = await env.DB.prepare('SELECT id, username, disabled FROM users WHERE id = ?').bind(c.owner_id).first();
+  if (!owner || owner.disabled) fail(403, "L'account del proprietario non è attivo");
+  return { ...c, owner };
+}
+
+function cleanUrl(raw) {
+  const u = String(raw || '');
+  if (u && !/^https:\/\/[^\s/]{3,200}$/.test(u)) fail(400, 'Indirizzo non valido');
+  return u;
+}
+
+// Chiave ES256 per firmare i gettoni d'accesso: creata la prima volta, poi sempre la stessa
+async function accessKeys(env) {
+  await ensureCreds(env);
+  let saved = await env.DB.prepare("SELECT v FROM kv WHERE k = 'access'").first('v');
+  if (!saved) {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+    const kid = (await sha256(pub.x + '.' + pub.y)).slice(0, 16);
+    const keys = { kid, priv: await crypto.subtle.exportKey('jwk', kp.privateKey),
+      pub: { kty: 'EC', crv: 'P-256', x: pub.x, y: pub.y, kid, alg: 'ES256', use: 'sig' } };
+    await env.DB.prepare("INSERT OR IGNORE INTO kv(k, v) VALUES('access', ?)").bind(JSON.stringify(keys)).run();
+    saved = await env.DB.prepare("SELECT v FROM kv WHERE k = 'access'").first('v');
+  }
+  return JSON.parse(saved);
+}
+
+async function signAccess(env, claims) {
+  const keys = await accessKeys(env);
+  const head = b64u(te.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256', kid: keys.kid })));
+  const payload = b64u(te.encode(JSON.stringify(claims)));
+  const key = await crypto.subtle.importKey('jwk', keys.priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, te.encode(head + '.' + payload));
+  return head + '.' + payload + '.' + b64u(sig);
+}
+
+// I dati di un gettone d'accesso, se la firma e' buona e non e' scaduto (altrimenti null)
+async function readAccess(env, token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const keys = await accessKeys(env);
+    const head = JSON.parse(new TextDecoder().decode(unb64u(parts[0])));
+    if (head.alg !== 'ES256' || head.kid !== keys.kid) return null;
+    const key = await crypto.subtle.importKey('jwk', keys.pub, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, unb64u(parts[2]),
+      te.encode(parts[0] + '.' + parts[1]));
+    if (!ok) return null;
+    const c = JSON.parse(new TextDecoder().decode(unb64u(parts[1])));
+    return c.iss === 'bunkerplex' && c.exp > now() ? c : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function areFriends(env, a, b) {
+  return !!await env.DB.prepare("SELECT 1 FROM friends WHERE status = 'ok' AND ((a = ? AND b = ?) OR (a = ? AND b = ?))")
+    .bind(a, b, b, a).first();
+}
+
+// Rotte con la credenziale del server (/server/...) e quelle pubbliche (/keys)
+async function serverRoutes(request, env, path, method) {
+  if (path === '/keys' && method === 'GET') {
+    const keys = await accessKeys(env);
+    return json({ keys: [keys.pub] });
+  }
+  if (!path.startsWith('/server/') && path !== '/server') return null;
+  const srv = await authServer(request, env);
+
+  // Chi sono e di chi sono
+  if (path === '/server/me' && method === 'GET') {
+    return json({ sid: srv.sid, name: srv.name || '', owner: { id: srv.owner.id, username: srv.owner.username } });
+  }
+
+  // Presenza e indirizzi, ogni pochi minuti. url = indirizzo da fuori casa (vuoto se
+  // non c'e' o se il server non si fa raggiungere), lan = nella rete di casa,
+  // friends = lo vedono anche gli amici.
+  if (path === '/server/heartbeat' && method === 'POST') {
+    const b = await body(request);
+    const url = cleanUrl(b.url);
+    const lan = cleanUrl(b.lan);
+    const pin = String(b.pin || '');
+    if (pin && !/^[0-9a-f]{64}$/.test(pin)) fail(400, 'Impronta non valida');
+    const name = String(b.name || '').slice(0, 40);
+    const t = now();
+    await env.DB.batch([
+      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ? WHERE sid = ?')
+        .bind(t, name, String(b.version || '').slice(0, 40), srv.sid),
+      env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,NULL) ' +
+        'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
+        'friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = NULL')
+        .bind(srv.owner_id, srv.sid, name, url, lan, b.friends === true ? 1 : 0, pin, t)
+    ]);
+    return json({ ok: true, owner: { id: srv.owner.id, username: srv.owner.username }, online_seconds: ONLINE_SECONDS });
+  }
+
+  // Verifica di un gettone d'accesso, per i server che non sanno controllare la firma.
+  // Qui si ricontrolla anche l'amicizia (un amico tolto non entra piu' subito).
+  if (path === '/server/verify' && method === 'POST') {
+    const c = await readAccess(env, (await body(request)).token);
+    if (!c || c.sid !== srv.sid || c.own !== srv.owner_id) fail(403, 'Gettone non valido');
+    if (c.role === 'friend' && !await areFriends(env, Number(c.sub), srv.owner_id)) fail(403, 'Non siete più amici');
+    return json({ claims: c });
+  }
+
+  // Il server si toglie dall'account (es. il proprietario lo scollega dal PC)
+  if (path === '/server' && method === 'DELETE') {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM server_creds WHERE sid = ?').bind(srv.sid),
+      env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(srv.owner_id, srv.sid)
+    ]);
+    return json({ ok: true });
+  }
+  fail(404, 'Non trovato');
+}
+
+// Il server ha gia' la sua credenziale: allora i suoi dati li scrive solo lui
+async function hasCredential(env, uid, sid) {
+  await ensureCreds(env);
+  return !!await env.DB.prepare('SELECT 1 FROM server_creds WHERE sid = ? AND owner_id = ?').bind(sid, uid).first();
+}
+
+// Rotte dell'utente sui server (dopo il controllo della password provvisoria)
+async function userServerRoutes(request, env, path, method, user) {
+  // Un server prende (o riprende) la sua credenziale con il gettone del proprietario
+  const cm = /^\/servers\/([0-9a-f]{8})\/claim$/.exec(path);
+  if (cm && method === 'POST') {
+    await ensureCreds(env);
+    await ensureSessionCols(env);
+    const sid = cm[1];
+    const b = await body(request);
+    const c = await env.DB.prepare('SELECT owner_id, last_seen FROM server_creds WHERE sid = ?').bind(sid).first();
+    if (c && c.owner_id !== user.id) fail(409, 'Questo server è già collegato a un altro account');
+    if (c) {
+      // Riprenderla (il server l'ha persa) la puo' una sessione di un server, o
+      // chiunque dell'account se il server tace da un po': un gettone di un telefono
+      // non porta via la credenziale a un server acceso.
+      const kind = await env.DB.prepare('SELECT kind FROM sessions WHERE token_hash = ?').bind(user.token_hash).first('kind');
+      if (kind !== 'server' && now() - c.last_seen < RECLAIM_IDLE) fail(409, 'Questo server è acceso e ha già la sua credenziale');
+    }
+    const secret = randomHex(32);
+    await env.DB.prepare('INSERT INTO server_creds(sid, owner_id, secret_hash, name, created, last_seen) VALUES(?,?,?,?,?,0) ' +
+      'ON CONFLICT(sid) DO UPDATE SET secret_hash = excluded.secret_hash, name = excluded.name')
+      .bind(sid, user.id, await sha256(secret), String(b.name || '').slice(0, 40), now()).run();
+    return json({ credential: 's_' + sid + '_' + secret, owner: { id: user.id, username: user.username } });
+  }
+
+  // Tutti i server che si possono usare: i propri e quelli che gli amici condividono
+  if (path === '/servers' && method === 'GET') {
+    await ensureCreds(env);
+    const t = now();
+    const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.pin, s.friends, s.t, c.last_seen FROM servers s ' +
+      'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
+    const shared = await env.DB.prepare(
+      'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.pin, s.t, c.last_seen FROM servers s ' +
+      "JOIN friends f ON f.status = 'ok' AND ((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) " +
+      'JOIN users u ON u.id = s.user_id LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id ' +
+      'WHERE s.friends = 1 AND u.disabled = 0').bind(user.id, user.id).all();
+    const servers = [
+      ...own.results.map((s) => ({
+        sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
+        online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends,
+        addresses: { lan: s.lan || '', remote: s.url || '' }, pin: s.pin
+      })),
+      ...shared.results.map((s) => ({
+        sid: s.sid, name: s.name || 'PC', role: 'friend', owner: { id: s.user_id, username: s.username },
+        online: online(s.last_seen), seen: s.last_seen || s.t, shared: true,
+        addresses: { lan: '', remote: s.url || '' }, pin: s.pin
+      }))
+    ];
+    return json({ me: { id: user.id, username: user.username }, servers });
+  }
+
+  // Un gettone per entrare in un server: proprio (owner) o di un amico (friend)
+  const am = /^\/servers\/([0-9a-f]{8})\/access$/.exec(path);
+  if (am && method === 'POST') {
+    await ensureCreds(env);
+    const sid = am[1];
+    const b = await body(request);
+    const ownerId = b.owner === undefined || b.owner === null ? user.id : Number(b.owner);
+    let role;
+    if (ownerId === user.id) {
+      const mine = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sid).first() ||
+        await env.DB.prepare('SELECT 1 FROM server_creds WHERE owner_id = ? AND sid = ?').bind(user.id, sid).first();
+      if (!mine) fail(404, 'Server non trovato tra i tuoi');
+      role = 'owner';
+    } else {
+      if (!Number.isInteger(ownerId) || !await areFriends(env, user.id, ownerId)) fail(403, 'Non siete amici');
+      const sh = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ? AND friends = 1').bind(ownerId, sid).first();
+      if (!sh) fail(404, 'Questo server non condivide');
+      role = 'friend';
+    }
+    const iat = Math.floor(now());
+    const claims = { iss: 'bunkerplex', sub: String(user.id), name: user.username, sid, own: ownerId, role,
+      iat, exp: iat + ACCESS_TTL, jti: randomHex(8) };
+    return json({ token: await signAccess(env, claims), exp: claims.exp, role });
+  }
+
+  // Un proprio server non lo si vuole piu' nell'elenco (anche se e' spento)
+  const fm = /^\/servers\/([0-9a-f]{8})\/forget$/.exec(path);
+  if (fm && method === 'POST') {
+    await ensureCreds(env);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM server_creds WHERE sid = ? AND owner_id = ?').bind(fm[1], user.id),
+      env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, fm[1])
+    ]);
+    return json({ ok: true });
+  }
+  return null;
+}
+
+// I dispositivi entrati nell'account (sessioni): vederli e toglierli
+async function deviceRoutes(env, path, method, user) {
+  if (path === '/devices' && method === 'GET') {
+    await ensureSessionCols(env);
+    const rows = await env.DB.prepare('SELECT rowid, token_hash, device, kind, created, last_seen FROM sessions WHERE user_id = ? ' +
+      'ORDER BY last_seen DESC').bind(user.id).all();
+    return json({ devices: rows.results.map((r) => ({ id: r.rowid, label: r.device || '', kind: r.kind || '',
+      created: r.created, seen: r.last_seen, current: r.token_hash === user.token_hash })) });
+  }
+  const m = /^\/devices\/(\d{1,12})$/.exec(path);
+  if (m && method === 'DELETE') {
+    const r = await env.DB.prepare('DELETE FROM sessions WHERE rowid = ? AND user_id = ?').bind(Number(m[1]), user.id).run();
+    if (!r.meta || !r.meta.changes) fail(404, 'Dispositivo non trovato');
+    return json({ ok: true });
+  }
+  return null;
+}
+
 function hex(buf) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -140,12 +418,14 @@ function userJson(u) {
     email: u.email || '', needs_name: pendingName(u.username) };
 }
 
-async function newSession(env, user, device) {
+// kind: che cosa e' entrato (server, pwa, tv, app, browser; vedi SESSION_KINDS)
+async function newSession(env, user, device, kind) {
   if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+  await ensureSessionCols(env);
   const token = randomHex(32);
   const t = now();
-  await env.DB.prepare('INSERT INTO sessions(token_hash, user_id, device, created, last_seen) VALUES(?,?,?,?,?)')
-    .bind(await sha256(token), user.id, String(device || '').slice(0, 80), t, t).run();
+  await env.DB.prepare('INSERT INTO sessions(token_hash, user_id, device, created, last_seen, kind) VALUES(?,?,?,?,?,?)')
+    .bind(await sha256(token), user.id, String(device || '').slice(0, 80), t, t, sessionKind(kind)).run();
   return token;
 }
 
@@ -158,6 +438,10 @@ async function auth(request, env) {
   ).bind(th).first();
   if (!u) fail(401, 'Accesso scaduto: rientra');
   if (u.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+  if (now() - u.last_seen > SESSION_IDLE) {
+    await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?').bind(th).run();
+    fail(401, 'Accesso scaduto: rientra');
+  }
   if (now() - u.last_seen > 3600) {
     await env.DB.prepare('UPDATE sessions SET last_seen = ? WHERE token_hash = ?').bind(now(), th).run();
   }
@@ -536,7 +820,7 @@ async function googleRoutes(request, env, url, path, method) {
     const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(f.user_id).first();
     if (!u) fail(404, 'Account non trovato');
     if (f.link_user) return json({ done: true, linked: true, user: userJson(u) });
-    return json({ done: true, token: await newSession(env, u, f.device), user: userJson(u) });
+    return json({ done: true, token: await newSession(env, u, f.device, f.kind === 'phone' ? 'app' : f.kind), user: userJson(u) });
   }
 
   // Toglie il collegamento con Google dall'account che chiede
@@ -1052,7 +1336,7 @@ async function route(request, env) {
     await env.DB.prepare('INSERT INTO users(username, salt, hash, must_change, admin, created) VALUES(?,?,?,0,1,?)')
       .bind(username, pw.salt, pw.hash, now()).run();
     const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
-    return json({ token: await newSession(env, user, b.device), user: userJson(user) });
+    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
   }
 
   // Entrare con l'email: prima il nome utente (vedi nameForEmail)
@@ -1068,7 +1352,7 @@ async function route(request, env) {
     const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(String(b.username || '').trim()).first();
     if (!user) fail(401, 'Nome utente o password sbagliati');
     await checkPassword(env, user, verifier);
-    return json({ token: await newSession(env, user, b.device), user: userJson(user) });
+    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
   }
 
   // Password dimenticata (vedi resetStart)
@@ -1081,15 +1365,19 @@ async function route(request, env) {
     if (!resetOn(env)) fail(404, 'Il recupero della password non è attivo nel servizio account');
     const b = await body(request);
     const user = await resetFinish(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'), b.code, cleanVerifier(b.verifier));
-    return json({ token: await newSession(env, user, b.device), user: userJson(user) });
+    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
   }
 
   const g = await googleRoutes(request, env, url, path, method);
   if (g) return g;
   const nr = await noticeRoutes(request, env, url, path, method);
   if (nr) return nr;
+  const sr = await serverRoutes(request, env, path, method);
+  if (sr) return sr;
 
   const user = await auth(request, env);
+  const dr = await deviceRoutes(env, path, method, user);
+  if (dr) return dr;
   const na = await noticeAccountRoutes(request, env, url, path, method, user);
   if (na) return na;
 
@@ -1134,6 +1422,9 @@ async function route(request, env) {
   }
 
   if (user.must_change) fail(403, 'Prima cambia la password provvisoria');
+
+  const us = await userServerRoutes(request, env, path, method, user);
+  if (us) return us;
 
   // ---- Impostazioni: {chiave: {v, t}}; vince il valore con t piu' recente
   if (path === '/settings' && method === 'GET') {
@@ -1201,7 +1492,7 @@ async function route(request, env) {
     // superava il limite di query per richiesta di D1 con ~45 amici)
     const shared = await env.DB.prepare(
       "SELECT s.user_id, s.sid, s.name, s.url, s.pin, s.t FROM servers s JOIN friends f ON f.status = 'ok' AND " +
-      '((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) WHERE s.friends = 1'
+      "((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) WHERE s.friends = 1 AND s.url <> ''"
     ).bind(user.id, user.id).all();
     const byUser = new Map();
     for (const s of shared.results) {
@@ -1221,7 +1512,7 @@ async function route(request, env) {
     }
     // I propri server accesi: da ogni PC dell'account si arriva agli altri (anche
     // quelli che non condividono con gli amici). lan = indirizzo nella rete di casa.
-    const mine = await env.DB.prepare('SELECT sid, name, url, lan, pin, t FROM servers WHERE user_id = ?').bind(user.id).all();
+    const mine = await env.DB.prepare("SELECT sid, name, url, lan, pin, t FROM servers WHERE user_id = ? AND url <> ''").bind(user.id).all();
     return json({ friends: out, me: user.id, mine: mine.results });
   }
   if (path === '/friends' && method === 'POST') {
@@ -1352,6 +1643,7 @@ async function route(request, env) {
         (lan && !/^https:\/\/[^\s/]{3,200}$/.test(lan))) {
       fail(400, 'Richiesta non valida');
     }
+    if (await hasCredential(env, user.id, sid)) fail(409, 'Questo server si aggiorna da solo con la sua credenziale');
     await serverWriter(env, user, sid);
     await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,?) ' +
       'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
@@ -1362,6 +1654,7 @@ async function route(request, env) {
   const sm = /^\/servers\/([0-9a-f]{8})$/.exec(path);
   if (sm && method === 'DELETE') {
     await ensureServerCols(env);
+    if (await hasCredential(env, user.id, sm[1])) fail(409, 'Questo server si aggiorna da solo con la sua credenziale');
     await serverWriter(env, user, sm[1]);
     await env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sm[1]).run();
     return json({ ok: true });
@@ -1566,6 +1859,7 @@ async function route(request, env) {
       if (!m[2] && method === 'DELETE') {
         if (id === user.id) fail(400, 'Non puoi eliminare il tuo account');
         await ensureNotices(env);
+        await ensureCreds(env);
         await env.DB.batch([
           env.DB.prepare('DELETE FROM notices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_devices WHERE user_id = ?').bind(id),
@@ -1575,6 +1869,7 @@ async function route(request, env) {
           env.DB.prepare('DELETE FROM state WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM friends WHERE a = ? OR b = ?').bind(id, id),
           env.DB.prepare('DELETE FROM servers WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM server_creds WHERE owner_id = ?').bind(id),
           env.DB.prepare('DELETE FROM tickets WHERE from_user = ? OR to_user = ?').bind(id, id),
           env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id)
         ]);
