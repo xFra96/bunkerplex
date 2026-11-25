@@ -809,7 +809,8 @@ async function cOpen(s) {
     if (!ok) session = '';
   }
   if (!session) {
-    var a = await cloud('POST', '/servers/' + host.sid + '/access', {});
+    // Il server di un amico: il servizio deve sapere di chi e' (senza, lo cerca tra i tuoi)
+    var a = await cloud('POST', '/servers/' + host.sid + '/access', s.role === 'friend' && s.owner ? { owner: s.owner.id } : {});
     var r = await fetch(base + '/api/auth/access', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: a.token, device: devName() }) });
     var j = await r.json().catch(function () { return {}; });
