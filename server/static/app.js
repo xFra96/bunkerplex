@@ -420,7 +420,7 @@ function loginPage() {
     (auth.reset ? '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' : '') +
     googleWide() +
     (TV ? '<a class="authlink f" href="#/home" data-key="who-phone">Entra con il telefono (QR o codice)</a>' : '') +
-    (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : ''));
+    (APP || IOS_APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : ''));
 }
 
 // Non e' il server del tuo account: lo vedi solo se il proprietario e' tuo amico
