@@ -833,10 +833,9 @@ async function loadLibs(force) {
   // Il server scelto all'apertura: solo le sue raccolte nel menu
   var src = serverSrc(), only = /^f\d+$/.test(src) ? +src.slice(1) : 0;
   var shownLibs = only ? [] : libs, shownFriends = src === 'here' ? [] : only ? friends.filter(function (fr) { return fr.n === only; }) : friends;
-  var pick = auth && auth.cloud && auth.user ? '<a class="f railitem srvswitch" href="#/server" data-key="nav-server">' + SRV_ICON + '<span>' +
-    esc(only ? (shownFriends[0] ? shownFriends[0].name : 'Server') : (auth.pc || 'Questo server')) + '</span></a>' : '';
+  // Il server scelto non sta tra le raccolte: ha il suo pulsante in alto, accanto agli amici
   // Una raccolta che sta tutta su un altro tuo PC acceso compare sotto quel PC
-  var html = pick + shownLibs.filter(function (l) { return !l.remote; }).map(function (l) {
+  var html = shownLibs.filter(function (l) { return !l.remote; }).map(function (l) {
     return '<a class="f railitem" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
       avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
   }).join('') + shownFriends.map(function (fr) {
@@ -852,6 +851,7 @@ async function loadLibs(force) {
     railSignature = html;
     document.getElementById('navlibs').innerHTML = html;
   }
+  renderServerButton(document.querySelector('#activity .srvbtn'));   // il nome del server dell'amico arriva con gli amici
 }
 
 function markRail(h) {
@@ -6459,6 +6459,31 @@ function friendsNowRows() {
     '<span class="acttxt"><b>Aggiungi un amico</b><small>Con il nome del suo account, in Impostazioni → Amici e dispositivi</small></span>' + CHEVRON + '</button></div></div>';
 }
 
+// Il server su cui stai guardando: un pulsante a se', accanto agli amici, che porta alla scelta
+var ICON_SERVER = '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+
+function serverName() {
+  var src = serverSrc(), only = /^f\d+$/.test(src) ? +src.slice(1) : 0;
+  if (!only) return auth.pc || 'Questo server';
+  for (var i = 0; i < friends.length; i++) if (friends[i].n === only) return friends[i].name;
+  return 'Server';
+}
+
+function renderServerButton(btn) {
+  if (!btn) return;
+  var show = !!(auth && auth.cloud && auth.user);
+  btn.hidden = !show;
+  if (!show) return;
+  var name = serverName();
+  var html = ICON_SERVER + '<span class="srvname">' + esc(name) + '</span>';
+  if (btn.getAttribute('data-sig') !== html) {
+    btn.innerHTML = html;
+    btn.setAttribute('data-sig', html);
+  }
+  btn.setAttribute('aria-label', 'Server: ' + name + '. Cambia server');
+  btn.title = 'Cambia server';
+}
+
 function renderFriendsButton(btn) {
   if (!btn) return;
   var on = friends.filter(function (f) { return f.online !== false; }).length;
@@ -6532,7 +6557,8 @@ function renderActivity() {
   if (!box) {
     box = document.createElement('div');
     box.id = 'activity';
-    box.innerHTML = '<button class="actbtn friendsbtn f" data-act="friendsnow" data-key="friendsbtn" aria-label="Amici" hidden></button>' +
+    box.innerHTML = '<a class="actbtn srvbtn f" href="#/server" data-key="srvbtn" hidden></a>' +
+      '<button class="actbtn friendsbtn f" data-act="friendsnow" data-key="friendsbtn" aria-label="Amici" hidden></button>' +
       '<button class="actbtn f" data-act="activity" data-key="actbtn" aria-label="Attività e notifiche"></button>';
     document.body.appendChild(box);
   }
@@ -6546,6 +6572,7 @@ function renderActivity() {
     ? '<span class="spin" aria-hidden="true"></span><span class="acttext">' + esc(op.title) + (op.pct === null ? '' : ' ' + op.pct + '%') + '</span>'
     : IC.bell;
   if (unseen) html += '<span class="actcount">' + unseen + '</span>';
+  renderServerButton(box.querySelector('.srvbtn'));
   renderFriendsButton(box.querySelector('.friendsbtn'));
   var btn = box.querySelector('[data-act="activity"]');
   btn.classList.toggle('busy', !!op);

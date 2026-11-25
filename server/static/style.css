@@ -1053,6 +1053,10 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .actbtn[hidden] { display: none; }
 .frcount { font-variant-numeric: tabular-nums; color: var(--accent-text); }
 .actbtn:focus .frcount { color: var(--bg); }
+/* Il server scelto, a se' accanto agli amici: icona e nome, solo icona sul telefono */
+.srvname { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srvbtn .ic { color: var(--accent-text); }
+.srvbtn:focus .ic { color: inherit; }
 .frwho { display: flex; align-items: center; gap: .55rem; margin: .5rem 1.7rem .2rem; font-weight: 600; }
 .frwho small { margin-left: auto; color: var(--ink2); font-weight: 400; font-size: .85rem; }
 .odot { width: .55rem; height: .55rem; flex: none; border-radius: 50%; background: var(--accent-text); }
@@ -1085,7 +1089,7 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 
 @media (max-width: 720px) {
   #activity { top: .55rem; right: .8rem; }
-  .acttext { display: none; }
+  .acttext, .srvname { display: none; }
   .actbtn.busy { padding: 0 .75rem; }
   #modal.corner { padding: 3.4rem .6rem 0; }
   .actsheet { width: 100%; }
@@ -1429,7 +1433,6 @@ html.lite .sheet { animation: none !important; }
 .srvreq span { flex: 1; }
 .srvreq b { color: var(--ink); }
 .srvreq .btn { margin: 0; }
-.railitem.srvswitch span { font-weight: 700; }
 
 /* TV: QR da una parte, codice dall'altra */
 .tvlink { width: 100%; max-width: 62rem; margin: auto; display: flex; flex-direction: column; align-items: center; animation: authin .35s ease-out; }
