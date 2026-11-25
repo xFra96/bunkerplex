@@ -20,10 +20,8 @@ on:
 permissions:
   contents: write
 
-# Stesso gruppo della release del server: la copia dell'APK nella release fissa
-# app-tv (per i server di prima) non si accavalla con la sua ricreazione
 concurrency:
-  group: release
+  group: release-app
   cancel-in-progress: false
 
 env:

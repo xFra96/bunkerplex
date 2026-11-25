@@ -9395,6 +9395,8 @@ def apk_link(request: Request):
     """L'indirizzo per scaricare l'app da un telefono di casa, con il suo QR (SVG)."""
     host = request.headers.get("host", "")
     port = host.rsplit(":", 1)[1] if ":" in host and not host.endswith("]") else "32500"
+    if not APK_PATH.is_file():       # la copia per la prima installazione arriva tra poco
+        threading.Thread(target=updater.refresh_apps, kwargs={"force": True}, daemon=True).start()
     ip = private_ip(host)
     if not ip:
         return {"url": "", "svg": "", "apk": APK_PATH.is_file()}
