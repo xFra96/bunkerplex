@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS users(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub);
 
--- Un gettone per ogni server BunkerPlex collegato all'account (si salva solo l'impronta).
+-- Un gettone per ogni server BunkerPlex o app collegati all'account (si salva solo l'impronta).
+-- device: nome del dispositivo (il server usa il suo nome, l'app «Telefono ...»).
 CREATE TABLE IF NOT EXISTS sessions(
   token_hash TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS servers(
   friends INTEGER NOT NULL DEFAULT 1, -- 0 = solo per gli altri PC dello stesso account
   pin TEXT NOT NULL,
   t REAL NOT NULL,
+  token_hash TEXT,                   -- sessione del PC che l'ha registrato: solo lui lo aggiorna
   PRIMARY KEY(user_id, sid)
 );
 
@@ -108,4 +110,52 @@ CREATE TABLE IF NOT EXISTS google_flows(
   email TEXT,
   error TEXT,
   exp REAL NOT NULL
+);
+
+-- «Password dimenticata»: un codice di 6 cifre per email, 15 minuti (si salva l'impronta).
+CREATE TABLE IF NOT EXISTS reset_codes(
+  user_id INTEGER PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  exp REAL NOT NULL,
+  tries INTEGER NOT NULL DEFAULT 0,
+  sent REAL NOT NULL
+);
+
+-- Notifiche (campanella, BP Avvisi, web push).
+CREATE TABLE IF NOT EXISTS notices(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  kind TEXT,
+  title TEXT,
+  body TEXT,
+  t REAL NOT NULL,
+  from_user INTEGER,
+  read INTEGER NOT NULL DEFAULT 0     -- 1 = letto
+);
+CREATE INDEX IF NOT EXISTS notices_user ON notices(user_id, id);
+
+-- Dispositivi che ricevono le notifiche (gettone nell'indirizzo, si salva l'impronta).
+CREATE TABLE IF NOT EXISTS notice_devices(
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  label TEXT,
+  kind TEXT,
+  open_url TEXT,
+  endpoint TEXT,                     -- web push
+  p256dh TEXT,
+  auth TEXT,
+  created REAL NOT NULL,
+  last_seen REAL
+);
+CREATE INDEX IF NOT EXISTS notice_devices_user ON notice_devices(user_id);
+
+CREATE TABLE IF NOT EXISTS notice_prefs(
+  user_id INTEGER PRIMARY KEY,
+  v TEXT
+);
+
+-- Valori del servizio (chiavi VAPID delle web push...).
+CREATE TABLE IF NOT EXISTS kv(
+  k TEXT PRIMARY KEY,
+  v TEXT
 );

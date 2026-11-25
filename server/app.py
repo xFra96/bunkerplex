@@ -7419,6 +7419,7 @@ async def share_ticket(request: Request):
 @app.get("/api/sharing")
 def sharing_status():
     """Per Impostazioni (rete di casa): stato della condivisione e amici registrati."""
+    manager_only()
     con = db()
     try:
         accounts = [{"id": r["id"], "name": r["name"], "approved": bool(r["approved"]),
@@ -7466,6 +7467,7 @@ async def sharing_set(request: Request):
 async def sharing_approve(account: int, request: Request):
     """Accetta (o sospende) la richiesta di un amico. Accettando, lo scambio e'
     reciproco: se lui ha offerto le sue raccolte, compaiono qui da sole."""
+    manager_only()
     body = await read_json(request)
     con = db()
     try:
@@ -7490,6 +7492,7 @@ async def sharing_approve(account: int, request: Request):
 @app.delete("/api/sharing/accounts/{account}")
 def sharing_remove(account: int):
     """Toglie un amico: non entra piu' qui, e le sue raccolte spariscono da questo server."""
+    manager_only()
     con = db()
     try:
         r = con.execute("SELECT back_url FROM accounts WHERE id=?", (account,)).fetchone()
@@ -9214,6 +9217,7 @@ def friends_list():
 async def friends_add(request: Request):
     """Collega il server di un amico: ci si registra da lui (o si accede con un
     account gia' fatto). La password non viene conservata: resta solo il gettone."""
+    manager_only()
     body = await read_json(request)
     name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:30]
     url = friend_address(body.get("url"))
@@ -9304,6 +9308,7 @@ def friend_store(name, url, user, token, account=None, pin=None, extra=None):
 @app.delete("/api/friends/{n}")
 def friends_remove(n: int):
     """Toglie un amico: spariscono le sue raccolte e lui non entra piu' qui."""
+    manager_only()
     f = friend_by_n(n)
     if f and f.get("account"):
         account_drop(f["account"])
@@ -9338,6 +9343,7 @@ def friends_refresh(n: int):
 
 @app.post("/api/friends/quality")
 async def friends_quality(request: Request):
+    manager_only()
     body = await read_json(request)
     q = str(body.get("quality") or "")
     if q not in QUALITIES:

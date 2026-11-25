@@ -68,7 +68,22 @@ async function ensureServerCols(env) {
   const cols = (await env.DB.prepare('PRAGMA table_info(servers)').all()).results.map((c) => c.name);
   if (!cols.includes('lan')) await env.DB.prepare('ALTER TABLE servers ADD COLUMN lan TEXT').run();
   if (!cols.includes('friends')) await env.DB.prepare('ALTER TABLE servers ADD COLUMN friends INTEGER NOT NULL DEFAULT 1').run();
+  if (!cols.includes('token_hash')) await env.DB.prepare('ALTER TABLE servers ADD COLUMN token_hash TEXT').run();
   serverCols = true;
+}
+
+// Indirizzo e impronta di un server li scrive solo la sessione del PC che l'ha
+// registrato: un altro dispositivo dell'account (un telefono, un gettone rubato)
+// non puo' dirottare gli amici verso un indirizzo falso. Passa anche una sessione
+// nuova dello stesso PC (stesso nome di dispositivo, dopo un nuovo accesso) o quando
+// la sessione di prima non c'e' piu' (password cambiata, uscita).
+// Provvisorio: poi il server avra' una credenziale sua (docs/architettura.md).
+async function serverWriter(env, user, sid) {
+  const cur = await env.DB.prepare('SELECT s.token_hash, ss.device FROM servers s ' +
+    'LEFT JOIN sessions ss ON ss.token_hash = s.token_hash WHERE s.user_id = ? AND s.sid = ?').bind(user.id, sid).first();
+  if (cur && cur.token_hash && cur.token_hash !== user.token_hash && cur.device != null && cur.device !== user.s_device) {
+    fail(403, 'Questo server lo aggiorna solo il PC su cui gira');
+  }
 }
 
 function hex(buf) {
@@ -139,7 +154,7 @@ async function auth(request, env) {
   if (!m) fail(401, 'Accesso scaduto: rientra');
   const th = await sha256(m[1]);
   const u = await env.DB.prepare(
-    'SELECT u.*, s.token_hash, s.last_seen FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'
+    'SELECT u.*, s.token_hash, s.last_seen, s.device AS s_device FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'
   ).bind(th).first();
   if (!u) fail(401, 'Accesso scaduto: rientra');
   if (u.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
@@ -213,8 +228,7 @@ async function userDevices(env, ts, uid) {
   const out = [];
   for (const d of list) {
     const hn = String(d.hostname || '').toLowerCase();
-    // Tailscale aggiunge "-1", "-2"... se il nome c'e' gia'
-    const row = rows.find((x) => hn === x.host || (hn.startsWith(x.host + '-') && /^\d+$/.test(hn.slice(x.host.length + 1))));
+    const row = rows.find((x) => sameHost(hn, x.host));
     if (!row) continue;
     out.push({
       id: String(d.nodeId || d.id), host: row.host, hostname: hn, label: row.label || hn,
@@ -222,6 +236,21 @@ async function userDevices(env, ts, uid) {
     });
   }
   return out;
+}
+
+// Tailscale aggiunge "-1", "-2"... se il nome c'e' gia'
+function sameHost(hn, host) {
+  return hn === host || (hn.startsWith(host + '-') && /^\d+$/.test(hn.slice(host.length + 1)));
+}
+
+// true se un dispositivo con quel nome e' adesso nella rete, false se no,
+// null se Tailscale non lascia leggere l'elenco.
+async function tsHostInUse(ts, host) {
+  const r = await fetch('https://api.tailscale.com/api/v2/tailnet/-/devices', {
+    headers: { Authorization: 'Bearer ' + ts.access }
+  });
+  if (!r.ok) return null;
+  return ((await r.json()).devices || []).some((d) => sameHost(String(d.hostname || '').toLowerCase(), host));
 }
 
 async function tsDeleteDevice(ts, d) {
@@ -1168,6 +1197,18 @@ async function route(request, env) {
       'SELECT f.a, f.b, f.status, f.t, ua.username AS ua, ub.username AS ub FROM friends f ' +
       'JOIN users ua ON ua.id = f.a JOIN users ub ON ub.id = f.b WHERE f.a = ? OR f.b = ?'
     ).bind(user.id, user.id).all();
+    // I server condivisi da tutti gli amici in una query sola (una per amico
+    // superava il limite di query per richiesta di D1 con ~45 amici)
+    const shared = await env.DB.prepare(
+      "SELECT s.user_id, s.sid, s.name, s.url, s.pin, s.t FROM servers s JOIN friends f ON f.status = 'ok' AND " +
+      '((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) WHERE s.friends = 1'
+    ).bind(user.id, user.id).all();
+    const byUser = new Map();
+    for (const s of shared.results) {
+      const { user_id: uid, ...srv } = s;
+      if (!byUser.has(uid)) byUser.set(uid, []);
+      byUser.get(uid).push(srv);
+    }
     const out = [];
     for (const r of rows.results) {
       const other = r.a === user.id ? r.b : r.a;
@@ -1175,10 +1216,7 @@ async function route(request, env) {
         id: other, username: r.a === user.id ? r.ub : r.ua, t: r.t,
         status: r.status === 'ok' ? 'ok' : (r.a === user.id ? 'sent' : 'received'), servers: []
       };
-      if (item.status === 'ok') {
-        const s = await env.DB.prepare('SELECT sid, name, url, pin, t FROM servers WHERE user_id = ? AND friends = 1').bind(other).all();
-        item.servers = s.results;
-      }
+      if (item.status === 'ok') item.servers = byUser.get(other) || [];
       out.push(item);
     }
     // I propri server accesi: da ogni PC dell'account si arriva agli altri (anche
@@ -1240,8 +1278,17 @@ async function route(request, env) {
     const ts = await tsAccess(env);
     const host = cleanHost(b.host);
     const ephemeral = b.ephemeral === true;      // l'app: sparisce da sola quando si spegne
-    if (host) {
+    // Senza nome non si potrebbe contare il dispositivo: il limite si salterebbe
+    if (!host) fail(400, 'Manca il nome del dispositivo: aggiorna BunkerPlex');
+    {
       await ensureDevices(env);
+      // Un nome che e' gia' di un altro account non si prende finche' quel dispositivo
+      // e' nella rete (prima l'ultimo che chiedeva diventava il padrone, e poteva
+      // togliere il PC di un amico, il cui nome bunkerplex-<sid> e' noto).
+      const owner = await env.DB.prepare('SELECT user_id FROM ts_devices WHERE host = ?').bind(host).first();
+      if (owner && owner.user_id !== user.id && await tsHostInUse(ts, host) !== false) {
+        fail(403, 'Questo nome di dispositivo è di un altro account');
+      }
       const mine = await userDevices(env, ts, user.id);
       if (mine) {
         const others = mine.filter((d) => d.host !== host);
@@ -1305,14 +1352,17 @@ async function route(request, env) {
         (lan && !/^https:\/\/[^\s/]{3,200}$/.test(lan))) {
       fail(400, 'Richiesta non valida');
     }
-    await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t) VALUES(?,?,?,?,?,?,?,?) ' +
+    await serverWriter(env, user, sid);
+    await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,?) ' +
       'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
-      'friends = excluded.friends, pin = excluded.pin, t = excluded.t')
-      .bind(user.id, sid, String(b.name || '').slice(0, 40), url, lan, b.friends === false ? 0 : 1, b.pin, now()).run();
+      'friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = excluded.token_hash')
+      .bind(user.id, sid, String(b.name || '').slice(0, 40), url, lan, b.friends === false ? 0 : 1, b.pin, now(), user.token_hash).run();
     return json({ ok: true });
   }
   const sm = /^\/servers\/([0-9a-f]{8})$/.exec(path);
   if (sm && method === 'DELETE') {
+    await ensureServerCols(env);
+    await serverWriter(env, user, sm[1]);
     await env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sm[1]).run();
     return json({ ok: true });
   }
