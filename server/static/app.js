@@ -1819,6 +1819,7 @@ function showSecret(title, name, pass, label) {
 function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account']);
+  if (auth && auth.user && auth.user.linked && !TV) out.push(['notices', 'Notifiche']);
   if (adminHere()) out.push(['admin', 'Plancia']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
     ['friends', 'Amici e dispositivi'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
@@ -1847,6 +1848,7 @@ var SICON = {
   catalog: '<rect x="4.5" y="3.5" width="15" height="17" rx="1.8"/><path d="M8 8h8M8 12h8M8 16h5"/>',
   subtitles: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6.5 12.5h3M11.5 12.5h6M6.5 15.5h7M15.5 15.5h2"/>',
   friends: '<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>',
+  notices: '<path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5zM10 20.5h4"/>',
   updates: '<path d="M20 11a8 8 0 0 0-14.5-4.5M4 13a8 8 0 0 0 14.5 4.5M5.5 3v3.5H9M18.5 21v-3.5H15"/>',
   device: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M12 16.5V20"/>',
   apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>'
@@ -2234,6 +2236,7 @@ async function settingsArea(area) {
   if (!known) { location.replace('#/settings'); return ''; }
 
   if (area === 'account') return accountArea(i);
+  if (area === 'notices') return noticesArea();
 
   if (area === 'libraries') {
     var libsHtml = libs.map(function (l) {
@@ -2400,6 +2403,87 @@ function installPanel() {
     body = '<p>Nel menu del browser scegli <b>Installa app</b> o <b>Aggiungi a schermata Home</b>: si apre a tutto schermo, come un\'app.</p>';
   }
   return '<div class="panel"><h2>App sulla schermata Home</h2>' + body + '</div>';
+}
+
+// ---- Notifiche su telefoni e tablet
+// Gli avvisi dell'account (nuovi titoli, amici, aggiornamenti) li manda il servizio
+// account. Nell'app Android li controlla l'app da sola ogni 15 minuti circa;
+// su iPhone e iPad (e nei browser) arrivano come notifiche push alla pagina
+// «BunkerPlex Avvisi» del servizio, da aggiungere alla schermata Home.
+var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+var NOTICE_KINDS = [['titles', 'Nuovi film ed episodi sui tuoi PC'], ['friends_titles', 'Novità sui PC dei tuoi amici'],
+  ['friends', 'Richieste di amicizia'], ['update', 'Aggiornamenti del server']];
+
+function noticeWhen(t) {
+  return new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+function noticeHereHtml() {
+  if (PHONE_APP && typeof tvApp.noticesState === 'function') {
+    var st = tvCall('noticesState');
+    if (st === 'on') {
+      return '<p>' + dot(true) + ' Attive su questo dispositivo: l\'app controlla gli avvisi ogni 15 minuti circa, anche chiusa.</p>' +
+        '<div class="actions"><button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button></div>';
+    }
+    if (st === 'denied') {
+      return '<p>' + dot(false) + ' Android non permette all\'app di mostrare notifiche.</p>' +
+        '<div class="actions"><button class="btn primary f" data-act="noticeperm" data-key="noticeperm">Apri le impostazioni di Android</button>' +
+        '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni</button></div>';
+    }
+    return '<p>Ricevi un avviso quando arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti. Funziona anche fuori casa.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="android" data-key="noticeon">Attiva le notifiche</button></div>';
+  }
+  if (APP) {
+    return '<p>Questa versione dell\'app non mostra ancora le notifiche: aggiornala da Impostazioni → Aggiornamenti.</p>';
+  }
+  if (IOS) {
+    return '<p>Su iPhone e iPad le notifiche arrivano dalla piccola app <b>BP Avvisi</b> (serve iOS 16.4 o più recente):</p>' +
+      '<ol class="steps"><li>Tocca «Attiva su questo iPhone»: si apre la pagina degli avvisi in Safari</li>' +
+      '<li>Lì tocca <b>Condividi</b> → <b>Aggiungi alla schermata Home</b></li>' +
+      '<li>Apri <b>BP Avvisi</b> dalla schermata Home e tocca «Attiva le notifiche»</li></ol>' +
+      '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="ios" data-key="noticeon">Attiva su questo ' + (/iPad/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 && !/iPhone/.test(navigator.userAgent) ? 'iPad' : 'iPhone') + '</button></div>';
+  }
+  return '<p>Sul telefono Android le attivi dall\'app BunkerPlex (Impostazioni → Notifiche); su iPhone e iPad da Safari, in questa stessa pagina. ' +
+    'In questo browser puoi ricevere gli avvisi dalla pagina «BunkerPlex Avvisi».</p>' +
+    '<div class="actions"><button class="btn f" data-act="noticeon" data-arg="web" data-key="noticeon">Attiva in questo browser</button></div>';
+}
+
+async function noticesArea() {
+  var d;
+  try { d = await api('/notices'); } catch (e) {
+    return settingsShell('notices', 'Notifiche', '', '<div class="panel"><p>' + dot(false) + ' ' +
+      esc(e.status === 404 ? 'Il servizio account non conosce ancora le notifiche: va aggiornato.' : e.message) + '</p></div>');
+  }
+  if (!d.linked) { location.replace('#/settings/account'); return ''; }
+  var prefs = d.prefs || {};
+  var kinds = NOTICE_KINDS.map(function (k) {
+    var on = prefs[k[0]] !== false;
+    return '<dt>' + esc(k[1]) + '</dt><dd><button class="btn f' + (on ? ' on' : '') + '" data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) +
+      '" data-key="npref-' + k[0] + '">' + (on ? IC.check + ' Sì' : 'No') + '</button></dd>';
+  }).join('');
+  var devs = (d.devices || []).map(function (v) {
+    var what = v.kind === 'android' ? 'App Android' : v.kind === 'ios' ? 'iPhone / iPad' : 'Browser';
+    var st = v.kind === 'android' ? (v.last_seen ? 'ultimo controllo ' + noticeWhen(v.last_seen) : 'in attesa del primo controllo')
+      : v.push ? 'notifiche attive' : 'da completare: apri BP Avvisi e tocca «Attiva»';
+    return '<div class="lib"><div class="head">' + avatar(v.label || what) + '<div class="name"><b>' + esc(v.label || what) + '</b><small>' +
+      esc(what + ' · ' + st) + '</small></div><button class="btn danger f" data-act="noticedel" data-arg="' + v.id + '" data-key="ndel-' + v.id + '">Togli</button></div></div>';
+  }).join('');
+  var list = (d.notices || []).slice(0, 15).map(function (n) {
+    return '<dt>' + esc(n.title) + '<small>' + esc(noticeWhen(n.t)) + '</small></dt><dd>' + esc(n.body) + '</dd>';
+  }).join('');
+  return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.',
+    '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
+    '<div class="panel"><h2>Cosa ti avvisa</h2><dl class="kv nkinds">' + kinds + '</dl></div>' +
+    '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
+    '<div class="panel"><h2>Ultimi avvisi</h2>' + (list ? '<dl class="kv nlist">' + list + '</dl>' : '<p>Ancora nessun avviso.</p>') + '</div>');
+}
+
+function deviceLabel(kind) {
+  var ua = navigator.userAgent;
+  var m = /Android [\d.]+; ([^;)]+?)(?: Build|\))/.exec(ua);
+  if (kind === 'android') return m && m[1] !== 'K' ? m[1].trim() : 'Telefono Android';
+  if (kind === 'ios') return /iPad/.test(ua) || (navigator.maxTouchPoints > 1 && !/iPhone/.test(ua)) ? 'iPad' : 'iPhone';
+  return /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
 }
 
 function accountArea(i) {
@@ -4445,6 +4529,35 @@ var actions = {
     toast(arg === '1' ? 'Collego i tuoi PC…' : 'Scollego i tuoi PC…');
     post('/account-friends/self', { on: arg === '1' }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
   },
+  noticeon: function (arg) {
+    var kind = arg || 'web';
+    // La pagina degli avvisi si apre subito (Safari blocca le finestre aperte dopo un'attesa)
+    var win = kind === 'android' ? null : window.open('about:blank', '_blank');
+    post('/notices/devices', { kind: kind, label: deviceLabel(kind), open: location.origin + '/' }).then(function (r) {
+      if (kind === 'android') {
+        tvApp.noticesSet(r.url);
+        toast('Notifiche attive su questo dispositivo');
+        setTimeout(render, 1500);
+        return;
+      }
+      if (win) win.location.href = r.url; else location.href = r.url;
+      render();
+    }, function (e) { if (win) win.close(); toast(e.message); });
+  },
+  noticeoff: function () {
+    if (typeof tvApp.noticesSet === 'function') tvApp.noticesSet('');
+    toast('Notifiche spente su questo dispositivo');
+    render();
+  },
+  noticeperm: function () { if (typeof tvApp.noticesSettings === 'function') tvApp.noticesSettings(); },
+  noticepref: function (arg) {
+    var p = String(arg).split(':'), body = {};
+    body[p[0]] = p[1] === '1';
+    api('/notices/prefs', { method: 'PUT', body: JSON.stringify(body) }).then(function () { render(); }, function (e) { toast(e.message); });
+  },
+  noticedel: function (arg) {
+    api('/notices/devices/' + arg, { method: 'DELETE' }).then(function () { toast('Dispositivo tolto'); render(); }, function (e) { toast(e.message); });
+  },
   afshare: function (arg) {
     toast(arg === '1' ? 'Apro la porta per gli amici…' : 'Spengo la condivisione…');
     post('/account-friends/share', { on: arg === '1' }).then(function () { render(); }, function (e) { toast(e.message); });
@@ -5742,6 +5855,9 @@ function activityState() {
     notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
   }
+  (i.notices || []).forEach(function (n) {
+    notes.push({ key: 'n:' + n.id, title: n.title, text: n.body, href: '#/settings/notices' });
+  });
   if (i.devices_full) {
     notes.push({ key: 'devfull', href: '#/settings/friends', title: 'Troppi dispositivi nell\'account',
       text: 'Questo PC non raggiunge amici e tuoi PC: togli un dispositivo in Impostazioni → Amici e dispositivi' });

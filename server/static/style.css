@@ -1363,3 +1363,9 @@ html.tv .srow > .sval { max-width: none; }
 }
 @keyframes sheetup { from { transform: translateY(100%); } }
 html.lite .sheet { animation: none !important; }
+
+/* Notifiche (Impostazioni → Notifiche) */
+.steps { margin: .4rem 0 1rem; padding-left: 1.3rem; color: var(--ink2); }
+.steps li { margin: .25rem 0; }
+.nlist dt small { display: block; color: var(--ink2); font-weight: 400; font-size: .85rem; }
+@media (max-width: 640px) { .nkinds, .nlist { grid-template-columns: 1fr; } .nkinds dd, .nlist dd { border-top: 0; padding-top: 0; } }
