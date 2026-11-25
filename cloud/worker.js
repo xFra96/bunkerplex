@@ -218,6 +218,7 @@ async function serverRoutes(request, env, path, method) {
     const b = await body(request);
     const url = cleanUrl(b.url);
     const lan = cleanUrl(b.lan);
+    const pub = cleanUrl(b.public);
     const pin = String(b.pin || '');
     if (pin && !/^[0-9a-f]{64}$/.test(pin)) fail(400, 'Impronta non valida');
     const name = String(b.name || '').slice(0, 40);
@@ -227,10 +228,10 @@ async function serverRoutes(request, env, path, method) {
     await env.DB.batch([
       env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ? WHERE sid = ?')
         .bind(t, name, String(b.version || '').slice(0, 40), securePort, srv.sid),
-      env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,NULL) ' +
+      env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, public, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,?,NULL) ' +
         'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
-        'friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = NULL')
-        .bind(srv.owner_id, srv.sid, name, url, lan, b.friends === true ? 1 : 0, pin, t)
+        'public = excluded.public, friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = NULL')
+        .bind(srv.owner_id, srv.sid, name, url, lan, pub, b.friends === true ? 1 : 0, pin, t)
     ]);
     // Il nome nella rete di casa (per il certificato valido): dall'indirizzo lan
     const names = await syncServerDns(env, srv.sid, lan ? new URL(lan).hostname : '');
@@ -303,7 +304,7 @@ async function userServerRoutes(request, env, path, method, user) {
     await ensureCertTables(env);
     const t = now();
     const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
-    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.pin, s.friends, s.t, c.last_seen, c.secure_port, ' +
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, c.last_seen, c.secure_port, ' +
       '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
@@ -315,7 +316,7 @@ async function userServerRoutes(request, env, path, method, user) {
       ...own.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
         online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends,
-        addresses: { lan: s.lan || '', remote: s.url || '',
+        addresses: { lan: s.lan || '', remote: s.url || '', public: s.public || '',
           secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       })),
       ...shared.results.map((s) => ({
@@ -426,6 +427,9 @@ async function ensureCertTables(env) {
   ]);
   const cols = (await env.DB.prepare('PRAGMA table_info(server_creds)').all()).results.map((c) => c.name);
   if (!cols.includes('secure_port')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN secure_port INTEGER NOT NULL DEFAULT 0').run();
+  // Indirizzo pubblico del server (Tailscale Funnel): la PWA lo usa fuori casa
+  const scols = (await env.DB.prepare('PRAGMA table_info(servers)').all()).results.map((c) => c.name);
+  if (!scols.includes('public')) await env.DB.prepare("ALTER TABLE servers ADD COLUMN public TEXT NOT NULL DEFAULT ''").run();
   certTables = true;
 }
 
