@@ -18,6 +18,8 @@
 // BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
 // con un codice via email (vedi /reset/start). Trigger cron settimanale (es.
 // «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
+// Notifiche su telefoni e tablet: tutto da solo, tabelle e chiavi VAPID nel database
+// (vedi «BunkerPlex Avvisi», /notices e /avvisi).
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -626,6 +628,353 @@ async function googleRoutes(request, env, url, path, method) {
   return null;
 }
 
+// ---- Notifiche sui telefoni e tablet («BunkerPlex Avvisi»)
+//
+// Gli avvisi di un account (nuovi film ed episodi, aggiornamenti, amicizie) stanno
+// qui, perche' questo servizio si raggiunge da ovunque, anche fuori casa.
+// I server di casa li mandano con POST /notices; le richieste di amicizia nascono
+// gia' qui. Ogni telefono o tablet ha un suo gettone (notice_devices), creato dal
+// server di casa con POST /notices/devices quando si tocca «Attiva le notifiche»:
+//   - iPhone e iPad: una piccola web app su questo indirizzo (/avvisi/<gettone>),
+//     da aggiungere alla schermata Home; riceve le notifiche push del browser
+//     (Web Push con chiavi VAPID, create qui la prima volta e salvate nel database);
+//   - app Android: ogni 15 minuti circa chiede /avvisi/<gettone>/list e mostra
+//     le notifiche nuove (niente Firebase).
+// Le chiavi e i gettoni restano nel database D1: non serve configurare nulla.
+
+const NOTICE_KEEP = 100;        // avvisi tenuti per account
+const NOTICE_DAYS = 30;         // e per quanti giorni al massimo
+const NOTICE_RATE = 40;         // avvisi all'ora che un account puo' mandare
+const NOTICE_DEVICES = 10;      // telefoni e tablet per account
+const NOTICE_KINDS = ['titles', 'friends_titles', 'friends', 'update'];
+const ICON_PNG = 'iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADm0lEQVR42u3czYtVZQDH8fOcc+/cGbkOOeMomArZC7ZoY5ugNi2EpI2zKUHBhQsj99KmRIgW7QoqRi2oZUWrIKQX2qgbN7Y2WrgIxMbxpav33vM8T5s0Ria4KDN453y+f8F5zvPhx11cTth2Ym8hrVTpFQgOwSE4BIfgEByCQ3AIDsEhwSE4BIfgEByCQ3AIDsEhOCQ4BIfgEByCQ3AIDsEhOASHBIfgEByCQ3AIDsEhOASH4BAcEhyCQ3AIDsEhOASH4BAcgkOCQ3AIjhULIYQQ3DEcK8gY1MN+PWiVlWuGY5mMfj3YtXn707Pbr95erMqyNCFw/HuqEO4O+89u3vHD0U8Ovfj6Uu9Wvx6aEDju+yjvDPubpqZPv/nelwff39Kd+at3w4TA8Z+PnPMw1vMvvPrLsVMH9+wzIXAs+/FRlWVMcUt3ZuGNd78yIXA8UFVWOeeY0n4TAocJgcOEwGFC4DAhcJgQOEwIHCYEDhMChwn5nwlp5v9C4BhpQupYN3BC4BhpQqYnu4u9G62yatSEwDHShJx969N9z79y7e+lmGJzJgSOkSbkqZknvz784cfzxydbnet3bjZkQuAYaUJSzimnIy/N//z2qdd2v9yQCYFjtNcUQhnKmOKu2QZNCBwmBA4TAocJgcOEwGFC4DAhcJgQOEzIepkQOEwIHCYEjsd5Qq7eXhzUwzHyAcfaTcgXB05u3ThbxzguPuBY/e5ReG5u51S7k4s0Lg/ecnerV8455tQqq1v93gc/nvns3Detqppqd1LOcDS6mFJVlq1Q/Xr54jvff/Tbn5dnN0wXRTEuMuBY/cH46fOF89+GEOa6m+pYj9dB4FibwQhjJwOONRuMPI4ngsNgwGEw4DAYcBgMOAwGHAYDDoMBh8GAw2Cs18GAw2DAYTDgMBhwGAw4DAYcBgMOgwGHwYDDYMBhMNQ8HAYDDoMBh8GAw2DAsQqDUeQ6xYmqbTDgWFbKKRRhomobDDgekJEn253e8O7JswunL3xnMB6isO3E3nV4qhD6w8Ezczs3tDvn/rg0132iKELKyX1bjiLn3GlP/H7tSsxp68aZOkWDAccyHxOtdihCnaJrhmMFH9lgPEK+CSY4BIfgEByCQ3AIDsEhOASHBIfgEByCQ3AIDsEhOASH4JDgEByCQ3AIDsEhOASH4BAcEhyCQ3AIDsEhOASH4BAcgkNwSHAIDsEhOASH4BAcgkNwCA4JDsGhR+kfx6aAFawJ73gAAAAASUVORK5CYII=';
+
+let noticeTables = false;
+async function ensureNotices(env) {
+  if (noticeTables) return;
+  await env.DB.batch([
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS notices(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT, ' +
+      'title TEXT, body TEXT, t REAL NOT NULL, from_user INTEGER)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS notices_user ON notices(user_id, id)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS notice_devices(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, ' +
+      'label TEXT, kind TEXT, open_url TEXT, endpoint TEXT, p256dh TEXT, auth TEXT, created REAL NOT NULL, last_seen REAL)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS notice_devices_user ON notice_devices(user_id)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS notice_prefs(user_id INTEGER PRIMARY KEY, v TEXT)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+  ]);
+  noticeTables = true;
+}
+
+const te = new TextEncoder();
+function b64u(buf) {
+  let s = '';
+  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function unb64u(s) {
+  s = String(s || '');
+  return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+}
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let i = 0;
+  for (const p of parts) { out.set(p, i); i += p.length; }
+  return out;
+}
+async function hkdf(salt, ikm, info, len) {
+  const key = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt, info }, key, len * 8));
+}
+
+// Le chiavi VAPID di questo servizio: create alla prima notifica, poi sempre le stesse
+async function vapidKeys(env) {
+  const saved = await env.DB.prepare("SELECT v FROM kv WHERE k = 'vapid'").first('v');
+  if (saved) return JSON.parse(saved);
+  const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const keys = { priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: b64u(await crypto.subtle.exportKey('raw', kp.publicKey)) };
+  await env.DB.prepare("INSERT OR IGNORE INTO kv(k, v) VALUES('vapid', ?)").bind(JSON.stringify(keys)).run();
+  return JSON.parse(await env.DB.prepare("SELECT v FROM kv WHERE k = 'vapid'").first('v'));
+}
+
+async function vapidHeader(keys, endpoint, contact) {
+  const head = b64u(te.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const claims = b64u(te.encode(JSON.stringify({
+    aud: new URL(endpoint).origin, exp: Math.floor(now()) + 12 * 3600, sub: 'mailto:' + contact
+  })));
+  const key = await crypto.subtle.importKey('jwk', keys.priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, te.encode(head + '.' + claims));
+  return 'vapid t=' + head + '.' + claims + '.' + b64u(sig) + ', k=' + keys.pub;
+}
+
+// Cifratura del messaggio per il browser (RFC 8291, aes128gcm)
+async function encryptPush(p256dh, authSecret, text) {
+  const uaPub = unb64u(p256dh);
+  const mine = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const myPub = new Uint8Array(await crypto.subtle.exportKey('raw', mine.publicKey));
+  const uaKey = await crypto.subtle.importKey('raw', uaPub, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, mine.privateKey, 256));
+  const ikm = await hkdf(unb64u(authSecret), shared, concat(te.encode('WebPush: info\0'), uaPub, myPub), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, te.encode('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await hkdf(salt, ikm, te.encode('Content-Encoding: nonce\0'), 12);
+  const key = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, concat(te.encode(text), new Uint8Array([2]))));
+  return concat(salt, new Uint8Array([0, 0, 16, 0]), new Uint8Array([myPub.length]), myPub, data);
+}
+
+async function sendPush(env, dev, payload) {
+  const keys = await vapidKeys(env);
+  const res = await fetch(dev.endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: await vapidHeader(keys, dev.endpoint, env.MAIL_FROM || 'bunkerplex@outlook.it'),
+      TTL: '86400', Urgency: 'normal', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream'
+    },
+    body: await encryptPush(dev.p256dh, dev.auth, JSON.stringify(payload))
+  });
+  // Iscrizione scaduta o tolta dal telefono: non si riprova piu'
+  if (res.status === 404 || res.status === 410) {
+    await env.DB.prepare('UPDATE notice_devices SET endpoint = NULL, p256dh = NULL, auth = NULL WHERE token_hash = ?')
+      .bind(dev.token_hash).run();
+  }
+  return res.status;
+}
+
+async function noticePrefs(env, uid) {
+  const v = await env.DB.prepare('SELECT v FROM notice_prefs WHERE user_id = ?').bind(uid).first('v');
+  let p = {};
+  try { p = JSON.parse(v || '{}') || {}; } catch (e) { p = {}; }
+  const out = {};
+  for (const k of NOTICE_KINDS) out[k] = p[k] !== false;
+  return out;
+}
+
+const cleanText = (raw, max) => String(raw || '').replace(/[\u0000-\u001f]+/g, ' ').trim().slice(0, max);
+
+// Un avviso a un account: si salva e parte subito verso i suoi iPhone/iPad iscritti
+async function notify(env, uid, kind, title, text, from) {
+  await ensureNotices(env);
+  if (!(await noticePrefs(env, uid))[kind]) return 0;
+  const t = now();
+  const id = (await env.DB.prepare('INSERT INTO notices(user_id, kind, title, body, t, from_user) VALUES(?,?,?,?,?,?)')
+    .bind(uid, kind, title, text, t, from || null).run()).meta.last_row_id;
+  await env.DB.prepare('DELETE FROM notices WHERE user_id = ? AND (t < ? OR id <= (SELECT id FROM notices WHERE user_id = ? ' +
+    'ORDER BY id DESC LIMIT 1 OFFSET ?))').bind(uid, t - NOTICE_DAYS * 86400, uid, NOTICE_KEEP).run();
+  const devs = (await env.DB.prepare('SELECT token_hash, endpoint, p256dh, auth FROM notice_devices ' +
+    'WHERE user_id = ? AND endpoint IS NOT NULL').bind(uid).all()).results;
+  for (const d of devs) {
+    try {
+      await sendPush(env, d, { id, title, body: text, kind, tag: 'bp-' + kind + '-' + id });
+    } catch (e) { /* il telefono la vedra' comunque nella lista degli avvisi */ }
+  }
+  return id;
+}
+
+// Un avviso che non deve far fallire la richiesta che lo genera (es. l'amicizia)
+async function notifySafe(env, uid, kind, title, text, from) {
+  try { await notify(env, uid, kind, title, text, from); } catch (e) { /* niente */ }
+}
+
+async function friendIds(env, uid) {
+  return (await env.DB.prepare("SELECT CASE WHEN a = ? THEN b ELSE a END AS id FROM friends WHERE status = 'ok' AND (a = ? OR b = ?)")
+    .bind(uid, uid, uid).all()).results.map((r) => r.id);
+}
+
+function noticeJson(r) {
+  return { id: r.id, kind: r.kind, title: r.title, body: r.body, t: r.t };
+}
+
+async function noticeDevice(env, token) {
+  if (!/^[0-9a-f]{64}$/.test(token)) return null;
+  await ensureNotices(env);
+  const d = await env.DB.prepare('SELECT d.*, u.disabled FROM notice_devices d JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?')
+    .bind(await sha256(token)).first();
+  return d && !d.disabled ? d : null;
+}
+
+function avvisiPage(token, dev, keys) {
+  const base = '/avvisi/' + token;
+  const cfg = JSON.stringify({ base, key: keys.pub, open: dev.open_url || '' }).replace(/</g, '\\u003c');
+  const html = '<!doctype html><html lang="it"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
+    '<meta name="theme-color" content="#060a07"><title>BunkerPlex Avvisi</title>' +
+    '<link rel="manifest" href="' + base + '/manifest.json"><link rel="apple-touch-icon" href="/avvisi/icon.png">' +
+    '<meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="BP Avvisi">' +
+    '<meta name="apple-mobile-web-app-status-bar-style" content="black">' +
+    '<style>body{margin:0;background:#060a07;color:#f2f5f2;font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}' +
+    'main{max-width:34rem;margin:0 auto;padding:calc(env(safe-area-inset-top) + 1.2rem) 1rem 2rem}h1{font-size:1.4rem;margin:0 0 .3rem}' +
+    'h1 b{color:#38c172}p{color:#c9d3cc;margin:.4rem 0}.box{background:#0e1510;border:1px solid #1f2b23;border-radius:.8rem;padding:1rem;margin:1rem 0}' +
+    '.btn{display:inline-block;border:0;border-radius:.6rem;padding:.75rem 1.2rem;font:600 1rem system-ui,sans-serif;background:#1a7f45;' +
+    'color:#fff;text-decoration:none;cursor:pointer;margin:.3rem .4rem .3rem 0}.btn.alt{background:#1f2b23}' +
+    'ol{padding-left:1.2rem;color:#c9d3cc}.n{padding:.7rem 0;border-top:1px solid #1f2b23}.n:first-child{border:0}' +
+    '.n b{display:block}.n small{color:#8b9a90}.err{color:#ff8f80}.ok{color:#38c172}</style></head><body><main>' +
+    '<h1><b>BunkerPlex</b> Avvisi</h1><p>Le notifiche di BunkerPlex su questo dispositivo.</p>' +
+    '<div class="box" id="state"></div><div class="box"><b>Ultimi avvisi</b><div id="list"><p>…</p></div></div>' +
+    '</main><script>var C=' + cfg + ';' + AVVISI_JS + '</script></body></html>';
+  return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY' } });
+}
+
+// Lo script della pagina: chiede il permesso, iscrive il browser e mostra gli ultimi avvisi
+const AVVISI_JS = `
+var st=document.getElementById('state'),ls=document.getElementById('list');
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function api(p,m,b){return fetch(C.base+p,{method:m||'GET',headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.detail||'Errore');return j})})}
+function u8(s){s=s.replace(/-/g,'+').replace(/_/g,'/');var b=atob(s+'==='.slice((s.length+3)%4));return Uint8Array.from(b,function(c){return c.charCodeAt(0)})}
+var standalone=navigator.standalone||matchMedia('(display-mode: standalone)').matches;
+var ios=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+var open=C.open?'<a class="btn alt" href="'+esc(C.open)+'">Apri BunkerPlex</a>':'';
+function show(h){st.innerHTML=h}
+function reg(){return navigator.serviceWorker.register('/avvisi/sw.js?b='+encodeURIComponent(C.base),{scope:'/avvisi/'}).then(function(){return navigator.serviceWorker.ready})}
+function sub(){return reg().then(function(r){return r.pushManager.getSubscription().then(function(s){return s||r.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:u8(C.key)})})}).then(function(s){return api('/push','POST',s.toJSON())})}
+function on(){Notification.requestPermission().then(function(p){if(p!=='granted'){show('<p class="err">Notifiche non permesse. Le riattivi da Impostazioni → Notifiche → BP Avvisi.</p>');return}return sub().then(function(){paint(true)})}).catch(function(e){show('<p class="err">'+esc(e.message)+'</p>')})}
+function off(){reg().then(function(r){return r.pushManager.getSubscription()}).then(function(s){return s&&s.unsubscribe()}).then(function(){return api('/push','DELETE')}).then(function(){paint(false)})}
+function test(){api('/test','POST').then(function(){},function(e){alert(e.message)})}
+function paint(active){
+ if(!('serviceWorker' in navigator)||!('PushManager' in window)){
+  show(ios&&!standalone?'<p><b>Ultimo passo:</b> aggiungi questa pagina alla schermata Home.</p><ol><li>Tocca <b>Condividi</b> (il quadrato con la freccia) in Safari</li><li>Scegli <b>Aggiungi alla schermata Home</b>, poi <b>Aggiungi</b></li><li>Apri <b>BP Avvisi</b> dalla schermata Home e tocca «Attiva le notifiche»</li></ol><p><small>Serve iOS 16.4 o più recente.</small></p>'
+   :'<p class="err">Questo browser non riceve notifiche push.</p>'+open);return}
+ if(active){show('<p class="ok">● Notifiche attive su questo dispositivo.</p><button class="btn" id="t">Manda una prova</button><button class="btn alt" id="x">Spegni</button>'+open);
+  document.getElementById('t').onclick=test;document.getElementById('x').onclick=off;return}
+ show('<p>Ricevi un avviso quando arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti.</p><button class="btn" id="a">Attiva le notifiche</button>'+open);
+ document.getElementById('a').onclick=on}
+function when(t){return new Date(t*1000).toLocaleString('it-IT',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
+api('/list').then(function(j){ls.innerHTML=j.notices.length?j.notices.map(function(n){return '<div class="n"><b>'+esc(n.title)+'</b>'+esc(n.body)+'<br><small>'+when(n.t)+'</small></div>'}).join(''):'<p>Ancora nessun avviso.</p>';
+ var perm=window.Notification&&Notification.permission==='granted';
+ if(perm&&'serviceWorker' in navigator)reg().then(function(r){return r.pushManager.getSubscription()}).then(function(s){if(s&&!j.push)return api('/push','POST',s.toJSON()).then(function(){return s});return s}).then(function(s){paint(!!s)});else paint(false)
+},function(e){ls.innerHTML='';show('<p class="err">'+esc(e.message)+'</p>')});
+`;
+
+// Il service worker della pagina: mostra la notifica e, toccandola, apre gli avvisi
+const AVVISI_SW = `
+self.addEventListener('install',function(){self.skipWaiting()});
+self.addEventListener('activate',function(e){e.waitUntil(self.clients.claim())});
+self.addEventListener('push',function(e){var d={};try{d=e.data.json()}catch(x){d={title:'BunkerPlex',body:e.data?e.data.text():''}}
+ e.waitUntil(self.registration.showNotification(d.title||'BunkerPlex',{body:d.body||'',tag:d.tag,icon:'/avvisi/icon.png',badge:'/avvisi/icon.png'}))});
+self.addEventListener('notificationclick',function(e){e.notification.close();e.waitUntil(self.clients.matchAll({type:'window',includeUncontrolled:true}).then(function(l){for(var i=0;i<l.length;i++){if(l[i].url.indexOf('/avvisi/')>=0&&'focus' in l[i])return l[i].focus()}var b=new URLSearchParams(self.location.search).get('b');return b?self.clients.openWindow(b):null}))});
+`;
+
+// Le pagine e le chiamate dei dispositivi (senza account: vale il gettone del dispositivo)
+async function noticeRoutes(request, env, url, path, method) {
+  if (path === '/avvisi/sw.js' && method === 'GET') {
+    return new Response(AVVISI_SW, { headers: { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache',
+      'Service-Worker-Allowed': '/avvisi/' } });
+  }
+  if (path === '/avvisi/icon.png' && method === 'GET') {
+    return new Response(unb64u(ICON_PNG.replace(/\+/g, '-').replace(/\//g, '_')), {
+      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800' } });
+  }
+  const m = /^\/avvisi\/([0-9a-f]{64})(\/manifest\.json|\/list|\/push|\/test)?$/.exec(path);
+  if (!m) return null;
+  const dev = await noticeDevice(env, m[1]);
+  if (!dev) {
+    if (!m[2]) return page('Avvisi', '<h1>Collegamento non più valido</h1><p>Apri BunkerPlex e tocca di nuovo «Attiva le notifiche».</p>', 404);
+    fail(401, 'Notifiche spente per questo dispositivo: riattivale da BunkerPlex');
+  }
+  if (!dev.last_seen || now() - dev.last_seen > 600) {
+    await env.DB.prepare('UPDATE notice_devices SET last_seen = ? WHERE token_hash = ?').bind(now(), dev.token_hash).run();
+  }
+  const base = '/avvisi/' + m[1];
+  if (!m[2] && method === 'GET') return avvisiPage(m[1], dev, await vapidKeys(env));
+  if (m[2] === '/manifest.json' && method === 'GET') {
+    return new Response(JSON.stringify({
+      name: 'BunkerPlex Avvisi', short_name: 'BP Avvisi', start_url: base, scope: '/avvisi/', id: base, display: 'standalone',
+      background_color: '#060a07', theme_color: '#060a07',
+      icons: [{ src: '/avvisi/icon.png', sizes: '180x180', type: 'image/png', purpose: 'any' }]
+    }), { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'no-store' } });
+  }
+  if (m[2] === '/list' && method === 'GET') {
+    const since = Math.max(0, Number(url.searchParams.get('since') || 0) || 0);
+    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t FROM notices WHERE user_id = ? AND id > ? AND t >= ? ' +
+      'ORDER BY id DESC LIMIT 30').bind(dev.user_id, since, dev.created - 60).all()).results;
+    return json({ notices: rows.map(noticeJson), push: !!dev.endpoint });
+  }
+  if (m[2] === '/push' && method === 'POST') {
+    const b = await body(request);
+    const ep = String(b.endpoint || '');
+    const keys = b.keys && typeof b.keys === 'object' ? b.keys : {};
+    if (!/^https:\/\/[^\s]{8,800}$/.test(ep) || !/^[A-Za-z0-9_-]{80,100}$/.test(String(keys.p256dh || '')) ||
+        !/^[A-Za-z0-9_-]{16,30}$/.test(String(keys.auth || ''))) fail(400, 'Iscrizione non valida');
+    await env.DB.prepare('UPDATE notice_devices SET endpoint = ?, p256dh = ?, auth = ? WHERE token_hash = ?')
+      .bind(ep, keys.p256dh, keys.auth, dev.token_hash).run();
+    return json({ ok: true });
+  }
+  if (m[2] === '/push' && method === 'DELETE') {
+    await env.DB.prepare('UPDATE notice_devices SET endpoint = NULL, p256dh = NULL, auth = NULL WHERE token_hash = ?')
+      .bind(dev.token_hash).run();
+    return json({ ok: true });
+  }
+  if (m[2] === '/test' && method === 'POST') {
+    if (!dev.endpoint) fail(409, 'Prima attiva le notifiche');
+    const code = await sendPush(env, dev, { title: 'BunkerPlex', body: 'Le notifiche funzionano su questo dispositivo.', tag: 'bp-test' });
+    if (code >= 300) fail(502, 'Il servizio di notifiche del telefono ha risposto ' + code);
+    return json({ ok: true });
+  }
+  fail(405, 'Richiesta non valida');
+}
+
+// Le chiamate con l'account (dal server di casa)
+async function noticeAccountRoutes(request, env, url, path, method, user) {
+  if (!path.startsWith('/notices')) return null;
+  await ensureNotices(env);
+  // Un evento dal server di casa: a te, e (se lo dici) ai tuoi amici
+  if (path === '/notices' && method === 'POST') {
+    const b = await body(request);
+    const kind = b.kind === 'update' ? 'update' : 'titles';
+    const title = cleanText(b.title, 80) || fail(400, 'Manca il titolo');
+    const text = cleanText(b.body, 240);
+    const sent = await env.DB.prepare('SELECT COUNT(*) n FROM notices WHERE from_user = ? AND t > ?').bind(user.id, now() - 3600).first('n');
+    if (sent >= NOTICE_RATE) fail(429, 'Troppi avvisi: riprova più tardi');
+    const ids = [await notify(env, user.id, kind, title, text, user.id)];
+    if (b.friends && kind === 'titles') {
+      const ftitle = cleanText(b.friends_title, 80) || title;
+      for (const fid of (await friendIds(env, user.id)).slice(0, 30)) {
+        ids.push(await notify(env, fid, 'friends_titles', ftitle, cleanText(b.friends_body, 240) || text, user.id));
+      }
+    }
+    return json({ ok: true, sent: ids.filter(Boolean).length });
+  }
+  if (path === '/notices' && method === 'GET') {
+    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t FROM notices WHERE user_id = ? ORDER BY id DESC LIMIT 50')
+      .bind(user.id).all()).results;
+    return json({ notices: rows.map(noticeJson) });
+  }
+  if (path === '/notices/prefs' && method === 'GET') return json({ prefs: await noticePrefs(env, user.id) });
+  if (path === '/notices/prefs' && method === 'PUT') {
+    const b = await body(request);
+    const p = await noticePrefs(env, user.id);
+    for (const k of NOTICE_KINDS) if (typeof b[k] === 'boolean') p[k] = b[k];
+    await env.DB.prepare('INSERT OR REPLACE INTO notice_prefs(user_id, v) VALUES(?, ?)').bind(user.id, JSON.stringify(p)).run();
+    return json({ prefs: p });
+  }
+  // I telefoni e tablet dell'account
+  if (path === '/notices/devices' && method === 'GET') {
+    const rows = (await env.DB.prepare('SELECT rowid AS id, label, kind, created, last_seen, endpoint IS NOT NULL AS push ' +
+      'FROM notice_devices WHERE user_id = ? ORDER BY created DESC').bind(user.id).all()).results;
+    return json({ devices: rows.map((r) => ({ ...r, push: !!r.push })) });
+  }
+  if (path === '/notices/devices' && method === 'POST') {
+    const b = await body(request);
+    const kind = ['ios', 'android', 'web'].includes(b.kind) ? b.kind : 'web';
+    const open = /^https?:\/\/[^\s"'<>]{3,200}$/.test(String(b.open || '')) ? String(b.open) : '';
+    const n = await env.DB.prepare('SELECT COUNT(*) n FROM notice_devices WHERE user_id = ?').bind(user.id).first('n');
+    if (n >= NOTICE_DEVICES) {     // al limite si toglie quello sentito meno di recente
+      await env.DB.prepare('DELETE FROM notice_devices WHERE token_hash = (SELECT token_hash FROM notice_devices ' +
+        'WHERE user_id = ? ORDER BY COALESCE(last_seen, created) LIMIT 1)').bind(user.id).run();
+    }
+    const token = randomHex(32);
+    await env.DB.prepare('INSERT INTO notice_devices(token_hash, user_id, label, kind, open_url, created) VALUES(?,?,?,?,?,?)')
+      .bind(await sha256(token), user.id, cleanText(b.label, 60) || 'Dispositivo', kind, open, now()).run();
+    return json({ token, url: url.origin + '/avvisi/' + token });
+  }
+  const dm = /^\/notices\/devices\/(\d+)$/.exec(path);
+  if (dm && method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM notice_devices WHERE rowid = ? AND user_id = ?').bind(Number(dm[1]), user.id).run();
+    return json({ ok: true });
+  }
+  fail(404, 'Non trovato');
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -686,8 +1035,12 @@ async function route(request, env) {
 
   const g = await googleRoutes(request, env, url, path, method);
   if (g) return g;
+  const nr = await noticeRoutes(request, env, url, path, method);
+  if (nr) return nr;
 
   const user = await auth(request, env);
+  const na = await noticeAccountRoutes(request, env, url, path, method, user);
+  if (na) return na;
 
   if (path === '/me' && method === 'GET') return json({ user: userJson(user) });
 
@@ -820,12 +1173,16 @@ async function route(request, env) {
     const back = await env.DB.prepare('SELECT status FROM friends WHERE a = ? AND b = ?').bind(other.id, user.id).first();
     if (back) {                         // lui l'aveva gia' chiesto a te: siete amici
       await env.DB.prepare("UPDATE friends SET status = 'ok', t = ? WHERE a = ? AND b = ?").bind(now(), other.id, user.id).run();
+      await notifySafe(env, other.id, 'friends', 'Nuovo amico', user.username + ' ha accettato la tua richiesta di amicizia.', user.id);
       return json({ ok: true, status: 'ok', username: other.username });
     }
     const n = await env.DB.prepare("SELECT COUNT(*) n FROM friends WHERE a = ? AND status = 'pending'").bind(user.id).first('n');
     if (n >= 20) fail(429, 'Troppe richieste in attesa');
-    await env.DB.prepare('INSERT OR IGNORE INTO friends(a, b, status, t) VALUES(?,?,?,?)')
+    const added = await env.DB.prepare('INSERT OR IGNORE INTO friends(a, b, status, t) VALUES(?,?,?,?)')
       .bind(user.id, other.id, 'pending', now()).run();
+    if (added.meta.changes) {
+      await notifySafe(env, other.id, 'friends', 'Richiesta di amicizia', user.username + ' vuole essere tuo amico su BunkerPlex. Rispondi da Impostazioni → Amici.', user.id);
+    }
     return json({ ok: true, status: 'sent', username: other.username });
   }
   const fm = /^\/friends\/(\d+)(\/accept)?$/.exec(path);
@@ -835,6 +1192,7 @@ async function route(request, env) {
       const r = await env.DB.prepare("UPDATE friends SET status = 'ok', t = ? WHERE a = ? AND b = ? AND status = 'pending'")
         .bind(now(), other, user.id).run();
       if (!r.meta.changes) fail(404, 'Richiesta non trovata');
+      await notifySafe(env, other, 'friends', 'Nuovo amico', user.username + ' ha accettato la tua richiesta di amicizia.', user.id);
       return json({ ok: true });
     }
     if (!fm[2] && method === 'DELETE') {   // rifiuta, annulla o togli l'amicizia
@@ -1135,7 +1493,11 @@ async function route(request, env) {
       }
       if (!m[2] && method === 'DELETE') {
         if (id === user.id) fail(400, 'Non puoi eliminare il tuo account');
+        await ensureNotices(env);
         await env.DB.batch([
+          env.DB.prepare('DELETE FROM notices WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM notice_devices WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM notice_prefs WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM settings WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM state WHERE user_id = ?').bind(id),
