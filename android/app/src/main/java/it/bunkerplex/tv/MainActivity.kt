@@ -121,6 +121,7 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
         if (server == null) showSetup(false) else openServer()
+        Notices.ensure(this)
     }
 
     private val isTelevision by lazy {
@@ -381,6 +382,42 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun getServer(): String = active ?: server ?: ""
+
+        /** Notifiche su questo telefono/tablet: "on", "denied" (accese ma senza permesso) o "off". */
+        @JavascriptInterface
+        fun noticesState(): String = when {
+            isTelevision -> "tv"
+            Notices.url(this@MainActivity) == null -> "off"
+            !Notices.allowed(this@MainActivity) -> "denied"
+            else -> "on"
+        }
+
+        /** Accende le notifiche con l'indirizzo degli avvisi di questo dispositivo ("" = spegne). */
+        @JavascriptInterface
+        fun noticesSet(url: String) {
+            if (url.isEmpty()) {
+                Notices.disable(this@MainActivity)
+                return
+            }
+            if (!url.startsWith("https://") || isTelevision) return
+            Notices.enable(this@MainActivity, url)
+            if (!Notices.allowed(this@MainActivity) && Build.VERSION.SDK_INT >= 33) {
+                runOnUiThread { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 42) }
+            }
+        }
+
+        /** Le impostazioni di Android per le notifiche dell'app (se il permesso e' stato negato). */
+        @JavascriptInterface
+        fun noticesSettings() = runOnUiThread {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                        .putExtra("app_package", packageName).putExtra("app_uid", applicationInfo.uid)
+                )
+            } catch (e: ActivityNotFoundException) {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+        }
 
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }

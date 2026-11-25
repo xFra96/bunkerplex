@@ -477,6 +477,10 @@ def init_db():
         user_id INT, k TEXT, kind TEXT, a INT, b INT, c INT, pos REAL, w INT, fav REAL, lp REAL, t REAL,
         PRIMARY KEY(user_id, k));
     CREATE INDEX IF NOT EXISTS cloud_state_a ON cloud_state(user_id, kind, a);
+    -- Avvisi da mandare al servizio account (notifiche su telefoni e tablet): partono
+    -- alla prossima sincronizzazione, anche se intanto mancava Internet
+    CREATE TABLE IF NOT EXISTS notice_out(
+        id INTEGER PRIMARY KEY, user_id INT, body TEXT, t REAL);
     -- (la copia del catalogo nell'account non c'e' piu': il catalogo resta sui dischi)
     DROP TABLE IF EXISTS cloud_catalog;
     """)
@@ -1510,6 +1514,7 @@ def scan():
         return
     state["scanning"] = True
     con = db()
+    new_ids, lib_before, gone_names = [], {}, set()
     try:
         now = time.time()
         seen = set()
@@ -1523,6 +1528,9 @@ def scan():
             "SELECT key, show_id FROM aliases WHERE show_id IN (SELECT id FROM shows)")})
         sibling_cache = {}
         found = 0
+        # Per le notifiche: i titoli nuovi di questo giro, e quanti ne aveva gia' ogni raccolta
+        for lib_id in known.values():
+            lib_before[lib_id] = lib_before.get(lib_id, 0) + 1
 
         for root, lib_id in roots:
             if not root.is_dir():
@@ -1551,6 +1559,7 @@ def scan():
                     cur = con.execute(
                         "INSERT INTO items(kind, path, title, year, size, added_at, library_id) "
                         "VALUES('movie',?,?,?,?,?,?)", (sp, title, year, st.st_size, added, lib_id))
+                    new_ids.append(cur.lastrowid)
                     art = local_art(video=p, folder=p.parent if p.parent != root else None)
                     if art:
                         con.execute("UPDATE items SET poster=? WHERE id=?",
@@ -1564,10 +1573,10 @@ def scan():
                             "INSERT INTO shows(folder, title, year, added_at, library_id) VALUES(?,?,?,?,?)",
                             (key, title, year, now, lib_id))
                         show_ids[key] = cur.lastrowid
-                    con.execute(
+                    new_ids.append(con.execute(
                         "INSERT INTO items(kind, path, show_id, season, episode, title, size, added_at, library_id) "
                         "VALUES('episode',?,?,?,?,?,?,?,?)",
-                        (sp, show_ids[key], season, number, ep_title, st.st_size, added, lib_id))
+                        (sp, show_ids[key], season, number, ep_title, st.st_size, added, lib_id)).lastrowid)
                 known[sp] = lib_id
                 found += 1
                 if found % 25 == 0:   # i titoli compaiono nell'app man mano, non tutti alla fine
@@ -1588,6 +1597,7 @@ def scan():
             owners = [ok for root, ok in online if r["path"].startswith(root + "/")]
             if not owners or any(owners):
                 con.execute("DELETE FROM items WHERE id=?", (r["id"],))
+                gone_names.add(os.path.basename(r["path"]).lower())
                 (IMG / f"thumb_{r['id']}.jpg").unlink(missing_ok=True)
         con.execute("DELETE FROM shows WHERE id NOT IN "
                     "(SELECT DISTINCT show_id FROM items WHERE show_id IS NOT NULL)")
@@ -1685,6 +1695,11 @@ def scan():
         print("Scan error:", repr(ex), flush=True)
     finally:
         con.close()
+        try:
+            if new_ids:
+                announce_new(new_ids, lib_before, gone_names)
+        except Exception as ex:
+            print("Notifiche dei titoli nuovi non preparate:", repr(ex), flush=True)
         state["last_scan"] = time.time()
         again = state.pop("again", False)
         state["scanning"] = again
@@ -2324,10 +2339,10 @@ class SmallAndFast:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
     RAW = ("/api/stream", "/api/transcode", "/api/hls/", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
-           "/api/share/stream", "/api/share/transcode",
+           "/api/share/stream", "/api/share/transcode", "/api/share/hls/",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
     PLAYING = ("/api/stream", "/api/transcode", "/api/hls/", "/api/progress", "/api/share/stream",
-               "/api/share/transcode")
+               "/api/share/transcode", "/api/share/hls/")
 
     def __init__(self, inner):
         self.inner = inner
@@ -4261,6 +4276,205 @@ def chunks(rows, n=SYNC_ROWS):
         yield rows[i:i + n]
 
 
+# ---- Notifiche su telefoni e tablet ------------------------------------------------
+# Gli avvisi (nuovi film ed episodi, aggiornamento disponibile) partono da qui verso
+# il servizio account, che li gira ai telefoni e tablet dell'account: push web per
+# iPhone/iPad (la pagina «BunkerPlex Avvisi» del servizio), controllo periodico
+# per l'app Android. Le richieste di amicizia le avvisa direttamente il servizio.
+# Senza Internet gli avvisi aspettano in notice_out e partono alla prossima
+# sincronizzazione (al massimo dopo due giorni si buttano: non sono piu' novita').
+
+NOTICE_MAX_AGE = 2 * DAY
+NOTICE_SCAN_MAX = 5              # avvisi al massimo per ogni lettura delle raccolte
+notices_cloud = {}               # account -> {"at": quando, "notices": ultimi avvisi}
+
+
+def queue_notice(uid, body):
+    if uid is None:
+        return
+    con = db(raw=True)
+    try:
+        con.execute("INSERT INTO notice_out(user_id, body, t) VALUES(?,?,?)",
+                    (uid, json.dumps(body, ensure_ascii=False), time.time()))
+        con.commit()
+    finally:
+        con.close()
+    sync_soon()
+
+
+def _names(names, n=3):
+    out = ", ".join(names[:n])
+    return out + (f" e altri {len(names) - n}" if len(names) > n else "")
+
+
+def _episodes_text(rows):
+    seasons = sorted({r["season"] or 0 for r in rows})
+    if len(rows) == 1:
+        r = rows[0]
+        t = f"Stagione {r['season'] or 0}, episodio {r['episode'] or 0}"
+        return t + (f" · {r['title']}" if r["title"] else "")
+    if len(seasons) == 1:
+        eps = sorted(r["episode"] or 0 for r in rows)
+        return f"Stagione {seasons[0]}, episodi {eps[0]}–{eps[-1]}"
+    return f"Stagioni {seasons[0]}–{seasons[-1]}"
+
+
+def new_titles_notices(rows):
+    """Gli avvisi per i titoli appena arrivati: un avviso per i film, uno per ogni
+    serie (al massimo tre, le altre insieme)."""
+    out = []
+    movies = [r for r in rows if r["kind"] == "movie"]
+    if movies:
+        names = [r["title"] + (f" ({r['year']})" if r["year"] else "") for r in movies]
+        if len(movies) == 1:
+            out.append(("Nuovo film", names[0]))
+        else:
+            out.append((f"{len(movies)} nuovi film", _names(names)))
+    shows = {}
+    for r in rows:
+        if r["kind"] == "episode" and r["show"]:
+            shows.setdefault(r["show"], []).append(r)
+    ordered = sorted(shows.items(), key=lambda kv: -len(kv[1]))
+    for show, eps in ordered[:3]:
+        out.append((f"{show}: " + ("nuovo episodio" if len(eps) == 1 else f"{len(eps)} nuovi episodi"),
+                    _episodes_text(eps)))
+    rest = ordered[3:]
+    if rest:
+        out.append((f"Episodi nuovi in altre {len(rest)} serie" if len(rest) > 1 else f"Episodi nuovi in {rest[0][0]}",
+                    _names([s for s, _ in rest])))
+    return out[:NOTICE_SCAN_MAX]
+
+
+def announce_new(ids, lib_before, gone_names):
+    """Fine della lettura delle raccolte: avvisa il padrone di ogni raccolta (e i suoi
+    amici, se condivide) dei titoli nuovi. Niente avvisi per una raccolta appena
+    creata (sarebbero tutti i suoi titoli) ne' per i file solo spostati di cartella."""
+    con = db(raw=True)
+    try:
+        rows = []
+        for part in chunks(ids, 400):
+            rows += con.execute(
+                "SELECT i.id, i.kind, i.path, i.title, i.year, i.season, i.episode, i.library_id, "
+                "s.title AS show FROM items i LEFT JOIN shows s ON s.id = i.show_id "
+                f"WHERE i.id IN ({','.join('?' * len(part))})", part).fetchall()
+    finally:
+        con.close()
+    with config_lock:
+        owners = {lib["id"]: lib.get("owner") for lib in config.get("libraries") or []}
+    per_owner = {}
+    for r in rows:
+        if not lib_before.get(r["library_id"]) or os.path.basename(r["path"]).lower() in gone_names:
+            continue
+        uid = owners.get(r["library_id"])
+        if uid is not None:
+            per_owner.setdefault(uid, []).append(r)
+    where = pc_name()
+    for uid, items in per_owner.items():
+        friends = bool(friends_shared(uid) and share_on())
+        for title, text in new_titles_notices(items):
+            body = {"kind": "titles", "title": title, "body": f"{text} · su {where}"}
+            if friends:
+                body.update(friends=True, friends_title=f"Novità su {where}", friends_body=f"{title}: {text}")
+            queue_notice(uid, body)
+
+
+def notice_update_available():
+    """Aggiornamento trovato su GitHub e installazione automatica spenta: lo si dice
+    al padrone del server, una volta per ogni versione nuova."""
+    snap = updater.snapshot()
+    remote = snap.get("remote") or ""
+    if not snap.get("available") or auto_update() or not remote or config.get("notified_update") == remote:
+        return
+    owner = server_owner()
+    if owner is None:
+        return
+    with config_lock:
+        config["notified_update"] = remote
+        save_config()
+    queue_notice(owner, {"kind": "update", "title": "Aggiornamento di BunkerPlex disponibile",
+                         "body": f"Su {pc_name()}: installalo da Impostazioni → Aggiornamenti."})
+
+
+def sync_notices(uid, token):
+    con = db(raw=True)
+    try:
+        con.execute("DELETE FROM notice_out WHERE t < ?", (time.time() - NOTICE_MAX_AGE,))
+        con.commit()
+        rows = con.execute("SELECT id, body FROM notice_out WHERE user_id=? ORDER BY id LIMIT 20", (uid,)).fetchall()
+    finally:
+        con.close()
+    for r in rows:
+        try:
+            accounts.call("POST", "/notices", json.loads(r["body"]), token)
+        except accounts.CloudError as ex:
+            if ex.status in (429, 401) or ex.status >= 500:
+                break                # si riprova al prossimo giro
+            # 404: servizio account di prima, senza notifiche; 400: avviso non valido
+        con = db(raw=True)
+        try:
+            con.execute("DELETE FROM notice_out WHERE id=?", (r["id"],))
+            con.commit()
+        finally:
+            con.close()
+    try:
+        res = accounts.call("GET", "/notices", token=token)
+        notices_cloud[uid] = {"at": time.time(), "notices": res.get("notices") or [], "supported": True}
+    except accounts.CloudError as ex:
+        if ex.status == 404:
+            notices_cloud[uid] = {"at": time.time(), "notices": [], "supported": False}
+
+
+def recent_notices(uid, days=7):
+    """Gli ultimi avvisi dell'account (per la campanella), dall'ultima sincronizzazione."""
+    info = notices_cloud.get(uid) or {}
+    since = time.time() - days * DAY
+    return [n for n in info.get("notices") or [] if isinstance(n, dict) and (n.get("t") or 0) > since][:10]
+
+
+@app.get("/api/notices")
+async def notices_get():
+    u = CURRENT.get()
+    if u is None or u.get("friend") or not u["linked"]:
+        return {"linked": False}
+    uid, token = profile_token()
+    prefs, devices = await asyncio.gather(cloud("GET", "/notices/prefs", None, token),
+                                          cloud("GET", "/notices/devices", None, token))
+    try:
+        res = await cloud("GET", "/notices", None, token)
+        notices_cloud[uid] = {"at": time.time(), "notices": res.get("notices") or [], "supported": True}
+    except HTTPException:
+        pass
+    return {"linked": True, "prefs": prefs.get("prefs") or {}, "devices": devices.get("devices") or [],
+            "notices": (notices_cloud.get(uid) or {}).get("notices") or [], "cloud": accounts.cloud_url()}
+
+
+@app.put("/api/notices/prefs")
+async def notices_prefs(request: Request):
+    _, token = profile_token()
+    body = await read_json(request)
+    return await cloud("PUT", "/notices/prefs", {k: bool(v) for k, v in body.items()
+                                                 if k in ("titles", "friends_titles", "friends", "update")}, token)
+
+
+@app.post("/api/notices/devices")
+async def notices_device_add(request: Request):
+    """Un telefono o tablet si iscrive: il servizio account gli da' il suo gettone."""
+    _, token = profile_token()
+    body = await read_json(request)
+    kind = body.get("kind") if body.get("kind") in ("ios", "android", "web") else "web"
+    label = re.sub(r"\s+", " ", str(body.get("label") or "")).strip()[:60]
+    opener = str(body.get("open") or "")
+    if not re.fullmatch(r"https?://[^\s\"'<>]{3,200}", opener):
+        opener = ""
+    return await cloud("POST", "/notices/devices", {"kind": kind, "label": label, "open": opener}, token)
+
+
+@app.delete("/api/notices/devices/{dev_id}")
+async def notices_device_remove(dev_id: int):
+    _, token = profile_token()
+    return await cloud("DELETE", f"/notices/devices/{dev_id}", None, token)
+
+
 def sync_loop():
     """Ogni pochi minuti, e subito dopo una modifica, manda e riceve impostazioni e visti."""
     first = True
@@ -4272,6 +4486,10 @@ def sync_loop():
         sync_wake.clear()
         if not auth_on() or not cloud_ping():
             continue
+        try:
+            notice_update_available()
+        except Exception as ex:
+            print("Avviso dell'aggiornamento non preparato:", repr(ex), flush=True)
         try:
             con = db(raw=True)
             try:
@@ -4344,6 +4562,7 @@ def sync_user(uid, token):
     pull_state(uid, token)
     apply_cloud_state(uid)
     sync_friends(uid, token)          # amici dell'account (un servizio di prima risponde 404: niente)
+    sync_notices(uid, token)          # avvisi per telefoni e tablet: partono quelli in coda, arrivano gli ultimi
     con = db(raw=True)
     try:
         con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
@@ -4772,6 +4991,8 @@ def info():
             "friend_requests": sum(1 for f in (friends_cloud.get((CURRENT.get() or {}).get("id")) or {})
                                    .get("friends", []) if f.get("status") == "received"),
             "updated": update_notice(),      # appena aggiornato: le novita'
+            # Gli ultimi avvisi dell'account (nuovi titoli, amici...), anche per la campanella
+            "notices": [] if (CURRENT.get() or {}).get("friend") else recent_notices((CURRENT.get() or {}).get("id")),
             # Richieste di condivisione degli amici ancora da approvare
             "share_requests": con.execute(
                 "SELECT COUNT(*) FROM accounts WHERE approved=0").fetchone()[0] if share_on() else 0,
@@ -6336,7 +6557,7 @@ async def hls_clean_loop():
                 await asyncio.to_thread(hls_prune, s)
 
 
-async def hls_start(item_id, tok, start, vcopy, audio):
+async def hls_start(item_id, tok, start, vcopy, audio, make_src=None):
     global hls_janitor
     if hls_janitor is None:
         shutil.rmtree(HLS_DIR, ignore_errors=True)        # avanzi di prima dell'avvio
@@ -6348,7 +6569,8 @@ async def hls_start(item_id, tok, start, vcopy, audio):
     while len(hls_sessions) >= HLS_MAX:
         hls_stop(min(hls_sessions, key=lambda k: hls_sessions[k]["seen"]))
     # Lo stesso flusso MP4 di sempre (anche dai PC degli amici), con audio AAC
-    src = await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
+    src = await asyncio.to_thread(make_src) if make_src else \
+        await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
     if not isinstance(src, StreamingResponse):
         raise HTTPException(502, "Il video non arriva")
     d = HLS_DIR / f"{item_id}-{tok}"
@@ -6389,6 +6611,12 @@ async def hls_start(item_id, tok, start, vcopy, audio):
 
 @app.get("/api/hls/{item_id}/{tok}/{name}")
 async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0):
+    return await hls_serve(item_id, tok, name, start, vcopy, audio)
+
+
+async def hls_serve(item_id, tok, name, start=0, vcopy=0, audio=0, make_src=None, shared=False):
+    """shared: la chiede un amico (o l'app iPhone fuori casa) da /api/share/hls:
+    chi e' lo dice gia' il gettone, controllato da share_guard."""
     m = HLS_FILE.match(name)
     if not HLS_TOK.match(tok) or not m:
         raise HTTPException(404)
@@ -6399,9 +6627,9 @@ async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 
             raise HTTPException(404, "Sessione finita")
         # Aprirne una vuole chi e' entrato; poi basta l'indirizzo, che e' casuale
         # (il player di Safari non sempre manda il cookie a ogni pezzo).
-        if CURRENT.get() is None:
+        if not shared and CURRENT.get() is None:
             raise HTTPException(401, "Scegli chi guarda per continuare")
-        s = await hls_start(item_id, tok, start, vcopy, audio)
+        s = await hls_start(item_id, tok, start, vcopy, audio, make_src)
     s["seen"] = time.monotonic()
     path = s["dir"] / name
     if name == "index.m3u8":
@@ -6963,6 +7191,17 @@ def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int =
     """'height' (720 o 1080): conversione leggera, a misura della linea di casa."""
     return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0,
                          aout if aout in AOUTS else "")
+
+
+@share.get("/hls/{item_id}/{tok}/{name}")
+async def share_hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0,
+                    height: int = 0):
+    """La conversione di /api/share/transcode in HLS, per il player dell'iPhone
+    (AVPlayer vuole HLS o un file intero, non un MP4 a flusso)."""
+    item_id = _own(item_id)
+    height = height if height in (720, 1080) else 0
+    return await hls_serve(item_id, tok, name, start, vcopy, audio, shared=True,
+                           make_src=lambda: run_transcode(item_id, start, vcopy, audio, height, "aac"))
 
 
 @share.post("/hello")

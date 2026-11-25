@@ -1,0 +1,64 @@
+# Progetto Xcode dell'app per iPhone e iPad, generato con XcodeGen (lo fa il giro
+# workflows/app-ios.yml su un Mac di GitHub: qui non serve un Mac).
+# Le pagine setup.html e remote.html sono le stesse dell'app Android.
+name: BunkerPlex
+options:
+  bundleIdPrefix: it.bunkerplex
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+targets:
+  BunkerPlex:
+    type: application
+    platform: iOS
+    sources:
+      - path: BunkerPlex
+      - path: ../android/app/src/main/assets/setup.html
+        buildPhase: resources
+      - path: ../android/comune/assets/remote.html
+        buildPhase: resources
+    dependencies:
+      - framework: Bpnet.xcframework
+        embed: false
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: libresolv.tbd
+    info:
+      path: BunkerPlex/Info.plist
+      properties:
+        CFBundleDisplayName: BunkerPlex
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        UIViewControllerBasedStatusBarAppearance: false
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIBackgroundModes: [audio]
+        NSLocalNetworkUsageDescription: BunkerPlex cerca il PC con i tuoi film sulla rete di casa.
+        NSBonjourServices: [_http._tcp]
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: it.bunkerplex.ios
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

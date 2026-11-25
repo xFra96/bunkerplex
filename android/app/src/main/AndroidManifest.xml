@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Per aggiornarsi da sola con l'APK che sta sul server di casa -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Notifiche sul telefono e sul tablet (nuovi titoli, amici, aggiornamenti), vedi Notices -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Funziona sia su Android TV / Google TV sia su telefoni e tablet -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -36,6 +39,12 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation"
             android:exported="false"
             android:theme="@style/PlayerTheme" />
+
+        <!-- Controllo periodico degli avvisi dell'account -->
+        <service
+            android:name=".NoticeJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <!-- Passa all'installatore della TV l'APK dell'aggiornamento appena scaricato -->
         <provider
