@@ -175,8 +175,13 @@ class CorsEChiavi(unittest.TestCase):
         for bad in (f"{uid}.{exp}.{'0' * 32}", f"{uid}.{int(time.time()) - 5}.{app.media_sign(uid + '.' + str(int(time.time()) - 5))}"):
             sent, _ = asyncio.run(chiama(self.gate, "GET", "/api/stream/1", query=b"bpk=" + bad.encode()))
             self.assertEqual(sent[0]["status"], 401)
-        # Un ospite o un amico non ne riceve
+        # Un ospite (amico entrato qui dalla PWA) la riceve; un profilo «amico» di prima no
         tok = app.CURRENT.set({"id": 99, "linked": True, "guest": True})
+        try:
+            self.assertTrue(app.access_media()["key"].startswith("99."))
+        finally:
+            app.CURRENT.reset(tok)
+        tok = app.CURRENT.set({"id": 99, "linked": True, "friend": True})
         try:
             with self.assertRaises(app.HTTPException):
                 app.access_media()

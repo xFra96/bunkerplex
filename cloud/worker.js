@@ -322,7 +322,8 @@ async function userServerRoutes(request, env, path, method, user) {
       '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
-      'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.pin, s.t, s.ip, c.last_seen FROM servers s ' +
+      'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.public, s.pin, s.t, s.ip, c.last_seen, c.secure_port, ' +
+      '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       "JOIN friends f ON f.status = 'ok' AND ((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) " +
       'JOIN users u ON u.id = s.user_id LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id ' +
       'WHERE s.friends = 1 AND u.disabled = 0').bind(user.id, user.id).all();
@@ -336,7 +337,10 @@ async function userServerRoutes(request, env, path, method, user) {
       ...shared.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'friend', owner: { id: s.user_id, username: s.username },
         online: online(s.last_seen), seen: s.last_seen || s.t, shared: true, local: local(s),
-        addresses: { lan: '', remote: s.url || '' }, pin: s.pin
+        // Gli amici si collegano direttamente: nome di casa con certificato (se sono li')
+        // e indirizzo pubblico (Funnel) da fuori
+        addresses: { lan: '', remote: s.url || '', public: s.public || '',
+          secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       }))
     ];
     const rel = await env.DB.prepare(

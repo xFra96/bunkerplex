@@ -7478,13 +7478,26 @@ async def auth_access(request: Request):
     Cosi' valgono come sempre «Chi guarda?», Esci e il resto."""
     body = await read_json(request)
     c = await asyncio.to_thread(access_claims, str(body.get("token") or ""))
-    if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
+    owner_tok = bool(c) and c["role"] == "owner" and str(c["own"]) == str(c["sub"])
+    friend_tok = bool(c) and c["role"] == "friend" and str(c["own"]) != str(c["sub"])
+    if not owner_tok and not friend_tok:
         raise HTTPException(403, "Gettone non valido o scaduto")
 
     def work():
         con = db(raw=True)
         try:
-            u = con.execute("SELECT * FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0", (c["own"],)).fetchone()
+            if friend_tok:
+                # Un amico del proprietario (il servizio ha gia' controllato l'amicizia):
+                # entra come ospite e vede le raccolte che il proprietario condivide
+                owner = owner_row(con)
+                if not owner or not friends_shared(owner["id"]):
+                    raise HTTPException(403, "Su questo server il proprietario non condivide con gli amici")
+                friend = {"id": int(c["sub"]), "username": str(c.get("name") or "Amico")[:40],
+                          "admin": False, "must_change": False}
+                uid = store_user(con, friend, None, None, guest=True)
+                u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+            else:
+                u = con.execute("SELECT * FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0", (c["own"],)).fetchone()
             if not u:
                 raise HTTPException(404, "Su questo server il tuo account non c'è: entra una volta dal server")
             token = open_session(con, u["id"], str(body.get("device") or "PWA"))
@@ -7641,8 +7654,8 @@ def media_sign(msg):
 @app.post("/api/access/media")
 def access_media():
     u = CURRENT.get()
-    if not u or u.get("friend") or u.get("guest") or not u.get("linked"):
-        raise HTTPException(403, "Chiavi dei video solo per il proprietario")
+    if not u or u.get("friend") or not u.get("linked"):
+        raise HTTPException(403, "Chiavi dei video solo per il proprietario e i suoi amici")
     exp = int(time.time()) + MEDIA_TTL
     msg = f"{u['id']}.{exp}"
     return {"key": f"{msg}.{media_sign(msg)}", "exp": exp, "param": "bpk"}
@@ -7654,7 +7667,23 @@ def media_user(key):
         return None
     if not hmac.compare_digest(m.group(3), media_sign(f"{m.group(1)}.{m.group(2)}")):
         return None
-    return owner_user("id=?", int(m.group(1)))
+    return owner_user("id=?", int(m.group(1))) or guest_user(int(m.group(1)))
+
+
+def guest_user(uid):
+    """Un amico del proprietario entrato qui (ospite) come «utente» della richiesta,
+    per le chiavi dei video: vede solo le raccolte condivise dal proprietario."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id, name FROM users WHERE id=? AND COALESCE(guest, 0)=1 "
+                        "AND COALESCE(disabled, 0)=0 AND cloud_id IS NOT NULL", (uid,)).fetchone()
+    finally:
+        con.close()
+    if not r:
+        return None
+    return {"id": r["id"], "name": r["name"], "admin": False, "linked": True, "guest": True,
+            "must_change": False, "libs": guest_libs(), "session": "",
+            "sid": r["id"], "profile": None, "pname": r["name"], "access": True}
 
 
 KEY_PATH = re.compile(r"/k/(\d{1,12}\.\d{10}\.[0-9a-f]{32})(/api/.*)")
