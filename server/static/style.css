@@ -1408,27 +1408,51 @@ html.lite .sheet { animation: none !important; }
 @keyframes authspin { to { transform: rotate(360deg); } }
 .authnote { color: var(--ink3); font-size: .9rem; text-align: center; margin-top: 1rem; }
 
-.srvlist { display: flex; flex-direction: column; gap: .7rem; }
-.srv { display: flex; align-items: center; gap: 1rem; width: 100%; padding: 1rem 1.1rem; border-radius: .8rem; background: var(--surface); border: 2px solid transparent; text-align: left; transition: transform .12s ease-out, background .12s; }
-.srv:hover { background: var(--surface2); }
-.srv:focus { background: var(--ink); color: var(--bg); transform: scale(1.02); }
+.authcard.grid { max-width: 64rem; }
+.srvfind { margin: 0 0 1.4rem !important; }
+.srvsec { margin-bottom: 1.6rem; }
+.srvsec h2 { display: flex; align-items: center; gap: .5rem; margin: 0 0 .8rem; font-size: .8rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); }
+.srvsec h2 span { padding: .1rem .5rem; border-radius: 1rem; background: var(--surface2); color: var(--ink2); letter-spacing: 0; }
+.srvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: .9rem; }
+.srv { display: flex; flex-direction: column; align-items: stretch; gap: 0; width: 100%; padding: 0; border-radius: 1rem; overflow: hidden; background: var(--surface); border: 2px solid transparent; text-align: left;
+  transition: transform .14s ease-out, background .14s, box-shadow .14s; }
+.srv:hover { background: var(--surface2); transform: translateY(-2px); box-shadow: 0 .6rem 1.4rem #0006; }
+.srv:focus { background: var(--ink); color: var(--bg); transform: scale(1.04); box-shadow: 0 .8rem 2rem #000a; }
 .srv.on { border-color: var(--accent); }
-.srv.off { opacity: .5; }
-.srvico { width: 3rem; height: 3rem; flex: none; border-radius: .7rem; background: var(--surface2); display: flex; align-items: center; justify-content: center; }
-.srvico svg { width: 1.6rem; height: 1.6rem; fill: none; stroke: var(--ink); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.srv:focus .srvico { background: var(--bg); }
-.srvtxt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.srvtxt b { font-size: 1.1rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.srvtxt small { color: var(--ink2); margin-top: .15rem; font-size: .9rem; }
+.srv.off { opacity: .55; }
+.srv[hidden] { display: none; }
+.srvart { position: relative; display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9;
+  background: radial-gradient(circle at 25% 20%, hsl(var(--h, 150) 70% 45% / .55), transparent 60%), linear-gradient(135deg, hsl(var(--h, 150) 45% 22%), hsl(calc(var(--h, 150) + 40) 40% 12%)); }
+.srvini { font-size: 2.6rem; font-weight: 800; letter-spacing: -.03em; color: #fff; text-shadow: 0 .2rem 1rem #0006; }
+.srvbadge { position: absolute; left: .6rem; bottom: .6rem; width: 2rem; height: 2rem; border-radius: .55rem; background: #0008; backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; }
+.srvbadge svg, .srvart > svg { fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.srvbadge svg { width: 1.15rem; height: 1.15rem; }
+.srvart > svg { width: 2.4rem; height: 2.4rem; }
+.srvtag { position: absolute; right: .6rem; bottom: .6rem; padding: .15rem .55rem; border-radius: 1rem; background: #0008; color: #fff; font-size: .75rem; font-weight: 700; }
+.srvtxt { display: flex; flex-direction: column; min-width: 0; padding: .75rem .9rem .9rem; }
+.srvtxt b { font-size: 1.05rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srvtxt small { color: var(--ink2); margin-top: .15rem; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .srv:focus .srvtxt small { color: var(--bg); opacity: .75; }
-.srvdot { width: .65rem; height: .65rem; flex: none; border-radius: 50%; background: var(--ink3); }
-.srvdot.live { background: var(--ok); box-shadow: 0 0 0 .25rem #4cbf7f26; }
+.srvdot { position: absolute; top: .65rem; right: .65rem; width: .7rem; height: .7rem; border-radius: 50%; background: var(--ink3); box-shadow: 0 0 0 .2rem #0006; }
+.srvdot.live { background: var(--ok); box-shadow: 0 0 0 .25rem #4cbf7f40; }
 .srv.add { background: transparent; border: 2px dashed var(--surface2); }
-.srv.add .srvico svg { stroke: var(--accent-text); }
+.srv.add .srvart { background: transparent; }
+.srv.add .srvart > svg { stroke: var(--accent-text); }
 .srv.add:focus { background: var(--ink); border-color: var(--ink); }
-.srvadd { display: flex; gap: .6rem; }
-.srvadd .field { margin: 0; flex: 1; min-width: 0; }
+.srv.add:focus .srvart > svg { stroke: var(--bg); }
+.srvadd { grid-column: 1 / -1; display: flex; gap: .6rem; align-items: center; }
+.srvadd .field { margin: 0 !important; flex: 1; min-width: 0; }
 .srvadd .btn { margin: 0; border-radius: .6rem; }
+.srvfoot { display: flex; justify-content: center; flex-wrap: wrap; gap: .5rem 1.5rem; }
+.srvfoot .authlink { margin-top: .4rem; }
+@media (max-width: 560px) {
+  .srvgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+  .srvini { font-size: 2rem; }
+  .srvtxt { padding: .6rem .7rem .7rem; }
+  .srvtxt b { font-size: .95rem; }
+}
+html.tv .authcard.grid { max-width: 92rem; }
+html.tv .srvgrid { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 1.1rem; }
 .srvreq { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; margin-bottom: .9rem; border-radius: .8rem; background: #1a7f4522; color: var(--ink2); }
 .srvreq span { flex: 1; }
 .srvreq b { color: var(--ink); }
