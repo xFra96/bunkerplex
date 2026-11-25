@@ -4896,11 +4896,21 @@ var actions = {
   },
   noticeall: function () {
     var list = (act.info && act.info.notices) || [];
+    var unread = list.some(function (n) { return !n.read; });
     list.forEach(function (n) { n.read = true; });
+    activityState().notes.forEach(function (n) { act.seen[n.key] = 1; });
+    try { localStorage.setItem('fpSeen', JSON.stringify(act.seen)); } catch (e) { /* niente */ }
     renderActivity();
     document.querySelectorAll('.nlist .unread').forEach(function (el) { el.classList.replace('unread', 'read'); });
-    post('/notices/read', { all: true }).then(function () { toast('Tutti gli avvisi sono letti'); },
-      function (e) { toast(e.message); pollActivity(); });
+    toast('Tutto segnato come letto');
+    if (unread || !act.info) post('/notices/read', { all: true }).catch(function (e) { toast(e.message); pollActivity(); });
+  },
+  noteopen: function (key) {
+    var n = activityState().notes.filter(function (x) { return x.key === key; })[0];
+    act.seen[key] = 1;
+    try { localStorage.setItem('fpSeen', JSON.stringify(act.seen)); } catch (e) { /* niente */ }
+    renderActivity();
+    if (n) actions.actgo(n.href);
   },
   noticeoff: function () {
     if (typeof tvApp.noticesSet === 'function') tvApp.noticesSet('');
@@ -5888,6 +5898,7 @@ var routes = [
   [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],
   [/^#\/news$/, newsPage],
+  [/^#\/notifiche$/, allNoticesPage],
   [/^#\/google(\/link)?$/, function (l) {
     if (!auth.google) { location.replace('#/settings/account'); return ''; }
     if (l && auth.user.linked) return googlePage(true);
@@ -6311,22 +6322,57 @@ function unreadNotices(list) {
   return (list || []).filter(function (n) { return !n.read; }).length;
 }
 
-function activityRows(st) {
-  var ops = st.ops.map(function (op) {
+// La campanella mostra solo le attivita' in corso e quello che e' da leggere:
+// le segnalazioni non ancora aperte e gli avvisi non letti. Tutto il resto
+// (letti compresi) sta nella pagina «Tutte le notifiche» (#/notifiche).
+function noteRows(list, prefix) {
+  return list.map(function (n) {
+    return '<button class="actrow f' + (act.seen[n.key] ? ' read' : ' unread') + '" data-act="noteopen" data-arg="' + esc(n.key) + '" data-key="' + prefix + esc(n.key) + '">' +
+      '<span class="ndot" aria-hidden="true"></span><span class="acttxt"><b>' + esc(n.title) + '</b><small>' + esc(n.text) + '</small></span>' + CHEVRON + '</button>';
+  }).join('');
+}
+
+function opRows(ops) {
+  return ops.map(function (op) {
     return '<button class="actrow f" data-act="actgo" data-arg="' + op.href + '" data-key="op-' + esc(op.key) + '">' +
       '<span class="spin" aria-hidden="true"></span><span class="acttxt"><b>' + esc(op.title) + (op.pct === null ? '' : ' · ' + op.pct + '%') + '</b>' +
       '<small>' + esc(op.text) + '</small>' + progressLine(op.pct) + '</span></button>';
   }).join('');
-  var notes = st.notes.map(function (n) {
-    return '<button class="actrow f" data-act="actgo" data-arg="' + n.href + '" data-key="note-' + esc(n.key) + '">' +
-      '<span class="ndot" aria-hidden="true"></span><span class="acttxt"><b>' + esc(n.title) + '</b><small>' + esc(n.text) + '</small></span>' + CHEVRON + '</button>';
-  }).join('');
+}
+
+function unseenNotes(st) {
+  return st.notes.filter(function (n) { return !act.seen[n.key]; });
+}
+
+function activityRows(st) {
+  var ops = opRows(st.ops);
+  var notes = noteRows(unseenNotes(st), 'note-');
+  var news = noticeRows(st.news.filter(function (n) { return !n.read; }), 'actn-');
+  var todo = notes || news;
   return '<div class="sheet actsheet" role="dialog" aria-label="Attività e notifiche"><h3>Attività</h3>' +
     (ops ? '<div class="actgroup"><h4>In corso</h4>' + ops + '</div>' : '') +
-    '<div class="actgroup"><h4>Notifiche</h4>' + (notes || '<p class="actempty">Niente da segnalare: è tutto in ordine.</p>') + '</div>' +
-    (st.news.length ? '<div class="actgroup"><h4>Avvisi' + (unreadNotices(st.news) ? ' · ' + unreadNotices(st.news) + ' da leggere' : '') + '</h4>' +
-      (unreadNotices(st.news) ? '<button class="actrow f allread" data-act="noticeall" data-key="nall"><span class="acttxt"><b>Segna tutte come lette</b></span></button>' : '') +
-      noticeRows(st.news, 'actn-') + '</div>' : '') + '</div>';
+    '<div class="actgroup"><h4>Da leggere</h4>' +
+      (todo ? '<button class="actrow f allread" data-act="noticeall" data-key="nall"><span class="acttxt"><b>Segna tutte come lette</b></span></button>' + notes + news
+        : '<p class="actempty">Niente da leggere.</p>') + '</div>' +
+    '<div class="actgroup"><button class="actrow f" data-act="actgo" data-arg="#/notifiche" data-key="nallpage"><span class="acttxt"><b>Vedi tutte</b>' +
+      '<small>Le notifiche lette e non lette</small></span>' + CHEVRON + '</button></div></div>';
+}
+
+// La pagina con tutte le notifiche: segnalazioni ancora valide e avvisi, letti e non letti
+async function allNoticesPage() {
+  var i = await api('/info');
+  act.info = i;
+  var st = activityState();
+  var ops = opRows(st.ops), notes = noteRows(st.notes, 'pgnote-'), news = noticeRows(st.news, 'pgn-');
+  var unread = unseenNotes(st).length + unreadNotices(st.news);
+  return '<div class="page"><div class="panel"><h1>Notifiche</h1>' +
+    (unread ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgall">Segna tutte come lette</button></div>' : '<p>Hai letto tutto.</p>') +
+    '</div>' +
+    (ops ? '<div class="panel"><h2>In corso</h2><div class="nlist">' + ops + '</div></div>' : '') +
+    (notes ? '<div class="panel"><h2>Da sistemare</h2><div class="nlist">' + notes + '</div></div>' : '') +
+    '<div class="panel"><h2>Avvisi</h2>' + (news ? '<div class="nlist">' + news + '</div>' : '<p>Ancora nessun avviso.</p>') +
+    (auth && auth.user && auth.user.linked && !TV ? '<div class="actions"><a class="btn f" href="#/settings/notices" data-key="pgnset">Impostazioni delle notifiche</a></div>' : '') +
+    '</div></div>';
 }
 
 function activityOpen() { return !modal.hidden && modal.classList.contains('corner'); }
@@ -6430,9 +6476,6 @@ function openActivity() {
   modal.hidden = false;
   var first = modal.querySelector('.f');
   if (first) first.focus();
-  // Aprire il riquadro vuol dire averle viste: il numero sul pulsante si azzera
-  activityState().notes.forEach(function (n) { act.seen[n.key] = 1; });
-  try { localStorage.setItem('fpSeen', JSON.stringify(act.seen)); } catch (e) { /* niente */ }
   renderActivity();
   pollActivity();
 }
@@ -6451,7 +6494,7 @@ function renderActivity() {
   if (box.hidden) return;
   var st = activityState();
   var op = st.ops[0];
-  var unseen = st.notes.filter(function (n) { return !act.seen[n.key]; }).length + unreadNotices(st.news);
+  var unseen = unseenNotes(st).length + unreadNotices(st.news);
   var html = op
     ? '<span class="spin" aria-hidden="true"></span><span class="acttext">' + esc(op.title) + (op.pct === null ? '' : ' ' + op.pct + '%') + '</span>'
     : IC.bell;
