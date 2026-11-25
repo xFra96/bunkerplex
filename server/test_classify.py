@@ -51,6 +51,31 @@ class Classify(unittest.TestCase):
         with mock.patch.object(app, "probe", return_value={"duration": 73 * 60}):
             self.assertIsNone(app.classify(files[0], self.tmp / "Film", {}))
 
+    def test_stagione_ed_episodio_col_trattino(self):
+        p, q = self.make("Serie TV",
+                         "House of Cards/1^ stagione/House of Cards - S01 - 01 - Capitolo 1.ITA-ENG.1080p.BDMux.DD5.1.x264-NovaRip.mkv",
+                         "House of Cards/6^ stagione/House of Cards - S06 - 02 Capitolo 67.ITA.ENG.1080p.WEBMux.DD5.1.x264-Morpheus.mkv")
+        self.assertEqual(app.classify(p, self.tmp / "Serie TV", {}), ("House of Cards", None, 1, 1, "Capitolo 1"))
+        self.assertEqual(app.classify(q, self.tmp / "Serie TV", {}), ("House of Cards", None, 6, 2, "Capitolo 67"))
+
+    def test_cartella_stagione_col_numero_davanti(self):
+        for name, n in (("1^ stagione", 1), ("2a Stagione", 2), ("3° stagione", 3), ("1st Season", 1)):
+            self.assertEqual(app.SEASON_DIR.match(app.clean(name)).group(2), str(n))
+
+    def test_film_con_trattino_resta_film(self):
+        p, = self.make("Film", "Mission Impossible - Dead Reckoning (2023)/Mission Impossible - Dead Reckoning (2023).mkv")
+        self.assertIsNone(app.classify(p, self.tmp / "Film", {}))
+
+    def test_id_imdb_nei_nomi_e_nfo(self):
+        film, = self.make("Film", "Le ali della liberta (1994) {imdb-tt0111161}/Le ali della liberta (1994).mkv")
+        ep, = self.make("Serie TV", "The Office (2005)/Season 01/The Office S01E01.mkv")
+        (ep.parent.parent / "tvshow.nfo").write_text("<tvshow><uniqueid type=\"imdb\">tt0386676</uniqueid></tvshow>")
+        libs = [{"folders": [str(self.tmp / "Film"), str(self.tmp / "Serie TV")]}]
+        with mock.patch.object(app, "get_libraries", return_value=libs):
+            self.assertEqual(app.imdb_in_path(str(film), "movie"), "tt0111161")
+            self.assertEqual(app.imdb_in_path(str(ep), "show"), "tt0386676")
+        self.assertEqual(app.parse_title("Le ali della liberta (1994) {imdb-tt0111161}"), ("Le ali della liberta", 1994))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -535,7 +535,9 @@ def init_db():
                           ("users", "guest INT DEFAULT 0"),
                           # Il profilo scelto su questo dispositivo: NULL = ancora da scegliere,
                           # 0 = quello principale (l'account), altrimenti l'id in profiles
-                          ("user_sessions", "profile INT")):
+                          ("user_sessions", "profile INT"),
+                          # Id IMDb della scheda (tt...), da TMDB o dai nomi / file .nfo
+                          ("items", "imdb_id TEXT"), ("shows", "imdb_id TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -557,14 +559,22 @@ JUNK = re.compile(
     r"extended|remastered|proper|repack|unrated)\b.*", re.I)
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 EP_PATTERNS = [re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})"),
-               re.compile(r"(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)")]
-SEASON_DIR = re.compile(r"^(?:(?:season|stagione|staffel|serie|s)\s*(\d{1,2})|specials?|speciali)$", re.I)
+               re.compile(r"(?<!\d)(\d{1,2})x(\d{2,3})(?!\d)"),
+               # 'House of Cards - S01 - 01 - Capitolo 1': stagione ed episodio separati da un trattino
+               re.compile(r"(?<![A-Za-z0-9])[Ss](\d{1,2})[\s._]*-[\s._]*(\d{1,3})(?!\d)")]
+SEASON_DIR = re.compile(r"^(?:(?:season|stagione|staffel|serie|s)\s*(\d{1,2})|"
+                        r"(\d{1,2})\s*(?:\^|a|°|ª|st|nd|rd|th)?\s*(?:season|stagione|staffel|serie)|"
+                        r"specials?|speciali)$", re.I)
+# Id IMDb nel nome di un file o di una cartella ('Film {imdb-tt0111161}', '[tt0111161]')
+# o dentro un file .nfo (Kodi, Plex, Jellyfin): e' la chiave piu' sicura per abbinare la scheda
+IMDB_ID = re.compile(r"(?<![a-z0-9])(tt\d{7,9})(?!\d)", re.I)
 SEASON_TAIL = re.compile(r"\s+(?:s\d{1,2}|(?:season|stagione|staffel|serie)\s*\d{1,2}|complet[ae])\b.*$", re.I)
 EP_WORD = re.compile(r"(?:^|[\s._\-\[(])(?:ep|episodio|episode|puntata)[\s._-]*(\d{1,3})(?!\d)", re.I)
 
 
 def clean(s):
-    s = re.sub(r"\[[^\]]*\]", " ", s)
+    s = re.sub(r"\[[^\]]*\]|\{[^}]*\}", " ", s)
+    s = IMDB_ID.sub(" ", s)
     s = re.sub(r"[._]+", " ", s)
     return re.sub(r"\s+", " ", s).strip(" -")
 
@@ -686,7 +696,8 @@ def classify(path, root, cache):
     for part in folders:
         m = SEASON_DIR.match(clean(part))
         if m:
-            season_dir = int(m.group(1)) if m.group(1) else 0
+            n = m.group(1) or m.group(2)
+            season_dir = int(n) if n else 0
 
     title = year = ep_title = None
     for rx in EP_PATTERNS:
@@ -936,20 +947,20 @@ def apply_movie(con, item_id, tmdb_id):
     con.execute(
         "UPDATE items SET title=?, original_title=?, year=?, overview=?, tagline=?, poster=?, "
         "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
-        "meta_at=?, meta_tries=0, released=? WHERE id=?",
+        "meta_at=?, meta_tries=0, released=?, imdb_id=? WHERE id=?",
         (m.get("title") or row["title"], m.get("original_title"),
          _year(m.get("release_date"), row["year"]), overview, m.get("tagline") or "",
          poster, fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(directors), json.dumps(actors, ensure_ascii=False),
          round(m.get("vote_average") or 0, 1), cast_people(credits), time.time(),
-         m.get("release_date") or None, item_id))
+         m.get("release_date") or None, m.get("imdb_id") or "", item_id))
     con.commit()                  # la saga puo' voler scaricare: il database non resta bloccato intanto
     set_collection(con, item_id, m)
 
 
 def apply_show(con, show_id, tmdb_id):
-    m = tmdb(f"/tv/{tmdb_id}", append_to_response="credits")
+    m = tmdb(f"/tv/{tmdb_id}", append_to_response="credits,external_ids")
     overview = m.get("overview") or ""
     if not overview:
         try:
@@ -963,7 +974,7 @@ def apply_show(con, show_id, tmdb_id):
     con.execute(
         "UPDATE shows SET title=?, original_title=?, year=?, overview=?, poster=?, backdrop=?, "
         "tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
-        "meta_at=?, meta_tries=0, status=?, next_air=?, last_air=? WHERE id=?",
+        "meta_at=?, meta_tries=0, status=?, next_air=?, last_air=?, imdb_id=? WHERE id=?",
         (m.get("name") or row["title"], m.get("original_name"),
          _year(m.get("first_air_date"), row["year"]), overview, poster,
          fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
@@ -972,7 +983,7 @@ def apply_show(con, show_id, tmdb_id):
          json.dumps(actors, ensure_ascii=False),
          round(m.get("vote_average") or 0, 1), cast_people(m.get("credits")), time.time(),
          m.get("status") or None, (m.get("next_episode_to_air") or {}).get("air_date") or None,
-         m.get("last_air_date") or None, show_id))
+         m.get("last_air_date") or None, (m.get("external_ids") or {}).get("imdb_id") or "", show_id))
     con.execute("UPDATE items SET meta_done=0 WHERE show_id=?", (show_id,))
 
 
@@ -1133,16 +1144,60 @@ def folder_candidates(path):
     return [(t, y, 1.0 if i == 0 else 0.9) for i, (t, y) in enumerate(folder_titles(folders))]
 
 
+def imdb_in_path(path, kind):
+    """Id IMDb scritto nel nome del video o delle sue cartelle, o in un file .nfo
+    (Kodi, Plex, Jellyfin): 'Film.nfo' / 'movie.nfo' accanto al film, 'tvshow.nfo'
+    nella cartella della serie o in quelle sopra, fino alla libreria."""
+    p = Path(path)
+    root = library_root(path)
+    dirs = [p.parent]
+    while root is not None and dirs[-1] != root and dirs[-1].parent != dirs[-1] and len(dirs) < 6:
+        dirs.append(dirs[-1].parent)
+    dirs = [d for d in dirs if d != root]
+    # Film: il nome del file e la sua cartella. Serie: le cartelle (il file puo'
+    # avere l'id del singolo episodio, che non e' quello della serie)
+    names = [p.name] + [d.name for d in dirs[:1]] if kind == "movie" else [d.name for d in dirs]
+    nfos = [p.with_suffix(".nfo"), p.parent / "movie.nfo"] if kind == "movie" \
+        else [d / "tvshow.nfo" for d in dirs]
+    for n in names:
+        m = IMDB_ID.search(n)
+        if m:
+            return m.group(1).lower()
+    for nfo in nfos:
+        try:
+            if nfo.is_file() and nfo.stat().st_size < 1_000_000:
+                m = IMDB_ID.search(nfo.read_text("utf-8", "ignore"))
+                if m:
+                    return m.group(1).lower()
+        except OSError:
+            pass
+    return None
+
+
+def tmdb_by_imdb(kind, imdb_id):
+    """La scheda TMDB che corrisponde a un id IMDb (lista vuota se TMDB non ce l'ha)."""
+    if not imdb_id:
+        return []
+    try:
+        res = tmdb(f"/find/{imdb_id}", external_source="imdb_id")
+    except urllib.error.HTTPError:
+        return []
+    return res.get("movie_results" if kind == "movie" else "tv_results") or []
+
+
 def find_show(con, show):
     row = con.execute("SELECT path FROM items WHERE show_id=? ORDER BY path LIMIT 1",
                       (show["id"],)).fetchone()
+    found = tmdb_by_imdb("show", imdb_in_path(row["path"], "show")) if row else []
+    if found:
+        return found
     extra = [c for c in folder_candidates(row["path"]) if show_key(c[0]) != show_key(show["title"])] \
         if row else []
     return find_tmdb("show", show["title"], show["year"], extra)
 
 
 def find_movie(r):
-    return find_tmdb("movie", r["title"], r["year"])
+    return tmdb_by_imdb("movie", imdb_in_path(r["path"], "movie")) or find_tmdb("movie", r["title"], r["year"])
 
 
 def merge_duplicate_show(con, show_id):
@@ -1685,6 +1740,23 @@ def scan():
                         credits = {}
                     con.execute(f"UPDATE {table} SET people=? WHERE id=?", (cast_people(credits), r["id"]))
                     con.commit()
+                # Id IMDb: i titoli che avevano gia' la scheda prima che si salvasse
+                # ('' = TMDB non lo conosce, non si richiede piu')
+                todo = [("items", "movie", r) for r in con.execute(
+                    "SELECT id, tmdb_id FROM items WHERE kind='movie' AND tmdb_id IS NOT NULL "
+                    "AND imdb_id IS NULL").fetchall()]
+                todo += [("shows", "tv", r) for r in con.execute(
+                    "SELECT id, tmdb_id FROM shows WHERE tmdb_id IS NOT NULL AND imdb_id IS NULL").fetchall()]
+                for n, (table, kind, r) in enumerate(todo, 1):
+                    state["message"] = f"Collego le schede a IMDb... {n} di {len(todo)}"
+                    try:
+                        ext = tmdb(f"/{kind}/{r['tmdb_id']}/external_ids")
+                    except urllib.error.HTTPError as ex:
+                        if ex.code != 404:
+                            raise
+                        ext = {}
+                    con.execute(f"UPDATE {table} SET imdb_id=? WHERE id=?", (ext.get("imdb_id") or "", r["id"]))
+                    con.commit()
             except Exception as ex:  # rete assente, chiave errata...
                 state["message"] = f"TMDB non raggiungibile: {ex}"
                 print("TMDB error:", repr(ex), flush=True)
@@ -1795,10 +1867,11 @@ def split_merged_shows():
 def reclassify_catalog():
     """Una volta sola, dopo il miglioramento del riconoscimento delle serie
     (miniserie con puntate lunghe come Band of Brothers, nomi di file con un
-    errore di battitura come 'True.Detectives.S02E01'): si rilegge ogni video gia'
+    errore di battitura come 'True.Detectives.S02E01', poi stagione ed episodio
+    separati da un trattino come 'House of Cards - S01 - 01'): si rilegge ogni video gia'
     in catalogo e quelli che ora risultano altro cambiano posto. Gli id dei
     video restano gli stessi, quindi visti e punti di ripresa non si perdono."""
-    if config.get("classifier", 1) != 3:      # prima va fatta la separazione delle serie
+    if config.get("classifier", 1) not in (3, 4):   # prima va fatta la separazione delle serie
         return
     con = db()
     missing = False
@@ -1827,7 +1900,7 @@ def reclassify_catalog():
             con.execute(
                 "UPDATE items SET kind='episode', show_id=?, season=?, episode=?, title=?, "
                 "original_title=NULL, year=NULL, overview=NULL, tagline=NULL, poster=NULL, backdrop=NULL, "
-                "tmdb_id=NULL, genres=NULL, director=NULL, actors=NULL, people=NULL, rating=NULL, "
+                "tmdb_id=NULL, imdb_id=NULL, genres=NULL, director=NULL, actors=NULL, people=NULL, rating=NULL, "
                 "collection_id=NULL, meta_done=0 WHERE id=?",
                 (show_ids[key], season, number, ep_title, it["id"]))
             (IMG / f"thumb_{it['id']}.jpg").unlink(missing_ok=True)
@@ -1843,7 +1916,7 @@ def reclassify_catalog():
         con.close()
     if not missing:           # un disco scollegato: si riprova al prossimo avvio
         with config_lock:
-            config["classifier"] = 4
+            config["classifier"] = 5
             save_config()
 
 
@@ -1958,6 +2031,7 @@ def item_json(r, show=None):
     d["poster"] = img_url(r["poster"]) if r["kind"] == "movie" else None
     d["backdrop"] = img_url(r["backdrop"])
     d["matched"] = bool(r["tmdb_id"])
+    d["imdb"] = (r["imdb_id"] if "imdb_id" in r.keys() else None) or None
     # Su un disco scollegato: la scheda resta, con il posto dove dovrebbe trovarsi il file
     path = r["path"] if "path" in r.keys() else None
     if path and is_offline(path):
@@ -1978,6 +2052,7 @@ def show_json(con, r):
     d = {k: r[k] for k in ("id", "title", "original_title", "year", "overview",
                            "added_at", "director", "rating", "library_id")}
     d["kind"] = "show"
+    d["imdb"] = (r["imdb_id"] if "imdb_id" in r.keys() else None) or None
     d["fav"] = bool(r["fav"])
     d["genres"] = jlist(r["genres"])
     d["actors"] = jlist(r["actors"])
@@ -5352,7 +5427,9 @@ def tmdb_search(kind: str, q: str, year: int = 0):
     if not tmdb_key():
         raise HTTPException(400, "Chiave TMDB non impostata")
     try:
-        res = search_tmdb("movie" if kind == "movie" else "show", q, year or None)
+        kind = "movie" if kind == "movie" else "show"
+        imdb = IMDB_ID.search(q)          # incollato un link o un id IMDb: si va a colpo sicuro
+        res = tmdb_by_imdb(kind, imdb.group(1).lower()) if imdb else search_tmdb(kind, q, year or None)
     except Exception:
         raise HTTPException(502, "Non riesco a contattare TMDB")
     out = []

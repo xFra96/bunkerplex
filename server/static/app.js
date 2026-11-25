@@ -881,6 +881,12 @@ function stars(x, short) {
   return short ? 'voto ' + n : '<span class="star">' + n + ' su 10</span>';
 }
 
+// Collegamento alla pagina IMDb del titolo (solo se la scheda ne ha l'id)
+function imdbLink(x) {
+  return /^tt\d+$/.test(x.imdb || '') ? '<a class="tag f" href="https://www.imdb.com/title/' + x.imdb +
+    '/" target="_blank" rel="noopener" data-key="imdb">IMDb</a>' : '';
+}
+
 // Badge della qualita' (4K, 1080p, 720p) in alto a sinistra sulla copertina
 function qBadge(x) { return x.quality && x.quality !== 'SD' ? '<span class="q">' + x.quality + '</span>' : ''; }
 
@@ -1427,7 +1433,7 @@ async function item(id) {
       metaLine([
         isEp ? '<b class="lead">' + esc(x.show_title || '') + ' · Stagione ' + x.season + ' · Episodio ' + x.episode + '</b>' : '',
         x.friend ? '<b class="lead">' + (x.friend_self ? 'Su ' : 'Di ') + esc(x.friend) + '</b>' : '',
-        x.year, fmtDur(x.duration), stars(x),
+        x.year, fmtDur(x.duration), stars(x), imdbLink(x),
         x.quality ? '<span class="tag">' + x.quality + '</span>' : '',
         x.watched ? '<span class="okdot">' + IC.check + ' Visto</span>' : '',
         resume ? 'mancano ' + fmtDur(x.duration - x.position) : ''
@@ -1690,7 +1696,7 @@ async function show(id) {
       metaLine([
         s.friend ? '<b class="lead">' + (s.friend_self ? 'Su ' : 'Di ') + esc(s.friend) + '</b>' : '',
         s.year, s.seasons_count + (s.seasons_count === 1 ? ' stagione' : ' stagioni'),
-        s.episodes + ' episodi', stars(s),
+        s.episodes + ' episodi', stars(s), imdbLink(s),
         s.unwatched ? s.unwatched + ' da vedere' : '<span class="okdot">' + IC.check + ' Vista</span>'
       ]) +
       '<p class="overview">' + esc(s.overview || '') + '</p>' +
@@ -1826,7 +1832,7 @@ async function matchPage(kind, id) {
   var x = kind === 'movie' ? await api('/items/' + id) : await api('/shows/' + id);
   return {
     html: '<div class="page"><div class="toolbar"><h1>Correggi scheda</h1></div>' +
-      '<div class="panel"><p>Scrivi il titolo giusto e scegli il risultato corretto.' +
+      '<div class="panel"><p>Scrivi il titolo giusto e scegli il risultato corretto, oppure incolla il link o il codice IMDb (tt…).' +
       (x.filename ? ' File: <code>' + esc(x.filename) + '</code>' : '') + '</p>' +
       '<div class="inline"><input class="field f" id="mq" data-key="match-input" data-enter="matchsearch" autocomplete="off" value="' + esc(x.title) + '">' +
       '<button class="btn primary f" data-act="matchsearch" data-key="match-go">Cerca</button></div>' +
