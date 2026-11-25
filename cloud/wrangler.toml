@@ -10,6 +10,8 @@
 # cancella una pubblicazione da qui).
 
 name = "bunkerplex-account"
+# Account Cloudflare di bunkerplex@outlook.it
+account_id = "4a8fc3154525d41fd733768c7ea45e18"
 main = "worker.js"
 compatibility_date = "2026-11-01"
 workers_dev = true
@@ -27,7 +29,7 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "bunkerplex"
-database_id = "129ed217-77b6-4a53-9e5b-f9c3185e59ec"
+database_id = "fa7bbd79-1744-4fb1-a8b7-2bd91032ad4a"
 
 # Una volta a settimana: tiene viva la chiave di Brevo (vedi scheduled in worker.js).
 # Oggi su Cloudflare non c'e': si accende togliendo il # dalle due righe.
