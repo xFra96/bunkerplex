@@ -881,10 +881,12 @@ function stars(x, short) {
   return short ? 'voto ' + n : '<span class="star">' + n + ' su 10</span>';
 }
 
-// Collegamento alla pagina IMDb del titolo (solo se la scheda ne ha l'id)
+// Collegamento alla pagina IMDb del titolo, con il voto IMDb se c'e' (solo se la scheda ne ha l'id)
 function imdbLink(x) {
-  return /^tt\d+$/.test(x.imdb || '') ? '<a class="tag f" href="https://www.imdb.com/title/' + x.imdb +
-    '/" target="_blank" rel="noopener" data-key="imdb">IMDb</a>' : '';
+  if (!/^tt\d+$/.test(x.imdb || '')) return '';
+  var v = x.imdb_rating ? ' ' + x.imdb_rating.toFixed(1).replace('.', ',') : '';
+  return '<a class="tag f" href="https://www.imdb.com/title/' + x.imdb +
+    '/" target="_blank" rel="noopener" data-key="imdb">IMDb' + v + '</a>';
 }
 
 // Badge della qualita' (4K, 1080p, 720p) in alto a sinistra sulla copertina
@@ -1450,7 +1452,8 @@ async function item(id) {
           (x.watched ? 'Segna come da vedere' : 'Segna come visto') + '</button>' +
         (isEp
           ? '<a class="btn f" href="#/show/' + x.show_id + '" data-key="toshow">Vai alla serie</a>'
-          : (x.friend ? '' : '<a class="btn f" href="#/match/movie/' + x.id + '" data-key="match">Correggi scheda</a>')) +
+          : (x.friend ? '' : '<a class="btn f" href="#/match/movie/' + x.id + '" data-key="match">Correggi scheda</a>' +
+            (x.matched ? '<a class="btn f" href="#/posters/movie/' + x.id + '" data-key="posters">Cambia locandina</a>' : ''))) +
       '</div>' +
       (!isEp && (x.genres.length || x.director || x.actors.length || x.collection) ? '<div class="credits">' +
         (x.collection ? '<div><b>Collezione</b><a class="chip f" href="#/saga/' + x.collection.id + '" data-key="chip-saga">' +
@@ -1709,7 +1712,8 @@ async function show(id) {
         (s.friend ? '' : favButton(s)) +
         '<button class="btn f" data-act="showwatched" data-arg="' + s.id + ':' + (s.watched ? 0 : 1) + '" data-key="allseen">' +
           (s.watched ? 'Segna tutta come da vedere' : 'Segna tutta come vista') + '</button>' +
-        (s.friend ? '' : '<a class="btn f" href="#/match/show/' + s.id + '" data-key="match">Correggi scheda</a>') +
+        (s.friend ? '' : '<a class="btn f" href="#/match/show/' + s.id + '" data-key="match">Correggi scheda</a>' +
+          (s.matched ? '<a class="btn f" href="#/posters/show/' + s.id + '" data-key="posters">Cambia locandina</a>' : '')) +
       '</div>' +
       (s.genres.length || s.director || s.actors.length ? '<div class="credits">' +
         (s.genres.length ? '<div><b>Genere</b>' + chips(s.genres, base, 'genre') + '</div>' : '') +
@@ -1858,6 +1862,24 @@ async function matchSearch() {
   } catch (e) {
     out.innerHTML = '<p>' + esc(e.message) + (/(chiave)/i.test(e.message) ? ' Vai in <b>Impostazioni</b> per inserirla.' : '') + '</p>';
   }
+}
+
+// ---------------------------------------------------------------- Cambia locandina
+
+async function postersPage(kind, id) {
+  var list = await api('/posters?kind=' + kind + '&id=' + id);
+  var lang = { it: 'italiano', en: 'inglese', '': 'senza scritte' };
+  return {
+    html: '<div class="page"><div class="toolbar"><h1>Cambia locandina</h1></div>' +
+      '<div class="panel"><p>Scegli la locandina da usare: resta anche quando la scheda si aggiorna.</p>' +
+      (list.length ? '<div class="pgrid">' + list.map(function (p, i) {
+        return '<button class="pick f" data-act="posterpick" data-arg="' + esc(p.path) + '" data-key="poster-' + i + '">' +
+          '<img src="' + esc(p.url) + '" alt="" loading="lazy"><span>' + esc(lang[p.lang] || p.lang) +
+          (p.votes ? ' · ' + p.votes + (p.votes === 1 ? ' voto' : ' voti') : '') + '</span></button>';
+      }).join('') + '</div>' : '<p>TMDB non ha altre locandine per questo titolo.</p>') +
+      '</div></div>',
+    mount: function () { cache.posters = { kind: kind, id: id }; }
+  };
 }
 
 // ---------------------------------------------------------------- Impostazioni
@@ -5475,6 +5497,11 @@ var actions = {
   },
 
   matchsearch: matchSearch,
+  posterpick: function (arg) {
+    toast('Cambio la locandina…');
+    post('/poster', { kind: cache.posters.kind, id: +cache.posters.id, path: arg })
+      .then(function () { toast('Locandina cambiata'); history.back(); }, function (e) { toast(e.message); });
+  },
   matchpick: function (arg) {
     toast('Aggiorno la scheda…');
     post('/match', { kind: cache.match.kind, id: +cache.match.id, tmdb_id: +arg })
@@ -5837,6 +5864,7 @@ var routes = [
   [/^#\/rename\/(\d+)$/, renamePage],
   [/^#\/browse\/(\d+)(?:\?.*)?$/, browsePage],
   [/^#\/match\/(movie|show)\/(\d+)$/, matchPage],
+  [/^#\/posters\/(movie|show)\/(\d+)$/, postersPage],
   [/^#\/settings\/(\w+)$/, settingsArea],
   [/^#\/accounts$/, function () { location.replace('#/settings/people'); return ''; }],
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],

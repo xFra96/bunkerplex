@@ -362,6 +362,11 @@ body.scrolling #view { pointer-events: none; }
 .result:hover { background: #223026; }
 .result:focus { background: var(--ink); color: var(--bg); }
 .result:focus p { color: #3a4a40; }
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr)); gap: 1rem; margin-top: 1.2rem; }
+.pick { display: flex; flex-direction: column; gap: .4rem; padding: .4rem; border-radius: var(--r); background: var(--surface2); text-align: center; font-size: .85rem; }
+.pick img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: .25rem; background: var(--bg); }
+.pick:hover { background: #223026; }
+.pick:focus { background: var(--ink); color: var(--bg); }
 .result.dir { padding: .8rem 1rem; font-size: 1.05rem; }
 .dirico { width: 2rem; flex: none; color: var(--ink2); font-size: 1.1rem; }
 .result.dir:focus .dirico { color: var(--bg); }

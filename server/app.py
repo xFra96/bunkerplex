@@ -543,7 +543,13 @@ def init_db():
                           # 0 = quello principale (l'account), altrimenti l'id in profiles
                           ("user_sessions", "profile INT"),
                           # Id IMDb della scheda (tt...), da TMDB o dai nomi / file .nfo
-                          ("items", "imdb_id TEXT"), ("shows", "imdb_id TEXT")):
+                          ("items", "imdb_id TEXT"), ("shows", "imdb_id TEXT"),
+                          # Voto IMDb e numero di voti (vedi imdb_ratings), NULL = non ancora letto
+                          ("items", "imdb_rating REAL"), ("items", "imdb_votes INT"),
+                          ("shows", "imdb_rating REAL"), ("shows", "imdb_votes INT"),
+                          # Locandina TMDB scelta a mano con «Cambia locandina» (percorso TMDB):
+                          # gli aggiornamenti della scheda la tengono
+                          ("items", "poster_pick TEXT"), ("shows", "poster_pick TEXT")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -947,26 +953,53 @@ def apply_movie(con, item_id, tmdb_id):
     credits = m.get("credits") or {}
     directors = [c["name"] for c in credits.get("crew", []) if c.get("job") == "Director"]
     actors = [c["name"] for c in credits.get("cast", [])[:8]]
-    row = con.execute("SELECT poster, year, title FROM items WHERE id=?", (item_id,)).fetchone()
+    row = con.execute("SELECT poster, year, title, poster_pick, tmdb_id FROM items WHERE id=?", (item_id,)).fetchone()
+    if row["tmdb_id"] != m["id"]:     # abbinato a un altro film: la scelta di prima non vale piu'
+        con.execute("UPDATE items SET poster_pick=NULL WHERE id=?", (item_id,))
+        row = dict(row, poster_pick=None)
     poster = row["poster"] if (row["poster"] or "").startswith("local_") \
-        else fetch_image(m.get("poster_path"), "w500")
+        else fetch_image(row["poster_pick"] or m.get("poster_path"), "w500")
     con.execute(
         "UPDATE items SET title=?, original_title=?, year=?, overview=?, tagline=?, poster=?, "
         "backdrop=?, tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
-        "meta_at=?, meta_tries=0, released=?, imdb_id=? WHERE id=?",
+        "meta_at=?, meta_tries=0, released=?, imdb_rating=CASE WHEN imdb_id IS ? THEN imdb_rating END, "
+        "imdb_id=? WHERE id=?",
         (m.get("title") or row["title"], m.get("original_title"),
          _year(m.get("release_date"), row["year"]), overview, m.get("tagline") or "",
          poster, fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
          json.dumps([g["name"] for g in m.get("genres", [])], ensure_ascii=False),
          ", ".join(directors), json.dumps(actors, ensure_ascii=False),
          round(m.get("vote_average") or 0, 1), cast_people(credits), time.time(),
-         m.get("release_date") or None, m.get("imdb_id") or "", item_id))
+         m.get("release_date") or None, m.get("imdb_id") or "", m.get("imdb_id") or "", item_id))
     con.commit()                  # la saga puo' voler scaricare: il database non resta bloccato intanto
     set_collection(con, item_id, m)
 
 
+def show_poster(m):
+    """La locandina di una serie. Quella 'principale' che TMDB indica per l'italiano
+    a volte e' di una sola stagione (True Detective -> la stagione 4, Night Country),
+    caricata da qualcuno e mai votata. Si prende l'italiana piu' votata, se ha voti;
+    se no, quando la principale non ha voti ma ce n'e' una in inglese (o senza
+    scritte) votata da piu' persone, quella."""
+    posters = (m.get("images") or {}).get("posters") or []
+    main = m.get("poster_path")
+    lang = TMDB_LANG[:2]
+
+    def rank(p):
+        return (p.get("vote_average") or 0, p.get("vote_count") or 0)
+    local = [p for p in posters if p.get("iso_639_1") == lang and (p.get("vote_count") or 0) > 0]
+    if local:
+        return max(local, key=rank)["file_path"]
+    cur = next((p for p in posters if p.get("file_path") == main), None)
+    other = [p for p in posters if p.get("iso_639_1") in ("en", None) and (p.get("vote_count") or 0) >= 2]
+    if other and (cur is None or not cur.get("vote_count")) and (cur is None or cur.get("iso_639_1") == lang):
+        return max(other, key=rank)["file_path"]
+    return main
+
+
 def apply_show(con, show_id, tmdb_id):
-    m = tmdb(f"/tv/{tmdb_id}", append_to_response="credits,external_ids")
+    m = tmdb(f"/tv/{tmdb_id}", append_to_response="credits,external_ids,images",
+             include_image_language=TMDB_LANG[:2] + ",en,null")
     overview = m.get("overview") or ""
     if not overview:
         try:
@@ -974,13 +1007,17 @@ def apply_show(con, show_id, tmdb_id):
         except Exception:
             pass
     actors = [c["name"] for c in (m.get("credits") or {}).get("cast", [])[:8]]
-    row = con.execute("SELECT poster, year, title FROM shows WHERE id=?", (show_id,)).fetchone()
+    row = con.execute("SELECT poster, year, title, poster_pick, tmdb_id FROM shows WHERE id=?", (show_id,)).fetchone()
+    if row["tmdb_id"] != m["id"]:     # abbinata a un'altra serie: la scelta di prima non vale piu'
+        con.execute("UPDATE shows SET poster_pick=NULL WHERE id=?", (show_id,))
+        row = dict(row, poster_pick=None)
     poster = row["poster"] if (row["poster"] or "").startswith("local_") \
-        else fetch_image(m.get("poster_path"), "w500")
+        else fetch_image(row["poster_pick"] or show_poster(m), "w500")
     con.execute(
         "UPDATE shows SET title=?, original_title=?, year=?, overview=?, poster=?, backdrop=?, "
         "tmdb_id=?, genres=?, director=?, actors=?, rating=?, people=?, meta_done=1, "
-        "meta_at=?, meta_tries=0, status=?, next_air=?, last_air=?, imdb_id=? WHERE id=?",
+        "meta_at=?, meta_tries=0, status=?, next_air=?, last_air=?, "
+        "imdb_rating=CASE WHEN imdb_id IS ? THEN imdb_rating END, imdb_id=? WHERE id=?",
         (m.get("name") or row["title"], m.get("original_name"),
          _year(m.get("first_air_date"), row["year"]), overview, poster,
          fetch_image(m.get("backdrop_path"), "w1280"), m["id"],
@@ -989,7 +1026,8 @@ def apply_show(con, show_id, tmdb_id):
          json.dumps(actors, ensure_ascii=False),
          round(m.get("vote_average") or 0, 1), cast_people(m.get("credits")), time.time(),
          m.get("status") or None, (m.get("next_episode_to_air") or {}).get("air_date") or None,
-         m.get("last_air_date") or None, (m.get("external_ids") or {}).get("imdb_id") or "", show_id))
+         m.get("last_air_date") or None, (m.get("external_ids") or {}).get("imdb_id") or "",
+         (m.get("external_ids") or {}).get("imdb_id") or "", show_id))
     con.execute("UPDATE items SET meta_done=0 WHERE show_id=?", (show_id,))
 
 
@@ -1906,7 +1944,7 @@ def reclassify_catalog():
             con.execute(
                 "UPDATE items SET kind='episode', show_id=?, season=?, episode=?, title=?, "
                 "original_title=NULL, year=NULL, overview=NULL, tagline=NULL, poster=NULL, backdrop=NULL, "
-                "tmdb_id=NULL, imdb_id=NULL, genres=NULL, director=NULL, actors=NULL, people=NULL, rating=NULL, "
+                "tmdb_id=NULL, imdb_id=NULL, imdb_rating=NULL, poster_pick=NULL, genres=NULL, director=NULL, actors=NULL, people=NULL, rating=NULL, "
                 "collection_id=NULL, meta_done=0 WHERE id=?",
                 (show_ids[key], season, number, ep_title, it["id"]))
             (IMG / f"thumb_{it['id']}.jpg").unlink(missing_ok=True)
@@ -1979,6 +2017,50 @@ def drives_loop():
             print("Controllo dischi non riuscito:", repr(ex), flush=True)
 
 
+IMDB_RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
+
+
+def imdb_ratings(force=False):
+    """Voti IMDb dei titoli in catalogo. IMDb non ha un'API gratuita, ma pubblica
+    ogni giorno un file con tutti i voti (title.ratings.tsv.gz, circa 8 MB, uso
+    personale): si scarica al massimo una volta al giorno (prima, se ci sono titoli
+    nuovi ancora senza voto, ogni 6 ore) e si tengono solo i titoli che ci sono qui."""
+    con = db()
+    try:
+        want = {}
+        for table in ("items", "shows"):
+            for r in con.execute(f"SELECT id, imdb_id, imdb_rating FROM {table} WHERE imdb_id LIKE 'tt%'"):
+                want.setdefault(r["imdb_id"], []).append((table, r["id"], r["imdb_rating"]))
+        if not want:
+            return
+        last = float(config.get("imdb_ratings_at") or 0)
+        fresh = any(v[2] is None for refs in want.values() for v in refs)
+        if not force and time.time() - last < (6 if fresh else 24) * 3600:
+            return
+        found = {}
+        req = urllib.request.Request(IMDB_RATINGS_URL, headers={"User-Agent": "media-server"})
+        with urllib.request.urlopen(req, timeout=60) as r, gzip.GzipFile(fileobj=r) as gz:
+            for line in io.TextIOWrapper(gz, "utf-8"):
+                tconst, _, rest = line.partition("\t")
+                if tconst in want:
+                    rating, _, votes = rest.strip().partition("\t")
+                    try:
+                        found[tconst] = (float(rating), int(votes))
+                    except ValueError:
+                        pass
+        for tconst, refs in want.items():
+            rating, votes = found.get(tconst, (0, 0))   # 0: IMDb non ha ancora voti per questo titolo
+            for table, row_id, _ in refs:
+                con.execute(f"UPDATE {table} SET imdb_rating=?, imdb_votes=? WHERE id=?", (rating, votes, row_id))
+        con.commit()
+        print(f"Voti IMDb aggiornati: {len(found)} titoli su {len(want)}", flush=True)
+    finally:
+        con.close()
+    with config_lock:
+        config["imdb_ratings_at"] = time.time()
+        save_config()
+
+
 def scan_loop():
     try:
         split_merged_shows()
@@ -1988,12 +2070,28 @@ def scan_loop():
         reclassify_catalog()
     except Exception as ex:
         print("Riclassificazione non riuscita:", repr(ex), flush=True)
+    if config.get("show_posters", 0) < 1:
+        # Una volta sola: le serie riprendono la scheda con la nuova scelta della
+        # locandina (vedi show_poster), al prossimo giro della scansione
+        con = db(raw=True)
+        try:
+            con.execute("UPDATE shows SET meta_done=0 WHERE tmdb_id IS NOT NULL")
+            con.commit()
+        finally:
+            con.close()
+        with config_lock:
+            config["show_posters"] = 1
+            save_config()
     while True:
         try:
             auto_relocate()
         except Exception as ex:
             print("Aggiornamento percorsi non riuscito:", repr(ex), flush=True)
         scan()
+        try:
+            imdb_ratings()
+        except Exception as ex:   # IMDb non raggiungibile: si riprova al prossimo giro
+            print("Voti IMDb non scaricati:", repr(ex), flush=True)
         time.sleep(max(1, SCAN_INTERVAL_MIN) * 60)
 
 
@@ -2038,6 +2136,7 @@ def item_json(r, show=None):
     d["backdrop"] = img_url(r["backdrop"])
     d["matched"] = bool(r["tmdb_id"])
     d["imdb"] = (r["imdb_id"] if "imdb_id" in r.keys() else None) or None
+    d["imdb_rating"] = (r["imdb_rating"] if "imdb_rating" in r.keys() else None) or None
     # Su un disco scollegato: la scheda resta, con il posto dove dovrebbe trovarsi il file
     path = r["path"] if "path" in r.keys() else None
     if path and is_offline(path):
@@ -2059,6 +2158,7 @@ def show_json(con, r):
                            "added_at", "director", "rating", "library_id")}
     d["kind"] = "show"
     d["imdb"] = (r["imdb_id"] if "imdb_id" in r.keys() else None) or None
+    d["imdb_rating"] = (r["imdb_rating"] if "imdb_rating" in r.keys() else None) or None
     d["fav"] = bool(r["fav"])
     d["genres"] = jlist(r["genres"])
     d["actors"] = jlist(r["actors"])
@@ -5478,6 +5578,57 @@ async def match(request: Request):
         raise HTTPException(502, "Non riesco a contattare TMDB")
     finally:
         con.close()
+
+
+@app.get("/api/posters")
+def posters(kind: str, id: int):
+    """Le locandine che TMDB ha per un film o una serie, per sceglierla a mano."""
+    con = db()
+    try:
+        r = get_item(con, id) if kind == "movie" else get_show(con, id)
+        if not r:
+            raise HTTPException(404, "Titolo non trovato")
+        if not r["tmdb_id"]:
+            raise HTTPException(400, "Prima serve la scheda: usa «Correggi scheda»")
+        tmdb_id = r["tmdb_id"]
+    finally:
+        con.close()
+    try:
+        res = tmdb(f"/{'movie' if kind == 'movie' else 'tv'}/{tmdb_id}/images",
+                   include_image_language=TMDB_LANG[:2] + ",en,null")
+    except Exception:
+        raise HTTPException(502, "Non riesco a contattare TMDB")
+    lang = TMDB_LANG[:2]
+    out = sorted(res.get("posters") or [], key=lambda p: (
+        p.get("iso_639_1") != lang, -(p.get("vote_average") or 0), -(p.get("vote_count") or 0)))
+    return [{"path": p["file_path"], "url": f"https://image.tmdb.org/t/p/w342{p['file_path']}",
+             "lang": p.get("iso_639_1") or "", "votes": p.get("vote_count") or 0} for p in out[:40]]
+
+
+@app.post("/api/poster")
+async def set_poster(request: Request):
+    """Cambia locandina: la scelta resta anche quando la scheda si aggiorna."""
+    body = await read_json(request)
+    kind, row_id, path = body.get("kind"), int(body.get("id") or 0), str(body.get("path") or "")
+    if not re.fullmatch(r"/[A-Za-z0-9_\-]+\.(?:jpg|png)", path):
+        raise HTTPException(400, "Locandina non valida")
+    check = db()
+    try:
+        if not (get_item(check, row_id) if kind == "movie" else get_show(check, row_id)):
+            raise HTTPException(404, "Titolo non trovato")
+    finally:
+        check.close()
+    name = fetch_image(path, "w500")
+    if not name:
+        raise HTTPException(502, "Non riesco a scaricare la locandina")
+    con = db(raw=True)
+    try:
+        con.execute(f"UPDATE {'items' if kind == 'movie' else 'shows'} SET poster=?, poster_pick=? WHERE id=?",
+                    (name, path, row_id))
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": True}
 
 
 @app.post("/api/refresh")
