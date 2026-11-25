@@ -410,19 +410,39 @@ function authShell(inner, wide) {
 // La usano la PWA centrale (cServersPage) e il server di casa (serversPage).
 var SRV_FIND_FROM = 7;          // da quante card compare «Cerca»
 
+// Le icone che il proprietario puo' dare al suo server (stessi nomi di LOOK_ICONS nel Worker)
+var SRV_LOOK_ICONS = {
+  tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
+  star: '<path d="M12 3l2.8 5.8 6.2.9-4.5 4.4 1 6.2L12 17.4 6.5 20.3l1-6.2L3 9.7l6.2-.9z"/>',
+  heart: '<path d="M12 20s-7-4.4-9-9a4.8 4.8 0 0 1 9-3 4.8 4.8 0 0 1 9 3c-2 4.6-9 9-9 9z"/>',
+  music: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+  game: '<rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3M15 12h.01M18 14h.01"/>',
+  cloud: '<path d="M7 18a4.5 4.5 0 0 1-.5-9 6 6 0 0 1 11.4 1.5A4 4 0 0 1 17.5 18z"/>'
+};
+function srvLookIcon(name) {
+  return SRV_LOOK_ICONS[name] ? '<svg viewBox="0 0 24 24" aria-hidden="true">' + SRV_LOOK_ICONS[name] + '</svg>' : '';
+}
+
 function srvHue(text) {
   var h = 0;
   String(text || '').split('').forEach(function (c) { h = (h * 31 + c.charCodeAt(0)) % 360; });
   return h;
 }
 
-// c: {act, arg, key, name, sub, icon, off, on, first, local}
+// c: {act, arg, key, name, sub, icon, off, on, first, local, look: {icon, image}, edit}
 function srvCard(c) {
   var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
-  return '<button class="srv f' + (c.off ? ' off' : '') + (c.on ? ' on' : '') + '"' + (c.first ? ' data-autofocus' : '') +
+  var look = c.look || {};
+  var img = /^https?:\/\//.test(look.image || '') ? look.image : '';
+  var face = img ? '' : (srvLookIcon(look.icon) ? '<span class="srvini ico">' + srvLookIcon(look.icon) + '</span>'
+    : '<span class="srvini">' + esc(initial) + '</span>');
+  return '<button class="srv f' + (c.off ? ' off' : '') + (c.on ? ' on' : '') + (c.edit ? ' edit' : '') + '"' + (c.first ? ' data-autofocus' : '') +
     ' data-act="' + c.act + '" data-arg="' + esc(c.arg) + '" data-key="' + esc(c.key) + '"' +
     ' data-find="' + esc((c.name + ' ' + (c.find || '')).toLowerCase()) + '">' +
-    '<span class="srvart" style="--h:' + srvHue(c.name) + '"><span class="srvini">' + esc(initial) + '</span>' +
+    '<span class="srvart' + (img ? ' img' : '') + '" style="--h:' + srvHue(c.name) + (img ? ';background-image:url(\'' + esc(img) + '\')' : '') + '">' + face +
+      (c.edit ? '<span class="srvpen">Modifica</span>' : '') +
       '<span class="srvbadge">' + c.icon + '</span>' +
       '<i class="srvdot' + (c.off ? '' : ' live') + '" title="' + (c.off ? 'Non raggiungibile' : 'Acceso') + '"></i>' +
       (c.local ? '<span class="srvtag">In casa</span>' : '') + '</span>' +
@@ -436,7 +456,7 @@ function srvGrid(sections, total) {
     : '';
   return find + sections.map(function (s) {
     if (!s.cards.length && !s.extra) return '';
-    return '<section class="srvsec"><h2>' + esc(s.title) + (s.cards.length ? ' <span>' + s.cards.length + '</span>' : '') + '</h2>' +
+    return '<section class="srvsec"><h2>' + esc(s.title) + (s.cards.length ? ' <span>' + s.cards.length + '</span>' : '') + (s.tool || '') + '</h2>' +
       '<div class="srvgrid">' + s.cards.join('') + (s.extra || '') + '</div></section>';
   }).join('') + '<p class="authnote srvnone" hidden>Nessun server o amico con questo nome.</p>';
 }
@@ -551,21 +571,22 @@ async function serversPage() {
         var r = await Promise.race([api('/account-friends'), new Promise(function (ok, ko) { setTimeout(function () { ko(new Error('lento')); }, 5000); })]);
         data.friends = r.friends || [];
         data.mine = r.mine || [];
+        data.hereLook = r.here_look || null;
       } catch (e) { data.error = true; }
     }
     cache.srvData = data;
   }
   var cur = currentServer();
-  function card(arg, ico, name, sub, on, first, find) {
+  function card(arg, ico, name, sub, on, first, find, look) {
     var off = on === false;
     return srvCard({ act: off ? 'srvoff' : 'srvpick', arg: arg, key: 'srv-' + arg, name: name, sub: sub, icon: ico,
-      off: off, on: cur === arg, first: first, find: find });
+      off: off, on: cur === arg, first: first, find: find, look: look });
   }
   var mine = [card('here', SRV_ICON, auth.pc || 'Questo server',
-    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Questo PC', true, true)];
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Questo PC', true, true, '', data.hereLook)];
   data.mine.forEach(function (m) {
     if (!m.n) return;
-    mine.push(card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true));
+    mine.push(card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true, false, '', m.look));
   });
   var friends = [];
   var waiting = [];
@@ -580,7 +601,7 @@ async function serversPage() {
     servers.forEach(function (s) {
       friends.push(card('f' + s.n, FRIEND_ICON, servers.length > 1 && s.name ? s.name : f.username,
         (servers.length > 1 ? 'di ' + esc(f.username) : (s.name ? esc(s.name) : 'Amico')) + (s.online === false ? ' · non raggiungibile' : ''),
-        s.online === false ? false : true, false, f.username + ' ' + (s.name || '')));
+        s.online === false ? false : true, false, f.username + ' ' + (s.name || ''), s.look));
     });
   });
   var add = '';
@@ -1122,9 +1143,10 @@ async function cServersPage() {
     var friend = s.role === 'friend';
     var sub = friend ? 'di ' + esc(s.owner.username) : 'Il tuo server';
     sub += off ? ' · non raggiungibile' : (!s.local && s.online ? ' · acceso' : '');
-    (friend ? theirs : mine).push(srvCard({ act: 'cpick', arg: i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
-      name: s.name || 'PC', sub: sub, icon: friend ? FRIEND_ICON : SRV_ICON, off: off, on: C.sid === s.sid,
-      first: i === 0, local: !!s.local, find: friend ? s.owner.username : '' }));
+    var edit = !friend && cache.cEdit;
+    (friend ? theirs : mine).push(srvCard({ act: edit ? 'clook' : 'cpick', arg: edit ? s.sid : i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
+      name: s.name || 'PC', sub: sub, icon: friend ? FRIEND_ICON : SRV_ICON, off: off && !edit, on: C.sid === s.sid,
+      first: i === 0, local: !!s.local, find: friend ? s.owner.username : '', look: s.look, edit: edit }));
   });
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
   var friends = C.friends || [];
@@ -1146,7 +1168,9 @@ async function cServersPage() {
   return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
     (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
-    srvGrid([{ title: 'I tuoi server', cards: mine }, { title: 'Amici', cards: theirs, extra: add }], mine.length + theirs.length) +
+    srvGrid([{ title: 'I tuoi server', cards: mine,
+      tool: mine.length ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' },
+      { title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }], mine.length + theirs.length) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
     '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
@@ -1181,8 +1205,82 @@ async function cGate() {
   return null;
 }
 
+// Personalizza un tuo server: un'icona tra poche, o un'immagine (dal telefono o dal PC)
+function cLookSheet(sid) {
+  var s = (C.list || []).filter(function (x) { return x.sid === sid && x.role === 'owner'; })[0];
+  if (!s) return;
+  var look = s.look || {};
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.innerHTML = '<div class="sheet srvlook"><h3>' + esc(s.name || 'PC') + '</h3>' +
+    '<p class="secretnote">Come lo vedete tu e i tuoi amici quando scegliete il server.</p>' +
+    '<div class="lookicons">' +
+      '<button class="lookico f' + (!look.icon && !look.image ? ' on' : '') + '" data-act="clookset" data-arg="' + sid + ':" data-key="lk-none"><b>' +
+        esc((String(s.name || '?').trim()[0] || '?').toUpperCase()) + '</b></button>' +
+      Object.keys(SRV_LOOK_ICONS).map(function (k) {
+        return '<button class="lookico f' + (look.icon === k && !look.image ? ' on' : '') + '" data-act="clookset" data-arg="' + sid + ':' + k + '" data-key="lk-' + k + '">' + srvLookIcon(k) + '</button>';
+      }).join('') + '</div>' +
+    '<div class="actions">' + (TVLOOK ? '' : '<button class="btn primary f" data-act="clookimg" data-arg="' + sid + '" data-key="lk-img">' + (look.image ? 'Cambia immagine' : 'Usa un\'immagine') + '</button>') +
+      (look.image ? '<button class="btn f" data-act="clookset" data-arg="' + sid + ':' + (look.icon || '') + ':noimg" data-key="lk-noimg">Togli l\'immagine</button>' : '') +
+      '<button class="btn f" data-act="closemodal" data-key="lk-done">Fatto</button></div></div>';
+  modal.hidden = false;
+  var first = modal.querySelector('.lookico.on') || modal.querySelector('.f');
+  if (first) first.focus();
+}
+
+async function cLookSave(sid, patch) {
+  var r = await cloud('PUT', '/servers/' + sid + '/look', patch);
+  (C.list || []).forEach(function (x) { if (x.sid === sid) x.look = r.look; });
+  lastHtml = '';
+  closeModal(true);
+  await render();
+  cLookSheet(sid);
+}
+
+// L'immagine scelta, ridotta a 480x270 (ritagliata al centro) e in JPEG: pochi KB
+function cPickImage() {
+  return new Promise(function (ok, ko) {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = function () {
+      var file = input.files && input.files[0];
+      if (!file) { ko(new Error('Nessuna immagine')); return; }
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var W = 480, H = 270, c = document.createElement('canvas');
+        c.width = W; c.height = H;
+        var k = Math.max(W / img.width, H / img.height), w = img.width * k, h = img.height * k;
+        c.getContext('2d').drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+        URL.revokeObjectURL(url);
+        ok(c.toDataURL('image/jpeg', 0.82));
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); ko(new Error('Questo file non è un\'immagine')); };
+      img.src = url;
+    };
+    input.click();
+  });
+}
+
 function cActions() {
   return {
+    cedit: function () { cache.cEdit = !cache.cEdit; lastHtml = ''; render(); },
+    clook: function (sid) { cLookSheet(sid); },
+    clookset: async function (arg) {
+      var p = String(arg).split(':');
+      var patch = { icon: p[1] || '' };
+      if (p[2] === 'noimg' || !p[1]) patch.image = '';
+      if (p[1]) patch.image = '';      // un'icona scelta prende il posto dell'immagine
+      try { await cLookSave(p[0], patch); } catch (e) { toast(e.message); }
+    },
+    clookimg: async function (sid) {
+      try {
+        var data = await cPickImage();
+        toast('Salvo l\'immagine…');
+        await cLookSave(sid, { image: data });
+        toast('Immagine salvata');
+      } catch (e) { if (e.message !== 'Nessuna immagine') toast(e.message); }
+    },
     // Primo passo: l'email. Un nome utente (senza @) va dritto alla password.
     cnext: async function () {
       var name = fieldValue('lname').trim();

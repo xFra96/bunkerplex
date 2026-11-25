@@ -10002,6 +10002,16 @@ def publish_presence(uid, token):
         save_config()
 
 
+def look_of(raw):
+    """L'aspetto di un server dal servizio account: icona (nome) e indirizzo dell'immagine."""
+    if not isinstance(raw, dict):
+        return {"icon": "", "image": ""}
+    icon = str(raw.get("icon") or "")
+    image = str(raw.get("image") or "")
+    return {"icon": icon if re.fullmatch(r"[a-z]{1,12}", icon) else "",
+            "image": image if image.startswith("https://") else ""}
+
+
 def sync_friends(uid, token):
     """Dentro la sincronizzazione dell'account: amici, collegamenti ai loro server,
     chi puo' entrare qui, il proprio indirizzo nella rubrica."""
@@ -10014,8 +10024,11 @@ def sync_friends(uid, token):
         return                   # servizio account di prima: niente amici dell'account
     lst = [f for f in res.get("friends") or [] if isinstance(f, dict) and isinstance(f.get("id"), int)]
     friends_cloud[uid] = {"at": time.time(), "friends": lst, "supported": True,
-                          "mine": [{"sid": str(s.get("sid") or ""), "name": str(s.get("name") or "")}
-                                   for s in res.get("mine") or [] if isinstance(s, dict)]}
+                          "mine": [{"sid": str(s.get("sid") or ""), "name": str(s.get("name") or ""),
+                                    "look": look_of(s.get("look"))}
+                                   for s in res.get("mine") or [] if isinstance(s, dict)],
+                          "looks": {k: look_of(v) for k, v in (res.get("looks") or {}).items()
+                                    if isinstance(k, str)} if isinstance(res.get("looks"), dict) else {}}
     ok = [f for f in lst if f.get("status") == "ok"]
     # 1. I collegamenti ai server degli amici
     wanted = {}
@@ -10219,7 +10232,7 @@ async def account_friends():
             lf = local.get((fr["id"], s.get("sid")))
             st = (friend_status.get(lf["n"]) if lf else None) or {}
             servers.append({"name": str(s.get("name") or ""), "online": st.get("online"), "sid": s.get("sid"),
-                            "error": st.get("error") or "", "n": lf["n"] if lf else None})
+                            "error": st.get("error") or "", "n": lf["n"] if lf else None, "look": look_of(s.get("look"))})
         out.append({"id": fr["id"], "username": fr.get("username") or "", "status": fr.get("status"),
                     "servers": servers})
     mine = []
@@ -10229,12 +10242,12 @@ async def account_friends():
         lf = next((f for f in local.values() if f.get("self") and f.get("sid") == s["sid"]), None)
         st = (friend_status.get(lf["n"]) if lf else None) or {}
         mine.append({"name": s["name"], "online": st.get("online"), "error": st.get("error") or "",
-                     "route": st.get("route") or "", "n": lf["n"] if lf else None})
+                     "route": st.get("route") or "", "n": lf["n"] if lf else None, "look": s.get("look") or look_of(None)})
     return {"linked": True, "supported": info.get("supported"), "loaded": bool(info), "friends": out,
             "mine": mine, "self_reach": self_reach(u["id"]), "reachable": bool((config.get("presence") or {}).get(str(u["id"]))),
             "sharing": friends_shared(u["id"]), "address": presence_url(), "pc": pc_name(),
             "published": bool((config.get("presence") or {}).get(str(u["id"]))),
-            "share_on": share_on()}
+            "share_on": share_on(), "here_look": (info.get("looks") or {}).get(pc_id()) or look_of(None)}
 
 
 # ---- I dispositivi dell'account nella rete di BunkerPlex (al massimo 4: lo decide

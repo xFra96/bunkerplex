@@ -201,3 +201,16 @@ CREATE TABLE IF NOT EXISTS kv(
   k TEXT PRIMARY KEY,
   v TEXT
 );
+
+-- L'aspetto dei server (scelto dal proprietario): un'icona tra poche o un'immagine (data URL).
+CREATE TABLE IF NOT EXISTS server_look(
+  sid TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL,
+  icon TEXT,
+  image TEXT,
+  v REAL NOT NULL                    -- quando e' cambiato: entra nell'indirizzo dell'immagine
+);
+
+-- Attivazione dal link dell'invito e link per entrare senza password (si salva l'impronta).
+CREATE TABLE IF NOT EXISTS activations(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS magic_links(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL, sent REAL NOT NULL);

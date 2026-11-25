@@ -396,3 +396,29 @@ test('PWA: GET / da browser e la pagina (con il segno centrale), con JSON e lo s
   // Le rotte dell'API non diventano file
   assert.equal((await get('/me', 'application/json')).status, 401);
 });
+
+test("aspetto del server: icona e immagine dal proprietario, l'amico le vede, gli altri no", async () => {
+  const t = await twoFriends();
+  const annaPc = await t.login('anna', 'server', 'PC di Anna');
+  await t.call('POST', `/servers/${SID}/claim`, { name: 'PC Anna' }, annaPc);
+  t.env.DB.raw.prepare("INSERT INTO servers(user_id, sid, name, url, pin, t, friends) VALUES(?, ?, 'PC Anna', 'https://x', ?, 0, 1)")
+    .run(t.anna, SID, PIN);
+  const anna = await t.login('anna', 'pwa');
+  const bob = await t.login('bob', 'pwa');
+  assert.equal((await t.call('PUT', `/servers/${SID}/look`, { icon: 'film' }, bob)).status, 404);
+  assert.equal((await t.call('PUT', `/servers/${SID}/look`, { icon: 'razzo' }, anna)).status, 400);
+  assert.equal((await t.call('PUT', `/servers/${SID}/look`, { image: 'data:text/html;base64,AAAA' }, anna)).status, 400);
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgaJgJAAGbAQ5TSSm5AAAAAElFTkSuQmCC';
+  const put = await t.call('PUT', `/servers/${SID}/look`, { icon: 'film', image: png }, anna);
+  assert.equal(put.status, 200);
+  assert.equal(put.body.look.icon, 'film');
+  assert.match(put.body.look.image, /^https:\/\/acc\.test\/servers\/1234abcd\/image\?v=\d+$/);
+  const seen = await t.call('GET', '/servers', undefined, bob);
+  assert.equal(seen.body.servers.find((s) => s.sid === SID).look.icon, 'film');
+  const img = await worker.fetch(new Request(`https://acc.test/servers/${SID}/image`), t.env);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('Content-Type'), 'image/png');
+  const off = await t.call('PUT', `/servers/${SID}/look`, { image: '' }, anna);
+  assert.equal(off.body.look.image, '');
+  assert.equal(off.body.look.icon, 'film');
+});

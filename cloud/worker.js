@@ -283,6 +283,39 @@ async function hasCredential(env, uid, sid) {
   return !!await env.DB.prepare('SELECT 1 FROM server_creds WHERE sid = ? AND owner_id = ?').bind(sid, uid).first();
 }
 
+// ---- L'aspetto dei server: un'icona tra poche o un'immagine (scelta dal proprietario).
+// L'immagine non viaggia negli elenchi: c'e' il suo indirizzo (/servers/<sid>/image?v=...).
+const LOOK_ICONS = ['tv', 'film', 'home', 'star', 'heart', 'music', 'game', 'cloud'];
+const LOOK_MAX = 150000;        // caratteri del data URL (circa 110 KB di immagine)
+
+let lookTable = false;
+async function ensureLook(env) {
+  if (lookTable) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS server_look(sid TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, ' +
+    'icon TEXT, image TEXT, v REAL NOT NULL)').run();
+  lookTable = true;
+}
+
+// sid -> {icon, image} per un elenco di server
+async function looksFor(env, origin, sids) {
+  await ensureLook(env);
+  const list = [...new Set(sids)].filter((x) => /^[0-9a-f]{8}$/.test(x));
+  const map = new Map();
+  if (!list.length) return map;
+  const rows = await env.DB.prepare('SELECT sid, icon, v, image IS NOT NULL AS has FROM server_look WHERE sid IN (' +
+    list.map(() => '?').join(',') + ')').bind(...list).all();
+  for (const r of rows.results) {
+    map.set(r.sid, { icon: r.icon || '', image: r.has ? origin + '/servers/' + r.sid + '/image?v=' + Math.floor(r.v) : '' });
+  }
+  return map;
+}
+
+async function ownsServer(env, uid, sid) {
+  await ensureCreds(env);
+  return !!(await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(uid, sid).first() ||
+    await env.DB.prepare('SELECT 1 FROM server_creds WHERE owner_id = ? AND sid = ?').bind(uid, sid).first());
+}
+
 // Rotte dell'utente sui server (dopo il controllo della password provvisoria)
 async function userServerRoutes(request, env, path, method, user) {
   // Un server prende (o riprende) la sua credenziale con il gettone del proprietario
@@ -351,7 +384,35 @@ async function userServerRoutes(request, env, path, method, user) {
       id: r.a === user.id ? r.b : r.a, username: r.a === user.id ? r.ub : r.ua,
       status: r.status === 'ok' ? 'ok' : (r.a === user.id ? 'sent' : 'received')
     }));
+    const looks = await looksFor(env, new URL(request.url).origin, servers.map((s) => s.sid));
+    for (const s of servers) s.look = looks.get(s.sid) || { icon: '', image: '' };
     return json({ me: { id: user.id, username: user.username }, servers, friends });
+  }
+
+  // L'aspetto di un proprio server: icon (una di LOOK_ICONS o ''), image (data URL, '' = togli)
+  const lm = /^\/servers\/([0-9a-f]{8})\/look$/.exec(path);
+  if (lm && method === 'PUT') {
+    const sid = lm[1];
+    if (!await ownsServer(env, user.id, sid)) fail(404, 'Server non trovato tra i tuoi');
+    await ensureLook(env);
+    const b = await body(request);
+    const old = await env.DB.prepare('SELECT * FROM server_look WHERE sid = ?').bind(sid).first();
+    let icon = old ? old.icon : '';
+    let image = old ? old.image : null;
+    if (b.icon !== undefined) {
+      icon = String(b.icon || '');
+      if (icon && !LOOK_ICONS.includes(icon)) fail(400, 'Icona non valida');
+    }
+    if (b.image !== undefined) {
+      image = String(b.image || '') || null;
+      if (image && (image.length > LOOK_MAX || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(image))) {
+        fail(400, 'Immagine non valida o troppo grande');
+      }
+    }
+    await env.DB.prepare('INSERT OR REPLACE INTO server_look(sid, owner_id, icon, image, v) VALUES(?,?,?,?,?)')
+      .bind(sid, user.id, icon || null, image, now()).run();
+    const looks = await looksFor(env, new URL(request.url).origin, [sid]);
+    return json({ ok: true, look: looks.get(sid) || { icon: '', image: '' } });
   }
 
   // Un gettone per entrare in un server: proprio (owner) o di un amico (friend)
@@ -1893,6 +1954,17 @@ async function route(request, env) {
   if (g) return g;
   const nr = await noticeRoutes(request, env, url, path, method);
   if (nr) return nr;
+  // L'immagine di un server (pubblica: e' solo la copertina, l'indirizzo cambia a ogni modifica)
+  const im = /^\/servers\/([0-9a-f]{8})\/image$/.exec(path);
+  if (im && method === 'GET') {
+    await ensureLook(env);
+    const r = await env.DB.prepare('SELECT image FROM server_look WHERE sid = ?').bind(im[1]).first();
+    const m = r && r.image ? /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(r.image) : null;
+    if (!m) fail(404, 'Nessuna immagine');
+    const bin = Uint8Array.from(atob(m[2]), (c) => c.charCodeAt(0));
+    return new Response(bin, { headers: { 'Content-Type': m[1], 'Cache-Control': 'public, max-age=31536000, immutable',
+      'Access-Control-Allow-Origin': '*' } });
+  }
   const sr = await serverRoutes(request, env, path, method);
   if (sr) return sr;
 
@@ -2051,7 +2123,18 @@ async function route(request, env) {
     // I propri server accesi: da ogni PC dell'account si arriva agli altri (anche
     // quelli che non condividono con gli amici). lan = indirizzo nella rete di casa.
     const mine = await env.DB.prepare("SELECT sid, name, url, lan, pin, t FROM servers WHERE user_id = ? AND url <> ''").bind(user.id).all();
-    return json({ friends: out, me: user.id, mine: mine.results });
+    // L'aspetto dei server (anche di quelli spenti o di questo PC: lo chiede il server di casa)
+    await ensureCreds(env);
+    const own = await env.DB.prepare('SELECT sid FROM servers WHERE user_id = ? UNION SELECT sid FROM server_creds WHERE owner_id = ?')
+      .bind(user.id, user.id).all();
+    const looks = await looksFor(env, new URL(request.url).origin,
+      [...shared.results.map((s) => s.sid), ...own.results.map((s) => s.sid)]);
+    const empty = { icon: '', image: '' };
+    for (const f of out) for (const s of f.servers) s.look = looks.get(s.sid) || empty;
+    for (const s of mine.results) s.look = looks.get(s.sid) || empty;
+    const ownLooks = {};
+    for (const r of own.results) if (looks.has(r.sid)) ownLooks[r.sid] = looks.get(r.sid);
+    return json({ friends: out, me: user.id, mine: mine.results, looks: ownLooks });
   }
   if (path === '/friends' && method === 'POST') {
     const b = await body(request);
