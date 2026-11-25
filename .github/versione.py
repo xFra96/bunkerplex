@@ -5,8 +5,8 @@ Due linee, ognuna con i suoi numeri:
   - app (tag app-v1.2): l'app Android per telefoni e TV (android/ tranne
     android/tv/), giro suo (workflows/app-android.yml);
   - tv (tag tv-v1.2): l'app nativa per la TV (android/tv/ e android/comune/),
-    con il suo giro di pubblicazione;
-  - ios (tag ios-v1.2): l'app per iPhone e iPad (ios/), giro suo (workflows/app-ios.yml).
+    con il suo giro di pubblicazione.
+(Su iPhone e iPad si usa la PWA: l'app iOS e' stata tolta, resta nel tag pre-pwa.)
 
 Lo usa il giro "Pubblica la release" (workflows/apk.yml) a ogni push su main.
 Si parte dall'ultima versione pubblicata di quella linea e si sale in base a
@@ -27,7 +27,7 @@ Il passo si puo' sempre decidere a mano, e allora vince:
 Le versioni di prima avevano la data (v2026.11.23.6): non contano come
 precedenti, la prima versione col numero nuovo e' la 1.0.
 
-Uso: python3 .github/versione.py [server|app|tv|ios]   (stampa il tag, es. v1.2 o app-v1.0)
+Uso: python3 .github/versione.py [server|app|tv]   (stampa il tag, es. v1.2 o app-v1.0)
      python3 .github/versione.py --test
 """
 import json
@@ -45,8 +45,6 @@ LINES = {
     "app": {"prefix": "app-v", "code": ("android/",), "skip": ("android/tv/",),
             "paths": ["android", ":(exclude)android/tv"], "label": "app-",
             "trailer": re.compile(r"^\s*versione\s+app\s*:\s*(\w+)\s*$", re.I | re.M)},
-    "ios": {"prefix": "ios-v", "code": ("ios/",), "paths": ["ios"], "label": "ios-",
-            "trailer": re.compile(r"^\s*versione\s+ios\s*:\s*(\w+)\s*$", re.I | re.M)},
     "tv": {"prefix": "tv-v", "code": ("android/tv/", "android/comune/"),
            "paths": ["android/tv", "android/comune"], "label": "tv-",
            "trailer": re.compile(r"^\s*versione\s+tv\s*:\s*(\w+)\s*$", re.I | re.M)},
@@ -183,10 +181,6 @@ def test():
     assert parse("tv-v1.0") == (1, 0, 0) and parse("app-v1.0") is None
     assert guess([("A", 300, "android/tv/Main.kt")]) == 2
     assert asked("Versione TV: minore", ["app-major"]) == 2
-    line = LINES["ios"]
-    assert parse("ios-v1.0") == (1, 0, 0) and parse("v1.0") is None
-    assert guess([("A", 300, "ios/BunkerPlex/App.swift")]) == 2
-    assert asked("Versione iOS: minore", ["tv-major"]) == 2
     print("ok")
 
 
