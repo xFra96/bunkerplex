@@ -2736,7 +2736,7 @@ function showSecret(title, name, pass, label) {
 
 // Le aree nel menu delle impostazioni. Poche voci, per il telecomando:
 // - Persone (solo amministratore) si apre da Account;
-// - Aggiornamenti (server e app di questo dispositivo) dalle versioni in cima alla Panoramica;
+// - Aggiornamenti (server e app di questo dispositivo) in fondo, con le versioni;
 // - Sottotitoli stanno in «Schede e sottotitoli»; sulla TV il QR per il telefono in «Questa TV».
 // Le vecchie pagine (#/settings/subtitles, #/settings/apps sulla TV) rimandano a quelle nuove.
 function settingsAreas() {
@@ -2747,11 +2747,12 @@ function settingsAreas() {
   out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
     ['friends', 'Amici e dispositivi'], ['device', TV ? 'Questa TV' : 'Questo dispositivo']);
   if (!APP) out.push(['apps', 'App per TV e telefono']);
+  out.push(['updates', 'Aggiornamenti']);
   return out;
 }
 
 // Aree che si aprono ma non stanno nel menu
-var SETTINGS_HIDDEN = ['people', 'updates'];
+var SETTINGS_HIDDEN = ['people'];
 
 // La plancia di amministrazione: per ora solo dal browser (non dalla TV né dalle app)
 function adminHere() {
@@ -2780,17 +2781,27 @@ function sicon(area) {
   return SICON[area] ? '<svg class="sic" viewBox="0 0 24 24" aria-hidden="true">' + SICON[area] + '</svg>' : '';
 }
 
+// Il colore della piastrella di ogni area (tonalita'): come nelle impostazioni dei
+// telefoni, l'area si riconosce dal colore prima ancora di leggerla
+var STINT = { home: 150, account: 150, admin: 4, people: 200, libraries: 210, catalog: 32, subtitles: 32, friends: 280,
+  notices: 350, updates: 150, device: 190, apps: 255 };
+function stile(area) {
+  return '<span class="stile" style="--h:' + (STINT[area] || 150) + '">' + sicon(area) + '</span>';
+}
+
 function settingsShell(area, title, sub, body) {
   var nav = settingsAreas().map(function (a) {
     var on = a[0] === area;
     return '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
-      (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : sicon(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
+      (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : stile(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
+  // Telefono: niente menu laterale, in alto «‹ Impostazioni» per tornare (come nelle
+  // app del telefono). PC e TV: menu a sinistra e contenuto a destra.
   return '<div class="page settings"><div class="sgrid">' +
-    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home">' + sicon('home') + '<span>Panoramica</span></a>' + nav + '</nav>' +
+    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home">' + stile('home') + '<span>Panoramica</span></a>' + nav + '</nav>' +
     // Persone si apre da Account: si torna li'
     '<div class="smain"><a class="sup f" href="' + (area === 'people' ? '#/settings/account' : '#/settings') + '" data-key="sup">' + IC.back +
-      (area === 'people' ? 'Account' : 'Impostazioni') + '</a>' +
+      '<span>' + (area === 'people' ? 'Account' : 'Impostazioni') + '</span></a>' +
     '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
 }
 
@@ -2836,26 +2847,6 @@ function appWhere() {
   return selfUpdating() ? 'È uscita la ' : 'Sul PC c\'è la ';
 }
 
-function versionStrip(i, u) {
-  var srvOld = !!(u && u.enabled && u.available);
-  var chip = function (label, value, note, old) {
-    return '<div class="vchip' + (old ? ' warn' : '') + '"><small>' + esc(label) + '</small><b class="num">' + esc(value) + '</b>' +
-      (note ? '<span>' + esc(note) + '</span>' : '') + '</div>';
-  };
-  var html = chip('Server · ' + i.name, serverVer(i),
-    srvOld ? 'Aggiornamento disponibile' : (u && u.enabled && u.checked_at && !u.error && u.access !== false ? 'Aggiornato' : ''), srvOld);
-  if (APP) {
-    var old = appOld(i);
-    html += chip(TV ? 'App su questa TV' : 'App su questo dispositivo', appVer(),
-      old ? appWhere() + (appLatest(i).name || 'più nuova') : (appLatest(i).code ? 'Aggiornata' : ''), old);
-  } else {
-    html += chip('Questo browser', serverVer(i), 'Stessa del server', false);
-  }
-  // Tutto il riquadro e' il pulsante per Aggiornamenti: col telecomando e' una pressione sola
-  return '<a class="versions f" href="#/settings/updates" data-key="versions" aria-label="Versioni installate: apri Aggiornamenti">' + html +
-    '<span class="vgo">Aggiornamenti' + CHEVRON + '</span></a>';
-}
-
 // Una riga della panoramica: area, nome, a cosa serve, com'e' adesso
 function settingsRows(i, u, sh) {
   var rows = [];
@@ -2875,44 +2866,49 @@ function settingsRows(i, u, sh) {
     if (l.mine !== false) away += (l.missing || []).length;
   });
   rows.push({ area: 'libraries', label: 'Raccolte',
-    desc: away ? (away === 1 ? 'Una cartella sta su un altro PC' : away + ' cartelle stanno su altri PC') : 'Le sezioni del menu e le cartelle dei video',
-    value: off ? (off === 1 ? 'Una cartella non raggiungibile' : off + ' cartelle non raggiungibili')
-      : (libs.length ? libs.length + (libs.length === 1 ? ' raccolta' : ' raccolte') : 'Nessuna raccolta'),
-    state: off || !libs.length ? 'warn' : 'ok' });
+    desc: away ? (away === 1 ? 'Una cartella sta su un altro PC' : away + ' cartelle stanno su altri PC') : 'Sezioni del menu e cartelle',
+    value: off ? (off === 1 ? 'Una cartella offline' : off + ' cartelle offline')
+      : (libs.length ? String(libs.length) : 'Nessuna raccolta'),
+    state: off || !libs.length ? 'warn' : '' });
   rows.push({ area: 'catalog', label: 'Schede e sottotitoli',
-    desc: films + ' film · ' + series + ' serie · ' + i.episodes + ' episodi · sottotitoli da internet ' + (i.subs_online ? 'attivi' : 'non attivi'),
-    value: i.scanning ? 'Lettura in corso…' : (i.tmdb ? 'Schede attive' : 'Schede non attive'),
-    state: i.scanning ? '' : (i.tmdb ? 'ok' : 'warn') });
+    desc: films + ' film · ' + series + ' serie · ' + i.episodes + ' episodi',
+    value: i.scanning ? 'Lettura…' : (i.tmdb ? 'Attive' : 'Non attive'),
+    state: i.scanning ? '' : (i.tmdb ? '' : 'warn') });
   if (sh) {
     var pending = sh.accounts.filter(function (a) { return !a.approved; }).length;
     shareRequests = pending;
     markRequests();
     var asks = pending + (i.friend_requests || 0);
     var online = friends.filter(function (f) { return f.online !== false; }).length;
-    rows.push({ area: 'friends', label: 'Amici e dispositivi', desc: 'Raccolte di amici e tuoi PC, anche fuori casa',
-      value: i.devices_full ? 'Troppi dispositivi: togline uno'
-        : asks ? (asks === 1 ? 'Una richiesta da accettare' : asks + ' richieste da accettare')
+    rows.push({ area: 'friends', label: 'Amici e dispositivi', desc: 'Raccolte degli amici e i tuoi PC, anche fuori casa',
+      value: i.devices_full ? 'Troppi dispositivi'
+        : asks ? (asks === 1 ? '1 richiesta' : asks + ' richieste')
         : friends.length ? online + ' di ' + friends.length + ' online'
-        : (sh.on ? 'Attiva' : 'Nessun amico'),
-      state: i.devices_full || asks ? 'warn' : (friends.length || sh.on ? 'ok' : '') });
+        : (sh.on ? 'Attiva' : ''),
+      state: i.devices_full || asks ? 'warn' : '' });
   }
-  // Aggiornamenti: non e' una riga dell'elenco (si apre dalle versioni in cima),
-  // ma serve alla riga di stato della Panoramica («Da guardare: ...»)
+  if (auth && auth.user && auth.user.linked && !TV) {
+    rows.push({ area: 'notices', label: 'Notifiche', desc: 'Avvisi su telefono e tablet', value: '', state: '' });
+  }
+  if (adminHere()) {
+    rows.push({ area: 'admin', label: 'Plancia', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
+  }
+  // Aggiornamenti: in fondo, con la versione (server e, nelle app, l'app)
   var tvOld = appOld(i);
-  if ((u && u.enabled) || tvOld) {
-    var srvWarn = !!(u && u.enabled && (u.error || u.access === false || u.available || u.phase));
-    rows.push({ area: 'updates', label: 'Aggiornamenti', hidden: true,
-      value: tvOld ? 'App da aggiornare'
-        : u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Aggiornamento disponibile' : 'Aggiornato')),
-      state: tvOld || srvWarn ? 'warn' : 'ok' });
-  }
+  var srvWarn = !!(u && u.enabled && (u.error || u.access === false || u.available || u.phase));
+  rows.push({ area: 'updates', label: 'Aggiornamenti',
+    desc: 'Server ' + serverVer(i) + (APP ? ' · app ' + appVer() : ''),
+    value: tvOld ? 'App da aggiornare'
+      : !(u && u.enabled) ? serverVer(i)
+      : u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Disponibile' : 'Aggiornato')),
+    state: tvOld || srvWarn ? 'warn' : (u && u.enabled ? 'ok' : '') });
   rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
-    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono'
-      : 'Preferenze di visione, collegamento al server' + (phoneTvOk() ? ', installa sulla TV' : ''),
-    value: 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: '' });
+    desc: TV ? 'Visione, collegamento, app sul telefono'
+      : 'Visione e collegamento' + (phoneTvOk() ? ', installa sulla TV' : ''),
+    value: '', state: '' });
   if (!APP) {
     rows.push({ area: 'apps', label: 'App per TV e telefono',
-      desc: 'Installa sulla TV dal PC, app sul telefono, indirizzo di questo PC', value: 'Installa', state: '' });
+      desc: 'Installa sulla TV, app sul telefono', value: '', state: '' });
   }
   return rows;
 }
@@ -3124,24 +3120,36 @@ function networkPanel(n) {
     'L\'app BunkerPlex fuori casa non ne ha bisogno: raggiunge amici e tuoi PC da sola.</p></div>';
 }
 
+// I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
+// gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato
+var SGROUPS = [['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices', 'admin']],
+  ['Dispositivi', ['device', 'apps']], ['Info', ['updates']]];
+
+function srowHtml(r, first) {
+  return '<a class="srow f' + (r.face ? ' lead' : '') + '"' + (first ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
+    (r.face ? face(r.face, 'mid') : stile(r.area)) +
+    '<span class="stext"><b>' + esc(r.label) + '</b>' + (r.desc ? '<small>' + esc(r.desc) + '</small>' : '') + '</span>' +
+    (r.value ? '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' : '') + CHEVRON + '</a>';
+}
+
 async function settings() {
   var res = await settingsData();
   var rows = settingsRows(res[0], res[2], res[3]);
-  var warn = rows.filter(function (r) { return r.state === 'warn'; });
-  var s = syncState();
-  var finding = warn.length
-    ? (warn.length === 1 ? 'Da guardare: ' : warn.length + ' cose da guardare · prima: ') + esc(warn[0].label) + ', ' + esc(warn[0].value.charAt(0).toLowerCase() + warn[0].value.slice(1))
-    : 'Tutto in ordine' + (s && s.state === 'ok' ? ' · ' + esc(s.text.charAt(0).toLowerCase() + s.text.slice(1)) : '');
+  var byArea = {};
+  rows.forEach(function (r) { byArea[r.area] = r; });
+  // Cosa va sistemato si vede nella sua riga (stato in giallo): niente doppioni in cima
+  var acc = byArea.account;
+  var html = acc ? '<div class="sgroup">' + srowHtml({ area: 'account', face: acc.face, label: acc.label,
+    desc: acc.desc + (acc.value ? ' · ' + acc.value : ''), value: '', state: acc.state }, true) + '</div>' : '';
+  var first = !acc;
+  SGROUPS.forEach(function (g) {
+    var list = g[1].map(function (a) { return byArea[a]; }).filter(Boolean);
+    if (!list.length) return;
+    html += '<section class="sblock"><h2 class="shead">' + esc(g[0]) + '</h2><div class="sgroup">' +
+      list.map(function (r) { var h = srowHtml(r, first); first = false; return h; }).join('') + '</div></section>';
+  });
   return '<div class="page settings"><div class="soverview">' +
-    '<h1 class="stitle">Impostazioni</h1><p class="ssub' + (warn.length ? ' warn' : '') + '">' + finding + '</p>' +
-    versionStrip(res[0], res[2]) +
-    '<div class="slist">' + rows.filter(function (r) { return !r.hidden; }).map(function (r, n) {
-      // L'account (con la sua faccia) in testa; le altre righe con l'icona della loro area
-      return '<a class="srow f' + (r.face ? ' lead' : '') + '"' + (n === 0 ? ' data-autofocus' : '') + ' href="#/settings/' + r.area + '" data-key="srow-' + r.area + '">' +
-        (r.face ? face(r.face, 'mid') : sicon(r.area)) +
-        '<span class="stext"><b>' + esc(r.label) + '</b><small>' + esc(r.desc) + '</small></span>' +
-        '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' + CHEVRON + '</a>';
-    }).join('') + '</div></div></div>';
+    '<h1 class="stitle">Impostazioni</h1>' + html + '</div></div>';
 }
 
 // Sottotitoli da internet (OpenSubtitles): un riquadro di «Schede e sottotitoli»
