@@ -3492,6 +3492,7 @@ function startPlayer(p) {
   var st = {
     id: p.id, v: v, offset: 0, transcoding: !p.browser_direct, loaded: false, dragging: false, sub: forcedSub(p.subs), done: false,
     audio: 0, audios: [], rate: 1, at: p.start || 0, pending: null, loadId: 0,
+    height: 0, bw: 0, stalls: [], qcool: 0, lastLoad: 0,
     lastT: -1, lastMove: Date.now(), recov: 0, recovAt: 0, fatal: false, endAt: null, sleepAt: 0, sleepEnd: false,
     introOn: false, introOff: false, card: false, cardOff: false, cardLeft: 10
   };
@@ -3621,9 +3622,11 @@ function startPlayer(p) {
     st.at = at;
     st.lastMove = Date.now();
     var id = ++st.loadId;
+    st.lastLoad = Date.now();
     if (st.transcoding) {
       st.offset = at;
-      var q = '?start=' + at.toFixed(1) + (st.vcopy ? '&vcopy=1' : '') + (st.audio ? '&audio=' + st.audio : '');
+      var q = '?start=' + at.toFixed(1) + (st.vcopy ? '&vcopy=1' : '') + (st.audio ? '&audio=' + st.audio : '') +
+        (st.height ? '&height=' + st.height : '');
       // Safari (iPhone, iPad, Mac) non legge un MP4 senza lunghezza: lo stesso flusso in HLS
       v.src = HLS ? p.transcode.replace('/api/transcode/', '/api/hls/') + '/' + st.hlsId + '-' + id + '/index.m3u8' + q
         : p.transcode + q;
@@ -3847,9 +3850,102 @@ function startPlayer(p) {
     if (index === st.audio) return;
     st.audio = index;
     // La prima lingua si puo' leggere dal file originale; le altre le prepara il PC
-    st.transcoding = index > 0 || !p.browser_direct || st.forced;
+    st.transcoding = index > 0 || !p.browser_direct || st.forced || st.height > 0;
     st.loaded = false;
     load(st.at);
+  }
+
+  // ---- Qualita': Auto (segue la banda), Originale, 4K, 1080p, 720p ----------
+  // Auto misura la velocita' tra questo dispositivo e il PC e sceglie la qualita' piu'
+  // alta che ci sta; se durante la visione il video si ferma spesso, scende di un gradino.
+  var QUALITIES_UI = [['auto', 'Automatica (segue la connessione)'], ['orig', 'Originale'],
+    ['2160', '4K (2160p)'], ['1080', '1080p'], ['720', '720p']];
+  var LADDER = [0, 2160, 1080, 720, 480];                 // 0 = originale
+  var RUNG_KBPS = { 2160: 40000, 1080: 16000, 720: 6000, 480: 2500 };    // come i tetti del server
+  function qualityPref() { return prefs.quality || 'auto'; }
+  function qualityLabel(h) { return h ? (h === 2160 ? '4K' : h + 'p') : 'Originale'; }
+
+  // Mbit/s verso il PC (0 se non riesce): scarica fino a 512 KB, al massimo 2,5 secondi
+  function measureBw() {
+    return new Promise(function (resolve) {
+      if (!window.fetch || !window.AbortController || !window.performance) { resolve(0); return; }
+      var ctl = new AbortController(), t0 = performance.now(), got = 0;
+      var timer = setTimeout(function () { ctl.abort(); }, 2500);
+      function done() {
+        clearTimeout(timer);
+        var sec = (performance.now() - t0) / 1000;
+        resolve(got > 32768 && sec > 0 ? got * 8 / 1e6 / sec : 0);
+      }
+      fetch('/api/bwtest?kb=512&r=' + Date.now(), { signal: ctl.signal, cache: 'no-store' }).then(function (r) {
+        if (!r.ok || !r.body || !r.body.getReader) return r.arrayBuffer().then(function (b) { got = b.byteLength; done(); });
+        var rd = r.body.getReader();
+        (function pump() {
+          rd.read().then(function (x) {
+            if (x.done) { done(); return; }
+            got += x.value.length;
+            pump();
+          }, done);
+        })();
+      }).catch(done);
+    });
+  }
+
+  // La qualita' piu' alta che sta nella banda misurata (0 = originale)
+  function pickRung(bw) {
+    if (!bw) return st.height;
+    var usable = bw * 1000 * 0.75;                          // kbit/s, con un po' di margine
+    var src = p.size && p.duration ? p.size * 8 / 1000 / p.duration : 0;
+    if (src ? src * 1.2 <= usable : usable >= 30000) return 0;
+    for (var i = 1; i < LADDER.length; i++) if (RUNG_KBPS[LADDER[i]] <= usable) return LADDER[i];
+    return 480;
+  }
+
+  // Imposta l'altezza e dice se serve riaprire il video (true)
+  function setHeight(h) {
+    if (h === st.height) return false;
+    st.height = h;
+    st.transcoding = h > 0 || st.audio > 0 || !p.browser_direct || st.forced;
+    st.loaded = false;
+    return true;
+  }
+
+  function setQuality(choice) {
+    prefs.quality = choice;
+    savePlayerPrefs(prefs);
+    if (choice === 'auto') {
+      toast('Qualità: misuro la connessione…');
+      measureBw().then(function (bw) {
+        if (player !== st) return;
+        st.bw = bw;
+        var h = pickRung(bw);
+        toast('Qualità automatica: ' + qualityLabel(h) + (bw ? ' (' + bw.toFixed(bw < 10 ? 1 : 0) + ' Mbit/s)' : ''));
+        if (setHeight(h)) load(st.at);
+      });
+      return;
+    }
+    var changed = setHeight(choice === 'orig' ? 0 : +choice);
+    toast('Qualità: ' + qualityLabel(st.height));
+    if (changed) load(st.at);
+  }
+
+  // Auto: il video si ferma 3 volte in 40 secondi -> si misura di nuovo e si scende
+  function noteStall() {
+    if (qualityPref() !== 'auto' || p.friend || v.paused || v.seeking || st.pending !== null) return;
+    var now = Date.now();
+    if (now - st.lastLoad < 10000) return;                  // appena (ri)aperto: normale che aspetti
+    st.stalls = st.stalls.filter(function (t) { return now - t < 40000; });
+    st.stalls.push(now);
+    if (st.stalls.length < 3 || now - st.qcool < 20000) return;
+    st.qcool = now;
+    st.stalls = [];
+    measureBw().then(function (bw) {
+      if (player !== st || qualityPref() !== 'auto') return;
+      var cur = LADDER.indexOf(st.height);
+      var next = Math.min(LADDER.length - 1, Math.max(LADDER.indexOf(pickRung(bw) || 0), cur + 1));
+      if (next === cur) return;
+      toast('Connessione lenta: qualità ' + qualityLabel(LADDER[next]));
+      if (setHeight(LADDER[next])) load(st.at);
+    });
   }
 
   function togglePip() {
@@ -3921,6 +4017,11 @@ function startPlayer(p) {
     add('Velocità', st.rate + '×', function () {
       choose('Velocità', SPEEDS.map(function (s) { return { value: s, label: s === 1 ? 'Normale' : s + '×' }; }), st.rate, setRate);
     });
+    if (!p.friend) {
+      add('Qualità', qualityPref() === 'auto' ? 'Auto · ' + qualityLabel(st.height) : qualityLabel(st.height), function () {
+        choose('Qualità', QUALITIES_UI.map(function (x) { return { value: x[0], label: x[1] }; }), qualityPref(), setQuality);
+      });
+    }
     if (st.audios.length > 1) {
       add('Lingua audio', esc(st.audios[st.audio] ? st.audios[st.audio].label : ''), function () {
         choose('Lingua audio', st.audios.map(function (a) {
@@ -4034,7 +4135,7 @@ function startPlayer(p) {
     }
   });
   v.addEventListener('playing', function () { st.waiting = false; setNote(''); setToggle(false); wake(); });
-  v.addEventListener('waiting', function () { st.waiting = true; busy(); });
+  v.addEventListener('waiting', function () { st.waiting = true; busy(); noteStall(); });
   v.addEventListener('canplay', function () {
     st.waiting = false;
     var t = note.textContent;
@@ -4258,7 +4359,19 @@ function startPlayer(p) {
   applyLook();
   setToggle(false);
   drawMarks();
-  load(p.start || 0);
+  if (!p.friend && qualityPref() === 'auto') {
+    // Auto: prima una misura veloce della banda, poi parte (al massimo 2,5 secondi di attesa)
+    setNote(LOADING);
+    measureBw().then(function (bw) {
+      if (player !== st) return;
+      st.bw = bw;
+      setHeight(pickRung(bw));
+      load(p.start || 0);
+    });
+  } else {
+    if (!p.friend && qualityPref() !== 'orig') setHeight(+qualityPref());
+    load(p.start || 0);
+  }
   wake();
   if (p.marks_pending && !p.friend) fetchMarks(1);
   // Le lingue disponibili: servono solo al menu, quindi si chiedono senza far aspettare il video

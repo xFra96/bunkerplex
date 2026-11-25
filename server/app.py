@@ -6810,7 +6810,10 @@ def stereo_args(track, kbps=192):
     elif ch == 8 and layout in ("", "7.1"):                    # FL FR FC LFE BL BR SL SR
         mix = ("pan=stereo|c0=0.707*c0+0.5*c2+0.5*c3+0.5*c4+0.5*c6"
                "|c1=0.707*c1+0.5*c2+0.5*c3+0.5*c5+0.5*c7")
-    args = ["-af", mix + ",alimiter=limit=0.95:level=0"] if mix else ["-ac", "2"]
+    # aresample=async: riallinea l'audio ai tempi del video (buchi o sfasamenti nel file
+    # originale non si accumulano in un desync audio/video).
+    sync = "aresample=async=1:first_pts=0"
+    args = ["-af", mix + ",alimiter=limit=0.95:level=0," + sync] if mix else ["-af", sync, "-ac", "2"]
     return args + ["-c:a", "aac", "-b:a", f"{kbps}k"]
 
 
@@ -6828,17 +6831,22 @@ def audio_plan(track, aout=""):
     return stereo_args(track)
 
 
-def uplink_plan(r, height):
+HEIGHTS_OK = (480, 720, 1080, 2160)     # qualita' chiedibili dal player
+
+
+def uplink_plan(r, height, vcopy=False):
     """Conversione per un amico che guarda da fuori casa: il collo di bottiglia
     e' la velocita' di caricamento di questa linea, quindi il video viene
     rimpicciolito a 'height' (720 o 1080) con un tetto ai dati al secondo.
     Se il file e' gia' H.264 leggero e non piu' grande, si copia senza lavoro."""
-    cap = 3500 if height == 720 else 8000          # kbit/s
+    cap = {480: 2500, 720: 6000, 1080: 16000, 2160: 40000}.get(height, 16000)          # kbit/s
     vcodec, pix = r["vcodec"] or "", r["pix"] or ""
     kbps = (r["size"] or 0) * 8 / 1000 / r["duration"] if r["duration"] else 0
-    if (vcodec == "h264" and pix in ("yuv420p", "yuvj420p") and 0 < (r["height"] or 0) <= height + 8
-            and 0 < kbps <= cap * 1.25):
-        vargs, heavy = ["-c:v", "copy"], False
+    # Copia senza ricodificare se il video e' gia' leggero abbastanza per la qualita' chiesta
+    # (H.265 e simili solo se il dispositivo ha detto di saperli decodificare).
+    ok_codec = (vcodec == "h264" and pix in ("yuv420p", "yuvj420p")) or (vcopy and vcodec in ("hevc", "h264", "av1", "vp9"))
+    if ok_codec and 0 < (r["height"] or 0) <= height + 8 and 0 < kbps <= cap * 1.25:
+        vargs, heavy = ["-c:v", "copy"] + (["-tag:v", "hvc1"] if vcodec == "hevc" else []), False
     else:
         hdr = "10" in pix and is_hdr(r["path"])
         chain = f"scale=-2:min({height}\\,ih):flags=fast_bilinear"
@@ -6852,16 +6860,29 @@ def uplink_plan(r, height):
 
 
 @app.get("/api/transcode/{item_id}")
-def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, aout: str = ""):
+def transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, aout: str = "", height: int = 0):
     """Conversione al volo in MP4 per i dispositivi che non leggono il file
     originale. Non si puo' saltare dentro il flusso: per spostarsi il player
     richiede di nuovo l'indirizzo con un altro 'start'.
     'vcopy=1': il dispositivo sa decodificare il video, va cambiato solo il resto.
-    'aout': che audio vuole il dispositivo (vedi AOUTS)."""
+    'aout': che audio vuole il dispositivo (vedi AOUTS).
+    'height' HEIGHTS_OK: qualita' adattiva scelta dal player in base alla banda
+    misurata: video rimpicciolito con tetto ai dati al secondo (0 = qualita' piena)."""
     aout = aout if aout in AOUTS else ""
     if item_id >= FRIEND_BASE:
         return friend_transcode(item_id, start, vcopy, audio, aout)
-    return run_transcode(item_id, start, vcopy, audio, aout=aout)
+    return run_transcode(item_id, start, vcopy, audio, height if height in HEIGHTS_OK else 0, aout)
+
+
+_BW_BLOB = os.urandom(1024 * 1024)      # casuale: la compressione gzip non lo accorcia
+
+
+@app.get("/api/bwtest")
+def bwtest(kb: int = 512):
+    """Dati a vuoto per misurare la banda tra il dispositivo e il PC (qualita' adattiva)."""
+    kb = max(16, min(kb, 1024))
+    return Response(_BW_BLOB[:kb * 1024], media_type="application/octet-stream",
+                    headers={"Cache-Control": "no-store"})
 
 
 def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0, aout=""):
@@ -6873,7 +6894,7 @@ def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0, aout=""):
     path = r["path"]
     if not os.path.isfile(path):
         raise HTTPException(404, "File non trovato sul disco")
-    vargs, heavy = uplink_plan(r, height) if height else transcode_plan(r, bool(vcopy))
+    vargs, heavy = uplink_plan(r, height, bool(vcopy)) if height else transcode_plan(r, bool(vcopy))
     audio = max(0, audio)
     # Formato e canali della lingua scelta (ogni traccia puo' essere diversa)
     found = audio_tracks(path)
@@ -6891,7 +6912,11 @@ def run_transcode(item_id, start=0.0, vcopy=0, audio=0, height=0, aout=""):
         # rapida), poi tiene un passo poco sopra la velocita' di visione invece di
         # occupare tutti i processori per riempire in anticipo la memoria del player.
         cmd += ["-readrate", "1.5", "-readrate_initial_burst", "30"]
-    cmd += (["-ss", f"{max(0.0, start):.2f}", "-i", path,
+    # Con video copiato '-ss' parte dal keyframe precedente: i suoi tempi negativi in
+    # un MP4 frammentato venivano tagliati e il video slittava rispetto all'audio.
+    # make_zero sposta audio e video insieme, mantenendoli allineati.
+    cmd += (["-fflags", "+genpts", "-ss", f"{max(0.0, start):.2f}", "-i", path,
+             "-avoid_negative_ts", "make_zero",
              "-map", "0:v:0", "-map", f"0:a:{audio}?", "-sn", "-dn", "-map_chapters", "-1"] + vargs + aargs +
             ["-movflags", movflags, "-f", "mp4", "pipe:1"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -6976,7 +7001,7 @@ async def hls_clean_loop():
                 await asyncio.to_thread(hls_prune, s)
 
 
-async def hls_start(item_id, tok, start, vcopy, audio, make_src=None):
+async def hls_start(item_id, tok, start, vcopy, audio, make_src=None, height=0):
     global hls_janitor
     if hls_janitor is None:
         shutil.rmtree(HLS_DIR, ignore_errors=True)        # avanzi di prima dell'avvio
@@ -6989,7 +7014,7 @@ async def hls_start(item_id, tok, start, vcopy, audio, make_src=None):
         hls_stop(min(hls_sessions, key=lambda k: hls_sessions[k]["seen"]))
     # Lo stesso flusso MP4 di sempre (anche dai PC degli amici), con audio AAC
     src = await asyncio.to_thread(make_src) if make_src else \
-        await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
+        await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac", height)
     if not isinstance(src, StreamingResponse):
         raise HTTPException(502, "Il video non arriva")
     d = HLS_DIR / f"{item_id}-{tok}"
@@ -7029,11 +7054,12 @@ async def hls_start(item_id, tok, start, vcopy, audio, make_src=None):
 
 
 @app.get("/api/hls/{item_id}/{tok}/{name}")
-async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0):
-    return await hls_serve(item_id, tok, name, start, vcopy, audio)
+async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0,
+              height: int = 0):
+    return await hls_serve(item_id, tok, name, start, vcopy, audio, height=height)
 
 
-async def hls_serve(item_id, tok, name, start=0, vcopy=0, audio=0, make_src=None, shared=False):
+async def hls_serve(item_id, tok, name, start=0, vcopy=0, audio=0, make_src=None, shared=False, height=0):
     """shared: la chiede un amico (o l'app iPhone fuori casa) da /api/share/hls:
     chi e' lo dice gia' il gettone, controllato da share_guard."""
     m = HLS_FILE.match(name)
@@ -7048,7 +7074,7 @@ async def hls_serve(item_id, tok, name, start=0, vcopy=0, audio=0, make_src=None
         # (il player di Safari non sempre manda il cookie a ogni pezzo).
         if not shared and CURRENT.get() is None:
             raise HTTPException(401, "Scegli chi guarda per continuare")
-        s = await hls_start(item_id, tok, start, vcopy, audio, make_src)
+        s = await hls_start(item_id, tok, start, vcopy, audio, make_src, height if height in HEIGHTS_OK else 0)
     s["seen"] = time.monotonic()
     path = s["dir"] / name
     if name == "index.m3u8":
@@ -7608,7 +7634,7 @@ def share_stream(item_id: int, request: Request):
 def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int = 0, height: int = 0,
                     aout: str = ""):
     """'height' (720 o 1080): conversione leggera, a misura della linea di casa."""
-    return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0,
+    return run_transcode(_own(item_id), start, vcopy, audio, height if height in HEIGHTS_OK else 0,
                          aout if aout in AOUTS else "")
 
 
@@ -7618,7 +7644,7 @@ async def share_hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: 
     """La conversione di /api/share/transcode in HLS, per il player dell'iPhone
     (AVPlayer vuole HLS o un file intero, non un MP4 a flusso)."""
     item_id = _own(item_id)
-    height = height if height in (720, 1080) else 0
+    height = height if height in HEIGHTS_OK else 0
     return await hls_serve(item_id, tok, name, start, vcopy, audio, shared=True,
                            make_src=lambda: run_transcode(item_id, start, vcopy, audio, height, "aac"))
 
