@@ -2270,7 +2270,7 @@ async function route(request, env) {
       return json({ ok: true, mailed });
     }
 
-    // Plancia: i numeri di tutta BunkerPlex, i server pubblicati e i dispositivi nella rete
+    // Amministrazione: i numeri di tutta BunkerPlex, i server pubblicati e i dispositivi nella rete
     if (path === '/admin/overview' && method === 'GET') {
       await ensureServerCols(env);
       await ensureDevices(env);

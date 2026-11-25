@@ -566,7 +566,7 @@ async function phonePairPage(code) {
     '<p style="margin-top:1rem"><small>Il tuo account è già su questo PC? Allora sulla TV basta sceglierlo in «Chi guarda?».</small></p></div></div>';
 }
 
-// Account invitato dalla plancia: ha ancora il nome provvisorio, al primo accesso sceglie il suo
+// Account invitato da Amministrazione: ha ancora il nome provvisorio, al primo accesso sceglie il suo
 function needsName() {
   return !!(auth && auth.user && /^invito-[0-9a-f]{6}$/i.test(auth.user.name || ''));
 }
@@ -2743,7 +2743,7 @@ function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account']);
   if (auth && auth.user && auth.user.linked && !TV) out.push(['notices', 'Notifiche']);
-  if (adminHere()) out.push(['admin', 'Plancia']);
+  if (adminHere()) out.push(['admin', 'Amministrazione']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
     ['friends', 'Amici'], ['device', TV ? 'Questa TV' : 'Questo dispositivo'], ['pcs', 'PC e dispositivi']);
   if (!APP) out.push(['apps', 'App per TV e telefono']);
@@ -2754,7 +2754,7 @@ function settingsAreas() {
 // Aree che si aprono ma non stanno nel menu
 var SETTINGS_HIDDEN = ['people'];
 
-// La plancia di amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
+// Amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
 function adminHere() {
   return !!(auth && auth.user && auth.user.admin);
 }
@@ -2906,7 +2906,7 @@ function settingsRows(i, u, sh) {
     rows.push({ area: 'notices', label: 'Notifiche', desc: 'Avvisi su telefono e tablet', value: '', state: '' });
   }
   if (adminHere()) {
-    rows.push({ area: 'admin', label: 'Plancia', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
+    rows.push({ area: 'admin', label: 'Amministrazione', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
   }
   // Aggiornamenti: in fondo, con la versione (server e, nelle app, l'app)
   var tvOld = appOld(i);
@@ -3137,8 +3137,8 @@ function networkPanel(n) {
 
 // I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
 // gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato
-// La Plancia (solo amministratori) subito sotto l'account, in vista
-var SGROUPS = [['Amministrazione', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
+// Amministrazione (solo amministratori) subito sotto l'account, in vista
+var SGROUPS = [['', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
   ['Dispositivi', ['device', 'pcs', 'apps']], ['Info', ['updates', 'news']], ['', ['logout']]];
 
 function srowHtml(r, first) {
@@ -3543,7 +3543,7 @@ function accountArea(i) {
   var tvlink = TV || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account.</p>' +
     '<div class="actions"><a class="btn primary f" href="#/tv" data-key="totv">Collega una TV</a></div></div>';
   // Cosa segue l'account (chiavi, preferenze, visti, raccolte) lo dice la riga sotto il
-  // nome; la Plancia sta nella Panoramica: qui solo quello che si fa con l'account
+  // nome; Amministrazione sta nella Panoramica: qui solo quello che si fa con l'account
   return settingsShell('account', 'Account', '', who + relogin + watchersPanel(u) + tvlink +
     '<div class="panel"><h2>Accesso</h2>' +
       '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Chiavi, preferenze, visti, La mia lista e raccolte ti seguono su ogni PC.</p>' +
@@ -3575,9 +3575,9 @@ function googlePanel(u) {
     '<div class="actions"><a class="btn f" href="#/google/link" data-key="glink">Collega Google</a></div>';
 }
 
-// ---------------------------------------------------------------- Plancia
+// ---------------------------------------------------------------- Amministrazione
 // Due ruoli per tutta BunkerPlex: base (guarda e gestisce le sue cose) e
-// amministratore (gestisce tutto). La plancia ha cinque schede.
+// amministratore (gestisce tutto). Amministrazione ha cinque schede.
 var ADMIN_TABS = [['home', 'Panoramica'], ['users', 'Utenti'], ['access', 'Accessi'], ['net', 'Server e rete'], ['server', 'Questo server']];
 
 function when(sec) {
@@ -3589,7 +3589,7 @@ function deviceLabel(d) {
   return { tv: 'TV', browser: 'Browser', phone: 'Telefono', app: 'App' }[d] || d || 'Dispositivo';
 }
 
-// Pezzi della Plancia: un numero grande con la sua piastrella, una sezione (titolo,
+// Pezzi di Amministrazione: un numero grande con la sua piastrella, una sezione (titolo,
 // una riga di spiegazione, elenco), lo stato di un servizio
 function akpi(area, value, label, sub) {
   return '<div class="akpi">' + stile(area) + '<b class="num">' + esc(value) + '</b><span>' + esc(label) + '</span>' +
@@ -3635,7 +3635,7 @@ async function adminArea() {
     if (tab === 'users') list = res[1];
     if (tab === 'access') sess = res[1];
   } catch (e) {
-    return settingsShell('admin', 'Plancia', '', '<div class="panel"><p>' + dot(false) + ' ' + esc(e.message) + '</p></div>');
+    return settingsShell('admin', 'Amministrazione', '', '<div class="panel"><p>' + dot(false) + ' ' + esc(e.message) + '</p></div>');
   }
   cache.admin = data;
   var c = data.cloud, srv = data.server;
@@ -3790,7 +3790,7 @@ async function adminArea() {
       (gRows ? asection('Amici che entrano da fuori', '', gRows) : '');
   }
 
-  return settingsShell('admin', 'Plancia', 'Gestisci tutta BunkerPlex. Sei <b>amministratore</b>.', tabs + body);
+  return settingsShell('admin', 'Amministrazione', 'Gestisci tutta BunkerPlex. Sei <b>amministratore</b>.', tabs + body);
 }
 
 // Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte.

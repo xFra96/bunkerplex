@@ -1500,6 +1500,7 @@ body.guest #rail .add { display: none; }
 .shead { margin: 1.6rem 0 .5rem .9rem; color: var(--ink3); font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .sgroup { background: var(--surface); border-radius: .9rem; overflow: hidden; }
 .sgroup + .sgroup { margin-top: .9rem; }
+.sblock > .sgroup:first-child { margin-top: .9rem; }
 .sgroup .srow { gap: .9rem; min-height: 3.6rem; padding: .65rem 1rem; border-radius: 0; }
 .sgroup .srow + .srow { border-top: 0; box-shadow: inset 4rem 1px 0 var(--surface), inset 0 1px 0 #ffffff0f; }
 .sgroup .srow.lead { min-height: 5rem; padding: .9rem 1rem; }
