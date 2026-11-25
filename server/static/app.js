@@ -2754,9 +2754,9 @@ function settingsAreas() {
 // Aree che si aprono ma non stanno nel menu
 var SETTINGS_HIDDEN = ['people'];
 
-// La plancia di amministrazione: per ora solo dal browser (non dalla TV né dalle app)
+// La plancia di amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
 function adminHere() {
-  return !!(auth && auth.user && auth.user.admin && !TV && !APP);
+  return !!(auth && auth.user && auth.user.admin);
 }
 
 var CHEVRON = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
@@ -3128,7 +3128,8 @@ function networkPanel(n) {
 
 // I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
 // gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato
-var SGROUPS = [['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices', 'admin']],
+// La Plancia (solo amministratori) subito sotto l'account, in vista
+var SGROUPS = [['Amministrazione', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
   ['Dispositivi', ['device', 'pcs', 'apps']], ['Info', ['updates', 'news']], ['', ['logout']]];
 
 function srowHtml(r, first) {
