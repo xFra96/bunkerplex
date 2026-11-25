@@ -88,9 +88,34 @@ CREATE TABLE IF NOT EXISTS server_creds(
   name TEXT,
   version TEXT,
   created REAL NOT NULL,
-  last_seen REAL NOT NULL DEFAULT 0  -- ultima presenza: acceso se recente (10 minuti)
+  last_seen REAL NOT NULL DEFAULT 0, -- ultima presenza: acceso se recente (10 minuti)
+  secure_port INTEGER NOT NULL DEFAULT 0 -- porta https con certificato valido (0 = non ancora)
 );
 CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id);
+
+-- Nomi DNS dei server: <ip-con-trattini>.<sid>.<SERVER_DOMAIN> -> indirizzo di casa.
+CREATE TABLE IF NOT EXISTS server_dns(
+  name TEXT PRIMARY KEY,
+  sid TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  record_id TEXT NOT NULL,           -- id del record su Cloudflare
+  t REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS server_dns_sid ON server_dns(sid);
+
+-- Richieste di certificato in corso (ACME, verifica DNS-01): una per server, 30 minuti.
+CREATE TABLE IF NOT EXISTS cert_orders(
+  sid TEXT PRIMARY KEY,
+  order_url TEXT NOT NULL,
+  authz_url TEXT NOT NULL,
+  chall_url TEXT,
+  finalize_url TEXT NOT NULL,
+  txt_id TEXT,                       -- record TXT _acme-challenge su Cloudflare
+  csr TEXT NOT NULL,
+  status TEXT NOT NULL,              -- pending / ready / finalizing
+  triggered REAL NOT NULL DEFAULT 0,
+  created REAL NOT NULL
+);
 
 -- Biglietti per entrare dal server di un amico: 5 minuti, una volta sola (si salva l'impronta).
 CREATE TABLE IF NOT EXISTS tickets(
@@ -168,7 +193,8 @@ CREATE TABLE IF NOT EXISTS notice_prefs(
   v TEXT
 );
 
--- Valori del servizio (chiavi VAPID delle web push, chiave dei gettoni d'accesso 'access').
+-- Valori del servizio (chiavi VAPID delle web push, chiave dei gettoni d'accesso 'access',
+-- account presso Let's Encrypt 'acme').
 CREATE TABLE IF NOT EXISTS kv(
   k TEXT PRIMARY KEY,
   v TEXT

@@ -2628,6 +2628,8 @@ def startup():
     threading.Thread(target=friends_loop, daemon=True).start()
     cast.scan_later()     # la lista di «Guarda su» pronta quando serve
     threading.Thread(target=sync_loop, daemon=True).start()
+    if SECURE_PORT:
+        threading.Thread(target=secure_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
         threading.Thread(target=public_listener, daemon=True).start()
@@ -2941,7 +2943,7 @@ class AuthGate:
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        if (scope.get("server") or ("", 0))[1] == PUBLIC_PORT and (scope["type"] != "http" or not auth_on()):
+        if (scope.get("server") or ("", 0))[1] in (PUBLIC_PORT, SECURE_PORT) and (scope["type"] != "http" or not auth_on()):
             # Da Internet solo con gli account (e i loro login): mai il PC aperto a tutti
             await self._reply(send, 403, "Non disponibile")
             return
@@ -2970,6 +2972,8 @@ class AuthGate:
             bearer = bearer_of(scope)
             if bearer:                   # gettone d'accesso del servizio account (vedi access_user)
                 user = await asyncio.to_thread(access_user, bearer)
+            elif media_key_of(scope):    # chiave dei video (vedi access_media)
+                user = await asyncio.to_thread(media_user, media_key_of(scope))
         ctx = CURRENT.set(user)
         try:
             if path.startswith("/api/") and not path.startswith(OPEN_PATHS) and user is None:
@@ -7561,10 +7565,16 @@ def access_user(token):
     c = access_claims(token)
     if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
         return None
+    return owner_user("cloud_id=?", c["own"])
+
+
+def owner_user(where, value):
+    """Il proprietario di questo server (account attivo) come «utente» della
+    richiesta, senza sessione: per i gettoni d'accesso e le chiavi dei video."""
     con = db(raw=True)
     try:
-        r = con.execute("SELECT id, name, admin, must_change FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0 "
-                        "AND id=(" + OWNER_SQL + ")", (c["own"],)).fetchone()
+        r = con.execute("SELECT id, name, admin, must_change FROM users WHERE " + where + " AND COALESCE(disabled, 0)=0 "
+                        "AND cloud_id IS NOT NULL AND id=(" + OWNER_SQL + ")", (value,)).fetchone()
     finally:
         con.close()
     if not r:
@@ -7572,6 +7582,242 @@ def access_user(token):
     return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]), "linked": True, "guest": False,
             "must_change": bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": "",
             "sid": r["id"], "profile": None, "pname": r["name"], "access": True}
+
+
+# ---- Chiavi dei video ---------------------------------------------------------------
+# <video> e <img> non mandano l'intestazione Authorization: la PWA chiede qui una
+# chiave breve (6 ore, firmata con un segreto di questo PC) e la aggiunge agli
+# indirizzi dei video e delle immagini come ?bpk=... (solo richieste GET).
+
+MEDIA_TTL = 6 * 3600
+
+
+def media_secret():
+    with config_lock:
+        if not config.get("media_secret"):
+            config["media_secret"] = secrets.token_hex(32)
+            save_config()
+        return config["media_secret"]
+
+
+def media_sign(msg):
+    return hmac.new(media_secret().encode(), msg.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+@app.post("/api/access/media")
+def access_media():
+    u = CURRENT.get()
+    if not u or u.get("friend") or u.get("guest") or not u.get("linked"):
+        raise HTTPException(403, "Chiavi dei video solo per il proprietario")
+    exp = int(time.time()) + MEDIA_TTL
+    msg = f"{u['id']}.{exp}"
+    return {"key": f"{msg}.{media_sign(msg)}", "exp": exp, "param": "bpk"}
+
+
+def media_user(key):
+    m = re.fullmatch(r"(\d{1,12})\.(\d{10})\.([0-9a-f]{32})", key or "")
+    if not m or int(m.group(2)) < time.time():
+        return None
+    if not hmac.compare_digest(m.group(3), media_sign(f"{m.group(1)}.{m.group(2)}")):
+        return None
+    return owner_user("id=?", int(m.group(1)))
+
+
+def media_key_of(scope):
+    if scope.get("method") != "GET":
+        return ""
+    for k, v in urllib.parse.parse_qsl((scope.get("query_string") or b"").decode("latin-1")):
+        if k == "bpk":
+            return v
+    return ""
+
+
+# ---- HTTPS valido nella rete di casa -------------------------------------------------
+# Il servizio account da' a questo server un nome nella rete di casa
+# (<ip-con-trattini>.<pc_id>.<dominio>) e un certificato vero *.<pc_id>.<dominio>:
+# la chiave resta qui, al servizio va solo la richiesta (CSR). Con quello BunkerPlex
+# risponde in https sulla porta SECURE_PORT (tutto BunkerPlex, come la 32500), e la
+# PWA ci arriva da una pagina https. Serve il pacchetto cryptography e un servizio
+# account con il dominio configurato (vedi cloud/worker.js, «Nomi e certificati»).
+# La porta non si apre sul router: solo rete di casa (e Tailscale).
+
+SECURE_PORT = int(os.environ.get("SECURE_PORT", "32443") or 0)
+TLS_DIR = DATA / "tls"
+secure = {"domain": "", "names": {}, "on": False, "exp": 0.0, "error": "", "ctx": None}
+secure_wake = threading.Event()
+SECURE_RENEW = 30 * 86400        # si rinnova a 30 giorni dalla scadenza
+
+
+def secure_files():
+    return TLS_DIR / "secure.key", TLS_DIR / "secure.crt"
+
+
+def secure_name():
+    return f"*.{pc_id()}.{secure['domain']}" if secure["domain"] else ""
+
+
+def secure_cert_info():
+    """(scadenza, nomi) del certificato salvato, o None."""
+    kf, cf = secure_files()
+    if ec is None or not kf.exists() or not cf.exists():
+        return None
+    from cryptography import x509
+    try:
+        cert = x509.load_pem_x509_certificate(cf.read_bytes())
+        names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+        return cert.not_valid_after_utc.timestamp(), names
+    except Exception:
+        return None
+
+
+def secure_request(cred):
+    """Chiede un certificato nuovo al servizio account (ci vuole al massimo qualche minuto)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import NameOID
+    name = secure_name()
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+           .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+           .sign(key, hashes.SHA256()))
+    der = base64.urlsafe_b64encode(csr.public_bytes(serialization.Encoding.DER)).rstrip(b"=").decode()
+    res = accounts.call("POST", "/server/cert/start", {"csr": der}, cred["secret"])
+    deadline = time.time() + 600
+    while res.get("status") != "valid":
+        if res.get("status") == "invalid":
+            raise RuntimeError(res.get("error") or "certificato rifiutato")
+        if time.time() > deadline:
+            raise RuntimeError("il certificato non è arrivato in tempo")
+        time.sleep(min(30, max(3, int(res.get("retry") or 10))))
+        res = accounts.call("POST", "/server/cert/poll", {}, cred["secret"])
+    pem = str(res.get("cert") or "")
+    if "BEGIN CERTIFICATE" not in pem:
+        raise RuntimeError("certificato non valido")
+    TLS_DIR.mkdir(parents=True, exist_ok=True)
+    kf, cf = secure_files()
+    tmp = kf.with_suffix(".tmp")
+    tmp.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                      serialization.NoEncryption()))
+    os.replace(tmp, kf)
+    tmp = cf.with_suffix(".tmp")
+    tmp.write_text(pem, "ascii")
+    os.replace(tmp, cf)
+
+
+def secure_check():
+    """Certificato presente, giusto e non in scadenza; poi la porta https accesa."""
+    if not SECURE_PORT or ec is None:
+        return
+    cred = server_cred()
+    if not cred or not secure["domain"]:
+        return
+    info = secure_cert_info()
+    if not info or secure_name() not in info[1] or info[0] - time.time() < SECURE_RENEW:
+        secure_request(cred)
+        info = secure_cert_info()
+        if not info:
+            raise RuntimeError("certificato salvato ma illeggibile")
+    kf, cf = secure_files()
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(str(cf), str(kf))
+    secure.update(ctx=ctx, exp=info[0], error="")
+    if not secure["on"]:
+        secure["on"] = True
+        threading.Thread(target=secure_listener, daemon=True).start()
+        sync_soon()                  # la porta https va detta subito al servizio account
+
+
+def secure_listener():
+    try:
+        import uvicorn
+        kf, cf = secure_files()
+        cfg = uvicorn.Config(app, host="0.0.0.0", port=SECURE_PORT, lifespan="off", log_level="warning",
+                             ssl_certfile=str(cf), ssl_keyfile=str(kf))
+        cfg.load()
+
+        def sni(sslobj, server_name, ctx):
+            if secure["ctx"] is not None:     # certificato rinnovato: si usa quello nuovo senza riaccendere
+                sslobj.context = secure["ctx"]
+        cfg.ssl.sni_callback = sni
+        uvicorn.Server(cfg).run()
+    except BaseException as ex:
+        print("Porta https non disponibile:", SECURE_PORT, ex, flush=True)
+    secure.update(on=False, error=f"porta {SECURE_PORT} non disponibile")
+
+
+def secure_loop():
+    while True:
+        try:
+            secure_check()
+        except Exception as ex:
+            secure["error"] = str(ex)[:200]
+            print("Certificato https:", secure["error"], flush=True)
+        secure_wake.wait(6 * 3600 if secure["on"] else 1800)
+        secure_wake.clear()
+
+
+# ---- Chiamate dalla PWA (CORS) ---------------------------------------------------
+# La PWA sta su un altro indirizzo (quello del servizio account, o quelli in
+# BUNKERPLEX_PWA_ORIGINS separati da virgole): il browser le lascia leggere le
+# risposte di questo server solo con queste intestazioni. Niente cookie tra siti
+# diversi: la PWA entra con il gettone (Authorization) e la chiave dei video.
+
+cors_cache = {"at": 0.0, "origins": frozenset()}
+
+
+def cors_origins():
+    if time.time() - cors_cache["at"] > 60:
+        out = set()
+        base = accounts.cloud_url()
+        if base:
+            u = urllib.parse.urlsplit(base)
+            out.add(f"{u.scheme}://{u.netloc}")
+        for o in os.environ.get("BUNKERPLEX_PWA_ORIGINS", "").split(","):
+            if o.strip():
+                out.add(o.strip().rstrip("/"))
+        cors_cache.update(at=time.time(), origins=frozenset(out))
+    return cors_cache["origins"]
+
+
+def header_of(scope, name):
+    for k, v in scope.get("headers") or ():
+        if k == name:
+            return v.decode("latin-1").strip()
+    return ""
+
+
+class Cors:
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        origin = header_of(scope, b"origin") if scope["type"] == "http" else ""
+        if not origin or origin not in cors_origins():
+            await self.inner(scope, receive, send)
+            return
+        extra = [(b"access-control-allow-origin", origin.encode("latin-1")), (b"vary", b"Origin")]
+        if scope["method"] == "OPTIONS" and header_of(scope, b"access-control-request-method"):
+            headers = extra + [(b"access-control-allow-methods", b"GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+                               (b"access-control-allow-headers",
+                                b"Authorization, Content-Type, X-Share-Token, X-BP-Session, Range"),
+                               (b"access-control-max-age", b"600"), (b"content-length", b"0")]
+            if header_of(scope, b"access-control-request-private-network") == "true":
+                headers.append((b"access-control-allow-private-network", b"true"))
+            await send({"type": "http.response.start", "status": 204, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_cors(m):
+            if m["type"] == "http.response.start":
+                m = dict(m)
+                m["headers"] = list(m.get("headers") or []) + extra + [
+                    (b"access-control-expose-headers", b"Content-Range, Content-Length, Accept-Ranges")]
+            await send(m)
+        await self.inner(scope, receive, send_cors)
+
+
+app.add_middleware(Cors)
 
 
 @app.get("/api/sharing")
@@ -9609,7 +9855,19 @@ def heartbeat_body(uid):
     friends = bool(friends_shared(uid) and share_on())
     pin = share_tls["pin"] if share_tls["on"] else ""
     return {"name": pc_name(), "url": presence_url() if (friends or self_reach(uid)) else "",
-            "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION}
+            "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION,
+            "secure_port": SECURE_PORT if secure["on"] else 0}
+
+
+def heartbeat(body, cred):
+    res = accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+    domain = str(res.get("domain") or "")
+    if not re.fullmatch(r"[a-z0-9.-]{3,200}", domain):
+        domain = ""
+    new = domain != secure["domain"]
+    secure.update(domain=domain, names=res.get("names") if isinstance(res.get("names"), dict) else {})
+    if new and domain:
+        secure_wake.set()           # dominio nuovo: si chiede il certificato
 
 
 def presence_v2(uid, token):
@@ -9626,13 +9884,13 @@ def presence_v2(uid, token):
             cred = claim_cred(token)
         body = heartbeat_body(uid)
         try:
-            accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+            heartbeat(body, cred)
         except accounts.CloudError as ex:
             if ex.status != 401:
                 raise
             set_server_cred(None)                    # credenziale persa o ripresa: si riprende
             cred = claim_cred(token)
-            accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+            heartbeat(body, cred)
     except accounts.CloudError as ex:
         if ex.status == 404:                         # servizio account di prima
             cloud_v2.update(on=False, error="")

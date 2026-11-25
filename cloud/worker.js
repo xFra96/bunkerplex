@@ -22,6 +22,8 @@
 // (vedi «BunkerPlex Avvisi», /notices e /avvisi).
 // Server come risorsa (credenziale propria, presenza, GET /servers, gettoni d'accesso
 // firmati, chiave in kv): vedi «Server come risorsa» e docs/architettura.md.
+// Nomi e certificati dei server (SERVER_DOMAIN, CF_ZONE_ID, CF_API_TOKEN, ACME_AGREE,
+// ACME_EMAIL, ACME_DIRECTORY): vedi «Nomi e certificati dei server».
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -205,7 +207,8 @@ async function serverRoutes(request, env, path, method) {
 
   // Chi sono e di chi sono
   if (path === '/server/me' && method === 'GET') {
-    return json({ sid: srv.sid, name: srv.name || '', owner: { id: srv.owner.id, username: srv.owner.username } });
+    return json({ sid: srv.sid, name: srv.name || '', owner: { id: srv.owner.id, username: srv.owner.username },
+      domain: certOn(env) ? env.SERVER_DOMAIN : '' });
   }
 
   // Presenza e indirizzi, ogni pochi minuti. url = indirizzo da fuori casa (vuoto se
@@ -218,16 +221,21 @@ async function serverRoutes(request, env, path, method) {
     const pin = String(b.pin || '');
     if (pin && !/^[0-9a-f]{64}$/.test(pin)) fail(400, 'Impronta non valida');
     const name = String(b.name || '').slice(0, 40);
+    const securePort = Number.isInteger(b.secure_port) && b.secure_port > 0 && b.secure_port < 65536 ? b.secure_port : 0;
     const t = now();
+    await ensureCertTables(env);
     await env.DB.batch([
-      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ? WHERE sid = ?')
-        .bind(t, name, String(b.version || '').slice(0, 40), srv.sid),
+      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ? WHERE sid = ?')
+        .bind(t, name, String(b.version || '').slice(0, 40), securePort, srv.sid),
       env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,NULL) ' +
         'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
         'friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = NULL')
         .bind(srv.owner_id, srv.sid, name, url, lan, b.friends === true ? 1 : 0, pin, t)
     ]);
-    return json({ ok: true, owner: { id: srv.owner.id, username: srv.owner.username }, online_seconds: ONLINE_SECONDS });
+    // Il nome nella rete di casa (per il certificato valido): dall'indirizzo lan
+    const names = await syncServerDns(env, srv.sid, lan ? new URL(lan).hostname : '');
+    return json({ ok: true, owner: { id: srv.owner.id, username: srv.owner.username }, online_seconds: ONLINE_SECONDS,
+      domain: certOn(env) ? env.SERVER_DOMAIN : '', names });
   }
 
   // Verifica di un gettone d'accesso, per i server che non sanno controllare la firma.
@@ -239,8 +247,17 @@ async function serverRoutes(request, env, path, method) {
     return json({ claims: c });
   }
 
+  // Certificato *.<sid>.<dominio>: si avvia con la CSR, poi si chiede a che punto e'
+  if (path === '/server/cert/start' && method === 'POST') {
+    return json(await certStart(env, srv, (await body(request)).csr));
+  }
+  if (path === '/server/cert/poll' && method === 'POST') {
+    return json(await certPoll(env, srv));
+  }
+
   // Il server si toglie dall'account (es. il proprietario lo scollega dal PC)
   if (path === '/server' && method === 'DELETE') {
+    await dropServerDns(env, srv.sid);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM server_creds WHERE sid = ?').bind(srv.sid),
       env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(srv.owner_id, srv.sid)
@@ -283,10 +300,11 @@ async function userServerRoutes(request, env, path, method, user) {
 
   // Tutti i server che si possono usare: i propri e quelli che gli amici condividono
   if (path === '/servers' && method === 'GET') {
-    await ensureCreds(env);
+    await ensureCertTables(env);
     const t = now();
     const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
-    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.pin, s.friends, s.t, c.last_seen FROM servers s ' +
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.pin, s.friends, s.t, c.last_seen, c.secure_port, ' +
+      '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
       'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.pin, s.t, c.last_seen FROM servers s ' +
@@ -297,7 +315,8 @@ async function userServerRoutes(request, env, path, method, user) {
       ...own.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
         online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends,
-        addresses: { lan: s.lan || '', remote: s.url || '' }, pin: s.pin
+        addresses: { lan: s.lan || '', remote: s.url || '',
+          secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       })),
       ...shared.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'friend', owner: { id: s.user_id, username: s.username },
@@ -337,6 +356,7 @@ async function userServerRoutes(request, env, path, method, user) {
   const fm = /^\/servers\/([0-9a-f]{8})\/forget$/.exec(path);
   if (fm && method === 'POST') {
     await ensureCreds(env);
+    if (await hasCredential(env, user.id, fm[1])) await dropServerDns(env, fm[1]);
     await env.DB.batch([
       env.DB.prepare('DELETE FROM server_creds WHERE sid = ? AND owner_id = ?').bind(fm[1], user.id),
       env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, fm[1])
@@ -362,6 +382,257 @@ async function deviceRoutes(env, path, method, user) {
     return json({ ok: true });
   }
   return null;
+}
+
+// ---- Nomi e certificati dei server (HTTPS valido nella rete di casa)
+//
+// Un browser (la PWA) non parla con http://192.168.x.x da una pagina https, e non
+// accetta i certificati fatti in casa. Allora ogni server riceve un nome pubblico
+// che punta al suo indirizzo di casa, <ip-con-trattini>.<sid>.<SERVER_DOMAIN>
+// (es. 192-168-1-5.1234abcd.bpx.esempio.it -> 192.168.1.5), e un certificato vero
+// *.<sid>.<SERVER_DOMAIN> da Let's Encrypt (verifica DNS-01, fatta qui).
+// La chiave privata del certificato resta sul server: qui arriva solo la richiesta (CSR).
+//
+// Si accende con: SERVER_DOMAIN (es. bpx.esempio.it, una zona o sottozona su
+// Cloudflare), CF_ZONE_ID e CF_API_TOKEN (permesso «Zone: DNS: Edit» su quella zona),
+// ACME_AGREE = "yes" (si accettano le condizioni di Let's Encrypt), ACME_EMAIL
+// facoltativa. ACME_DIRECTORY cambia autorita' (es. lo staging di Let's Encrypt per le prove).
+
+const ACME_LE = 'https://acme-v02.api.letsencrypt.org/directory';
+const ORDER_TTL = 1800;               // un ordine di certificato fermo da 30 minuti si butta
+
+const dnsOn = (env) => !!(env.SERVER_DOMAIN && env.CF_ZONE_ID && env.CF_API_TOKEN);
+const certOn = (env) => dnsOn(env) && env.ACME_AGREE === 'yes';
+const dashed = (ip) => ip.replace(/\./g, '-');
+
+function privateIPv4(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || ''));
+  if (!m || m.slice(1).some((n) => Number(n) > 255)) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+let certTables = false;
+async function ensureCertTables(env) {
+  if (certTables) return;
+  await ensureCreds(env);
+  await env.DB.batch([
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS server_dns(name TEXT PRIMARY KEY, sid TEXT NOT NULL, ip TEXT NOT NULL, ' +
+      'record_id TEXT NOT NULL, t REAL NOT NULL)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS server_dns_sid ON server_dns(sid)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS cert_orders(sid TEXT PRIMARY KEY, order_url TEXT NOT NULL, ' +
+      'authz_url TEXT NOT NULL, chall_url TEXT, finalize_url TEXT NOT NULL, txt_id TEXT, csr TEXT NOT NULL, ' +
+      'status TEXT NOT NULL, triggered REAL NOT NULL DEFAULT 0, created REAL NOT NULL)')
+  ]);
+  const cols = (await env.DB.prepare('PRAGMA table_info(server_creds)').all()).results.map((c) => c.name);
+  if (!cols.includes('secure_port')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN secure_port INTEGER NOT NULL DEFAULT 0').run();
+  certTables = true;
+}
+
+async function cfApi(env, method, path, payload) {
+  const r = await fetch('https://api.cloudflare.com/client/v4/zones/' + env.CF_ZONE_ID + path, {
+    method, headers: { Authorization: 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/json' },
+    body: payload ? JSON.stringify(payload) : undefined
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.success === false) throw new Error('Cloudflare DNS: errore ' + r.status);
+  return j.result;
+}
+
+// I nomi del server (uno per indirizzo di casa) allineati con quelli voluti.
+// Torna { lan: nome } (vuoto se non si puo'); gli errori non fermano la presenza.
+async function syncServerDns(env, sid, lanIp) {
+  if (!dnsOn(env)) return {};
+  await ensureCertTables(env);
+  const want = privateIPv4(lanIp) ? dashed(lanIp) + '.' + sid + '.' + env.SERVER_DOMAIN : '';
+  const have = (await env.DB.prepare('SELECT name, ip, record_id FROM server_dns WHERE sid = ?').bind(sid).all()).results;
+  try {
+    for (const h of have) {
+      if (h.name === want) continue;
+      await cfApi(env, 'DELETE', '/dns_records/' + h.record_id).catch(() => null);
+      await env.DB.prepare('DELETE FROM server_dns WHERE name = ?').bind(h.name).run();
+    }
+    if (want && !have.some((h) => h.name === want)) {
+      const rec = await cfApi(env, 'POST', '/dns_records', { type: 'A', name: want, content: lanIp, ttl: 300, proxied: false });
+      await env.DB.prepare('INSERT OR REPLACE INTO server_dns(name, sid, ip, record_id, t) VALUES(?,?,?,?,?)')
+        .bind(want, sid, lanIp, String(rec.id), now()).run();
+    }
+  } catch (e) {
+    return { error: String(e.message || e) };
+  }
+  return want ? { lan: want } : {};
+}
+
+async function dropServerDns(env, sid) {
+  if (!dnsOn(env)) return;
+  await ensureCertTables(env);
+  const have = (await env.DB.prepare('SELECT name, record_id FROM server_dns WHERE sid = ?').bind(sid).all()).results;
+  for (const h of have) await cfApi(env, 'DELETE', '/dns_records/' + h.record_id).catch(() => null);
+  await env.DB.prepare('DELETE FROM server_dns WHERE sid = ?').bind(sid).run();
+}
+
+// -- ACME (RFC 8555), il minimo per un certificato con verifica DNS-01
+
+let acmeDirCache = null;
+async function acmeDir(env) {
+  const url = env.ACME_DIRECTORY || ACME_LE;
+  if (!acmeDirCache || acmeDirCache.url !== url) {
+    const r = await fetch(url);
+    if (!r.ok) fail(502, "L'autorità dei certificati non risponde");
+    acmeDirCache = { url, dir: await r.json() };
+  }
+  return acmeDirCache.dir;
+}
+
+async function acmeKeys(env) {
+  let saved = await env.DB.prepare("SELECT v FROM kv WHERE k = 'acme'").first('v');
+  if (!saved) {
+    const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+    const keys = { priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: { crv: 'P-256', kty: 'EC', x: pub.x, y: pub.y } };
+    await env.DB.prepare("INSERT OR IGNORE INTO kv(k, v) VALUES('acme', ?)").bind(JSON.stringify(keys)).run();
+    saved = await env.DB.prepare("SELECT v FROM kv WHERE k = 'acme'").first('v');
+  }
+  return JSON.parse(saved);
+}
+
+async function acmeThumbprint(pub) {
+  const canon = JSON.stringify({ crv: pub.crv, kty: pub.kty, x: pub.x, y: pub.y });
+  return b64u(await crypto.subtle.digest('SHA-256', te.encode(canon)));
+}
+
+// POST firmato (payload null = POST-as-GET). Un nonce scaduto si riprova una volta.
+async function acmePost(env, url, payload, opts = {}) {
+  const dir = await acmeDir(env);
+  const keys = await acmeKeys(env);
+  const key = await crypto.subtle.importKey('jwk', keys.priv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const nr = await fetch(dir.newNonce, { method: 'HEAD' });
+    const prot = { alg: 'ES256', nonce: nr.headers.get('Replay-Nonce'), url };
+    if (opts.jwk) prot.jwk = keys.pub;
+    else prot.kid = keys.kid;
+    const p = b64u(te.encode(JSON.stringify(prot)));
+    const pl = payload === null ? '' : b64u(te.encode(JSON.stringify(payload)));
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, te.encode(p + '.' + pl));
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/jose+json', Accept: opts.accept || 'application/json' },
+      body: JSON.stringify({ protected: p, payload: pl, signature: b64u(sig) })
+    });
+    if (r.status === 400 && attempt === 0) {
+      const j = await r.clone().json().catch(() => ({}));
+      if (j.type === 'urn:ietf:params:acme:error:badNonce') continue;
+    }
+    return r;
+  }
+}
+
+async function acmeJson(r, what) {
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) fail(502, what + ': ' + (j.detail || 'errore ' + r.status));
+  return j;
+}
+
+// L'account di questo servizio presso l'autorita': si crea una volta (accettando le condizioni)
+async function acmeAccount(env) {
+  const keys = await acmeKeys(env);
+  if (keys.kid) return keys;
+  const dir = await acmeDir(env);
+  const payload = { termsOfServiceAgreed: true };
+  if (env.ACME_EMAIL) payload.contact = ['mailto:' + env.ACME_EMAIL];
+  const r = await acmePost(env, dir.newAccount, payload, { jwk: true });
+  await acmeJson(r, 'Account per i certificati');
+  keys.kid = r.headers.get('Location');
+  if (!keys.kid) fail(502, "L'autorità dei certificati non ha dato l'account");
+  await env.DB.prepare("UPDATE kv SET v = ? WHERE k = 'acme'").bind(JSON.stringify(keys)).run();
+  return keys;
+}
+
+async function dropOrder(env, o) {
+  if (o.txt_id) await cfApi(env, 'DELETE', '/dns_records/' + o.txt_id).catch(() => null);
+  await env.DB.prepare('DELETE FROM cert_orders WHERE sid = ?').bind(o.sid).run();
+}
+
+// Avvia la richiesta di *.<sid>.<dominio>: ordine, record TXT della verifica.
+async function certStart(env, srv, csr) {
+  if (!certOn(env)) fail(404, 'I certificati non sono attivi nel servizio account');
+  if (!/^[A-Za-z0-9_-]{100,4000}$/.test(String(csr || ''))) fail(400, 'Richiesta di certificato non valida');
+  await ensureCertTables(env);
+  const old = await env.DB.prepare('SELECT * FROM cert_orders WHERE sid = ?').bind(srv.sid).first();
+  if (old && now() - old.created < ORDER_TTL) return { status: 'pending', retry: 15 };
+  if (old) await dropOrder(env, old);
+  await acmeAccount(env);
+  const dir = await acmeDir(env);
+  const name = '*.' + srv.sid + '.' + env.SERVER_DOMAIN;
+  const r = await acmePost(env, dir.newOrder, { identifiers: [{ type: 'dns', value: name }] });
+  const order = await acmeJson(r, 'Ordine del certificato');
+  const orderUrl = r.headers.get('Location');
+  const authzUrl = (order.authorizations || [])[0];
+  if (!orderUrl || !authzUrl || !order.finalize) fail(502, 'Ordine del certificato incompleto');
+  const authz = await acmeJson(await acmePost(env, authzUrl, null), 'Verifica del certificato');
+  let challUrl = null;
+  let txtId = null;
+  if (authz.status !== 'valid') {
+    const ch = (authz.challenges || []).find((c) => c.type === 'dns-01');
+    if (!ch) fail(502, 'Verifica DNS non offerta');
+    const keys = await acmeKeys(env);
+    const value = b64u(await crypto.subtle.digest('SHA-256', te.encode(ch.token + '.' + await acmeThumbprint(keys.pub))));
+    try {
+      const rec = await cfApi(env, 'POST', '/dns_records', {
+        type: 'TXT', name: '_acme-challenge.' + srv.sid + '.' + env.SERVER_DOMAIN, content: value, ttl: 60
+      });
+      txtId = String(rec.id);
+    } catch (e) {
+      fail(502, String(e.message || e));
+    }
+    challUrl = ch.url;
+  }
+  await env.DB.prepare('INSERT OR REPLACE INTO cert_orders(sid, order_url, authz_url, chall_url, finalize_url, txt_id, csr, ' +
+    'status, triggered, created) VALUES(?,?,?,?,?,?,?,?,0,?)')
+    .bind(srv.sid, orderUrl, authzUrl, challUrl, order.finalize, txtId, csr, challUrl ? 'pending' : 'ready', now()).run();
+  return { status: 'pending', retry: 15 };
+}
+
+// Un passo avanti: verifica, poi firma, poi il certificato. Il server chiama ogni ~15 s.
+async function certPoll(env, srv) {
+  if (!certOn(env)) fail(404, 'I certificati non sono attivi nel servizio account');
+  await ensureCertTables(env);
+  const o = await env.DB.prepare('SELECT * FROM cert_orders WHERE sid = ?').bind(srv.sid).first();
+  if (!o) fail(404, 'Nessuna richiesta di certificato in corso');
+  const gone = async (error) => { await dropOrder(env, o); return { status: 'invalid', error }; };
+  if (now() - o.created > ORDER_TTL) return gone('Richiesta scaduta');
+  await acmeAccount(env);
+  if (o.status === 'pending') {
+    // Il record TXT ha bisogno di qualche secondo per arrivare ai DNS di Cloudflare
+    if (!o.triggered) {
+      if (now() - o.created < 10) return { status: 'pending', retry: 10 };
+      await acmeJson(await acmePost(env, o.chall_url, {}), 'Verifica del certificato');
+      await env.DB.prepare('UPDATE cert_orders SET triggered = ? WHERE sid = ?').bind(now(), o.sid).run();
+      return { status: 'pending', retry: 10 };
+    }
+    const authz = await acmeJson(await acmePost(env, o.authz_url, null), 'Verifica del certificato');
+    if (authz.status === 'invalid') {
+      const ch = (authz.challenges || []).find((c) => c.type === 'dns-01') || {};
+      return gone('Verifica non riuscita' + (ch.error && ch.error.detail ? ': ' + ch.error.detail : ''));
+    }
+    if (authz.status !== 'valid') return { status: 'pending', retry: 10 };
+    o.status = 'ready';
+  }
+  if (o.status === 'ready') {
+    const fin = await acmePost(env, o.finalize_url, { csr: o.csr });
+    const j = await fin.json().catch(() => ({}));
+    if (!fin.ok) return gone('Firma del certificato rifiutata: ' + (j.detail || fin.status));
+    await env.DB.prepare("UPDATE cert_orders SET status = 'finalizing' WHERE sid = ?").bind(o.sid).run();
+    o.status = 'finalizing';
+  }
+  const order = await acmeJson(await acmePost(env, o.order_url, null), 'Stato del certificato');
+  if (order.status === 'invalid') return gone('Certificato rifiutato');
+  if (order.status !== 'valid' || !order.certificate) return { status: 'pending', retry: 5 };
+  const cr = await acmePost(env, order.certificate, null, { accept: 'application/pem-certificate-chain' });
+  if (!cr.ok) return { status: 'pending', retry: 15 };
+  const pem = await cr.text();
+  await dropOrder(env, o);
+  return { status: 'valid', cert: pem };
 }
 
 function hex(buf) {
@@ -1317,7 +1588,7 @@ async function route(request, env) {
 
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
-    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env) });
+    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env), certs: certOn(env) });
   }
 
   // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
@@ -1860,6 +2131,9 @@ async function route(request, env) {
         if (id === user.id) fail(400, 'Non puoi eliminare il tuo account');
         await ensureNotices(env);
         await ensureCreds(env);
+        for (const c of (await env.DB.prepare('SELECT sid FROM server_creds WHERE owner_id = ?').bind(id).all()).results) {
+          await dropServerDns(env, c.sid);
+        }
         await env.DB.batch([
           env.DB.prepare('DELETE FROM notices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_devices WHERE user_id = ?').bind(id),

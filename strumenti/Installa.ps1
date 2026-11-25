@@ -390,7 +390,7 @@ if ($missing) {
 
 # ---------------------------------------------------------------- 4b. Firewall
 # TV e telefoni arrivano da fuori: il firewall di Windows deve lasciar entrare
-# le porte 32500 e 32501 (anche con la rete impostata come "Pubblica").
+# le porte 32500, 32501 e 32443 (anche con la rete impostata come "Pubblica").
 # Firewall.ps1 lo controlla senza permessi; se serve sistemare chiede una volta
 # il consenso di Windows. Lanciato dall'aiutante nessuno puo' rispondere: si
 # rimanda alla prossima volta che si apre "Installa".

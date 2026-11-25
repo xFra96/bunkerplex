@@ -220,3 +220,139 @@ test('fase 0: Tailscale senza nome rifiutato, GET /friends con piu amici', async
     globalThis.fetch = realFetch;
   }
 });
+
+// ---- Fase 2: nomi DNS e certificati (Cloudflare e Let's Encrypt finti)
+
+function fakeNet() {
+  const dns = new Map();
+  const st = { n: 0, authz: 'pending', order: 'pending', jwk: null, triggered: false, finalCsr: null };
+  const b64json = (s) => JSON.parse(Buffer.from(s, 'base64url').toString());
+  const reply = (body, status = 200, headers = {}) =>
+    new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers });
+  const fetch = async (input, init = {}) => {
+    const url = String(input.url || input);
+    const method = init.method || 'GET';
+    if (url.startsWith('https://api.cloudflare.com/client/v4/zones/Z/dns_records')) {
+      if (method === 'POST') {
+        const id = 'r' + (++st.n);
+        dns.set(id, JSON.parse(init.body));
+        return reply({ success: true, result: { id } });
+      }
+      if (method === 'DELETE') {
+        dns.delete(url.split('/').pop());
+        return reply({ success: true, result: {} });
+      }
+    }
+    if (url === 'https://acme.test/dir') {
+      return reply({ newNonce: 'https://acme.test/nonce', newAccount: 'https://acme.test/acct', newOrder: 'https://acme.test/order' });
+    }
+    if (url === 'https://acme.test/nonce') return reply('', 200, { 'Replay-Nonce': 'n' + (++st.n) });
+    const jws = init.body ? JSON.parse(init.body) : null;
+    const prot = jws ? b64json(jws.protected) : {};
+    const payload = jws && jws.payload ? b64json(jws.payload) : null;
+    if (prot.url !== url || !prot.nonce) return reply({ type: 'urn:ietf:params:acme:error:malformed' }, 400);
+    if (url === 'https://acme.test/acct') {
+      assert.equal(payload.termsOfServiceAgreed, true);
+      st.jwk = prot.jwk;
+      return reply({ status: 'valid' }, 201, { Location: 'https://acme.test/acct/1' });
+    }
+    assert.equal(prot.kid, 'https://acme.test/acct/1');
+    if (url === 'https://acme.test/order') {
+      st.name = payload.identifiers[0].value;
+      return reply({ status: 'pending', authorizations: ['https://acme.test/authz/1'], finalize: 'https://acme.test/fin/1' },
+        201, { Location: 'https://acme.test/order/1' });
+    }
+    if (url === 'https://acme.test/authz/1') {
+      return reply({ status: st.authz, challenges: [{ type: 'http-01', url: 'x', token: 'no' },
+        { type: 'dns-01', url: 'https://acme.test/chall/1', token: 'tok' }] });
+    }
+    if (url === 'https://acme.test/chall/1') { st.triggered = true; st.authz = 'valid'; return reply({ status: 'processing' }); }
+    if (url === 'https://acme.test/fin/1') { st.finalCsr = payload.csr; st.order = 'valid'; return reply({ status: 'processing' }); }
+    if (url === 'https://acme.test/order/1') return reply({ status: st.order, certificate: 'https://acme.test/cert/1' });
+    if (url === 'https://acme.test/cert/1') return reply('-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n');
+    return reply({ detail: 'sconosciuto ' + url }, 404);
+  };
+  return { dns, st, fetch };
+}
+
+async function withNet(net, fn) {
+  const real = globalThis.fetch;
+  globalThis.fetch = net.fetch;
+  try { return await fn(); } finally { globalThis.fetch = real; }
+}
+
+function certEnv(t) {
+  Object.assign(t.env, { SERVER_DOMAIN: 'bpx.test', CF_ZONE_ID: 'Z', CF_API_TOKEN: 'cf', ACME_AGREE: 'yes',
+    ACME_DIRECTORY: 'https://acme.test/dir' });
+}
+
+test('nome DNS del server nella rete di casa e indirizzo https in GET /servers', async () => {
+  const t = await twoFriends();
+  certEnv(t);
+  const net = fakeNet();
+  await withNet(net, async () => {
+    const cred = (await t.call('POST', `/servers/${SID}/claim`, {}, await t.login('anna', 'server'))).body.credential;
+    const hb = await t.call('POST', '/server/heartbeat',
+      { name: 'PC', lan: 'https://192.168.1.5:32501', pin: PIN, friends: true, secure_port: 32443 }, cred);
+    assert.equal(hb.body.names.lan, '192-168-1-5.1234abcd.bpx.test');
+    assert.equal(hb.body.domain, 'bpx.test');
+    assert.deepEqual([...net.dns.values()].map((r) => [r.type, r.name, r.content]),
+      [['A', '192-168-1-5.1234abcd.bpx.test', '192.168.1.5']]);
+    const s = (await t.call('GET', '/servers', undefined, await t.login('anna', 'pwa'))).body.servers[0];
+    assert.equal(s.addresses.secure_lan, 'https://192-168-1-5.1234abcd.bpx.test:32443');
+    const f = (await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'))).body.servers[0];
+    assert.equal(f.addresses.secure_lan, undefined);
+    // Indirizzo di casa cambiato: nome nuovo, il vecchio sparisce
+    await t.call('POST', '/server/heartbeat', { name: 'PC', lan: 'https://10.0.0.7:32501', pin: PIN, secure_port: 32443 }, cred);
+    assert.deepEqual([...net.dns.values()].map((r) => r.name), ['10-0-0-7.1234abcd.bpx.test']);
+    // Un indirizzo pubblico al posto di quello di casa: nessun nome
+    await t.call('POST', '/server/heartbeat', { name: 'PC', lan: 'https://8.8.8.8:32501', pin: PIN }, cred);
+    assert.equal(net.dns.size, 0);
+    // Il server se ne va: via anche i nomi
+    await t.call('POST', '/server/heartbeat', { name: 'PC', lan: 'https://192.168.1.5:32501', pin: PIN }, cred);
+    await t.call('DELETE', '/server', undefined, cred);
+    assert.equal(net.dns.size, 0);
+  });
+});
+
+test('certificato *.<sid>.<dominio> con la verifica DNS-01', async () => {
+  const t = await twoFriends();
+  certEnv(t);
+  const net = fakeNet();
+  await withNet(net, async () => {
+    const cred = (await t.call('POST', `/servers/${SID}/claim`, {}, await t.login('anna', 'server'))).body.credential;
+    const csr = 'M'.repeat(300);
+    assert.equal((await t.call('POST', '/server/cert/start', { csr: 'corta' }, cred)).status, 400);
+    const st = await t.call('POST', '/server/cert/start', { csr }, cred);
+    assert.equal(st.body.status, 'pending');
+    assert.equal(net.st.name, '*.1234abcd.bpx.test');
+    // Record TXT = base64url(sha256(token.impronta della chiave dell'account))
+    const txt = [...net.dns.values()].find((r) => r.type === 'TXT');
+    assert.equal(txt.name, '_acme-challenge.1234abcd.bpx.test');
+    const jwk = net.st.jwk;
+    const thumb = createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest('base64url');
+    assert.equal(txt.content, createHash('sha256').update('tok.' + thumb).digest('base64url'));
+    // Troppo presto: il TXT deve arrivare ai DNS
+    assert.equal((await t.call('POST', '/server/cert/poll', {}, cred)).body.status, 'pending');
+    assert.equal(net.st.triggered, false);
+    t.env.DB.raw.prepare('UPDATE cert_orders SET created = created - 20').run();
+    assert.equal((await t.call('POST', '/server/cert/poll', {}, cred)).body.status, 'pending');
+    assert.equal(net.st.triggered, true);
+    const done = await t.call('POST', '/server/cert/poll', {}, cred);
+    assert.equal(done.body.status, 'valid');
+    assert.match(done.body.cert, /BEGIN CERTIFICATE/);
+    assert.equal(net.st.finalCsr, csr);
+    assert.equal([...net.dns.values()].filter((r) => r.type === 'TXT').length, 0);
+    assert.equal((await t.call('POST', '/server/cert/poll', {}, cred)).status, 404);
+  });
+});
+
+test('senza dominio configurato niente nomi e niente certificati', async () => {
+  const t = await twoFriends();
+  const cred = (await t.call('POST', `/servers/${SID}/claim`, {}, await t.login('anna', 'server'))).body.credential;
+  const hb = await t.call('POST', '/server/heartbeat',
+    { name: 'PC', lan: 'https://192.168.1.5:32501', pin: PIN, secure_port: 32443 }, cred);
+  assert.deepEqual([hb.body.names, hb.body.domain], [{}, '']);
+  assert.equal((await t.call('POST', '/server/cert/start', { csr: 'M'.repeat(300) }, cred)).status, 404);
+  assert.equal((await t.call('GET', '/')).body.certs, false);
+});

@@ -4,7 +4,9 @@
 # Apre in entrata:
 #   - 32500 (TV, telefoni e PC di casa), solo dalla rete locale e da Tailscale
 #     (100.64.0.0/10: i tuoi dispositivi, per esempio il telefono fuori casa);
-#   - 32501 (amici e tuoi altri PC), che risponde solo a /api/share/.
+#   - 32501 (amici e tuoi altri PC), che risponde solo a /api/share/;
+#   - 32443 (https con certificato valido, per la PWA), come la 32500: solo dalla
+#     rete locale e da Tailscale.
 # Se in passato alla domanda di Windows su Docker si e' risposto "Annulla",
 # Windows ha creato regole che bloccano Docker e prevalgono su ogni consenso:
 # quelle si spengono (non si cancellano, si possono riaccendere).
@@ -20,7 +22,8 @@ $ErrorActionPreference = 'Continue'
 
 $rules = @(
     @{ Name = 'BunkerPlex-32500'; Display = 'BunkerPlex (TV, telefoni e PC di casa)'; Port = 32500; Remote = @('LocalSubnet', '100.64.0.0/255.192.0.0') },
-    @{ Name = 'BunkerPlex-32501'; Display = 'BunkerPlex (amici e tuoi altri PC)';     Port = 32501; Remote = 'Any' }
+    @{ Name = 'BunkerPlex-32501'; Display = 'BunkerPlex (amici e tuoi altri PC)';     Port = 32501; Remote = 'Any' },
+    @{ Name = 'BunkerPlex-32443'; Display = 'BunkerPlex (https per la PWA di casa)';  Port = 32443; Remote = @('LocalSubnet', '100.64.0.0/255.192.0.0') }
 )
 
 # Regole accese che bloccano in entrata i programmi di Docker Desktop

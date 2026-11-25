@@ -1,6 +1,6 @@
 # BunkerPlex — nuova architettura (proposta)
 
-Stato: **fatte le fasi 0 e 1** (vedi §5 e §7).
+Stato: **fatte le fasi 0, 1 e 2** (vedi §5, §7 e §8).
 Decisioni già prese:
 - il servizio centrale diventa una **PWA universale** (telefono, tablet, PC, iPhone/iPad);
 - l'**app TV nativa resta**;
@@ -194,7 +194,7 @@ Ogni fase lascia tutto funzionante; le app esistenti continuano a lavorare fino 
 |---|---|---|
 | 0 ✅ | Correzioni subito: scrittura dei server solo dal server stesso (anche in forma provvisoria), furto dei dispositivi Tailscale, controlli mancanti sul server, `GET /friends` con una sola query, `schema.sql` allineato. Tag `pre-pwa`. App iOS tolta. | `cloud/`, `server/` |
 | 1 ✅ | Cloud: credenziale del server (associazione con codice rimandata alla fase 3, oggi la prende il server con il gettone del proprietario), presenza, `GET /servers`, gettoni firmati, dispositivi e scadenze. Server: accetta i gettoni firmati **accanto** alle sessioni di oggi, heartbeat. | `cloud/`, `server/` |
-| 2 | Dominio, DNS e certificati; ingresso HTTPS unico con API completa per ruolo; CORS; URL firmati per i media. Prova da browser. | `cloud/`, `server/` |
+| 2 ✅ | Dominio, DNS e certificati (manca solo il dominio vero: §8); ingresso HTTPS unico con API completa per ruolo; CORS; URL firmati per i media. Prova da browser. | `cloud/`, `server/` |
 | 3 | PWA: `app.js` nei due modi, login sul cloud, lista dal cloud, collegamento diretto, selezione server invariata, admin e notifiche dalla PWA. Pubblicata dal Worker. | `server/static/`, `cloud/` |
 | 4 | App TV: login sul cloud, lista dal cloud, collegamento diretto. | `android/tv`, `android/comune` |
 | 5 | Rimozioni: `android/app` e `setup.html` (se si decide di togliere anche l'app telefono), workflow `app-android.yml`; nel server proxy del login, hub degli amici, amici vecchio stile, proxy admin. Avviso a chi usa le app telefono (non ricevono più aggiornamenti). | tutto |
@@ -248,3 +248,53 @@ Inoltre:
 
 1. Prima il Worker su Cloudflare (le tabelle nuove si creano da sole).
 2. Poi il ramo su `main`: i server si aggiornano da soli; dove l'aiutante ricostruisce Docker arriva anche `cryptography`.
+
+---
+
+## 8. Fatto nella fase 2 (ramo `fase-2`)
+
+Spento finché non si configura il dominio: senza, tutto funziona come prima.
+
+### Servizio account (`cloud/worker.js`, sezione «Nomi e certificati dei server»)
+
+- **Nome nella rete di casa**: a ogni presenza il Worker allinea un record DNS
+  `<ip-con-trattini>.<sid>.<SERVER_DOMAIN>` → IP di casa (solo IP privati 10/8, 172.16/12, 192.168/16).
+  Cambia l'IP: nome nuovo, il vecchio si cancella. Il server se ne va: via anche i nomi.
+- **Certificato** `*.<sid>.<SERVER_DOMAIN>` da Let's Encrypt con la verifica DNS-01, fatta dal Worker:
+  - `POST /server/cert/start {csr}` (credenziale del server): ordine e record TXT `_acme-challenge`;
+  - `POST /server/cert/poll` (ogni ~15 s): verifica, firma, certificato. Il TXT si cancella alla fine.
+  - La chiave privata del certificato non lascia mai il server: al Worker arriva solo la CSR.
+- `GET /servers` → `addresses.secure_lan` = `https://<nome>:<porta>` per i propri server con il certificato.
+- `GET /` → `certs: true/false`.
+- Prove: `node --test cloud/test_worker.mjs` (Cloudflare e Let's Encrypt finti).
+
+**Configurazione del Worker** (segreti/variabili):
+
+| Nome | Valore |
+|---|---|
+| `SERVER_DOMAIN` | es. `bpx.<dominio>`: una zona (o sottodominio di una zona) su Cloudflare |
+| `CF_ZONE_ID` | id della zona |
+| `CF_API_TOKEN` | token con permesso «Zone → DNS → Edit» solo su quella zona |
+| `ACME_AGREE` | `yes`: accetta le condizioni di Let's Encrypt (decisione di chi gestisce il servizio) |
+| `ACME_EMAIL` | facoltativa, avvisi di Let's Encrypt |
+| `ACME_DIRECTORY` | facoltativa: per le prove lo staging `https://acme-staging-v02.api.letsencrypt.org/directory` |
+
+### Server (`server/app.py`, prove in `server/test_secure.py`)
+
+- **Certificato** (`secure_check`, ogni 6 ore): dal dominio ricevuto con la presenza chiede il certificato,
+  lo salva in `data/tls/`, lo rinnova a 30 giorni dalla scadenza o se cambia il dominio.
+- **Porta https `SECURE_PORT` (32443)**: tutto BunkerPlex come la 32500, con il certificato valido; il
+  certificato rinnovato si usa senza riaccendere. Risponde solo con gli account attivi. **Non si apre sul
+  router**: rete di casa e Tailscale (firewall di Windows come la 32500).
+- **CORS**: le risposte si possono leggere solo dall'indirizzo della PWA (quello del servizio account, più
+  `BUNKERPLEX_PWA_ORIGINS`), con l'intestazione per gli IP privati di Chrome. Niente cookie tra siti.
+- **Chiavi dei video**: `POST /api/access/media` → chiave di 6 ore (firmata con un segreto del PC) da
+  aggiungere come `?bpk=` a video e immagini (solo GET), perché `<video>` non manda `Authorization`.
+- `docker-compose.yml`: porta 32443 (serve ricostruire il contenitore, lo fa l'aiutante).
+
+### Da fare per accenderla
+
+1. Scegliere il dominio (decisione aperta n. 1) e metterlo su Cloudflare.
+2. Configurare il Worker come sopra, prima con lo staging di Let's Encrypt.
+3. Rischi già noti (§3): protezione DNS rebinding di alcuni router; limite di Let's Encrypt sui certificati
+   nuovi per dominio (con molti server: Public Suffix List).

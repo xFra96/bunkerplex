@@ -12,6 +12,9 @@ services:
       - "32500:32500"
       # Porta per gli amici: risponde solo a /api/share/
       - "32501:32501"
+      # https con certificato valido, per la PWA nella rete di casa (vedi server/app.py,
+      # «HTTPS valido nella rete di casa»). Non si apre sul router.
+      - "32443:32443"
     environment:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       TMDB_LANG: ${TMDB_LANG:-it-IT}
