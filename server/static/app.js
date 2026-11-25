@@ -783,6 +783,8 @@ function cCandidates(s) {
   var lan = s.addresses && /^https:\/\/([\d.]+):\d+$/.exec(s.addresses.lan || '');
   if (lan) out.push('http://' + lan[1] + ':32500');
   out.push('http://localhost:32500');
+  // Fuori casa: l'indirizzo pubblico del server (Tailscale Funnel), se acceso
+  if (s.addresses && s.addresses.public) out.push(s.addresses.public);
   return out;
 }
 
@@ -1025,7 +1027,7 @@ function cActions() {
       } catch (e) {
         cDrop();
         C.error = (s.name || 'PC') + ': ' + e.message +
-          (s.role === 'owner' ? ' (serve la stessa rete di casa con il nome https del server, o questo PC)' : '');
+          (s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)' : '');
         render();
       }
     },
