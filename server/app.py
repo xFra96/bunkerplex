@@ -6826,8 +6826,9 @@ def audio_plan(track, aout=""):
         return ["-c:a", "ac3", "-b:a", "640k"] + (["-ac", "6"] if ch > 6 else [])
     if aout == "aac" and ch > 2:
         return ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
-    if not aout and codec == "aac":
-        return ["-c:a", "copy"]
+    # Per il browser l'audio si ricodifica sempre (anche l'AAC): copiarlo lasciava
+    # l'offset di partenza del file e l'audio slittava rispetto al video. Ricodificando,
+    # aresample lo riallinea; costa pochissimo processore.
     return stereo_args(track)
 
 
