@@ -6824,8 +6824,12 @@ def audio_plan(track, aout=""):
         return ["-c:a", "copy"]
     if aout in ("tv", "ac3") and ch > 2:
         return ["-c:a", "ac3", "-b:a", "640k"] + (["-ac", "6"] if ch > 6 else [])
+    sync = ["-af", "aresample=async=1:first_pts=0"]      # riallinea l'audio al video
     if aout == "aac" and ch > 2:
-        return ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
+        return sync + ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
+    if not aout and codec == "aac" and ch > 2:
+        # AAC surround per il browser: resta 5.1 (ricodificato, non copiato, per tenerlo in sincrono)
+        return sync + ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
     # Per il browser l'audio si ricodifica sempre (anche l'AAC): copiarlo lasciava
     # l'offset di partenza del file e l'audio slittava rispetto al video. Ricodificando,
     # aresample lo riallinea; costa pochissimo processore.
