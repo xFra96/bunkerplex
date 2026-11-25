@@ -356,3 +356,22 @@ test('senza dominio configurato niente nomi e niente certificati', async () => {
   assert.equal((await t.call('POST', '/server/cert/start', { csr: 'M'.repeat(300) }, cred)).status, 404);
   assert.equal((await t.call('GET', '/')).body.certs, false);
 });
+
+// ---- Fase 3: la PWA servita dal Worker
+
+test('PWA: GET / da browser e la pagina (con il segno centrale), con JSON e lo stato', async () => {
+  const t = setup();
+  const files = { '/': '<!doctype html><html><head><title>B</title></head></html>', '/app.js': 'var x;' };
+  t.env.ASSETS = { fetch: async (req) => {
+    const p = new URL(req.url).pathname;
+    return p in files ? new Response(files[p], { status: 200 }) : new Response('no', { status: 404 });
+  } };
+  const get = (path, accept) => worker.fetch(new Request('https://acc.test' + path, { headers: accept ? { Accept: accept } : {} }), t.env);
+  const page = await get('/', 'text/html');
+  assert.match(await page.text(), /<head>\n<meta name="bp-central" content="1">/);
+  const stato = await get('/', 'application/json');
+  assert.equal((await stato.json()).app, 'bunkerplex-account');
+  assert.equal(await (await get('/app.js')).text(), 'var x;');
+  // Le rotte dell'API non diventano file
+  assert.equal((await get('/me', 'application/json')).status, 401);
+});

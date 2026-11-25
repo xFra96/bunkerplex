@@ -5344,7 +5344,7 @@ def info():
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL, "login": True,
                 "release": updater.release(), "commit": updater.current_commit()[:7],
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
-                "addresses": other_addresses(), "cloud": accounts.cloud_url(), **tv}
+                "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id(), **tv}
     con = db()
     try:
         key = tmdb_key()
@@ -5352,7 +5352,7 @@ def info():
             "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL,
             # Numero di versione del programma (es. 2026.11.23.2) e commit installato
             "release": updater.release(), "commit": updater.current_commit()[:7],
-            "addresses": other_addresses(), "cloud": accounts.cloud_url(),
+            "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id(),
             # Questo PC non entra nella rete di BunkerPlex: l'account ha gia' 4 dispositivi
             "devices_full": tailnet["limit"] is not None,
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],

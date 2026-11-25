@@ -32,3 +32,7 @@ __pycache__/
 .claude/
 # Libreria Tailscale dell'app: la compila android/tsnet/build.sh
 /android/app/libs/
+
+# wrangler (pubblicazione del servizio account)
+/cloud/.wrangler/
+/cloud/node_modules/

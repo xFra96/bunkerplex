@@ -1581,10 +1581,36 @@ async function noticeAccountRoutes(request, env, url, path, method, user) {
   fail(404, 'Non trovato');
 }
 
+// ---- La PWA: i file dell'interfaccia (server/static, vedi wrangler.toml [assets])
+//
+// La stessa interfaccia dei server, servita da qui: con <meta name="bp-central">
+// sa di essere la PWA centrale (accesso con l'account, scelta del server, poi
+// collegamento diretto al server). GET / con Accept: application/json resta lo
+// stato del servizio (lo chiedono i server e le app).
+
+const PWA_FILES = /^\/(app\.js|style\.css|sw\.js|manifest\.json|icons\/[A-Za-z0-9._-]+)$/;
+
+async function pwaAsset(request, env, path) {
+  if (!env.ASSETS) return null;
+  if (path === '/') {
+    if ((request.headers.get('Accept') || '').includes('application/json')) return null;
+    const res = await env.ASSETS.fetch(new Request(new URL('/', request.url), request));
+    if (!res.ok) return res;
+    const html = (await res.text()).replace('<head>', '<head>\n<meta name="bp-central" content="1">');
+    return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' } });
+  }
+  return PWA_FILES.test(path) || path === '/index.html' ? env.ASSETS.fetch(request) : null;
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const method = request.method;
+
+  if (method === 'GET' || method === 'HEAD') {
+    const asset = await pwaAsset(request, env, path);
+    if (asset) return asset;
+  }
 
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
