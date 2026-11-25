@@ -225,9 +225,8 @@ class MainActivity : ComponentActivity() {
     fun reset(s: Screen) {
         stack.clear()
         stack.add(s)
-        // Entrando: se sul server c'e' una versione piu' nuova dell'app, la propone (una volta)
+        // Entrando: se su GitHub c'e' una versione piu' nuova dell'app, la propone (una volta)
         if (s == Screen.Home && !updateOffered) {
-            Api.info?.let { update.read(it) }
             if (update.available) {
                 updateOffered = true
                 stack.add(Screen.NewVersion)

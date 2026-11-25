@@ -2091,8 +2091,30 @@ function appVer() {
   return APP ? (tvCall('getVersionName') || 'precedente') : '';
 }
 
+// Ultima versione dell'app: le app nuove la chiedono da sole a GitHub (release
+// app-v*), senza il server; quelle di prima si aggiornano ancora dalla copia sul PC.
+function selfUpdating() {
+  return APP && typeof tvApp.latestApp === 'function';
+}
+
+function appLatest(i) {
+  if (selfUpdating()) {
+    try { return JSON.parse(tvCall('latestApp') || 'null') || {}; } catch (e) { return {}; }
+  }
+  return { code: i.apk_version || 0, name: i.apk_version_name || '' };
+}
+
 function appOld(i) {
-  return APP && i.apk_version > (+tvCall('getVersion') || 0);
+  return APP && (appLatest(i).code || 0) > (+tvCall('getVersion') || 0);
+}
+
+// Questa app vuole un server piu' nuovo (livello API in /api/info)
+function serverTooOld(i) {
+  return APP && typeof tvApp.minServerApi === 'function' && (+tvCall('minServerApi') || 1) > (i.api || 1);
+}
+
+function appWhere() {
+  return selfUpdating() ? 'È uscita la ' : 'Sul PC c\'è la ';
 }
 
 function versionStrip(i, u) {
@@ -2106,10 +2128,9 @@ function versionStrip(i, u) {
   if (APP) {
     var old = appOld(i);
     html += chip(TV ? 'App su questa TV' : 'App su questo dispositivo', appVer(),
-      old ? 'Sul PC c\'è la ' + (i.apk_version_name || 'più nuova') : (i.apk_version ? 'Aggiornata' : ''), old);
+      old ? appWhere() + (appLatest(i).name || 'più nuova') : (appLatest(i).code ? 'Aggiornata' : ''), old);
   } else {
     html += chip('Questo browser', serverVer(i), 'Stessa del server', false);
-    if (i.apk_version_name) html += chip('App per TV e telefoni', i.apk_version_name, 'Pronta sul PC', false);
   }
   // Tutto il riquadro e' il pulsante per Aggiornamenti: col telecomando e' una pressione sola
   return '<a class="versions f" href="#/settings/updates" data-key="versions" aria-label="Versioni installate: apri Aggiornamenti">' + html +
@@ -2537,7 +2558,9 @@ async function settingsArea(area) {
       // Nell'app: anche l'app di questo dispositivo si aggiorna da qui (un posto solo per gli aggiornamenti)
       (APP ? '<div class="panel"><h2>' + (TV ? 'App su questa TV' : 'App su questo dispositivo') + '</h2>' +
         '<dl class="kv"><dt>Versione</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
-          (appOld(i) ? ' · <span class="nodot">sul PC c\'è la ' + esc(i.apk_version_name || 'più nuova') + '</span>' : (i.apk_version ? ' · aggiornata' : '')) + '</dd></dl>' +
+          (appOld(i) ? ' · <span class="nodot">' + esc(appWhere().toLowerCase() + (appLatest(i).name || 'più nuova')) + '</span>' : (appLatest(i).code ? ' · aggiornata' : '')) + '</dd></dl>' +
+        (selfUpdating() ? '<p class="hint">L\'app si aggiorna da sola dalle sue versioni pubblicate, anche senza aggiornare il server.</p>' : '') +
+        (serverTooOld(i) ? '<p class="nodot">Questa app è più nuova del server: aggiorna il server qui sotto per usare tutte le funzioni.</p>' : '') +
         '<div class="actions"><button class="btn' + (appOld(i) ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">' +
           (appOld(i) ? 'Aggiorna l\'app' : 'Controlla aggiornamenti') + '</button></div></div>' : '') +
       (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '<h2>Server</h2>') : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>') +
@@ -4350,23 +4373,40 @@ function startUpdate() {
 
 function checkUpdate(manual) {
   if (!APP) return;
-  api('/info').then(function (i) {
-    if (!i.apk_version) { if (manual) toast('Sul PC non c\'è un APK: avvia strumenti/sviluppo/«Compila APK.bat»'); return; }
+  if (selfUpdating()) {
+    // L'app chiede a GitHub (subito se a mano, se no al massimo ogni 6 ore), poi risponde in fpLatest
+    window.fpLatest = function (error) {
+      window.fpLatest = null;
+      if (error && manual) { toast('Non riesco a controllare gli aggiornamenti: ' + error); return; }
+      api('/info').then(function (i) { offerUpdate(i, manual); }).catch(function () { offerUpdate({}, manual); });
+    };
+    tvApp.checkLatest(!!manual);
+    return;
+  }
+  api('/info').then(function (i) { offerUpdate(i, manual); }).catch(function (e) { if (manual) toast(e.message); });
+}
+
+function offerUpdate(i, manual) {
+    var latest = appLatest(i);
+    if (!latest.code) {
+      if (manual) toast(selfUpdating() ? 'Non trovo ancora una versione pubblicata dell\'app' : 'Sul PC non c\'è un APK: avvia strumenti/sviluppo/«Compila APK.bat»');
+      return;
+    }
     var mine = +tvCall('getVersion') || 0;
     var canUpdate = !OLD_TV_APP && typeof tvApp.update === 'function';
-    if (canUpdate && i.apk_version <= mine) { if (manual) toast('L\'app è già aggiornata'); return; }
+    if (canUpdate && latest.code <= mine) { if (manual) toast('L\'app è già aggiornata'); return; }
     if (!manual) {
-      if (updateLater === i.apk_version) return;
+      if (updateLater === latest.code) return;
       // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
       if (player || !modal.hidden || /^#\/play/.test(location.hash)) { setTimeout(checkUpdate, 20000); return; }
     }
-    var name = i.apk_version_name ? ' (versione ' + i.apk_version_name + ')' : '';
+    var name = latest.name ? ' (versione ' + latest.name + ')' : '';
     if (!canUpdate) {
       // App installata prima che esistesse l'aggiornamento automatico: l'ultima volta a mano.
       var told = '';
       try { told = localStorage.getItem('fpOldApp') || ''; } catch (e) {}
-      if (!manual && told === String(i.apk_version)) return;
-      try { localStorage.setItem('fpOldApp', String(i.apk_version)); } catch (e) {}
+      if (!manual && told === String(latest.code)) return;
+      try { localStorage.setItem('fpOldApp', String(latest.code)); } catch (e) {}
       openPicker(OLD_TV_APP
         ? 'È arrivata la nuova app BunkerPlex per la TV' + name + ' e sostituisce questa, che non riceverà più aggiornamenti. ' +
           'Installala con l\'app «Downloader», aprendo http://' + location.host + '/BunkerPlex.apk, poi disinstalla questa dalle impostazioni della TV.'
@@ -4375,12 +4415,12 @@ function checkUpdate(manual) {
         [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       return;
     }
-    openPicker('È disponibile un aggiornamento dell\'app BunkerPlex' + name + '. Vuoi installarlo adesso?',
+    var needs = (latest.min_api || 1) > (i.api || 1) ? ' Richiede anche di aggiornare il server.' : '';
+    openPicker('È disponibile un aggiornamento dell\'app BunkerPlex' + name + '.' + needs + ' Vuoi installarlo adesso?',
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startUpdate();
-        else { updateLater = i.apk_version; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
+        else { updateLater = latest.code; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
       });
-  }).catch(function (e) { if (manual) toast(e.message); });
 }
 
 // L'app Android racconta qui come procede l'aggiornamento
@@ -4417,7 +4457,8 @@ window.fpUpdate = function (state, value) {
         if (answer === 'retry') startUpdate();
       });
   } else {
-    openPicker('Aggiornamento non riuscito: ' + value + '. Controlla che il PC sia acceso e riprova.',
+    openPicker('Aggiornamento non riuscito: ' + value + '. ' +
+      (selfUpdating() ? 'Controlla la connessione a Internet e riprova.' : 'Controlla che il PC sia acceso e riprova.'),
       [{ value: 'retry', label: 'Riprova' }, { value: 'no', label: 'Chiudi' }], 'retry', function (answer) {
         if (answer === 'retry') startUpdate();
       });
@@ -4427,14 +4468,12 @@ window.fpUpdate = function (state, value) {
 // ---------------------------------------------------------------- Aggiornamento di BunkerPlex (da GitHub)
 // Il server sul PC controlla da solo ogni 12 ore. Da qui (PC o TV) si vede
 // l'avviso, si controlla a mano e si lancia l'installazione: il server scarica
-// i file nuovi e la nuova app per la TV, poi si riavvia.
+// i file nuovi e si riavvia. Le app si aggiornano per conto loro (release su GitHub).
 
 var serverUpdateLater = '';          // aggiornamento per cui si e' risposto "Più tardi"
 var serverUpdating = false;
 
 function updateWhat(u) {
-  if (u.code && u.apk) return ' (programma e app per la TV)';
-  if (u.apk) return ' (app per la TV)';
   if (u.docker && !u.code) return ' (il server sul PC va riallineato)';
   return '';
 }
@@ -4526,7 +4565,7 @@ function watchServerUpdate() {
       } else {
         toast('BunkerPlex è aggiornato');
         if (/^#\/settings/.test(location.hash)) render();
-        if (APP) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
+        if (APP && !selfUpdating()) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
       }
     }).catch(function () {
       down = true;
@@ -4547,7 +4586,7 @@ function checkServerUpdate() {
     // e' appena riacceso a meta' lavoro): si segue fino alla fine
     if (u.phase === 'pc' && !player && modal.hidden && !/^#\/play/.test(location.hash)) { watchServerUpdate(); return; }
     if (!u.enabled || !u.available || u.phase || u.can_update === false) return;
-    var sig = u.remote + (u.apk ? '+tv' : '');
+    var sig = u.remote;
     if (serverUpdateLater === sig) return;
     // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
     if (player || !modal.hidden || /^#\/play/.test(location.hash)) { setTimeout(checkServerUpdate, 60000); return; }
@@ -6200,8 +6239,8 @@ function activityState() {
   if (!i.tmdb && libs.length) notes.push({ key: 'tmdb', title: 'Locandine e schede non attive', text: 'Serve la chiave TMDB', href: '#/settings/catalog' });
   var s = syncState();
   if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
-  if (APP && i.apk_version > (+tvCall('getVersion') || 0)) {
-    notes.push({ key: 'tvapp:' + i.apk_version, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+  if (appOld(i)) {
+    notes.push({ key: 'tvapp:' + appLatest(i).code, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
   return { ops: ops, notes: notes };
 }

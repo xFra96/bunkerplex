@@ -2,6 +2,8 @@
 # indipendenti dal server e dall'app attuale. A ogni push su main che la tocca
 # (android/tv o il player in comune, android/comune) pubblica la release tv-vX.Y:
 # il numero lo calcola .github/versione.py dai tag tv-v precedenti.
+# Accanto all'APK c'e' BunkerPlexTV.json (numero di versione e livello minimo
+# delle API del server): l'app lo legge da sola per aggiornarsi, senza il server.
 # Firmata con la stessa chiave dell'app attuale (segreto ANDROID_KEYSTORE_B64).
 
 name: Pubblica l'app TV nativa
@@ -35,7 +37,10 @@ jobs:
         id: ver
         run: |
           ver=$(python3 .github/versione.py tv)
+          min=$(grep -oP 'const val MIN_SERVER_API = \K\d+' android/comune/java/it/bunkerplex/tv/Releases.kt)
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "code=$(( $(date +%s) / 60 ))" >> "$GITHUB_OUTPUT"
+          echo "min=${min:-1}" >> "$GITHUB_OUTPUT"
           echo "Versione: $ver"
 
       - name: Chiave di firma
@@ -73,6 +78,7 @@ jobs:
         working-directory: android
         env:
           BUNKERPLEX_TV_VERSION: ${{ steps.ver.outputs.ver }}
+          BUNKERPLEX_CODE: ${{ steps.ver.outputs.code }}
         run: |
           gradle --no-daemon :tv:assembleRelease
           mkdir -p ../out
@@ -84,7 +90,11 @@ jobs:
       - name: Pubblica
         env:
           VER: ${{ steps.ver.outputs.ver }}
+          CODE: ${{ steps.ver.outputs.code }}
+          MIN: ${{ steps.ver.outputs.min }}
         run: |
+          printf '{"version": "%s", "code": %s, "min_server_api": %s}\n' "${VER#tv-v}" "$CODE" "$MIN" > out/BunkerPlexTV.json
+          cat out/BunkerPlexTV.json
           if ! git rev-parse -q --verify "refs/tags/$VER" > /dev/null; then
             git tag "$VER" HEAD
             git push origin "refs/tags/$VER"
@@ -97,11 +107,11 @@ jobs:
             echo
             echo "---"
             echo "BunkerPlexTV.apk: BunkerPlex con interfaccia nativa per Android TV, Google TV e Fire TV."
-            echo "Si installa accanto all'app BunkerPlex, che resta disponibile."
+            echo "Si installa accanto all'app BunkerPlex, che resta disponibile. Si aggiorna da sola da qui."
           } > notes.md
           if gh release view "$VER" > /dev/null 2>&1; then
-            gh release upload "$VER" out/BunkerPlexTV.apk --clobber
+            gh release upload "$VER" out/BunkerPlexTV.apk out/BunkerPlexTV.json --clobber
           else
-            gh release create "$VER" out/BunkerPlexTV.apk --title "BunkerPlex TV ${VER#tv-v}" \
+            gh release create "$VER" out/BunkerPlexTV.apk out/BunkerPlexTV.json --title "BunkerPlex TV ${VER#tv-v}" \
               --notes-file notes.md --verify-tag --latest=false
           fi

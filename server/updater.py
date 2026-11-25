@@ -24,6 +24,7 @@ L'accesso al repository privato viene dal file strumenti/github-token.txt
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -40,8 +41,9 @@ TOOLS = PROGRAM / "strumenti"
 CFG_FILE = TOOLS / "aggiornamenti.json"
 STATE_FILE = TOOLS / "versione.json"
 TOKEN_FILE = TOOLS / "github-token.txt"
+# Copie delle app per la prima installazione (vedi refresh_apps): app Android
+# (release app-v1.0...) e app TV nativa (tv-v1.0...), ognuna con la sua linea
 APK_FILE = PROGRAM / "apk" / "BunkerPlex.apk"
-# L'app TV nativa: release a parte (tag tv-v1.0, tv-v1.1...), mai "latest"
 TV_APK_FILE = PROGRAM / "apk" / "BunkerPlexTV.apk"
 AGENT_FILE = TOOLS / "agente.json"
 REQUEST_FILE = TOOLS / "richiesta-aggiornamento.json"
@@ -66,10 +68,8 @@ BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico asp
 
 _op = threading.Lock()        # un'operazione alla volta (controllo o installazione)
 _guard = threading.Lock()
-_status = {"phase": "", "access": None, "checked_at": 0, "code": False, "apk": False,
+_status = {"phase": "", "access": None, "checked_at": 0, "code": False,
            "docker": False, "error": "", "result": "", "remote": ""}
-_asset = None
-_tv = None          # APK dell'app TV nativa da scaricare
 _last_play = 0.0
 
 
@@ -419,36 +419,10 @@ def _newer(asset, path):
     return asset
 
 
-def _apk_asset(cfg, tok):
-    """L'APK allegato alla release, se e' piu' nuovo di quello sul disco."""
-    try:
-        release = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok))
-    except Exception:
-        return None
-    asset = next((a for a in release.get("assets", []) if a.get("name") == "BunkerPlex.apk"), None)
-    return _newer(asset, APK_FILE)
-
-
-def _tv_asset(cfg, tok):
-    """L'APK dell'app TV nativa dall'ultima release tv-v*, se e' piu' nuovo."""
-    try:
-        releases = json.loads(_api(cfg, "releases?per_page=30", tok))
-    except Exception:
-        return None
-    for rel in releases:
-        if rel.get("draft") or not str(rel.get("tag_name", "")).startswith("tv-v"):
-            continue
-        asset = next((a for a in rel.get("assets", []) if a.get("name") == "BunkerPlexTV.apk"), None)
-        if asset:
-            return _newer(asset, TV_APK_FILE)
-    return None
-
-
 def _check():
-    global _asset, _tv
     cfg = _config()
     if not cfg or not TOOLS.is_dir():
-        _set(access=None, code=False, apk=False, error="", checked_at=time.time())
+        _set(access=None, code=False, error="", checked_at=time.time())
         return None
     tok = token()
     try:
@@ -456,7 +430,7 @@ def _check():
                    timeout=20).decode("ascii", "replace").strip()
     except urllib.error.HTTPError as ex:
         if ex.code in (401, 403, 404):
-            _set(access=False, code=False, apk=False, error="", checked_at=time.time())
+            _set(access=False, code=False, error="", checked_at=time.time())
         else:
             _set(error=f"GitHub ha risposto con errore {ex.code}", checked_at=time.time())
         return None
@@ -466,8 +440,6 @@ def _check():
     if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha):
         _set(error="Risposta di GitHub non valida", checked_at=time.time())
         return None
-    _asset = _apk_asset(cfg, tok)
-    _tv = _tv_asset(cfg, tok)
     if _dev_copy():
         # La copia di sviluppo la aggiorna git, cioe' l'aiutante sul PC. Se il
         # commit di GitHub e' gia' qui (anche solo scaricato) non c'e' niente da fare:
@@ -477,7 +449,7 @@ def _check():
         code = _state().get("commit") != sha
     # Docker da riallineare: conta solo se c'e' l'aiutante, l'unico che puo' farlo
     docker = agent() and stale()
-    _set(access=True, code=code, apk=bool(_asset or _tv), docker=docker, error="", remote=sha,
+    _set(access=True, code=code, docker=docker, error="", remote=sha,
          checked_at=time.time())
     return cfg, tok, sha
 
@@ -577,7 +549,7 @@ def _install_files(cfg, tok, sha):
     return touched
 
 
-def _install_apk(cfg, tok, asset, dest=APK_FILE):
+def _install_apk(cfg, tok, asset, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".nuovo")
     try:
@@ -610,11 +582,7 @@ def _install():
         touched = []
         if _status["code"]:
             touched = _install_files(cfg, tok, sha)
-        if _asset:
-            _install_apk(cfg, tok, _asset)
-        if _tv:
-            _install_apk(cfg, tok, _tv, TV_APK_FILE)
-        _set(code=False, apk=False, checked_at=time.time())
+        _set(code=False, checked_at=time.time())
         if any(t in NEEDS_HOST for t in touched):
             _set(phase="host", result="host")
             return
@@ -656,19 +624,11 @@ def _follow_agent(rid, started, asked):
                     lost = 0.0
                 if r.get("phase") == "done":
                     if r.get("ok"):
-                        _set(result="ok", code=False, apk=False, docker=False)
+                        _set(result="ok", code=False, docker=False)
                         try:
-                            found = _check()
-                            # Un'app che l'aiutante non ha scaricato (es. uno script
-                            # vecchio sul PC) la prende il server: l'avviso non resta fisso
-                            if found and (_asset or _tv):
-                                if _asset:
-                                    _install_apk(found[0], found[1], _asset)
-                                if _tv:
-                                    _install_apk(found[0], found[1], _tv, TV_APK_FILE)
-                                _check()
+                            _check()
                         except Exception as ex:
-                            print("App dopo l'aiutante non scaricate:", repr(ex), flush=True)
+                            print("Controllo dopo l'aiutante non riuscito:", repr(ex), flush=True)
                     else:
                         _set(error=str(r.get("message") or "Aggiornamento non riuscito sul PC"))
                     return
@@ -740,7 +700,7 @@ def set_token(tok):
 
 
 def available():
-    return bool(_status["code"] or _status["apk"] or _status["docker"])
+    return bool(_status["code"] or _status["docker"])
 
 
 # Le novita' delle ultime release del server (tag v1.2...), lette dalle note che
@@ -824,10 +784,88 @@ def snapshot():
         "remote": out["remote"][:7],
         "has_token": bool(token()),
         "agent": agent(),
-        "available": bool(out["code"] or out["apk"] or out["docker"]),
+        "available": bool(out["code"] or out["docker"]),
         "check_hours": CHECK_HOURS,
     })
     return out
+
+
+# ---- Le app sul PC, solo per installarle la prima volta
+# Le app si aggiornano da sole dalle loro release su GitHub (app Android: app-v*,
+# app TV nativa: tv-v*), senza passare dal server. Il server ne tiene comunque
+# una copia in apk\ per la prima installazione (QR per il telefono, installazione
+# sulla TV dal PC) e per le app di prima, che si aggiornavano da qui. La copia si
+# rinnova per conto suo, ogni 6 ore: non fa parte dell'aggiornamento del server.
+APPS = (("app-v", "BunkerPlex.apk", APK_FILE), ("tv-v", "BunkerPlexTV.apk", TV_APK_FILE))
+APPS_EVERY = 6 * 3600
+_apps = {"at": 0.0}
+_apps_lock = threading.Lock()
+
+
+def _line_version(tag, prefix):
+    """app-v1.2 -> (1, 2, 0) per la linea app-v; None per le altre."""
+    m = re.match(re.escape(prefix) + r"(\d+)\.(\d+)(?:\.(\d+))?$", str(tag or ""))
+    return (int(m[1]), int(m[2]), int(m[3] or 0)) if m else None
+
+
+def latest_app_asset(cfg, tok, prefix, name):
+    """L'APK dell'ultima release della linea (es. tv-v1.7), o None. Si parte dai
+    tag della linea: le release del server escono a ogni modifica e
+    spingerebbero quelle delle app fuori dall'elenco."""
+    refs = json.loads(_api(cfg, f"git/matching-refs/tags/{prefix}", tok, timeout=20))
+    tags = [str(r.get("ref") or "").removeprefix("refs/tags/") for r in refs if isinstance(r, dict)]
+    tags = sorted((t for t in tags if _line_version(t, prefix)), key=lambda t: _line_version(t, prefix), reverse=True)
+    for tag in tags[:3]:              # un tag appena creato puo' non avere ancora la release
+        try:
+            rel = json.loads(_api(cfg, f"releases/tags/{tag}", tok, timeout=20))
+        except urllib.error.HTTPError:
+            continue
+        if rel.get("draft") or rel.get("prerelease"):
+            continue
+        asset = next((a for a in rel.get("assets") or [] if a.get("name") == name), None)
+        if asset:
+            return asset
+    return None
+
+
+def refresh_apps(force=False):
+    """Rinnova le copie delle app nella cartella apk se su GitHub ce n'e' una piu' nuova.
+    True se ora la copia dell'app Android c'e'."""
+    if not force and time.time() - _apps["at"] < APPS_EVERY:
+        return APK_FILE.is_file()
+    if not _apps_lock.acquire(blocking=False):
+        return APK_FILE.is_file()
+    try:
+        cfg = _config()
+        if not cfg or not PROGRAM.is_dir():
+            return APK_FILE.is_file()
+        tok = token()
+        for prefix, name, dest in APPS:
+            asset = latest_app_asset(cfg, tok, prefix, name)
+            if not asset and prefix == "app-v":
+                # Prima delle release app-v l'app stava nella release fissa del server
+                try:
+                    rel = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok, timeout=20))
+                except urllib.error.HTTPError:
+                    rel = {}
+                asset = next((a for a in rel.get("assets") or [] if a.get("name") == name), None)
+            asset = _newer(asset, dest)
+            if asset:
+                _install_apk(cfg, tok, asset, dest)
+        _apps["at"] = time.time()
+    except Exception as ex:
+        _apps["at"] = time.time() - APPS_EVERY + 600         # si riprova tra 10 minuti
+        print("Copie delle app non rinnovate:", repr(ex), flush=True)
+    finally:
+        _apps_lock.release()
+    return APK_FILE.is_file()
+
+
+def apps_loop():
+    time.sleep(120)
+    while True:
+        refresh_apps()
+        time.sleep(600)
 
 
 def loop(auto):

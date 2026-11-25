@@ -13,7 +13,7 @@ android {
         minSdk = 21
         targetSdk = 35
         // Sempre crescente: la TV riconosce un APK piu' nuovo
-        versionCode = (System.currentTimeMillis() / 60_000L).toInt()
+        versionCode = System.getenv("BUNKERPLEX_CODE")?.toIntOrNull() ?: (System.currentTimeMillis() / 60_000L).toInt()
         // Versione sua, indipendente da server e app attuale: la calcola GitHub dai tag
         // tv-v1.0, tv-v1.1... (.github/versione.py) e la passa in BUNKERPLEX_TV_VERSION
         versionName = System.getenv("BUNKERPLEX_TV_VERSION")?.removePrefix("tv-v")?.takeIf { it.isNotBlank() } ?: "sviluppo"

@@ -3,7 +3,7 @@
 Due linee, ognuna con i suoi numeri:
   - server (tag v1.2): il programma sul PC, cioe' tutto tranne android/;
   - app (tag app-v1.2): l'app Android per telefoni e TV (android/ tranne
-    android/tv/), sale solo quando l'APK viene ricompilato;
+    android/tv/), giro suo (workflows/app-android.yml);
   - tv (tag tv-v1.2): l'app nativa per la TV (android/tv/ e android/comune/),
     con il suo giro di pubblicazione;
   - ios (tag ios-v1.2): l'app per iPhone e iPad (ios/), giro suo (workflows/app-ios.yml).

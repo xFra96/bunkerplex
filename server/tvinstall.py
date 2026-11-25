@@ -437,8 +437,11 @@ def _pair(target, code_):
 
 def _install(serial, replace):
     apk = _hooks["apk"]
+    if apk and not apk.is_file():
+        import updater                 # la copia per la prima installazione si prende adesso
+        updater.refresh_apps(force=True)
     if not apk or not apk.is_file():
-        raise RuntimeError("Sul PC non c'è ancora l'APK: aspetta il prossimo aggiornamento o avvia «Compila APK.bat»")
+        raise RuntimeError("Sul PC non c'è ancora l'app: controlla che il PC sia collegato a Internet e riprova")
     log(f"Installo BunkerPlex su {_label(serial)}")
     _connect_and_wait(serial)
     if replace:

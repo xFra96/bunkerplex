@@ -16,10 +16,11 @@ android {
         minSdk = 21
         targetSdk = 35
         // Numero di versione automatico (i minuti dal 1970): ogni compilazione e'
-        // "piu' nuova" della precedente, cosi' l'app sulla TV si accorge da sola
-        // che sul PC c'e' un APK aggiornato e propone di installarlo.
+        // "piu' nuova" della precedente. GitHub lo passa in BUNKERPLEX_CODE e lo
+        // scrive anche in BunkerPlex.json accanto all'APK della release app-v:
+        // l'app lo confronta col suo per sapere se c'e' un aggiornamento.
         val now = System.currentTimeMillis()
-        versionCode = (now / 60_000L).toInt()
+        versionCode = System.getenv("BUNKERPLEX_CODE")?.toIntOrNull() ?: (now / 60_000L).toInt()
         // Nome mostrato sulla TV: la versione della release (es. 2026.11.20, la passa
         // GitHub in BUNKERPLEX_VERSION) o, compilando sul PC, data e ora in Italia.
         versionName = System.getenv("BUNKERPLEX_VERSION")?.removePrefix("v")?.takeIf { it.isNotBlank() }
