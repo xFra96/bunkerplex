@@ -384,8 +384,24 @@ object CloudTv {
 
     fun lastSid(ctx: Context) = prefs(ctx).getString("cloud_sid", "") ?: ""
 
-    fun servers(ctx: Context): List<JSONObject> =
-        JSONObject(Remote.call(ctx, "GET", "/servers", null)).optJSONArray("servers").objects()
+    /** I server (prima quello in casa, poi gli accesi, i tuoi prima di quelli degli amici) e gli amici. */
+    fun servers(ctx: Context): Pair<List<JSONObject>, List<JSONObject>> {
+        val r = JSONObject(Remote.call(ctx, "GET", "/servers", null))
+        fun rank(s: JSONObject) = when {
+            s.optBoolean("local") -> 0
+            s.opt("online") == false -> 4
+            s.opt("online") != true -> 3
+            s.optString("role") == "owner" -> 1
+            else -> 2
+        }
+        return r.optJSONArray("servers").objects().sortedBy { rank(it) } to r.optJSONArray("friends").objects()
+    }
+
+    /** Amicizie dal servizio account: aggiungi (nome), accetta, rifiuta. */
+    fun addFriend(ctx: Context, name: String): JSONObject =
+        JSONObject(Remote.call(ctx, "POST", "/friends", JSONObject().put("username", name.trim()).toString()))
+    fun acceptFriend(ctx: Context, id: Int) { Remote.call(ctx, "POST", "/friends/$id/accept", "{}") }
+    fun declineFriend(ctx: Context, id: Int) { Remote.call(ctx, "DELETE", "/friends/$id", null) }
 
     /** Nome utente o email (con l'email si chiede prima il nome, come fanno i server). */
     fun login(ctx: Context, name: String, password: String) {
@@ -467,7 +483,8 @@ object CloudTv {
      */
     fun open(ctx: Context, s: JSONObject, all: List<JSONObject>): String {
         val mine = s.optString("role") == "owner"
-        val host = if (mine) s else all.firstOrNull { it.optString("role") == "owner" && it.opt("online") != false }
+        val hosts = all.filter { it.optString("role") == "owner" && it.opt("online") != false }
+        val host = if (mine) s else hosts.firstOrNull { it.optBoolean("local") } ?: hosts.firstOrNull()
             ?: throw IOException("Per i server degli amici serve un tuo server acceso")
         val sid = host.optString("sid")
         val base = reach(ctx, host)
@@ -582,9 +599,29 @@ fun CloudGoogleScreen(act: MainActivity) {
 @Composable
 fun CloudServersScreen(act: MainActivity, refresh: Int) {
     var list by remember { mutableStateOf<List<JSONObject>?>(null) }
+    var friends by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
     var msg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var round by remember { mutableIntStateOf(0) }
+    var adding by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf("") }
+    fun friendTask(done: String?, job: () -> Unit) {
+        Thread {
+            try { job(); act.runOnUiThread { done?.let { act.toast(it) }; round++ } }
+            catch (e: Exception) { act.runOnUiThread { msg = e.message } }
+        }.start()
+    }
+    fun send() {
+        if (name.isBlank()) { msg = "Scrivi il nome dell'account del tuo amico"; return }
+        Thread {
+            try {
+                val r = CloudTv.addFriend(act, name)
+                act.toast(if (r.optString("status") == "ok") "Ora tu e ${r.optString("username")} siete amici"
+                    else "Richiesta mandata a ${r.optString("username")}: quando accetta, i suoi server compaiono qui")
+                act.runOnUiThread { adding = false; name = ""; msg = null; round++ }
+            } catch (e: Exception) { act.runOnUiThread { msg = e.message } }
+        }.start()
+    }
     fun pick(s: JSONObject, all: List<JSONObject>) {
         if (busy != null) return
         busy = "Mi collego a ${s.optString("name").ifEmpty { "PC" }}…"
@@ -600,8 +637,9 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
     }
     LaunchedEffect(refresh, round) {
         try {
-            val l = withContext(Dispatchers.IO) { CloudTv.servers(act) }
+            val (l, fr) = withContext(Dispatchers.IO) { CloudTv.servers(act) }
             list = l
+            friends = fr
             // All'apertura si torna da soli sul server di prima (una volta)
             val last = CloudTv.lastSid(act)
             if (!CloudTv.resumed && last.isNotEmpty()) {
@@ -624,20 +662,46 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
     AuthPage {
         Title("Cosa guardi oggi?", size = 34.sp, lines = 1)
         Txt("Scegli il server: i tuoi e quelli dei tuoi amici", Modifier.padding(top = 8.dp, bottom = 24.dp), size = 18.sp, color = C.ink2)
+        friends.filter { it.optString("status") == "received" }.forEach { fr ->
+            Row(Modifier.width(620.dp).padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp)).background(C.accent.copy(alpha = 0.16f))
+                .padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Txt("${fr.optString("username")} vuole essere tuo amico", Modifier.weight(1f), size = 17.sp)
+                Btn("Rifiuta") { friendTask(null) { CloudTv.declineFriend(act, fr.optInt("id")) } }
+                Spacer(Modifier.width(10.dp))
+                Btn("Accetta", primary = true) { friendTask("Ora siete amici: i suoi server compaiono qui") { CloudTv.acceptFriend(act, fr.optInt("id")) } }
+            }
+        }
         val l = list
         if (l == null) Txt("…", color = C.ink3)
-        else if (l.isEmpty()) Txt("Nessun server nel tuo account: installa BunkerPlex su un PC ed entra lì con il tuo account.",
-            Modifier.width(620.dp), color = C.ink2, lines = 3)
         else Nearest {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (l.isEmpty()) Txt("Nessun server nel tuo account: installa BunkerPlex su un PC ed entra lì con il tuo account.",
+                    Modifier.width(620.dp), color = C.ink2, lines = 3)
                 l.forEachIndexed { i, s ->
                     val friend = s.optString("role") == "friend"
                     val off = s.opt("online") == false
                     val sub = (if (friend) "di " + (s.optJSONObject("owner")?.optString("username") ?: "") else "Il tuo server") +
-                        (if (off) " · spento o non raggiungibile" else if (s.opt("online") == true) " · acceso" else "")
+                        (if (off) " · spento o non raggiungibile" else if (s.optBoolean("local")) " · in casa" else if (s.opt("online") == true) " · acceso" else "")
                     SrvCard(if (i == 0) Modifier.focusRequester(first) else Modifier,
                         if (friend) Ic.friends else Ic.screen, s.optString("name").ifEmpty { "PC" }, sub, !off) { pick(s, l) }
                 }
+                // Gli amici senza server nell'elenco: non condividono, o sono spenti
+                friends.filter { fr -> fr.optString("status") == "ok" &&
+                    l.none { it.optString("role") == "friend" && it.optJSONObject("owner")?.optInt("id") == fr.optInt("id") } }.forEach { fr ->
+                    SrvCard(Modifier, Ic.friends, fr.optString("username"), "Amico · nessun server condiviso acceso", false) {
+                        act.toast("${fr.optString("username")} deve accendere la condivisione con gli amici sul suo server")
+                    }
+                }
+                if (adding) {
+                    Row(Modifier.width(620.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Field(name, { name = it }, "Nome dell'account del tuo amico") { send() }
+                        Spacer(Modifier.width(12.dp))
+                        Btn("Invia", primary = true) { send() }
+                    }
+                } else SrvCard(if (l.isEmpty()) Modifier.focusRequester(first) else Modifier, Ic.plus, "Aggiungi un amico",
+                    "Con il nome del suo account: vedrai i suoi server accesi", true, add = true) { adding = true }
+                val sent = friends.filter { it.optString("status") == "sent" }.map { it.optString("username") }
+                if (sent.isNotEmpty()) Txt("In attesa di risposta: " + sent.joinToString(", "), color = C.ink3, size = 15.sp)
             }
         }
         busy?.let { Txt(it, Modifier.padding(top = 14.dp), color = C.ink2, lines = 2) }
