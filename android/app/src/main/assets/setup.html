@@ -68,7 +68,7 @@ function showManual(title, error) {
   $('manual').hidden = false;
   $('mtitle').textContent = title;
   $('err').textContent = error || '';
-  var saved = app ? app.getServer() : '';
+  var saved = app ? (app.lastServer ? app.lastServer() : app.getServer()) : '';
   if (saved && !$('addr').value) $('addr').value = saved.replace(/^https?:\/\//, '').replace(/:32500$/, '');
   $('connect').focus();
 }

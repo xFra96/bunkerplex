@@ -821,6 +821,7 @@ async function cOpen(s) {
   }
   C.base = base;
   C.session = session;
+  if (APP && tvApp.rememberServer) tvApp.rememberServer(base);     // senza Internet l'app lo ritrova
   await cMediaKey(true);
   auth = null;
   await loadAuth();
