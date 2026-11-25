@@ -22,6 +22,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -42,6 +43,8 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val ACTION_INSTALL_RESULT = "it.bunkerplex.tv.INSTALL_RESULT"
+        /** Linea delle release di questa app su GitHub (app-v1.0, app-v1.1...) */
+        private const val RELEASES = "app-v"
     }
 
     private lateinit var web: WebView
@@ -122,6 +125,8 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.RECEIVER_NOT_EXPORTED)
         if (server == null) showSetup(false) else openServer()
         Notices.ensure(this)
+        // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
+        thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
     }
 
     private val isTelevision by lazy {
@@ -136,8 +141,10 @@ class MainActivity : AppCompatActivity() {
         onSetup = false
         lastOpen = System.currentTimeMillis()
         thread {
+            var api = 1
             val found = (listOf(home) + others).distinct().firstOrNull { url ->
                 val info = Net.info(url, if (url == home) 3000 else 6000) ?: return@firstOrNull false
+                api = Releases.serverApi(info)
                 Remote.setCloud(this, info.optString("cloud"))
                 val list = info.optJSONArray("addresses")
                 if (list != null) others = (0 until list.length()).map { Net.normalize(list.getString(it)) }
@@ -151,6 +158,10 @@ class MainActivity : AppCompatActivity() {
                     onSetup = false
                     clearHistoryOnLoad = true
                     web.loadUrl("$found/#/home")
+                    // App piu' nuova del server: qualcosa potrebbe non andare finche' non si aggiorna il server
+                    if (api < Releases.MIN_SERVER_API) Toast.makeText(this,
+                        "Il server sul PC è più vecchio di questa app: aggiornalo da Impostazioni → Aggiornamenti",
+                        Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -177,7 +188,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
 
-    // ---- Aggiornamento dell'app: l'APK nuovo arriva dal server sul PC
+    // ---- Aggiornamento dell'app: l'APK nuovo arriva dalla release app-v* su GitHub
 
     private val updating = AtomicBoolean(false)
     private val updateFile by lazy { File(cacheDir, "BunkerPlex-update.apk") }
@@ -351,16 +362,40 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun getVersionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 
-        /** Scarica l'APK dal server e apre la finestra di installazione della TV.
+        /** Ultima versione dell'app su GitHub, come JSON {name, code, url, min_api}, o "" se non si sa ancora. */
+        @JavascriptInterface
+        fun latestApp(): String = Releases.cached(this@MainActivity, RELEASES)?.json() ?: ""
+
+        /** Ricontrolla su GitHub (force = subito, altrimenti al massimo ogni 6 ore), poi
+         *  chiama window.fpLatest(errore): "" se e' andata, se no il motivo. */
+        @JavascriptInterface
+        fun checkLatest(force: Boolean) {
+            thread {
+                val error = try {
+                    Releases.check(this@MainActivity, RELEASES, "BunkerPlex.apk", force); ""
+                } catch (e: Exception) {
+                    "GitHub non raggiungibile"
+                }
+                js("window.fpLatest&&fpLatest(${JSONObject.quote(error)})")
+            }
+        }
+
+        /** Livello minimo delle API del server che serve a questa app (il server lo dice in /api/info "api"). */
+        @JavascriptInterface
+        fun minServerApi(): Int = Releases.MIN_SERVER_API
+
+        /** Scarica l'APK dalla release su GitHub e apre la finestra di installazione.
          *  La pagina segue l'andamento con window.fpUpdate(stato, valore). */
         @JavascriptInterface
         fun update() {
-            val base = active ?: server ?: return
             if (!updating.compareAndSet(false, true)) return
             thread {
                 try {
                     updateFile.delete()
-                    Net.download("$base/BunkerPlex.apk", updateFile) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
+                    val latest = Releases.cached(this@MainActivity, RELEASES)
+                        ?: Releases.check(this@MainActivity, RELEASES, "BunkerPlex.apk", true)
+                        ?: throw IOException("su GitHub non c'è ancora una versione dell'app")
+                    Net.download(latest.url, updateFile, auth = false) { pct -> js("window.fpUpdate&&fpUpdate('progress',$pct)") }
                     val found = packageManager.getPackageArchiveInfo(updateFile.path, 0)
                     if (found?.packageName != packageName) throw IOException("il file scaricato non è l'app BunkerPlex")
                     runOnUiThread { install() }

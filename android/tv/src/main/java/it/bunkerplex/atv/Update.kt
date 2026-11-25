@@ -20,16 +20,16 @@ import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
 import androidx.core.content.pm.PackageInfoCompat
 import it.bunkerplex.tv.Net
-import org.json.JSONObject
+import it.bunkerplex.tv.Releases
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Aggiornamento dell'app dal server sul PC: il server scarica l'ultima release
- * dell'app TV nativa (tv-v*) e la offre in /BunkerPlexTV.apk; qui si confronta
- * la versione, si scarica e si installa con l'installatore di Android.
+ * Aggiornamento dell'app direttamente dalle sue release su GitHub (tv-v*),
+ * senza passare dal server: qui si confronta la versione (BunkerPlexTV.json
+ * accanto all'APK), si scarica e si installa con l'installatore di Android.
  * Lo stato si legge dalle schermate (Compose) e si aggiorna da solo.
  */
 class Update(private val act: Activity) {
@@ -43,19 +43,26 @@ class Update(private val act: Activity) {
     var error by mutableStateOf("")
         private set
 
-    /** Versione sul server (numero e nome), letta da /api/info. 0 = nessuna. */
-    var serverCode by mutableStateOf(0L)
+    /** Ultima versione pubblicata su GitHub (numero e nome). 0 = non si sa ancora. */
+    var latestCode by mutableStateOf(0L)
         private set
-    var serverName by mutableStateOf("")
+    var latestName by mutableStateOf("")
         private set
+    private var latest: Releases.Latest? = null
 
     val myCode: Long by lazy {
         PackageInfoCompat.getLongVersionCode(act.packageManager.getPackageInfo(act.packageName, 0))
     }
     val myName: String by lazy { act.packageManager.getPackageInfo(act.packageName, 0).versionName ?: "" }
 
-    /** Sul server c'e' una versione piu' nuova di quella installata. */
-    val available get() = serverCode > myCode
+    /** Su GitHub c'e' una versione piu' nuova di quella installata. */
+    val available get() = latestCode > myCode
+
+    /** Il server a cui e' collegata la TV e' piu' vecchio di quanto serve a questa app. */
+    val serverTooOld get() = Api.info != null && Releases.serverApi(Api.info) < Releases.MIN_SERVER_API
+
+    /** La versione nuova vuole un server piu' nuovo di quello collegato. */
+    val needsServer get() = (latest?.minServerApi ?: 1) > Releases.serverApi(Api.info)
 
     private val busy = AtomicBoolean(false)
     private val file by lazy { File(act.cacheDir, "BunkerPlexTV-update.apk") }
@@ -64,33 +71,42 @@ class Update(private val act: Activity) {
     fun start() {
         file.delete()     // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         ContextCompat.registerReceiver(act, result, IntentFilter(ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
+        show(Releases.cached(act, PREFIX))
+        thread { refresh() }
     }
 
     fun stop() {
         try { act.unregisterReceiver(result) } catch (_: Exception) {}
     }
 
-    /** Dati di /api/info: la versione dell'app TV nativa che il server tiene pronta. */
-    fun read(info: JSONObject) {
-        serverCode = info.optLong("tv_apk_version", 0)
-        serverName = info.optString("tv_apk_version_name")
+    private fun show(l: Releases.Latest?) {
+        if (l == null) return
+        latest = l
+        latestCode = l.code
+        latestName = l.name
     }
 
-    /** Rilegge /api/info (dalla schermata Impostazioni). Da chiamare fuori dal thread principale. */
-    fun refresh() {
-        try { read(Api.obj("/api/info")) } catch (_: Exception) {}
+    /** Chiede a GitHub l'ultima versione (al massimo ogni 6 ore, o subito con force).
+     *  Fuori dal thread principale; true se GitHub ha risposto. */
+    fun refresh(force: Boolean = false): Boolean = try {
+        val l = Releases.check(act, PREFIX, APK, force)
+        act.runOnUiThread { show(l) }
+        true
+    } catch (_: Exception) {
+        false
     }
 
-    /** Scarica l'APK dal server e apre l'installazione. */
+    /** Scarica l'APK dalla release su GitHub e apre l'installazione. */
     fun download() {
-        val base = Api.base.ifEmpty { return }
         if (!busy.compareAndSet(false, true)) return
         phase = Phase.DOWNLOAD
         percent = 0
         thread {
             try {
                 file.delete()
-                Net.download("$base/BunkerPlexTV.apk", file) { p -> act.runOnUiThread { percent = p } }
+                val l = latest ?: Releases.check(act, PREFIX, APK, true)
+                    ?: throw IOException("su GitHub non c'è ancora una versione dell'app")
+                Net.download(l.url, file, auth = false) { p -> act.runOnUiThread { percent = p } }
                 val found = act.packageManager.getPackageArchiveInfo(file.path, 0)
                 if (found?.packageName != act.packageName) throw IOException("il file scaricato non è BunkerPlex TV")
                 act.runOnUiThread { install() }
@@ -223,5 +239,8 @@ class Update(private val act: Activity) {
 
     companion object {
         private const val ACTION = "it.bunkerplex.atv.INSTALL_RESULT"
+        /** Linea delle release dell'app TV nativa su GitHub (tv-v1.0, tv-v1.1...) e il suo APK */
+        private const val PREFIX = "tv-v"
+        private const val APK = "BunkerPlexTV.apk"
     }
 }

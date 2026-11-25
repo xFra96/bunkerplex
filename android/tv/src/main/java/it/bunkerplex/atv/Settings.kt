@@ -27,6 +27,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import it.bunkerplex.tv.Releases
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -47,7 +48,7 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
             val (s, i) = withContext(Dispatchers.IO) { Api.obj("/api/auth/state") to Api.obj("/api/info") }
             state = s
             info = i
-            up.read(i)
+            withContext(Dispatchers.IO) { up.refresh() }
         } catch (e: ApiError) {
             if (e.status == 401) act.session401() else msg = e.message
         } catch (e: Exception) {
@@ -97,6 +98,10 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                     Btn("Cambia server") { act.reset(Screen.Connect) }
                     Btn("Amici e tuoi PC") { act.remote("friends") }
                 }
+                if (info != null && Releases.serverApi(info) < Releases.MIN_SERVER_API) {
+                    Txt("Questo server è più vecchio dell'app: aggiornalo per usare tutte le funzioni.",
+                        Modifier.padding(top = 12.dp), color = C.accentText, lines = 2)
+                }
                 ServerUpdate(act)
             }
 
@@ -106,8 +111,9 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                 val status = up.status()
                 when {
                     up.available -> {
-                        Txt("È disponibile la versione ${up.serverName.ifEmpty { "nuova" }}.",
-                            Modifier.padding(top = 10.dp), color = C.accentText, weight = FontWeight.SemiBold)
+                        Txt("È disponibile la versione ${up.latestName.ifEmpty { "nuova" }}." +
+                            if (up.needsServer) " Richiede di aggiornare anche il server." else "",
+                            Modifier.padding(top = 10.dp), color = C.accentText, weight = FontWeight.SemiBold, lines = 2)
                         Row(Modifier.padding(top = 14.dp)) {
                             Btn("Aggiorna l'app", icon = Ic.restart, primary = true) { up.download() }
                         }
@@ -154,7 +160,7 @@ fun Line(label: String, value: String) {
 }
 
 /**
- * Al primo ingresso, se il server ha una versione piu' nuova dell'app:
+ * Al primo ingresso, se su GitHub c'e' una versione piu' nuova dell'app:
  * la propone (come l'app attuale), una volta sola per avvio.
  */
 @Composable
@@ -165,7 +171,8 @@ fun NewVersionScreen(act: MainActivity) {
         Column(Modifier.width(620.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Logo(64.dp)
             Title("Nuova versione dell'app", Modifier.padding(top = 22.dp), size = 30.sp, lines = 1)
-            Txt("BunkerPlex TV ${up.serverName.ifEmpty { "nuova" }} è pronta sul server (questa è la ${up.myName}).",
+            Txt("È uscita BunkerPlex TV ${up.latestName.ifEmpty { "nuova" }} (questa è la ${up.myName})." +
+                if (up.needsServer) " Richiede di aggiornare anche il server." else "",
                 Modifier.padding(top = 10.dp), color = C.ink2, lines = 2)
             Row(Modifier.padding(top = 26.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 Btn("Aggiorna ora", Modifier.focusRequester(fr), Ic.restart, primary = true) { up.download() }

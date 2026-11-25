@@ -22,14 +22,16 @@ object Net {
     @Volatile
     var session: String = ""
 
-    private fun open(url: String): HttpURLConnection {
+    /** auth = false per i siti esterni (GitHub): il gettone dell'account resta tra app e server. */
+    private fun open(url: String, auth: Boolean = true): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
-        if (session.isNotEmpty()) c.setRequestProperty("X-BP-Session", session)
+        if (auth && session.isNotEmpty()) c.setRequestProperty("X-BP-Session", session)
+        if (!auth) c.setRequestProperty("User-Agent", "BunkerPlex")
         return c
     }
 
-    fun get(url: String, timeoutMs: Int = 8000): String {
-        val c = open(url)
+    fun get(url: String, timeoutMs: Int = 8000, auth: Boolean = true): String {
+        val c = open(url, auth)
         c.connectTimeout = timeoutMs
         c.readTimeout = timeoutMs
         try {
@@ -40,8 +42,8 @@ object Net {
     }
 
     /** Scarica un file; 'progress' riceve la percentuale (0-100) man mano. */
-    fun download(url: String, target: File, progress: (Int) -> Unit) {
-        val c = open(url)
+    fun download(url: String, target: File, auth: Boolean = true, progress: (Int) -> Unit) {
+        val c = open(url, auth)
         c.connectTimeout = 8000
         c.readTimeout = 20000
         try {

@@ -53,6 +53,12 @@ from accounts import CURRENT
 # Entrato offline senza account (PC dove nessun account e' mai entrato): tutto come prima degli account
 
 VERSION = "1.2"
+# Livello delle API che le app usano (/api/info "api"). Le app si aggiornano da
+# sole dalle loro release e sanno qual e' il livello minimo che serve a loro
+# (Releases.MIN_SERVER_API in android/comune): se il server e' piu' vecchio
+# avvisano di aggiornarlo. Va alzato solo quando le API cambiano in un modo che
+# le app vecchie o nuove devono sapere; aggiungere campi o rotte non conta.
+API_LEVEL = 1
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TMDB_LANG = os.environ.get("TMDB_LANG", "it-IT")
 SCAN_INTERVAL_MIN = int(os.environ.get("SCAN_INTERVAL_MIN", "30") or 30)
@@ -2428,6 +2434,7 @@ def startup():
     threading.Thread(target=sigle_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
+    threading.Thread(target=updater.apps_loop, daemon=True).start()   # copie delle app per la prima installazione
     threading.Thread(target=friends_loop, daemon=True).start()
     cast.scan_later()     # la lista di «Guarda su» pronta quando serve
     threading.Thread(target=sync_loop, daemon=True).start()
@@ -4968,7 +4975,7 @@ def info():
     tv = {"tv_apk_version": tv_code, "tv_apk_version_name": tv_name}
     if CURRENT.get() is None:
         # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
-        return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "login": True,
+        return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL, "login": True,
                 "release": updater.release(), "commit": updater.current_commit()[:7],
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
                 "addresses": other_addresses(), "cloud": accounts.cloud_url(), **tv}
@@ -4976,7 +4983,7 @@ def info():
     try:
         key = tmdb_key()
         return {
-            "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION,
+            "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL,
             # Numero di versione del programma (es. 2026.11.23.2) e commit installato
             "release": updater.release(), "commit": updater.current_commit()[:7],
             "addresses": other_addresses(), "cloud": accounts.cloud_url(),
@@ -9316,16 +9323,20 @@ async def set_pc_name(request: Request):
 
 @app.get("/BunkerPlex.apk")
 def apk():
-    """L'app per la TV, scaricabile direttamente dal server."""
-    if not APK_PATH.is_file():
-        raise HTTPException(404, "APK non ancora compilato: avvia strumenti/sviluppo/'Compila APK.bat' sul PC")
+    """L'app Android, per installarla la prima volta da un telefono o una TV di casa
+    (poi si aggiorna da sola dalle sue release su GitHub). Se il PC non ne ha
+    ancora una copia la prende adesso."""
+    if not APK_PATH.is_file() and not updater.refresh_apps(force=True):
+        raise HTTPException(404, "App non ancora sul PC: riprova tra qualche minuto")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
                         filename="BunkerPlex.apk")
 
 
 @app.get("/BunkerPlexTV.apk")
 def tv_apk():
-    """L'app TV nativa: la scarica lei stessa per aggiornarsi."""
+    """L'app TV nativa, per installarla la prima volta (poi si aggiorna da sola da GitHub)."""
+    if not TV_APK_PATH.is_file():
+        updater.refresh_apps(force=True)
     if not TV_APK_PATH.is_file():
         raise HTTPException(404, "App TV nativa non ancora sul PC")
     return FileResponse(TV_APK_PATH, media_type="application/vnd.android.package-archive",
