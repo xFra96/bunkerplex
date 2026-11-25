@@ -800,7 +800,14 @@ async function cMediaKey(force) {
 // «friend» e quel server fa entrare l'amico come ospite (le raccolte condivise).
 async function cOpen(s) {
   var host = s;
-  var base = await anyOf(cCandidates(host).map(function (c) { return cProbe(c, host.sid); }));
+  var base;
+  try {
+    base = await anyOf(cCandidates(host).map(function (c) { return cProbe(c, host.sid); }));
+  } catch (e) {
+    var ne = new Error('non raggiungibile');
+    ne.net = true;
+    throw ne;
+  }
   var saved = cSessGet(host.sid);
   var session = saved && saved.base === base ? saved.session : '';
   if (session) {
@@ -814,7 +821,14 @@ async function cOpen(s) {
     var r = await fetch(base + '/api/auth/access', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: a.token, device: devName() }) });
     var j = await r.json().catch(function () { return {}; });
-    if (!r.ok || !j.session) throw new Error(j.detail || 'Il server non ha accettato l\'accesso');
+    if (!r.ok || !j.session) {
+      var se = new Error(j.detail || 'Il server non ha accettato l\'accesso');
+      // Un server di prima della 3.26 non conosce il gettone degli amici
+      if (s.role === 'friend' && r.status === 403 && /Gettone/.test(se.message)) {
+        se.message = 'il server di ' + s.owner.username + ' va aggiornato per far entrare gli amici (Impostazioni → Aggiornamenti)';
+      }
+      throw se;
+    }
     session = j.session;
     cSessSet(host.sid, { base: base, session: session });
   }
@@ -1260,8 +1274,9 @@ function cActions() {
         render();
       } catch (e) {
         cDrop();
-        C.error = (s.name || 'PC') + ': ' + e.message +
-          (s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)'
+        // Il consiglio sull'indirizzo pubblico solo se il server non si raggiunge
+        C.error = (s.name || 'PC') + ': ' + e.message + (!e.net ? ''
+          : s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)'
             : ' (fuori casa il server di ' + s.owner.username + ' deve avere l\'indirizzo pubblico acceso)');
         render();
       }
