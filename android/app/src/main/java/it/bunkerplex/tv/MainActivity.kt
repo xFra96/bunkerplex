@@ -83,6 +83,8 @@ class MainActivity : AppCompatActivity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.mediaPlaybackRequiresUserGesture = false
+        // BunkerPlex con l'account (pagina https del servizio) parla col server di casa in http
+        web.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
         Posters.init(this)
@@ -123,7 +125,8 @@ class MainActivity : AppCompatActivity() {
         updateFile.delete()   // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
-        if (server == null) showSetup(false) else openServer()
+        // Senza un server scelto a mano: BunkerPlex con l'account (elenco dei server dal servizio)
+        if (server == null) showCentral() else openServer()
         Notices.ensure(this)
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
@@ -178,6 +181,17 @@ class MainActivity : AppCompatActivity() {
         onSetup = true
         clearHistoryOnLoad = true
         web.loadUrl("file:///android_asset/remote.html#$hash")
+    }
+
+    /** BunkerPlex con l'account: la pagina del servizio account (accesso, scelta del
+     *  server, poi collegamento diretto). Se non si carica (niente Internet), lost()
+     *  porta alla ricerca del server sulla rete di casa. */
+    private fun showCentral() {
+        onSetup = false
+        active = null
+        clearHistoryOnLoad = true
+        lastOpen = System.currentTimeMillis()
+        web.loadUrl(Remote.cloud(this) + "/")
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -338,7 +352,9 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun play(json: String) {
-            val base = active ?: server ?: return
+            // Con l'account la pagina dice lei il server (server_base); altrimenti quello aperto
+            val chosen = try { org.json.JSONObject(json).optString("server_base") } catch (_: Exception) { "" }
+            val base = chosen.ifEmpty { null } ?: active ?: server ?: return
             runOnUiThread {
                 cameFromPlayer = true
                 startActivity(
@@ -456,6 +472,10 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }
+
+        /** Dalla ricerca del server: BunkerPlex con l'account. */
+        @JavascriptInterface
+        fun openCentral() = runOnUiThread { server = null; showCentral() }
 
         @JavascriptInterface
         fun saveServer(input: String) {

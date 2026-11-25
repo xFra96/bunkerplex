@@ -776,6 +776,9 @@ function cProbe(base, sid) {
 function cCandidates(s) {
   var out = [];
   if (s.addresses && s.addresses.secure_lan) out.push(s.addresses.secure_lan);
+  // Indirizzo di casa in http: va nell'app Android (che lo permette); un browser lo blocca subito
+  var lan = s.addresses && /^https:\/\/([\d.]+):\d+$/.exec(s.addresses.lan || '');
+  if (lan) out.push('http://' + lan[1] + ':32500');
   out.push('http://localhost:32500');
   return out;
 }
@@ -859,6 +862,7 @@ function cLoginPage() {
     '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' +
     '<div class="author"><span>oppure</span></div>' +
     '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' +
+    (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Collega un server senza account</button>' : '') +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : ''));
 }
 
@@ -3774,7 +3778,7 @@ async function play(id, fromStart, at) {
   if (at > 0) p.start = at;
   // Il player dell'app TV si fa vivo col server con questo nome: dal telefono lo si comanda (Guarda su)
   if (TV && castId) { p.cast_id = castId; p.cast_name = tvName(); }
-  if (APP) { tvApp.play(JSON.stringify(p)); return; }
+  if (APP) { if (CENTRAL) p.server_base = C.base; tvApp.play(JSON.stringify(p)); return; }
   cache.pendingPlay = p;
   location.hash = '#/play/' + id;
 }

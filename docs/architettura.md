@@ -1,6 +1,6 @@
 # BunkerPlex — nuova architettura (proposta)
 
-Stato: **fatte le fasi 0, 1, 2 e la PWA della fase 3** (vedi §5, §7, §8, §9).
+Stato: **fatte le fasi 0-3 e la fase 4 (TV e telefono)** (vedi §5, §7-§10).
 Decisioni già prese:
 - il servizio centrale diventa una **PWA universale** (telefono, tablet, PC, iPhone/iPad);
 - l'**app TV nativa resta**;
@@ -317,3 +317,26 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
   cambio server, chiave dei video, Esci.
 - Da pubblicare: il Worker (porta con sé la PWA aggiornata). Il service worker non si registra nel browser
   integrato di prova: da ricontrollare su Chrome.
+
+---
+
+## 10. Fase 4: app TV e app Android (ramo `fase-4`)
+
+**App TV** (`android/tv`, `Access.kt` sezione «Con l'account»):
+- All'apertura: con l'account → elenco dei server del servizio (e si torna da soli sul server di prima);
+  senza → «Entra con il tuo account» (nome o email e password, oppure Google con indirizzo e codice da
+  aprire sul telefono) o «Collega un server senza account» (la ricerca di prima). Chi aveva già un server
+  scelto a mano continua come prima.
+- Collegamento: nome https di casa, `http://<IP di casa>:32500` (dall'indirizzo che il server dà al
+  servizio), l'ultimo che ha funzionato, poi la ricerca sulla rete; sempre controllando il `sid`.
+- Sessione: gettone d'accesso → `/api/auth/access` → `X-BP-Session`. Home, player, «Chi guarda?» e il
+  resto non cambiano. I server degli amici si aprono dal tuo server (src `f<n>`).
+- «Esci dall'account», «Aggiorna», «Amici e tuoi PC fuori casa» (Tailscale dentro l'app, come prima).
+
+**App Android** (`android/app`): senza un server scelto a mano apre la PWA del servizio account
+(accesso, elenco, collegamento diretto anche in http nella rete di casa: la WebView lo permette); il player
+nativo riceve il server scelto (`server_base`). Dalla ricerca del server: «Entra con l'account».
+
+**Da verificare**: compilazione (qui manca l'SDK Android: la fa `verifica.yml` su una pull request) e prova
+su TV e telefono veri. Perché funzioni in produzione servono il server aggiornato (rami fino a `fase-3`
+su `main`) e il Worker ripubblicato (porta l'`app.js` nuovo).
