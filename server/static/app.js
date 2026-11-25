@@ -16,6 +16,10 @@ var APP = !!tvApp;                   // dentro l'app Android (TV o telefono): vi
 // L'app sa dire se gira su un televisore. Una versione vecchia non lo sa: allora vale come TV.
 var PHONE_APP = APP && typeof tvApp.isTv === 'function' && !callSafe(function () { return tvApp.isTv(); });
 var TV = APP && !PHONE_APP;          // true dentro l'app su Android TV
+// Dentro l'app per iPhone e iPad: la pagina e' quella del browser (video in HLS), l'app
+// aggiunge solo il cambio di server e Tailscale per fuori casa
+var IOS_APP = !APP && !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bpios);
+function iosApp(fn) { try { window.webkit.messageHandlers.bpios.postMessage({ fn: fn, args: [] }); } catch (e) { /* niente */ } }
 var kb = TV;                         // l'ultimo comando e' arrivato da tasti/telecomando
 var focusMemory = {};                // pagina -> ultimo elemento selezionato
 var scrollMemory = {};
@@ -269,7 +273,7 @@ function profilesPage() {
     (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>' : '') +
       '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' +
       (mode === 'login' ? '' : googleButton()) : '') +
-    (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
+    (APP || IOS_APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
   return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
     '<div class="profiles">' + list + '</div>' + (body ? '<div style="margin-top:1.4rem">' + body + '</div>' : '') + more + '</div></div>';
 }
@@ -2347,6 +2351,8 @@ async function settingsArea(area) {
     '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '<small>' + esc(i.name) + '</small></dd></dl>' +
     (APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
       '<a class="btn f" href="#/settings/updates" data-key="dev-upd">Versioni e aggiornamenti</a></div>' : '') +
+    (IOS_APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
+      '<button class="btn f" data-act="iosremote" data-key="iosremote">Amici e tuoi PC fuori casa</button></div>' : '') +
     '</div>' +
     (TV ? await apkPanel('App sul telefono') : ''));
 }
@@ -2376,7 +2382,7 @@ if (!APP && window.isSecureContext && 'serviceWorker' in navigator) {
 }
 
 function installPanel() {
-  if (APP || TVLOOK || STANDALONE) return '';
+  if (APP || IOS_APP || TVLOOK || STANDALONE) return '';
   var body;
   if (installEvt) {
     body = '<p>Mettila sulla schermata Home: si apre a tutto schermo, come un\'app, con tutte le funzioni.</p>' +
@@ -4778,7 +4784,8 @@ var actions = {
       render();
     }, function (e) { toast(e.message); });
   },
-  resetserver: function () { if (APP) tvApp.resetServer(); },
+  resetserver: function () { if (APP) tvApp.resetServer(); else if (IOS_APP) iosApp('resetServer'); },
+  iosremote: function () { iosApp('openRemote'); },
 
   // --- amici
   friendadd: function (arg) {

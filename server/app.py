@@ -2308,10 +2308,10 @@ class SmallAndFast:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
     RAW = ("/api/stream", "/api/transcode", "/api/hls/", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
-           "/api/share/stream", "/api/share/transcode",
+           "/api/share/stream", "/api/share/transcode", "/api/share/hls/",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
     PLAYING = ("/api/stream", "/api/transcode", "/api/hls/", "/api/progress", "/api/share/stream",
-               "/api/share/transcode")
+               "/api/share/transcode", "/api/share/hls/")
 
     def __init__(self, inner):
         self.inner = inner
@@ -6191,7 +6191,7 @@ async def hls_clean_loop():
                 await asyncio.to_thread(hls_prune, s)
 
 
-async def hls_start(item_id, tok, start, vcopy, audio):
+async def hls_start(item_id, tok, start, vcopy, audio, make_src=None):
     global hls_janitor
     if hls_janitor is None:
         shutil.rmtree(HLS_DIR, ignore_errors=True)        # avanzi di prima dell'avvio
@@ -6203,7 +6203,8 @@ async def hls_start(item_id, tok, start, vcopy, audio):
     while len(hls_sessions) >= HLS_MAX:
         hls_stop(min(hls_sessions, key=lambda k: hls_sessions[k]["seen"]))
     # Lo stesso flusso MP4 di sempre (anche dai PC degli amici), con audio AAC
-    src = await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
+    src = await asyncio.to_thread(make_src) if make_src else \
+        await asyncio.to_thread(transcode, item_id, start, vcopy, audio, "aac")
     if not isinstance(src, StreamingResponse):
         raise HTTPException(502, "Il video non arriva")
     d = HLS_DIR / f"{item_id}-{tok}"
@@ -6244,6 +6245,12 @@ async def hls_start(item_id, tok, start, vcopy, audio):
 
 @app.get("/api/hls/{item_id}/{tok}/{name}")
 async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0):
+    return await hls_serve(item_id, tok, name, start, vcopy, audio)
+
+
+async def hls_serve(item_id, tok, name, start=0, vcopy=0, audio=0, make_src=None, shared=False):
+    """shared: la chiede un amico (o l'app iPhone fuori casa) da /api/share/hls:
+    chi e' lo dice gia' il gettone, controllato da share_guard."""
     m = HLS_FILE.match(name)
     if not HLS_TOK.match(tok) or not m:
         raise HTTPException(404)
@@ -6254,9 +6261,9 @@ async def hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 
             raise HTTPException(404, "Sessione finita")
         # Aprirne una vuole chi e' entrato; poi basta l'indirizzo, che e' casuale
         # (il player di Safari non sempre manda il cookie a ogni pezzo).
-        if CURRENT.get() is None:
+        if not shared and CURRENT.get() is None:
             raise HTTPException(401, "Scegli chi guarda per continuare")
-        s = await hls_start(item_id, tok, start, vcopy, audio)
+        s = await hls_start(item_id, tok, start, vcopy, audio, make_src)
     s["seen"] = time.monotonic()
     path = s["dir"] / name
     if name == "index.m3u8":
@@ -6818,6 +6825,17 @@ def share_transcode(item_id: int, start: float = 0, vcopy: int = 0, audio: int =
     """'height' (720 o 1080): conversione leggera, a misura della linea di casa."""
     return run_transcode(_own(item_id), start, vcopy, audio, height if height in (720, 1080) else 0,
                          aout if aout in AOUTS else "")
+
+
+@share.get("/hls/{item_id}/{tok}/{name}")
+async def share_hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: int = 0, audio: int = 0,
+                    height: int = 0):
+    """La conversione di /api/share/transcode in HLS, per il player dell'iPhone
+    (AVPlayer vuole HLS o un file intero, non un MP4 a flusso)."""
+    item_id = _own(item_id)
+    height = height if height in (720, 1080) else 0
+    return await hls_serve(item_id, tok, name, start, vcopy, audio, shared=True,
+                           make_src=lambda: run_transcode(item_id, start, vcopy, audio, height, "aac"))
 
 
 @share.post("/hello")
