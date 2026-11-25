@@ -4905,6 +4905,20 @@ var actions = {
     toast('Tutto segnato come letto');
     if (unread || !act.info) post('/notices/read', { all: true }).catch(function (e) { toast(e.message); pollActivity(); });
   },
+  duptrash: function (arg) {
+    var id = +arg, x = null;
+    (cache.dups || []).forEach(function (g) { g.items.forEach(function (y) { if (y.id === id) x = y; }); });
+    if (!x) return;
+    confirmBox('Spostare nel Cestino di Windows «' + x.path + '»? L\'altra copia resta al suo posto.', 'Sposta nel Cestino', function () {
+      toast('Sposto il file nel Cestino…');
+      post('/duplicates/trash', { id: id }).then(function () { toast('File spostato nel Cestino'); render(); pollActivity(); },
+        function (e) { toast(e.message); });
+    });
+  },
+  dupignore: function (key) {
+    post('/duplicates/ignore', { key: key }).then(function () { toast('Non lo segnalo più'); render(); pollActivity(); },
+      function (e) { toast(e.message); });
+  },
   noteopen: function (key) {
     var n = activityState().notes.filter(function (x) { return x.key === key; })[0];
     act.seen[key] = 1;
@@ -5899,6 +5913,7 @@ var routes = [
   [/^#\/pair\/([A-Za-z0-9]+)$/, phonePairPage],
   [/^#\/news$/, newsPage],
   [/^#\/notifiche$/, allNoticesPage],
+  [/^#\/doppioni$/, duplicatesPage],
   [/^#\/google(\/link)?$/, function (l) {
     if (!auth.google) { location.replace('#/settings/account'); return ''; }
     if (l && auth.user.linked) return googlePage(true);
@@ -6267,6 +6282,10 @@ function activityState() {
     notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
   }
+  if (i.duplicates) {
+    notes.push({ key: 'dup:' + i.duplicates, href: '#/doppioni', title: i.duplicates === 1 ? 'Un titolo è doppio' : i.duplicates + ' titoli doppi',
+      text: 'Lo stesso film o episodio in più file: scegli quale copia tenere' });
+  }
   if (i.devices_full) {
     notes.push({ key: 'devfull', href: '#/settings/friends', title: 'Troppi dispositivi nell\'account',
       text: 'Questo PC non raggiunge amici e tuoi PC: togli un dispositivo in Impostazioni → Amici e dispositivi' });
@@ -6356,6 +6375,34 @@ function activityRows(st) {
         : '<p class="actempty">Niente da leggere.</p>') + '</div>' +
     '<div class="actgroup"><button class="actrow f" data-act="actgo" data-arg="#/notifiche" data-key="nallpage"><span class="acttxt"><b>Vedi tutte</b>' +
       '<small>Le notifiche lette e non lette</small></span>' + CHEVRON + '</button></div></div>';
+}
+
+// I doppioni: lo stesso film o episodio in piu' file. Una copia si sposta nel
+// Cestino di Windows (dall'aiutante sul PC), oppure il gruppo si ignora.
+async function duplicatesPage() {
+  var d;
+  try { d = await api('/duplicates'); } catch (e) {
+    return '<div class="page"><div class="panel"><h1>Doppioni</h1><p>' + dot(false) + ' ' + esc(e.message) + '</p></div></div>';
+  }
+  cache.dups = d.groups;
+  var groups = d.groups.map(function (g) {
+    var best = g.items.slice().sort(function (a, b) { return (b.width || 0) - (a.width || 0) || b.size - a.size; })[0];
+    var rows = g.items.map(function (x) {
+      var what = [x.width ? x.width + '×' + x.height : '', (x.vcodec || '').toUpperCase(), x.size ? fmtSize(x.size) : '',
+        x.duration ? fmtTime(x.duration) : '', x.library].filter(Boolean).join(' · ');
+      var btn = !x.exists ? '<small class="nodot">non raggiungibile ora</small>'
+        : !x.trash ? '<small>da eliminare a mano</small>'
+        : '<button class="btn danger f" data-act="duptrash" data-arg="' + x.id + '" data-key="dupt-' + x.id + '">Sposta nel Cestino</button>';
+      return '<div class="lib"><div class="head"><div class="name"><b>' + esc(x.path) + '</b><small>' + esc(what) +
+        (x === best ? ' · <span class="okdot">la migliore</span>' : '') + '</small></div>' + btn + '</div></div>';
+    }).join('');
+    return '<div class="panel"><h2>' + esc(g.title) + '</h2>' + rows +
+      '<div class="actions"><button class="btn f" data-act="dupignore" data-arg="' + esc(g.key) + '" data-key="dupi-' + esc(g.key) + '">Non è un doppione: ignora</button></div></div>';
+  }).join('');
+  return '<div class="page"><div class="panel"><h1>Doppioni</h1><p>Lo stesso film o episodio in più file. Scegli la copia da togliere: ' +
+    'va nel Cestino di Windows, da cui puoi sempre recuperarla. L\'altra copia resta al suo posto.</p>' +
+    (d.agent ? '' : '<p>' + dot(false) + ' Sul PC non è acceso l\'aiutante di BunkerPlex: rilancia «Installa BunkerPlex» per poter spostare i file nel Cestino da qui.</p>') +
+    '</div>' + (groups || '<div class="panel"><p>Nessun doppione: è tutto in ordine.</p></div>') + '</div>';
 }
 
 // La pagina con tutte le notifiche: segnalazioni ancora valide e avvisi, letti e non letti

@@ -4465,6 +4465,152 @@ def chunks(rows, n=SYNC_ROWS):
         yield rows[i:i + n]
 
 
+# ---- Doppioni ------------------------------------------------------------------------
+# Lo stesso film (stessa scheda TMDB) o lo stesso episodio (serie, stagione, episodio)
+# in piu' file. La campanella lo segnala a chi gestisce il server; dalla pagina
+# «Doppioni» si sceglie quale copia togliere. I dischi sono collegati a Docker in
+# sola lettura: il file lo sposta nel Cestino di Windows l'aiutante sul PC
+# (strumenti\Agente.ps1), cosi' si puo' sempre recuperare. Un gruppo si puo' anche
+# ignorare (es. versione estesa e versione al cinema).
+
+TRASH_REQUEST = updater.TOOLS / "richiesta-cestino.json"
+TRASH_RESULT = updater.TOOLS / "esito-cestino.json"
+trash_lock = threading.Lock()
+
+
+def duplicate_groups(con):
+    ignored = set(config.get("dup_ignore") or [])
+    groups = {}
+    for r in con.execute(
+            "SELECT i.id, i.kind, i.path, i.title, i.year, i.tmdb_id, i.show_id, i.season, i.episode, i.size, "
+            "i.width, i.height, i.vcodec, i.duration, i.library_id, s.title AS show FROM items i "
+            "LEFT JOIN shows s ON s.id = i.show_id WHERE (i.kind='movie' AND i.tmdb_id IN "
+            "(SELECT tmdb_id FROM items WHERE kind='movie' AND tmdb_id IS NOT NULL GROUP BY tmdb_id HAVING COUNT(*) > 1)) "
+            "OR (i.kind='episode' AND i.season IS NOT NULL AND i.episode IS NOT NULL AND "
+            "(i.show_id, i.season, i.episode) IN (SELECT show_id, season, episode FROM items WHERE kind='episode' "
+            "AND season IS NOT NULL AND episode IS NOT NULL GROUP BY show_id, season, episode HAVING COUNT(*) > 1)) "
+            "ORDER BY i.id"):
+        key = f"m{r['tmdb_id']}" if r["kind"] == "movie" else f"e{r['show_id']}-{r['season']}-{r['episode']}"
+        if key in ignored:
+            continue
+        if key not in groups:
+            title = (r["title"] + (f" ({r['year']})" if r["year"] else "")) if r["kind"] == "movie" \
+                else f"{r['show']} · stagione {r['season']}, episodio {r['episode']}"
+            groups[key] = {"key": key, "title": title, "items": []}
+        groups[key]["items"].append(r)
+    return [g for g in groups.values() if len(g["items"]) > 1]
+
+
+def duplicates_count():
+    con = db(raw=True)
+    try:
+        return len(duplicate_groups(con))
+    finally:
+        con.close()
+
+
+def windows_path(path):
+    """/host/g/Video/x.mkv -> G:\\Video\\x.mkv (None se non e' su un disco di Windows)."""
+    p = display_path(path)
+    return p if re.fullmatch(r"[A-Z]:\\[^<>\"|?*\x00-\x1f]+", p) else None
+
+
+@app.get("/api/duplicates")
+async def duplicates_list():
+    manager_only()
+
+    def work():
+        con = db(raw=True)
+        try:
+            groups = duplicate_groups(con)
+        finally:
+            con.close()
+        with config_lock:
+            names = {lib["id"]: lib.get("name") or "" for lib in config.get("libraries") or []}
+        out = []
+        for g in groups:
+            out.append({"key": g["key"], "title": g["title"], "items": [{
+                "id": r["id"], "path": display_path(r["path"]), "size": r["size"] or 0,
+                "width": r["width"], "height": r["height"], "vcodec": r["vcodec"] or "",
+                "duration": r["duration"] or 0, "library": names.get(r["library_id"], ""),
+                "exists": os.path.isfile(r["path"]), "trash": bool(windows_path(r["path"]))} for r in g["items"]]})
+        return {"groups": out, "agent": updater.agent()}
+
+    return await in_thread(work)
+
+
+@app.post("/api/duplicates/ignore")
+async def duplicates_ignore(request: Request):
+    manager_only()
+    key = str((await read_json(request)).get("key") or "")
+    if not re.fullmatch(r"m\d+|e\d+-\d+-\d+", key):
+        raise HTTPException(400, "Richiesta non valida")
+    with config_lock:
+        lst = config.setdefault("dup_ignore", [])
+        if key not in lst:
+            lst.append(key)
+            del lst[:-500]
+        save_config()
+    return {"ok": True}
+
+
+@app.post("/api/duplicates/trash")
+async def duplicates_trash(request: Request):
+    """Sposta nel Cestino di Windows una copia di un doppione: solo se un'altra
+    copia dello stesso titolo resta al suo posto."""
+    manager_only()
+    item = (await read_json(request)).get("id")
+    if not isinstance(item, int) or isinstance(item, bool):
+        raise HTTPException(400, "Richiesta non valida")
+    if not updater.agent():
+        raise HTTPException(409, "Sul PC non è acceso l'aiutante di BunkerPlex: rilancia «Installa BunkerPlex», "
+                                 "oppure elimina il file a mano")
+
+    def work():
+        con = db(raw=True)
+        try:
+            group = next((g for g in duplicate_groups(con) if any(r["id"] == item for r in g["items"])), None)
+        finally:
+            con.close()
+        if group is None:
+            raise HTTPException(404, "Questo file non è più un doppione")
+        target = next(r for r in group["items"] if r["id"] == item)
+        others = [r for r in group["items"] if r["id"] != item and os.path.isfile(r["path"])]
+        if not others:
+            raise HTTPException(409, "L'altra copia non è raggiungibile adesso: non tolgo l'unica rimasta")
+        win = windows_path(target["path"])
+        if not win:
+            raise HTTPException(409, "Questo file non sta su un disco di Windows: eliminalo a mano")
+        if not trash_lock.acquire(blocking=False):
+            raise HTTPException(409, "Sto già spostando un file nel Cestino: riprova tra poco")
+        try:
+            rid = secrets.token_hex(8)
+            TRASH_RESULT.unlink(missing_ok=True)
+            part = TRASH_REQUEST.with_name(TRASH_REQUEST.name + ".nuovo")
+            part.write_text(json.dumps({"id": rid, "files": [win]}), encoding="utf-8")
+            os.replace(part, TRASH_REQUEST)
+            for _ in range(60):                  # l'aiutante guarda ogni 3 secondi
+                time.sleep(0.5)
+                try:
+                    res = json.loads(TRASH_RESULT.read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    continue
+                if res.get("id") == rid:
+                    break
+            else:
+                TRASH_REQUEST.unlink(missing_ok=True)
+                raise HTTPException(504, "L'aiutante sul PC non ha risposto: riprova tra poco")
+        finally:
+            trash_lock.release()
+        if not res.get("ok"):
+            raise HTTPException(409, str(res.get("message") or "Non sono riuscito a spostare il file nel Cestino"))
+        print("Doppione spostato nel Cestino:", win, flush=True)
+        scan_async()
+        return {"ok": True, "path": win}
+
+    return await in_thread(work)
+
+
 # ---- Notifiche su telefoni e tablet ------------------------------------------------
 # Gli avvisi (nuovi film ed episodi, aggiornamento disponibile) partono da qui verso
 # il servizio account, che li gira ai telefoni e tablet dell'account: push web per
@@ -5193,6 +5339,10 @@ def info():
             "friend_requests": sum(1 for f in (friends_cloud.get((CURRENT.get() or {}).get("id")) or {})
                                    .get("friends", []) if f.get("status") == "received"),
             "updated": update_notice(),      # appena aggiornato: le novita'
+            # Doppioni da sistemare (solo per chi gestisce il server)
+            "duplicates": duplicates_count() if (CURRENT.get() or {}).get("id") is not None
+                and not (CURRENT.get() or {}).get("friend")
+                and can_manage(CURRENT.get()["id"], CURRENT.get().get("admin")) else 0,
             # Gli ultimi avvisi dell'account (nuovi titoli, amici...), anche per la campanella
             "notices": [] if (CURRENT.get() or {}).get("friend") else recent_notices((CURRENT.get() or {}).get("id")),
             # Richieste di condivisione degli amici ancora da approvare
