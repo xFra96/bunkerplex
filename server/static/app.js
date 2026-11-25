@@ -2707,7 +2707,8 @@ function settingsRows(i, u, sh) {
       state: tvOld || srvWarn ? 'warn' : 'ok' });
   }
   rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
-    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono' : 'Preferenze di visione, collegamento al server',
+    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono'
+      : 'Preferenze di visione, collegamento al server' + (phoneTvOk() ? ', installa sulla TV' : ''),
     value: 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: '' });
   if (!APP) {
     rows.push({ area: 'apps', label: 'App per TV e telefono',
@@ -3101,7 +3102,20 @@ async function settingsArea(area) {
     (APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
       '<a class="btn f" href="#/settings/updates" data-key="dev-upd">Versioni e aggiornamenti</a></div>' : '') +
     '</div>' +
-    (TV ? await apkPanel('App sul telefono') : ''));
+    (TV ? await apkPanel('App sul telefono') : '') + phoneTvPanel());
+}
+
+// Dall'app Android sul telefono: installa l'app TV sulle TV di casa con adb,
+// senza PC (la pagina e' nell'app, tvinstall.html)
+function phoneTvOk() {
+  try { return PHONE_APP && typeof tvApp.tvInstallSupported === 'function' && tvApp.tvInstallSupported(); } catch (e) { return false; }
+}
+
+function phoneTvPanel() {
+  if (!phoneTvOk()) return '';
+  return '<div class="panel"><h2>App sulla TV</h2>' +
+    '<p>Installa BunkerPlex sulla TV di casa direttamente da questo telefono: basta accendere una volta il debug sulla TV.</p>' +
+    '<div class="actions"><button class="btn primary f" data-act="phonetv" data-key="phonetv">Installa sulla TV</button></div></div>';
 }
 
 // ---------------------------------------------------------------- App sul telefono (PWA)
@@ -6012,6 +6026,7 @@ var actions = {
     tvSend('pair', { target: a.trim(), code: c.trim() });
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
+  phonetv: function () { if (phoneTvOk()) tvApp.openTvInstall(); },
   tvcancel: function () { tvSend('cancel'); },
   tvcopylog: function () {
     api('/tv/log').then(function (r) { return copyText(r.text || ''); }).then(function (ok) {

@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var clearHistoryOnLoad = false
     private var cameFromPlayer = false
     private var onSetup = false
+    private var onTvInstall = false
 
     private var server: String?
         get() = prefs.getString("server", null)
@@ -113,6 +114,11 @@ class MainActivity : AppCompatActivity() {
                 if (request.method == "GET") Posters.serve(request.url) else null
 
             override fun onPageFinished(view: WebView, url: String) {
+                if (onTvInstall && !url.startsWith("file:///android_asset/tvinstall.html")) {
+                    onTvInstall = false
+                    onSetup = false
+                    TvInstaller.listener = null
+                }
                 if (clearHistoryOnLoad) {
                     clearHistoryOnLoad = false
                     view.clearHistory()
@@ -218,6 +224,14 @@ class MainActivity : AppCompatActivity() {
         onSetup = true
         clearHistoryOnLoad = true
         web.loadUrl("file:///android_asset/setup.html" + if (unreachable) "#offline" else "")
+    }
+
+    /** Dal telefono: la pagina che installa l'app sulla TV (TvInstaller). Indietro torna dove si era. */
+    private fun showTvInstall() {
+        onSetup = true
+        onTvInstall = true
+        TvInstaller.listener = { json -> js("window.tvUpdate&&tvUpdate($json)") }
+        web.loadUrl("file:///android_asset/tvinstall.html")
     }
 
     private fun js(code: String) = runOnUiThread { web.evaluateJavascript(code, null) }
@@ -499,6 +513,30 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
             }
         }
+
+        // ---- Installa l'app sulla TV dal telefono (tvinstall.html, vedi TvInstaller)
+
+        /** true sul telefono (Android 8+): la pagina mostra «Installa sulla TV». */
+        @JavascriptInterface
+        fun tvInstallSupported(): Boolean = !isTelevision && TvInstaller.supported()
+
+        @JavascriptInterface
+        fun openTvInstall() = runOnUiThread { if (!isTelevision) showTvInstall() }
+
+        @JavascriptInterface
+        fun tvState(): String = TvInstaller.state(this@MainActivity)
+
+        @JavascriptInterface
+        fun tvScan() = TvInstaller.scan(this@MainActivity)
+
+        @JavascriptInterface
+        fun tvInstall(addr: String, replace: Boolean) = TvInstaller.install(this@MainActivity, addr, replace)
+
+        @JavascriptInterface
+        fun tvCancel() = TvInstaller.cancel(this@MainActivity)
+
+        @JavascriptInterface
+        fun tvClose() = runOnUiThread { if (web.canGoBack()) web.goBack() else if (server == null) showCentral() else openServer() }
 
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }
