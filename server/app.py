@@ -4613,11 +4613,24 @@ def sync_notices(uid, token):
             notices_cloud[uid] = {"at": time.time(), "notices": [], "supported": False}
 
 
-def recent_notices(uid, days=7):
-    """Gli ultimi avvisi dell'account (per la campanella), dall'ultima sincronizzazione."""
+def recent_notices(uid):
+    """Gli avvisi dell'account (per la campanella, letti e non letti), dall'ultima sincronizzazione."""
     info = notices_cloud.get(uid) or {}
-    since = time.time() - days * DAY
-    return [n for n in info.get("notices") or [] if isinstance(n, dict) and (n.get("t") or 0) > since][:10]
+    return [n for n in info.get("notices") or [] if isinstance(n, dict)][:30]
+
+
+@app.post("/api/notices/read")
+async def notices_read(request: Request):
+    """Segna letti alcuni avvisi ({"ids": [...]}) o tutti ({"all": true})."""
+    uid, token = profile_token()
+    body = await read_json(request)
+    ids = [int(i) for i in body.get("ids") or [] if isinstance(i, int) and not isinstance(i, bool)][:100]
+    every = body.get("all") is True
+    res = await cloud("POST", "/notices/read", {"ids": ids, "all": every}, token)
+    for n in (notices_cloud.get(uid) or {}).get("notices") or []:
+        if every or n.get("id") in ids:
+            n["read"] = True
+    return res
 
 
 @app.get("/api/notices")
