@@ -959,7 +959,38 @@ function mailPage(preview, inner) {
     '</table></td></tr></table></body></html>';
 }
 
-async function resetStart(env, email) {
+// I link delle email: aprono la PWA alla pagina giusta, con i campi gia' scritti
+function mailLink(origin, page, params) {
+  return origin + '/#/' + page + '?' + new URLSearchParams(params).toString();
+}
+
+function mailButton(href, label) {
+  return '<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0 0"><tr>' +
+    '<td style="border-radius:10px;background:#1a7f45"><a href="' + esc(href) + '" style="display:inline-block;padding:13px 22px;' +
+    'font:700 15px/1 -apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,Helvetica,Arial,sans-serif;color:#ffffff;text-decoration:none;border-radius:10px">' +
+    esc(label) + '</a></td></tr></table>';
+}
+
+// Attivazione dall'invito: il link dell'email porta un gettone (valido ACTIVATE_TTL)
+// che sostituisce la password provvisoria, cosi' la persona sceglie subito nome e password.
+const ACTIVATE_TTL = 14 * 86400;
+
+let activateTable = false;
+async function ensureActivate(env) {
+  if (activateTable) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS activations(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL)').run();
+  activateTable = true;
+}
+
+async function newActivation(env, userId) {
+  await ensureActivate(env);
+  const token = randomHex(24);
+  await env.DB.prepare('INSERT OR REPLACE INTO activations(user_id, token_hash, exp) VALUES(?,?,?)')
+    .bind(userId, await sha256(token), now() + ACTIVATE_TTL).run();
+  return token;
+}
+
+async function resetStart(env, email, origin) {
   await ensureReset(env);
   const user = await userForEmail(env, email);
   if (!user) return;
@@ -971,8 +1002,10 @@ async function resetStart(env, email) {
   await env.DB.prepare('INSERT OR REPLACE INTO reset_codes(user_id, code_hash, exp, tries, sent) VALUES(?,?,?,0,?)')
     .bind(user.id, await sha256(user.id + ':' + code), now() + RESET_TTL, now()).run();
   const shown = code.slice(0, 3) + ' ' + code.slice(3);
+  const link = mailLink(origin, 'reset', { email, code });
   await sendMail(env, email, 'Il tuo codice BunkerPlex: ' + shown,
     'Ciao ' + user.username + ',\n\nper scegliere una password nuova scrivi questo codice in BunkerPlex:\n\n    ' + shown +
+    '\n\noppure apri questo link:\n' + link +
     '\n\nVale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la tua password resta quella di prima.' +
     '\n\n--\nBunkerPlex · Only for bunkers',
     mailPage('Il tuo codice è ' + shown,
@@ -980,22 +1013,29 @@ async function resetStart(env, email) {
       '<p style="margin:0 0 24px">per scegliere una password nuova scrivi questo codice in BunkerPlex:</p>' +
       '<div style="background:#f1f6f2;border:1px solid #dce7df;border-radius:10px;padding:18px 0;text-align:center;' +
       'font:700 34px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:8px;color:#0f1a13">' + shown + '</div>' +
+      mailButton(link, 'Scegli la password nuova') +
       '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Vale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: ' +
       'la tua password resta quella di prima.</p>'));
 }
 
 // L'invito dell'amministratore: email e password provvisoria per il primo accesso
-async function inviteMail(env, to, from, password, again) {
+// origin + userId: il link diretto all'attivazione (email gia' scritta, niente password provvisoria)
+async function inviteMail(env, to, from, password, again, origin, userId) {
   const intro = again
     ? 'ecco una nuova password provvisoria per il tuo account BunkerPlex.'
     : (from ? from + ' ti ha invitato su BunkerPlex.' : 'hai un invito per BunkerPlex.');
+  const link = mailLink(origin, 'attiva', { email: to, t: await newActivation(env, userId) });
+  const label = again ? 'Scegli la tua password' : 'Attiva il tuo account';
   await sendMail(env, to, again ? 'La tua nuova password provvisoria BunkerPlex' : 'Il tuo invito a BunkerPlex',
-    'Ciao,\n\n' + intro + ' Entra con:\n\n    Email: ' + to + '\n    Password provvisoria: ' + password +
+    'Ciao,\n\n' + intro + '\n\n' + label + ' da qui (vale 14 giorni):\n' + link +
+    '\n\nOppure entra con:\n\n    Email: ' + to + '\n    Password provvisoria: ' + password +
     '\n\nAl primo accesso ' + (again ? 'scegli una password tua.' : 'scegli il tuo nome e una password tua, poi crei il tuo profilo.') +
     '\n\n--\nBunkerPlex · Only for bunkers',
     mailPage(again ? 'La tua nuova password provvisoria' : 'Il tuo invito a BunkerPlex',
       '<p style="margin:0 0 16px">Ciao,</p>' +
-      '<p style="margin:0 0 24px">' + esc(intro) + ' Entra con:</p>' +
+      '<p style="margin:0">' + esc(intro) + '</p>' +
+      mailButton(link, label) +
+      '<p style="margin:28px 0 12px;color:#5b6660;font-size:14px">Oppure entra con (anche dalla TV o dal server di casa):</p>' +
       '<div style="background:#f1f6f2;border:1px solid #dce7df;border-radius:10px;padding:16px 18px;font-size:15px;color:#1d2420">' +
       '<div style="color:#5b6660;font-size:13px">Email</div><div style="margin:2px 0 12px"><b>' + esc(to) + '</b></div>' +
       '<div style="color:#5b6660;font-size:13px">Password provvisoria</div>' +
@@ -1643,6 +1683,48 @@ async function route(request, env) {
     return json({ username: await nameForEmail(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email')) });
   }
 
+  // Accesso a passi: prima l'email. activate: account invitato (o con password
+  // provvisoria) da attivare, con needs_name se deve ancora scegliere il nome. Per
+  // un'email sconosciuta risponde come per un account normale (nome finto).
+  if (path === '/lookup' && method === 'POST') {
+    await ensureGoogle(env);
+    const email = cleanEmail((await body(request)).email) || fail(400, 'Scrivi l\'email');
+    const u = await userForEmail(env, email);
+    if (u && u.must_change && !u.disabled) {
+      return json({ username: u.username, activate: true, needs_name: pendingName(u.username) });
+    }
+    return json({ username: await nameForEmail(env, email), activate: false, needs_name: false });
+  }
+
+  // Attivazione dal link dell'invito: email + gettone, poi nome (se serve) e password
+  if (path === '/activate' && method === 'POST') {
+    await ensureGoogle(env);
+    await ensureActivate(env);
+    const b = await body(request);
+    const bad = () => fail(400, 'Link di attivazione non valido o scaduto: entra con la password provvisoria dell\'email');
+    const user = await userForEmail(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'));
+    if (!user || !user.must_change) bad();
+    if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+    const row = await env.DB.prepare('SELECT * FROM activations WHERE user_id = ?').bind(user.id).first();
+    if (!row || row.exp < now() || !sameString(await sha256(String(b.token || '')), row.token_hash)) bad();
+    let username = user.username;
+    if (pendingName(user.username)) {
+      username = cleanName(b.new_username);
+      if (pendingName(username) || /^invito-/i.test(username)) fail(400, 'Scegli un nome tuo');
+      const other = await env.DB.prepare('SELECT id FROM users WHERE username = ? AND id <> ?').bind(username, user.id).first();
+      if (other) fail(409, 'Questo nome è già di un altro account: scegline un altro');
+    }
+    const pw = await passwordFields(cleanVerifier(b.verifier));
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET username = ?, salt = ?, hash = ?, must_change = 0, fails = 0, locked_until = 0 WHERE id = ?')
+        .bind(username, pw.salt, pw.hash, user.id),
+      env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
+      env.DB.prepare('DELETE FROM activations WHERE user_id = ?').bind(user.id)
+    ]);
+    const fresh = { ...user, username, must_change: 0 };
+    return json({ token: await newSession(env, fresh, b.device, b.kind), user: userJson(fresh) });
+  }
+
   if (path === '/login' && method === 'POST') {
     const b = await body(request);
     const verifier = cleanVerifier(b.verifier);
@@ -1655,7 +1737,7 @@ async function route(request, env) {
   // Password dimenticata (vedi resetStart)
   if (path === '/reset/start' && method === 'POST') {
     if (!resetOn(env)) fail(404, 'Il recupero della password non è attivo nel servizio account');
-    await resetStart(env, cleanEmail((await body(request)).email) || fail(400, 'Scrivi l\'email'));
+    await resetStart(env, cleanEmail((await body(request)).email) || fail(400, 'Scrivi l\'email'), url.origin);
     return json({ ok: true });
   }
   if (path === '/reset/finish' && method === 'POST') {
@@ -2023,7 +2105,8 @@ async function route(request, env) {
       const plain = tempPlain(b.password);
       let mailed = false;
       if (plain && resetOn(env)) {
-        try { await inviteMail(env, gmail, user.username, plain, false); mailed = true; } catch (e) { mailed = false; }
+        const created = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+        try { await inviteMail(env, gmail, user.username, plain, false, url.origin, created.id); mailed = true; } catch (e) { mailed = false; }
       }
       return json({ ok: true, mailed });
     }
@@ -2149,7 +2232,7 @@ async function route(request, env) {
         const plain = tempPlain(b.password);
         let mailed = false;
         if (to && plain && resetOn(env)) {
-          try { await inviteMail(env, to, user.username, plain, !pendingName(target.username)); mailed = true; } catch (e) { mailed = false; }
+          try { await inviteMail(env, to, user.username, plain, !pendingName(target.username), url.origin, id); mailed = true; } catch (e) { mailed = false; }
         }
         return json({ ok: true, mailed });
       }
@@ -2157,10 +2240,12 @@ async function route(request, env) {
         if (id === user.id) fail(400, 'Non puoi eliminare il tuo account');
         await ensureNotices(env);
         await ensureCreds(env);
+        await ensureActivate(env);
         for (const c of (await env.DB.prepare('SELECT sid FROM server_creds WHERE owner_id = ?').bind(id).all()).results) {
           await dropServerDns(env, c.sid);
         }
         await env.DB.batch([
+          env.DB.prepare('DELETE FROM activations WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_devices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_prefs WHERE user_id = ?').bind(id),

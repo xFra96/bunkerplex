@@ -702,7 +702,7 @@ function cloud(method, path, body) {
     throw new Error('Il servizio account non risponde: controlla la connessione');
   }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
-      if (r.status === 401 && C.token && !/^\/(login|resolve|google|reset)/.test(path)) {
+      if (r.status === 401 && C.token && !/^\/(login|resolve|lookup|activate|google|reset)/.test(path)) {
         cForget();
         setTimeout(render, 0);
       }
@@ -858,29 +858,91 @@ async function cResume() {
   }
 }
 
+// I parametri dopo «?» nell'indirizzo #/pagina?a=1&b=2 (i link delle email)
+function hashParams() {
+  var q = location.hash.split('?')[1] || '';
+  var out = {};
+  q.split('&').forEach(function (kv) {
+    if (!kv) return;
+    var i = kv.indexOf('=');
+    try { out[decodeURIComponent(i < 0 ? kv : kv.slice(0, i))] = decodeURIComponent((i < 0 ? '' : kv.slice(i + 1)).replace(/\+/g, ' ')); } catch (e) {}
+  });
+  return out;
+}
+
+// Accesso a passi: prima l'email (o il nome utente), poi la password; per un account
+// invitato (o con password provvisoria) i campi per attivarlo. Google resta com'e'.
 function cLoginPage() {
-  return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
-    '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" placeholder="Email o nome utente" value="' + esc(fieldValue('lname')) + '">' +
-    '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="clogin" placeholder="Password">' +
+  var L = cache.cLogin;
+  var note = C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '';
+  if (!L) {
+    return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
+      '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
+      '<button class="btn primary block f" data-act="cnext" data-key="cnext">Continua</button>' +
+      '<div class="author"><span>oppure</span></div>' +
+      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note);
+  }
+  var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
+  var back = '<button class="authlink f" data-act="cback" data-key="cback">Usa un\'altra email</button>';
+  if (L.activate) {
+    return authShell('<h1>' + (L.needs_name ? 'Attiva il tuo account' : 'Scegli la tua password') + '</h1>' + who +
+      (L.needs_name ? '<input class="field f" id="cname" data-key="cname" data-autofocus autocapitalize="none" spellcheck="false" maxlength="32" placeholder="Il tuo nome utente">' : '') +
+      (L.token ? '' : '<input class="field f" id="cold" data-key="cold" type="password" autocomplete="current-password"' + (L.needs_name ? '' : ' data-autofocus') + ' placeholder="Password provvisoria (dall\'email)">') +
+      '<input class="field f" id="cnew" data-key="cnew" type="password" autocomplete="new-password"' + (!L.needs_name && L.token ? ' data-autofocus' : '') + ' placeholder="Password nuova (almeno 8 caratteri)">' +
+      '<input class="field f" id="cnew2" data-key="cnew2" type="password" autocomplete="new-password" data-enter="cactivate" placeholder="Ripeti la password">' +
+      '<button class="btn primary block f" data-act="cactivate" data-key="cactivate">' + (L.needs_name ? 'Crea il mio account' : 'Salva ed entra') + '</button>' +
+      back + note);
+  }
+  return authShell('<h1>Bentornato</h1>' + who +
+    '<input type="email" autocomplete="username" value="' + esc(L.email) + '" hidden>' +
+    '<input class="field f" id="lpass" data-key="lpass" data-autofocus type="password" autocomplete="current-password" data-enter="clogin" placeholder="Password">' +
     '<button class="btn primary block f" data-act="clogin" data-key="login">Entra</button>' +
     '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' +
-    '<div class="author"><span>oppure</span></div>' +
-    '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' +
-    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : ''));
+    back + note);
 }
 
 function cResetPage() {
   var sent = cache.cReset;
   return authShell('<h1>Password dimenticata</h1>' +
     (sent ? '<p class="authsub">Ti abbiamo scritto a <b>' + esc(sent) + '</b>: scrivi il codice e la password nuova</p>' +
-      '<input class="field f" id="rcode" data-key="rcode" data-autofocus inputmode="numeric" maxlength="6" placeholder="Codice di 6 cifre">' +
-      '<input class="field f" id="rpass" data-key="rpass" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+      '<input class="field f" id="rcode" data-key="rcode"' + (cache.cResetCode ? '' : ' data-autofocus') + ' inputmode="numeric" maxlength="6" placeholder="Codice di 6 cifre" value="' + esc(cache.cResetCode || fieldValue('rcode')) + '">' +
+      '<input class="field f" id="rpass" data-key="rpass"' + (cache.cResetCode ? ' data-autofocus' : '') + ' type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
       '<input class="field f" id="rpass2" data-key="rpass2" type="password" autocomplete="new-password" data-enter="cresetdone" placeholder="Ripeti la password">' +
       '<button class="btn primary block f" data-act="cresetdone" data-key="cresetdone">Cambia la password</button>'
       : '<p class="authsub">Ti mandiamo un codice all\'email dell\'account</p>' +
-      '<input class="field f" id="remail" data-key="remail" data-autofocus type="email" inputmode="email" autocapitalize="none" maxlength="120" data-enter="cresetgo" placeholder="Email">' +
+      '<input class="field f" id="remail" data-key="remail" data-autofocus type="email" inputmode="email" autocapitalize="none" maxlength="120" data-enter="cresetgo" placeholder="Email" value="' + esc(fieldValue('remail') || (cache.cLogin && cache.cLogin.email.indexOf('@') > 0 ? cache.cLogin.email : '')) + '">' +
       '<button class="btn primary block f" data-act="cresetgo" data-key="cresetgo">Manda il codice</button>') +
     '<a class="authlink f" href="#/home" data-key="back">Torna all\'accesso</a>');
+}
+
+// I link delle email (#/attiva?email=…&t=… e #/reset?email=…&code=…): i dati vanno
+// nella pagina e l'indirizzo torna pulito (il gettone non resta nella cronologia)
+async function cMailLink() {
+  var h = location.hash;
+  if (!/^#\/(attiva|reset)\?/.test(h)) return;
+  var p = hashParams();
+  // I dati prima, poi l'indirizzo pulito: il cambio di indirizzo ridisegna la pagina
+  if (/^#\/reset/.test(h)) {
+    if (!C.token && p.email) {
+      cache.cReset = p.email;
+      cache.cResetCode = /^\d{6}$/.test(p.code || '') ? p.code : '';
+    }
+    location.replace('#/reset');
+    return;
+  }
+  if (p.email) {
+    // Un altro account gia' aperto su questo dispositivo: il link e' per qualcun altro
+    if (C.token) cForget();
+    try {
+      var r = await cloud('POST', '/lookup', { email: p.email });
+      cache.cLogin = { email: p.email, username: r.username, activate: r.activate, needs_name: r.needs_name, token: r.activate ? (p.t || '') : '' };
+      C.error = r.activate ? '' : 'Questo account è già attivo: entra con la tua password';
+    } catch (e) {
+      cache.cLogin = null;
+      C.error = e.message;
+    }
+  }
+  location.replace('#/home');
 }
 
 // Password provvisoria (account invitato): si cambia qui, con il nome se serve
@@ -935,9 +997,10 @@ async function cGate() {
     cGate.probed = true;
     fetch('/', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(cOffline);
   }
+  await cMailLink();
   if (!C.token) {
     lockScreen(true);
-    return location.hash === '#/reset' ? cResetPage() : cLoginPage();
+    return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return cPasswordPage(); }
   if (location.hash === '#/server') {
@@ -953,13 +1016,65 @@ async function cGate() {
 
 function cActions() {
   return {
+    // Primo passo: l'email. Un nome utente (senza @) va dritto alla password.
+    cnext: async function () {
+      var name = fieldValue('lname').trim();
+      if (!name) { toast('Scrivi l\'email'); return; }
+      C.error = '';
+      try {
+        if (name.indexOf('@') < 0) {
+          cache.cLogin = { email: name, username: name, activate: false };
+        } else {
+          var r = await cloud('POST', '/lookup', { email: name });
+          cache.cLogin = { email: name, username: r.username, activate: r.activate, needs_name: r.needs_name, token: '' };
+        }
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cback: function () {
+      cache.cLogin = null;
+      C.error = '';
+      render();
+    },
     clogin: async function () {
-      var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
-      if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
+      var L = cache.cLogin, pass = fieldValue('lpass');
+      if (!L) return;
+      if (!pass) { toast('Scrivi la password'); return; }
       toast('Entro…');
       try {
-        var u = await cUsername(name);
-        cEntered(await cloud('POST', '/login', { username: u, verifier: await cVerifier(u, pass), device: devName(), kind: 'pwa' }));
+        cEntered(await cloud('POST', '/login', { username: L.username, verifier: await cVerifier(L.username, pass), device: devName(), kind: 'pwa' }));
+        cache.cLogin = null;
+        location.replace('#/home');
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    // Attivazione: con il gettone del link basta nome e password; senza, prima la
+    // password provvisoria (entra) e poi quella nuova, come prima
+    cactivate: async function () {
+      var L = cache.cLogin;
+      if (!L) return;
+      var name = L.needs_name ? fieldValue('cname').trim() : L.username;
+      var p1 = fieldValue('cnew'), p2 = fieldValue('cnew2');
+      if (L.needs_name && !name) { toast('Scegli il tuo nome utente'); return; }
+      if (p1.length < 8 || p1 !== p2) { toast(p1.length < 8 ? 'Almeno 8 caratteri' : 'Le due password non sono uguali'); return; }
+      toast('Attivo l\'account…');
+      try {
+        if (L.token) {
+          var body = { email: L.email, token: L.token, verifier: await cVerifier(name, p1), device: devName(), kind: 'pwa' };
+          if (L.needs_name) body.new_username = name;
+          cEntered(await cloud('POST', '/activate', body));
+        } else {
+          var old = fieldValue('cold');
+          if (!old) { toast('Scrivi la password provvisoria dell\'email'); return; }
+          cEntered(await cloud('POST', '/login', { username: L.username, verifier: await cVerifier(L.username, old), device: devName(), kind: 'pwa' }));
+          var pb = { verifier: await cVerifier(L.username, old), new_verifier: await cVerifier(name, p1) };
+          if (L.needs_name) pb.new_username = name;
+          var r = await cloud('POST', '/password', pb);
+          C.user = r.user || C.user;
+          C.user.must_change = false;
+          cSave();
+        }
+        cache.cLogin = null;
         location.replace('#/home');
         render();
       } catch (e) { toast(e.message); }
@@ -993,6 +1108,8 @@ function cActions() {
         var u = await cUsername(cache.cReset);
         cEntered(await cloud('POST', '/reset/finish', { email: cache.cReset, code: code, verifier: await cVerifier(u, p1), device: devName(), kind: 'pwa' }));
         cache.cReset = null;
+        cache.cResetCode = '';
+        cache.cLogin = null;
         location.replace('#/home');
         render();
       } catch (e) { toast(e.message); }
@@ -6464,6 +6581,8 @@ var routes = [
   [/^#\/chi$/, function () { location.replace('#/home'); return ''; }],
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
+  // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
+  [/^#\/(attiva|reset)\?/, function () { location.replace('#/home'); return ''; }],
   [/^#\/tv$/, tvCodePage],
   [/^#\/password$/, function () {
     return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',
