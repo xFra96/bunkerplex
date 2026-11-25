@@ -1513,6 +1513,12 @@ body.guest #rail .add { display: none; }
 .sgroup .srow:focus .stile { background: var(--bg); color: var(--ink); }
 body:not(.kb) .sgroup .srow:focus .stile { background: hsl(var(--h) 42% 24%); color: hsl(var(--h) 75% 78%); }
 
+/* «Esci»: una riga-pulsante in fondo, in rosso */
+.sgroup button.srow { width: 100%; border: 0; background: transparent; color: #ff8a80; font: inherit; text-align: left; cursor: pointer; }
+.sgroup button.srow .stext b { color: #ff8a80; }
+.sgroup button.srow:focus .stext b { color: var(--bg); }
+body:not(.kb) .sgroup button.srow:focus .stext b { color: #ff8a80; }
+
 /* Menu laterale (PC e TV) con le piastrelle */
 .snav { gap: .7rem; }
 .snav .stile { width: 1.75rem; height: 1.75rem; border-radius: .45rem; }
@@ -1533,13 +1539,17 @@ body:not(.kb) .smain .setting:focus { background: transparent; color: inherit; }
 
 /* Telefono (e finestre strette, non la TV): niente menu laterale, «‹ Impostazioni» in alto */
 @media (max-width: 720px) {
-  html:not(.tv) .scol { display: none; }
-  html:not(.tv) .sup { display: inline-flex; align-items: center; gap: .35rem; margin: .2rem 0 .6rem -.3rem; padding: .35rem .5rem; border-radius: var(--r);
+  html .sgrid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  html .scol { display: none; }
+  html .sup { display: inline-flex; align-items: center; gap: .35rem; margin: .2rem 0 .6rem -.3rem; padding: .35rem .5rem; border-radius: var(--r);
     color: var(--accent-text); font-weight: 600; font-size: 1rem; }
-  html:not(.tv) .sup .ic { width: 1.25rem; height: 1.25rem; }
+  html .sup .ic { width: 1.25rem; height: 1.25rem; }
   .settings .stitle { font-size: 1.85rem; }
-  .soverview, html:not(.tv) .sgrid { padding: 0 1rem; }
+  .soverview, html .sgrid { padding: 0 1rem; }
   .smain .panel { padding: 1.1rem 1.1rem; }
+  /* Il valore di un'impostazione: testo grigio a destra, non una bolla (anche se lungo) */
+  .smain .setting { gap: .8rem; }
+  .smain .setting small, body:not(.kb) .smain .setting:focus small { max-width: 55%; padding: 0; background: none; color: var(--ink2); text-align: right; font-size: .92rem; line-height: 1.35; }
   .sgroup .srow { display: flex; min-height: 3.3rem; padding: .55rem .9rem; gap: .8rem; }
   .sgroup .srow > .sval { max-width: 48%; font-size: .9rem; }
   .sgroup .stext small { display: none; }
