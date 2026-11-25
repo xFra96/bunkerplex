@@ -439,6 +439,22 @@ object CloudTv {
         return found.takeIf { Net.info(it, 3500)?.optString("sid") == sid }
     }
 
+    /** Il servizio account risponde? (false = niente Internet, o servizio fermo) */
+    fun reachable(ctx: Context): Boolean =
+        try { Remote.call(ctx, "GET", "/", null); true } catch (e: Remote.CloudError) { e.status != 0 }
+
+    /**
+     * Senza servizio account: l'ultimo server usato, con la sessione che la TV ha gia'
+     * (il server la riconosce anche senza Internet). false = non risponde o va rifatto
+     * l'accesso: allora la ricerca sulla rete di casa.
+     */
+    fun offline(ctx: Context): Boolean {
+        val base = prefs(ctx).getString("cloud_base_" + lastSid(ctx), null)?.ifEmpty { null } ?: Api.home
+        if (base.isEmpty() || Net.info(base, 3500) == null) return false
+        Api.base = base
+        return sessionOk(base)
+    }
+
     /** La sessione salvata vale ancora su quel server? */
     private fun sessionOk(base: String): Boolean {
         if (Api.home != base || Net.session.isEmpty()) return false
@@ -485,6 +501,10 @@ fun CloudLoginScreen(act: MainActivity) {
     var busy by remember { mutableStateOf(false) }
     val fr = remember { FocusRequester() }
     val passFr = remember { FocusRequester() }
+    // Niente servizio account (niente Internet): si va dritti al server sulla rete di casa
+    LaunchedEffect(Unit) {
+        if (!withContext(Dispatchers.IO) { CloudTv.reachable(act) }) act.reset(Screen.Connect)
+    }
     fun send() {
         if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente (o email) e password"; return }
         if (busy) return
@@ -494,6 +514,8 @@ fun CloudLoginScreen(act: MainActivity) {
             try {
                 CloudTv.login(act, name, pass)
                 act.runOnUiThread { Access.reset(); act.reset(Screen.Servers) }
+            } catch (e: Remote.CloudError) {
+                act.runOnUiThread { if (e.status == 0) act.reset(Screen.Connect) else { msg = e.message; busy = false } }
             } catch (e: Exception) {
                 act.runOnUiThread { msg = e.message; busy = false }
             }
@@ -509,9 +531,6 @@ fun CloudLoginScreen(act: MainActivity) {
         Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             Btn("Entra", primary = true) { send() }
             Btn("Entra con Google") { act.go(Screen.CloudGoogle) }
-        }
-        Row(Modifier.padding(top = 14.dp)) {
-            Btn("Collega un server senza account") { act.reset(Screen.Connect) }
         }
     }
     AutoFocus(fr)
@@ -590,6 +609,12 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
                 l.firstOrNull { it.optString("sid") == last }?.let { pick(it, l) }
             }
         } catch (e: Exception) {
+            if (e is Remote.CloudError && e.status == 0) {
+                // Niente Internet: l'ultimo server con la sessione di prima, altrimenti la ricerca
+                if (withContext(Dispatchers.IO) { CloudTv.offline(act) }) { Access.src = "here"; act.proceed() }
+                else act.reset(Screen.Connect)
+                return@LaunchedEffect
+            }
             msg = e.message
             list = list ?: emptyList()
             if (!CloudTv.on(act)) act.reset(Screen.CloudLogin)      // accesso scaduto

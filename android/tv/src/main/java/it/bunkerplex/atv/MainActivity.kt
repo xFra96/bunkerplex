@@ -348,7 +348,7 @@ class MainActivity : ComponentActivity() {
         var status by remember { mutableStateOf("Cerco BunkerPlex sulla rete di casa…") }
         var searching by remember { mutableStateOf(true) }
         var manual by remember { mutableStateOf(false) }
-        var address by remember { mutableStateOf(Api.base.substringAfter("://").substringBefore(":")) }
+        var address by remember { mutableStateOf(Api.base.ifEmpty { Api.home }.substringAfter("://").substringBefore(":")) }
         var attempt by remember { mutableIntStateOf(0) }
 
         LaunchedEffect(attempt) {

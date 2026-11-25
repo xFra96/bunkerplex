@@ -697,7 +697,10 @@ function cloud(method, path, body) {
   var h = { Accept: 'application/json' };
   if (body !== undefined) h['Content-Type'] = 'application/json';
   if (C.token) h.Authorization = 'Bearer ' + C.token;
-  return fetch(path, { method: method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) }).then(function (r) {
+  return fetch(path, { method: method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) }).catch(function () {
+    cOffline();
+    throw new Error('Il servizio account non risponde: controlla la connessione');
+  }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
       if (r.status === 401 && C.token && !/^\/(login|resolve|google|reset)/.test(path)) {
         cForget();
@@ -862,7 +865,6 @@ function cLoginPage() {
     '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' +
     '<div class="author"><span>oppure</span></div>' +
     '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' +
-    (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Collega un server senza account</button>' : '') +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : ''));
 }
 
@@ -920,8 +922,18 @@ async function cServersPage() {
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button>', true);
 }
 
+// Nell'app Android senza servizio account (niente Internet): la ricerca del server
+// sulla rete di casa, con l'indirizzo da scrivere solo se non lo trova
+function cOffline() {
+  if (APP && tvApp.resetServer && !cOffline.done) { cOffline.done = true; tvApp.resetServer(); }
+}
+
 // Prima di ogni pagina, nella PWA centrale: account, poi server, poi come sempre
 async function cGate() {
+  if (APP && !cGate.probed) {
+    cGate.probed = true;
+    fetch('/', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(cOffline);
+  }
   if (!C.token) {
     lockScreen(true);
     return location.hash === '#/reset' ? cResetPage() : cLoginPage();

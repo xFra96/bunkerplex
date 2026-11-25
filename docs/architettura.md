@@ -326,12 +326,17 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
 - All'apertura: con l'account → elenco dei server del servizio (e si torna da soli sul server di prima);
   senza → «Entra con il tuo account» (nome o email e password, oppure Google con indirizzo e codice da
   aprire sul telefono) o «Collega un server senza account» (la ricerca di prima). Chi aveva già un server
-  scelto a mano continua come prima.
+  scelto a mano continua come prima. (Il pulsante «Collega un server senza account» non c'è più: vedi
+  «Senza Internet».)
 - Collegamento: nome https di casa, `http://<IP di casa>:32500` (dall'indirizzo che il server dà al
   servizio), l'ultimo che ha funzionato, poi la ricerca sulla rete; sempre controllando il `sid`.
 - Sessione: gettone d'accesso → `/api/auth/access` → `X-BP-Session`. Home, player, «Chi guarda?» e il
   resto non cambiano. I server degli amici si aprono dal tuo server (src `f<n>`).
 - «Esci dall'account», «Aggiorna», «Amici e tuoi PC fuori casa» (Tailscale dentro l'app, come prima).
+- **Senza Internet** (servizio account che non risponde): niente pulsante da scegliere, la TV va da sola
+  sull'ultimo server usato con la sessione che ha già; se non basta, cerca il server sulla rete di casa;
+  solo se non lo trova chiede l'indirizzo, già scritto con l'ultimo IP conosciuto. Lo stesso nell'app
+  Android (ricerca di `setup.html`).
 
 **App Android** (`android/app`): senza un server scelto a mano apre la PWA del servizio account
 (accesso, elenco, collegamento diretto anche in http nella rete di casa: la WebView lo permette); il player
