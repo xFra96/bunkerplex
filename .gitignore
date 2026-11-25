@@ -36,3 +36,4 @@ __pycache__/
 # wrangler (pubblicazione del servizio account)
 /cloud/.wrangler/
 /cloud/node_modules/
+/cloud/.dev.vars

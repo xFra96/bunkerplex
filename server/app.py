@@ -2943,7 +2943,8 @@ class AuthGate:
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        if (scope.get("server") or ("", 0))[1] in (PUBLIC_PORT, SECURE_PORT) and (scope["type"] != "http" or not auth_on()):
+        port = (scope.get("server") or ("", 0))[1]
+        if port and port in (PUBLIC_PORT, SECURE_PORT) and (scope["type"] != "http" or not auth_on()):
             # Da Internet solo con gli account (e i loro login): mai il PC aperto a tutti
             await self._reply(send, 403, "Non disponibile")
             return
@@ -2951,6 +2952,12 @@ class AuthGate:
             await self.inner(scope, receive, send)
             return
         path = scope["path"]
+        keyed = KEY_PATH.fullmatch(path)
+        if keyed:
+            # La PWA: video e immagini con la chiave nel percorso (vedi access_media).
+            # Nel percorso, e non nella domanda, resta anche ai segmenti HLS relativi.
+            scope = dict(scope, path=keyed.group(2), raw_path=keyed.group(2).encode())
+            path = scope["path"]
         if path.startswith("/api/share/") or (scope.get("server") or ("", 0))[1] == SHARE_PORT:
             # Un amico: con l'account vede (in sola lettura) solo le raccolte del profilo
             # che lo ha come amico; con il vecchio collegamento a password, tutto il PC
@@ -2972,6 +2979,8 @@ class AuthGate:
             bearer = bearer_of(scope)
             if bearer:                   # gettone d'accesso del servizio account (vedi access_user)
                 user = await asyncio.to_thread(access_user, bearer)
+            elif keyed and scope.get("method") in ("GET", "HEAD"):
+                user = await asyncio.to_thread(media_user, keyed.group(1))
             elif media_key_of(scope):    # chiave dei video (vedi access_media)
                 user = await asyncio.to_thread(media_user, media_key_of(scope))
         ctx = CURRENT.set(user)
@@ -7462,6 +7471,31 @@ async def share_access(request: Request):
     return await in_thread(lambda: share_account_token(who, p["id"]))
 
 
+@app.post("/api/auth/access")
+async def auth_access(request: Request):
+    """La PWA centrale: un gettone d'accesso del servizio account (del proprietario)
+    in cambio di una sessione di questo server, da mandare come X-BP-Session.
+    Cosi' valgono come sempre «Chi guarda?», Esci e il resto."""
+    body = await read_json(request)
+    c = await asyncio.to_thread(access_claims, str(body.get("token") or ""))
+    if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
+        raise HTTPException(403, "Gettone non valido o scaduto")
+
+    def work():
+        con = db(raw=True)
+        try:
+            u = con.execute("SELECT * FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0", (c["own"],)).fetchone()
+            if not u:
+                raise HTTPException(404, "Su questo server il tuo account non c'è: entra una volta dal server")
+            token = open_session(con, u["id"], str(body.get("device") or "PWA"))
+            con.execute("UPDATE users SET last_login=? WHERE id=?", (time.time(), u["id"]))
+            con.commit()
+            return {"ok": True, "session": token, "user": user_json(u)}
+        finally:
+            con.close()
+    return await in_thread(work)
+
+
 # ---- Gettoni d'accesso del servizio account ----------------------------------------
 # Firmati ES256 dal servizio account (POST /servers/<sid>/access), validi poche ore,
 # solo per questo server (sid). Si controllano qui con la chiave pubblica (GET /keys)
@@ -7623,8 +7657,11 @@ def media_user(key):
     return owner_user("id=?", int(m.group(1)))
 
 
+KEY_PATH = re.compile(r"/k/(\d{1,12}\.\d{10}\.[0-9a-f]{32})(/api/.*)")
+
+
 def media_key_of(scope):
-    if scope.get("method") != "GET":
+    if scope.get("method") not in ("GET", "HEAD"):
         return ""
     for k, v in urllib.parse.parse_qsl((scope.get("query_string") or b"").decode("latin-1")):
         if k == "bpk":
@@ -10144,7 +10181,7 @@ async def account_friends():
         for s in fr.get("servers") or []:
             lf = local.get((fr["id"], s.get("sid")))
             st = (friend_status.get(lf["n"]) if lf else None) or {}
-            servers.append({"name": str(s.get("name") or ""), "online": st.get("online"),
+            servers.append({"name": str(s.get("name") or ""), "online": st.get("online"), "sid": s.get("sid"),
                             "error": st.get("error") or "", "n": lf["n"] if lf else None})
         out.append({"id": fr["id"], "username": fr.get("username") or "", "status": fr.get("status"),
                     "servers": servers})

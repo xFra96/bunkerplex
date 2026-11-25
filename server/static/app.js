@@ -90,6 +90,10 @@ var prefsTimer = 0;
 var conflicts = null;                // primo accesso: impostazioni di qui diverse da quelle dell'account
 
 function loadAuth() {
+  if (CENTRAL && !C.base) {
+    auth = { on: true, cloud: true, central: true, user: null, profiles: [] };
+    return Promise.resolve(auth);
+  }
   return api('/auth/state').then(function (a) { auth = a; return a; }, function () { auth = { on: false }; return auth; });
 }
 
@@ -469,6 +473,7 @@ function setServer(v) {
   try { sessionStorage.setItem(serverKey(), v); } catch (e) { /* niente */ }
 }
 function needServer() {
+  if (CENTRAL) return false;
   var u = auth && auth.user;
   return !!(u && auth.cloud && !u.must_change && currentServer() === null);
 }
@@ -651,18 +656,419 @@ applyDevice();
 setKb(TVLOOK);
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
+// ---------------------------------------------------------------- PWA centrale
+// La stessa interfaccia, servita dal servizio account (<meta name="bp-central">):
+// si entra con l'account (qui, non su un server), si sceglie il server dall'elenco
+// del servizio e ci si collega direttamente, prima per la rete di casa (nome https
+// con certificato valido), poi su questo PC (localhost). Il server da' una sessione
+// in cambio del gettone d'accesso (/api/auth/access, intestazione X-BP-Session);
+// video e immagini portano una chiave nel percorso (/k/<chiave>/api/...).
+// I server degli amici si aprono dal proprio server, come prima (src = f<n>).
+// Vedi docs/architettura.md.
+var CENTRAL = !!document.querySelector('meta[name="bp-central"]');
+var C = { token: '', user: null, sid: '', owner: 0, name: '', role: '', base: '', session: '', mkey: '', mexp: 0, list: null, error: '' };
+var C_SAVED = ['token', 'user', 'sid', 'owner', 'name', 'role'];
+
+function cSave() {
+  var o = {};
+  C_SAVED.forEach(function (k) { o[k] = C[k]; });
+  try { localStorage.setItem('bpCentral', JSON.stringify(o)); } catch (e) { /* niente */ }
+}
+
+function cLoad() {
+  try {
+    var o = JSON.parse(localStorage.getItem('bpCentral')) || {};
+    C_SAVED.forEach(function (k) { if (o[k] !== undefined) C[k] = o[k]; });
+  } catch (e) { /* niente */ }
+}
+if (CENTRAL) cLoad();
+
+// Sessione su un server, per non crearne una nuova a ogni apertura
+function cSessKey(sid) { return 'bpSess:' + sid; }
+function cSessGet(sid) {
+  try { return JSON.parse(localStorage.getItem(cSessKey(sid))) || null; } catch (e) { return null; }
+}
+function cSessSet(sid, v) {
+  try { if (v) localStorage.setItem(cSessKey(sid), JSON.stringify(v)); else localStorage.removeItem(cSessKey(sid)); } catch (e) { /* niente */ }
+}
+
+// Chiamata al servizio account (stesso indirizzo della pagina)
+function cloud(method, path, body) {
+  var h = { Accept: 'application/json' };
+  if (body !== undefined) h['Content-Type'] = 'application/json';
+  if (C.token) h.Authorization = 'Bearer ' + C.token;
+  return fetch(path, { method: method, headers: h, body: body === undefined ? undefined : JSON.stringify(body) }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (r.status === 401 && C.token && !/^\/(login|resolve|google|reset)/.test(path)) {
+        cForget();
+        setTimeout(render, 0);
+      }
+      if (!r.ok) {
+        var err = new Error(j.detail || ('Errore ' + r.status));
+        err.data = j;
+        err.status = r.status;
+        throw err;
+      }
+      return j;
+    });
+  });
+}
+
+// La password non lascia mai il dispositivo: al servizio va l'impronta (come dal server)
+async function cVerifier(username, password) {
+  var enc = new TextEncoder();
+  var key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+  var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations: 200000,
+    salt: enc.encode('bunkerplex:' + String(username).trim().toLowerCase()) }, key, 256);
+  return Array.prototype.map.call(new Uint8Array(bits), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+}
+
+async function cUsername(name) {
+  name = String(name || '').trim();
+  return name.indexOf('@') > 0 ? (await cloud('POST', '/resolve', { email: name })).username : name;
+}
+
+function cEntered(r) {
+  C.token = r.token;
+  C.user = r.user;
+  C.error = '';
+  cSave();
+}
+
+// Via dal server scelto (non dall'account)
+function cDrop() {
+  C.base = ''; C.session = ''; C.mkey = ''; C.mexp = 0;
+  auth = null;
+  conflicts = null;
+  dropCached();
+  libsLoadedAt = 0;
+  railSignature = '';
+}
+
+// Via anche dall'account (su questo dispositivo)
+function cForget() {
+  cDrop();
+  C.token = ''; C.user = null; C.sid = ''; C.list = null;
+  cSave();
+}
+
+function anyOf(list) {
+  return new Promise(function (ok, ko) {
+    var left = list.length;
+    if (!left) { ko(new Error('nessun indirizzo')); return; }
+    list.forEach(function (p) { p.then(ok, function () { if (--left === 0) ko(new Error('non raggiungibile')); }); });
+  });
+}
+
+// Risponde, ed e' proprio quel server (sid)?
+function cProbe(base, sid) {
+  var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var t = setTimeout(function () { if (ctl) ctl.abort(); }, 3500);
+  return fetch(base + '/api/info', { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      clearTimeout(t);
+      if (j.app !== 'bunkerplex' || j.sid !== sid) throw new Error('un altro server');
+      return base;
+    }, function (e) { clearTimeout(t); throw e; });
+}
+
+function cCandidates(s) {
+  var out = [];
+  if (s.addresses && s.addresses.secure_lan) out.push(s.addresses.secure_lan);
+  out.push('http://localhost:32500');
+  return out;
+}
+
+async function cMediaKey(force) {
+  if (!C.session || (!force && C.mkey && C.mexp - Date.now() / 1000 > 1800)) return;
+  var r = await fetch(C.base + '/api/access/media', { method: 'POST', headers: { 'X-BP-Session': C.session } });
+  var j = await r.json().catch(function () { return {}; });
+  if (r.ok && j.key) { C.mkey = j.key; C.mexp = j.exp; }
+}
+
+// Collegamento al server scelto: indirizzo, sessione, chiave dei video
+async function cOpen(s) {
+  var mine = s.role === 'owner';
+  var host = s;
+  if (!mine) {
+    // Il server di un amico si apre dal proprio server acceso (che lo collega)
+    host = (C.list || []).filter(function (x) { return x.role === 'owner' && x.online !== false; })[0];
+    if (!host) throw new Error('Per i server degli amici serve un tuo server acceso');
+  }
+  var base = await anyOf(cCandidates(host).map(function (c) { return cProbe(c, host.sid); }));
+  var saved = cSessGet(host.sid);
+  var session = saved && saved.base === base ? saved.session : '';
+  if (session) {
+    var ok = await fetch(base + '/api/auth/state', { headers: { 'X-BP-Session': session } })
+      .then(function (r) { return r.json(); }).then(function (j) { return !!(j && j.user); }, function () { return false; });
+    if (!ok) session = '';
+  }
+  if (!session) {
+    var a = await cloud('POST', '/servers/' + host.sid + '/access', {});
+    var r = await fetch(base + '/api/auth/access', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: a.token, device: devName() }) });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok || !j.session) throw new Error(j.detail || 'Il server non ha accettato l\'accesso');
+    session = j.session;
+    cSessSet(host.sid, { base: base, session: session });
+  }
+  C.base = base;
+  C.session = session;
+  await cMediaKey(true);
+  auth = null;
+  await loadAuth();
+  // Quale parte mostrare: il server stesso, o quello dell'amico collegato da qui
+  var src = 'here';
+  if (!mine) {
+    var f = await api('/account-friends').catch(function () { return {}; });
+    (f.friends || []).forEach(function (fr) {
+      (fr.servers || []).forEach(function (x) { if (x.sid === s.sid && x.n) src = 'f' + x.n; });
+    });
+    if (src === 'here') throw new Error('Il tuo server non è ancora collegato a ' + s.owner.username + ': riprova tra un minuto');
+  }
+  setServer(src);
+  if (auth.user && !auth.user.must_change) await afterLogin([]);
+}
+
+async function cServers(force) {
+  if (!C.list || force) C.list = (await cloud('GET', '/servers')).servers || [];
+  return C.list;
+}
+
+// Il server scelto l'ultima volta (se c'e' ancora), altrimenti l'elenco
+async function cResume() {
+  if (C.base || !C.sid) return;
+  try {
+    var list = await cServers(true);
+    var s = list.filter(function (x) { return x.sid === C.sid && (x.role === 'owner' ? true : x.owner.id === C.owner); })[0];
+    if (!s) { C.sid = ''; cSave(); return; }
+    await cOpen(s);
+  } catch (e) {
+    C.error = (C.name || 'Il server') + ': ' + e.message;
+    C.sid = '';
+    cDrop();
+  }
+}
+
+function cLoginPage() {
+  return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
+    '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" placeholder="Email o nome utente" value="' + esc(fieldValue('lname')) + '">' +
+    '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="clogin" placeholder="Password">' +
+    '<button class="btn primary block f" data-act="clogin" data-key="login">Entra</button>' +
+    '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' +
+    '<div class="author"><span>oppure</span></div>' +
+    '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' +
+    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : ''));
+}
+
+function cResetPage() {
+  var sent = cache.cReset;
+  return authShell('<h1>Password dimenticata</h1>' +
+    (sent ? '<p class="authsub">Ti abbiamo scritto a <b>' + esc(sent) + '</b>: scrivi il codice e la password nuova</p>' +
+      '<input class="field f" id="rcode" data-key="rcode" data-autofocus inputmode="numeric" maxlength="6" placeholder="Codice di 6 cifre">' +
+      '<input class="field f" id="rpass" data-key="rpass" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+      '<input class="field f" id="rpass2" data-key="rpass2" type="password" autocomplete="new-password" data-enter="cresetdone" placeholder="Ripeti la password">' +
+      '<button class="btn primary block f" data-act="cresetdone" data-key="cresetdone">Cambia la password</button>'
+      : '<p class="authsub">Ti mandiamo un codice all\'email dell\'account</p>' +
+      '<input class="field f" id="remail" data-key="remail" data-autofocus type="email" inputmode="email" autocapitalize="none" maxlength="120" data-enter="cresetgo" placeholder="Email">' +
+      '<button class="btn primary block f" data-act="cresetgo" data-key="cresetgo">Manda il codice</button>') +
+    '<a class="authlink f" href="#/home" data-key="back">Torna all\'accesso</a>');
+}
+
+// Password provvisoria (account invitato): si cambia qui, con il nome se serve
+function cPasswordPage() {
+  var named = C.user && C.user.needs_name;
+  return authShell('<h1>Scegli la tua password</h1><p class="authsub">Quella che hai ricevuto è provvisoria</p>' +
+    (named ? '<input class="field f" id="cname" data-key="cname" data-autofocus autocapitalize="none" maxlength="32" placeholder="Il tuo nome utente">' : '') +
+    '<input class="field f" id="cold" data-key="cold" type="password" autocomplete="current-password"' + (named ? '' : ' data-autofocus') + ' placeholder="Password provvisoria">' +
+    '<input class="field f" id="cnew" data-key="cnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+    '<input class="field f" id="cnew2" data-key="cnew2" type="password" autocomplete="new-password" data-enter="cpwsave" placeholder="Ripeti la password">' +
+    '<button class="btn primary block f" data-act="cpwsave" data-key="cpwsave">Salva</button>' +
+    '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>');
+}
+
+async function cServersPage() {
+  var list;
+  try {
+    list = await cServers(!C.list);
+  } catch (e) {
+    return authShell('<h1>Cosa guardi oggi?</h1><p class="authnote">' + esc(e.message) + '</p>' +
+      '<button class="btn primary f" data-act="crefresh" data-key="crefresh">Riprova</button>' +
+      '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>', true);
+  }
+  function card(s, i) {
+    var off = s.online === false;
+    var friend = s.role === 'friend';
+    var sub = friend ? 'di ' + esc(s.owner.username) : 'Il tuo server';
+    sub += off ? ' · spento o non raggiungibile' : (s.online ? ' · acceso' : '');
+    return '<button class="srv f' + (off ? ' off' : '') + (C.sid === s.sid ? ' on' : '') + '"' + (i === 0 ? ' data-autofocus' : '') +
+      ' data-act="cpick" data-arg="' + i + '" data-key="csrv-' + esc(s.sid) + '-' + (friend ? s.owner.id : 0) + '">' +
+      '<span class="srvico">' + (friend ? FRIEND_ICON : SRV_ICON) + '</span><span class="srvtxt"><b>' + esc(s.name || 'PC') + '</b><small>' + sub + '</small></span>' +
+      '<i class="srvdot' + (off ? '' : ' live') + '"></i></button>';
+  }
+  var html = list.map(card).join('');
+  return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
+    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') +
+    (html ? '<div class="srvlist">' + html + '</div>'
+      : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
+    '<button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
+    '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button>', true);
+}
+
+// Prima di ogni pagina, nella PWA centrale: account, poi server, poi come sempre
+async function cGate() {
+  if (!C.token) {
+    lockScreen(true);
+    return location.hash === '#/reset' ? cResetPage() : cLoginPage();
+  }
+  if (C.user && C.user.must_change) { lockScreen(true); return cPasswordPage(); }
+  if (location.hash === '#/server') {
+    cDrop();
+    C.sid = '';
+    cSave();
+    location.replace('#/home');
+  }
+  if (!C.base) await cResume();
+  if (!C.base) { lockScreen(true); return cServersPage(); }
+  return null;
+}
+
+function cActions() {
+  return {
+    clogin: async function () {
+      var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
+      if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
+      toast('Entro…');
+      try {
+        var u = await cUsername(name);
+        cEntered(await cloud('POST', '/login', { username: u, verifier: await cVerifier(u, pass), device: devName(), kind: 'pwa' }));
+        location.replace('#/home');
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cgoogle: async function () {
+      var win = window.open('about:blank', '_blank');
+      try {
+        var r = await cloud('POST', '/google/start', { device: devName(), kind: 'browser' });
+        if (win) win.location.href = r.url; else location.href = r.url;
+        toast('Continua nella finestra di Google…');
+        for (var i = 0; i < 150; i++) {
+          await new Promise(function (ok) { setTimeout(ok, 2000); });
+          var p = await cloud('POST', '/google/poll', { poll: r.poll });
+          if (p.done && p.token) { cEntered(p); render(); return; }
+        }
+        toast('Tempo scaduto: riprova');
+      } catch (e) {
+        if (win) win.close();
+        toast(e.message);
+      }
+    },
+    cresetgo: async function () {
+      var email = fieldValue('remail').trim();
+      if (!email) { toast('Scrivi l\'email'); return; }
+      try { await cloud('POST', '/reset/start', { email: email }); cache.cReset = email; render(); } catch (e) { toast(e.message); }
+    },
+    cresetdone: async function () {
+      var code = fieldValue('rcode').trim(), p1 = fieldValue('rpass'), p2 = fieldValue('rpass2');
+      if (p1.length < 8 || p1 !== p2) { toast(p1.length < 8 ? 'Almeno 8 caratteri' : 'Le due password non sono uguali'); return; }
+      try {
+        var u = await cUsername(cache.cReset);
+        cEntered(await cloud('POST', '/reset/finish', { email: cache.cReset, code: code, verifier: await cVerifier(u, p1), device: devName(), kind: 'pwa' }));
+        cache.cReset = null;
+        location.replace('#/home');
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cpwsave: async function () {
+      var name = C.user.needs_name ? fieldValue('cname').trim() : C.user.username;
+      var p1 = fieldValue('cnew'), p2 = fieldValue('cnew2');
+      if (p1.length < 8 || p1 !== p2) { toast(p1.length < 8 ? 'Almeno 8 caratteri' : 'Le due password non sono uguali'); return; }
+      try {
+        var body = { verifier: await cVerifier(C.user.username, fieldValue('cold')), new_verifier: await cVerifier(name, p1) };
+        if (C.user.needs_name) body.new_username = name;
+        var r = await cloud('POST', '/password', body);
+        C.user = r.user || C.user;
+        C.user.must_change = false;
+        cSave();
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cpick: async function (arg) {
+      var s = (C.list || [])[Number(arg)];
+      if (!s) return;
+      toast('Mi collego a ' + (s.name || 'PC') + '…');
+      cDrop();
+      try {
+        await cOpen(s);
+        C.sid = s.sid; C.owner = s.owner.id; C.name = s.name || 'PC'; C.role = s.role; C.error = '';
+        cSave();
+        location.replace('#/home');
+        render();
+      } catch (e) {
+        cDrop();
+        C.error = (s.name || 'PC') + ': ' + e.message +
+          (s.role === 'owner' ? ' (serve la stessa rete di casa con il nome https del server, o questo PC)' : '');
+        render();
+      }
+    },
+    crefresh: function () { C.list = null; C.error = ''; render(); }
+  };
+}
+
+function cLogout() {
+  var tok = C.token;
+  if (C.base && C.session) {
+    fetch(C.base + '/api/auth/logout', { method: 'POST', headers: { 'X-BP-Session': C.session } }).catch(function () {});
+  }
+  try {
+    Object.keys(localStorage).forEach(function (k) { if (k.indexOf('bpSess:') === 0) localStorage.removeItem(k); });
+  } catch (e) { /* niente */ }
+  if (tok) cloud('POST', '/logout', {}).catch(function () {});
+  cForget();
+  location.replace('#/home');
+  render();
+}
+
+// Gli indirizzi del server nelle risposte (/api/...) diventano completi, con la chiave
+function cAbs(x) {
+  if (typeof x === 'string') return x.indexOf('/api/') === 0 ? C.base + (C.mkey ? '/k/' + C.mkey : '') + x : x;
+  if (Array.isArray(x)) { for (var i = 0; i < x.length; i++) x[i] = cAbs(x[i]); return x; }
+  if (x && typeof x === 'object') {
+    for (var k in x) if (Object.prototype.hasOwnProperty.call(x, k)) x[k] = cAbs(x[k]);
+  }
+  return x;
+}
+
+function apiUrl(path) { return (CENTRAL ? C.base : '') + '/api' + path; }
+
+function apiOpt(opt) {
+  if (!CENTRAL || !C.session) return opt;
+  var o = {};
+  for (var k in (opt || {})) o[k] = opt[k];
+  o.headers = {};
+  for (var h in ((opt && opt.headers) || {})) o.headers[h] = opt.headers[h];
+  o.headers['X-BP-Session'] = C.session;
+  return o;
+}
+
 // ---------------------------------------------------------------- utilita'
 
 function api(path, opt) {
   if (opt && opt.method && opt.method !== 'GET') dropCached();   // qualcosa cambia: le copie salvate non valgono piu'
-  return fetch('/api' + path, opt).then(function (r) {
+  if (CENTRAL && !C.base) return Promise.reject(new Error('Scegli un server'));
+  return (CENTRAL ? cMediaKey(false).catch(function () {}) : Promise.resolve()).then(function () {
+    return fetch(apiUrl(path), apiOpt(opt));
+  }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
       if (r.status === 503 && j.detail && !j.login && !/^\/auth\//.test(path) && !api.reloading) { api.reloading = true; location.reload(); }
       // Accesso scaduto (o password provvisoria da cambiare): si torna alla pagina di accesso
       if ((r.status === 401 || r.status === 403) && j.login && auth && auth.user && !/^\/auth\//.test(path)) {
+        if (CENTRAL) { cSessSet(C.sid, null); cDrop(); }    // si riprende la sessione dal servizio account
         auth = null;
         setTimeout(render, 0);
       }
+      if (CENTRAL && r.ok) j = cAbs(j);
       if (!r.ok) {
         var err = new Error(j.detail || ('Errore ' + r.status));
         err.data = j;   // es. 'missing': il disco scollegato e dove dovrebbe stare il file
@@ -916,7 +1322,7 @@ function posterCard(x, prefix, allQ) {
 // Immagini nelle griglie: la versione leggera (le TV la decodificano in meta' tempo).
 // Solo per le immagini di questo PC; quelle degli amici restano come sono.
 function small(url, w) {
-  return url && url.indexOf('/api/image/') === 0 ? url + '?size=' + w : url;
+  return url && url.indexOf('/api/image/') >= 0 && url.indexOf('?') < 0 ? url + '?size=' + w : url;
 }
 
 // Saga: i film della stessa serie cinematografica, riuniti da soli
@@ -3872,7 +4278,7 @@ function startPlayer(p) {
         var sec = (performance.now() - t0) / 1000;
         resolve(got > 32768 && sec > 0 ? got * 8 / 1e6 / sec : 0);
       }
-      fetch('/api/bwtest?kb=512&r=' + Date.now(), { signal: ctl.signal, cache: 'no-store' }).then(function (r) {
+      fetch(apiUrl('/bwtest?kb=512&r=' + Date.now()), apiOpt({ signal: ctl.signal, cache: 'no-store' })).then(function (r) {
         if (!r.ok || !r.body || !r.body.getReader) return r.arrayBuffer().then(function (b) { got = b.byteLength; done(); });
         var rd = r.body.getReader();
         (function pump() {
@@ -4679,7 +5085,7 @@ function watchServerUpdate() {
   modalState.serverUpdate = true;
   var timer = setInterval(function () {
     tries++;
-    fetch('/api/update', { cache: 'no-store' }).then(function (r) {
+    fetch(apiUrl('/update'), apiOpt({ cache: 'no-store' })).then(function (r) {
       if (!r.ok) throw new Error('spento');
       return r.json();
     }).then(function (u) {
@@ -5149,6 +5555,7 @@ var actions = {
     }, function (e) { toast(e.message); });
   },
   logout: function () {
+    if (CENTRAL) { cLogout(); return; }
     var who = auth && auth.user ? auth.user.id : '';
     post('/auth/logout').catch(function () {}).then(function () {
       try {
@@ -6058,6 +6465,10 @@ var routes = [
 // Prima di ogni pagina: chi guarda? (scelta dell'account, password provvisoria da cambiare,
 // impostazioni diverse da confrontare). Mai una pagina che chieda Internet per andare avanti.
 async function gate() {
+  if (CENTRAL) {
+    var cg = await cGate();
+    if (cg) return cg;
+  }
   if (!auth) await loadAuth();
   markOffline();
   markMe();
@@ -6717,6 +7128,7 @@ function pollActivity() {
   }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });
 }
 
+if (CENTRAL) Object.assign(actions, cActions());
 loadAuth().then(function () {
   if (auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();

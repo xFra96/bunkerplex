@@ -1,6 +1,6 @@
 # BunkerPlex — nuova architettura (proposta)
 
-Stato: **fatte le fasi 0, 1 e 2** (vedi §5, §7 e §8).
+Stato: **fatte le fasi 0, 1, 2 e la PWA della fase 3** (vedi §5, §7, §8, §9).
 Decisioni già prese:
 - il servizio centrale diventa una **PWA universale** (telefono, tablet, PC, iPhone/iPad);
 - l'**app TV nativa resta**;
@@ -298,3 +298,22 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
 2. Configurare il Worker come sopra, prima con lo staging di Let's Encrypt.
 3. Rischi già noti (§3): protezione DNS rebinding di alcuni router; limite di Let's Encrypt sui certificati
    nuovi per dominio (con molti server: Public Suffix List).
+
+---
+
+## 9. Fase 3: PWA centrale (ramo `fase-3`)
+
+- Il Worker serve `server/static` (`wrangler.toml`, `[assets]`): `GET /` da browser = la PWA con
+  `<meta name="bp-central">`; con `Accept: application/json` resta lo stato per server e app.
+- `app.js` in modalità centrale (sezione «PWA centrale»): accesso con l'account sul servizio (password con
+  la stessa impronta PBKDF2 dei server, Google, password dimenticata, password provvisoria), elenco da
+  `GET /servers` con la stessa grafica della scelta del server, collegamento diretto (nome https di casa,
+  poi `http://localhost:32500`), riapertura sull'ultimo server, Esci.
+- Server: `POST /api/auth/access {token}` → sessione (`X-BP-Session`), così «Chi guarda?», Esci e il resto
+  funzionano come sempre; chiave dei video nel percorso `/k/<chiave>/api/...` (vale anche per i segmenti
+  HLS); `sid` in `/api/info` e in `/api/account-friends`.
+- I server degli amici si aprono dal proprio server acceso (come prima, `src = f<n>`).
+- Provato dal vivo in locale (wrangler dev + server): accesso, elenco, collegamento, Home, riapertura,
+  cambio server, chiave dei video, Esci.
+- Da pubblicare: il Worker (porta con sé la PWA aggiornata). Il service worker non si registra nel browser
+  integrato di prova: da ricontrollare su Chrome.
