@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Installa sulla TV</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #060a07; color: #f2f5f2; font-family: Roboto, "Segoe UI", sans-serif; font-size: 16px; }
+  .wrap { max-width: 34rem; margin: 0 auto; padding: 1.2rem 1rem 3rem; }
+  .top { display: flex; align-items: center; justify-content: space-between; }
+  .logo { font-size: 1.4rem; letter-spacing: -.02em; }
+  .logo b { font-weight: 800; }
+  h1 { font-size: 1.45rem; font-weight: 700; margin: 1.4rem 0 .4rem; }
+  h2 { font-size: 1.05rem; margin: 1.6rem 0 .6rem; }
+  p, li { color: #9fada3; line-height: 1.55; }
+  p b, li b { color: #f2f5f2; }
+  button { font: inherit; font-weight: 700; padding: .75rem 1.2rem; border: 0; border-radius: .5rem;
+           background: #ffffff24; color: #f2f5f2; cursor: pointer; }
+  button.primary { background: #1a7f45; color: #fff; }
+  button.small { padding: .45rem .9rem; font-size: .9rem; }
+  button:disabled { opacity: .45; }
+  button.link { background: none; color: #9fada3; padding: .3rem 0; font-weight: 600; }
+  .steps { list-style: none; padding: 0; margin: 1rem 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+  .steps li { font-size: .82rem; padding: .3rem .6rem; border-radius: 1rem; background: #0e1510; color: #6f7d73; }
+  .steps li.done { color: #4cbf7f; }
+  .steps li.now { background: #17211a; color: #f2f5f2; font-weight: 700; }
+  .steps li.fail { color: #e0a030; }
+  .now { padding: 1rem; border-radius: .6rem; background: #0e1510; border-left: 4px solid #3a4a3f; line-height: 1.55; }
+  .now.ok { border-color: #4cbf7f; } .now.err { border-color: #e0a030; } .now.wait { border-color: #5aa0e0; }
+  .now .row { margin-top: .8rem; }
+  .dev { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .8rem 0; border-bottom: 1px solid #17211a; }
+  .dev b { display: block; } .dev small { color: #9fada3; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  input { flex: 1; min-width: 10rem; padding: .75rem 1rem; font: inherit; color: #f2f5f2; background: #0e1510;
+          border: 2px solid #17211a; border-radius: .5rem; outline: none; }
+  input:focus { border-color: #4cbf7f; }
+  .log { font-size: .8rem; max-height: 14rem; overflow: auto; background: #0e1510; border-radius: .5rem; padding: .6rem; }
+  .log div { padding: .15rem 0; color: #c9d3cc; } .log .dbg { color: #6f7d73; } .log .err { color: #e0a030; }
+  .log .ok { color: #4cbf7f; } .log .sep { margin-top: .4rem; font-weight: 700; color: #f2f5f2; }
+  .log time { color: #6f7d73; margin-right: .5rem; }
+  details summary { cursor: pointer; font-weight: 700; padding: .6rem 0; }
+  .spin { display: inline-block; width: 1rem; height: 1rem; margin-right: .5rem; vertical-align: -.15rem; border: .18rem solid #17211a;
+          border-top-color: #4cbf7f; border-radius: 50%; animation: s 1s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><div class="logo"><b>Bunker</b>Plex</div><button class="link" id="back">‹ Indietro</button></div>
+  <h1>Installa BunkerPlex sulla TV</h1>
+  <p>Dal telefono, nella rete di casa: niente PC, Downloader o chiavette. Dopo la prima volta l'app sulla TV si aggiorna da sola.</p>
+  <div id="main"></div>
+  <details id="guide">
+    <summary>Come si accende il debug sulla TV (una volta sola)</summary>
+    <ol>
+      <li><b>Google TV / Android TV</b>: Impostazioni → Sistema → Info → premi 7 volte su <b>Build del sistema operativo Android TV</b> (compare «Ora sei uno sviluppatore»).</li>
+      <li>Torna in Impostazioni → Sistema → <b>Opzioni sviluppatore</b> e attiva <b>Debug USB</b> (se c'è, anche <b>Debug di rete</b> o <b>ADB in rete</b>).</li>
+      <li><b>Fire TV</b>: Impostazioni → La mia Fire TV → Informazioni → premi 7 volte sul nome del dispositivo, poi Opzioni sviluppatore → <b>Debug ADB</b> attivo.</li>
+      <li>Porta la TV sulla <b>schermata Home</b>, telefono e TV sullo stesso Wi-Fi, poi premi <b>Cerca le TV</b>.</li>
+    </ol>
+    <p>Le TV che hanno solo <b>Debug wireless</b> con codice di associazione non sono ancora supportate dal telefono: lì usa «Installa sulla TV dal PC» nel server BunkerPlex.</p>
+  </details>
+</div>
+<script>
+var app = window.BunkerPlexTV;
+var $ = function (id) { return document.getElementById(id); };
+var state = null;
+var STEPS = [['debug', 'Debug sulla TV'], ['scan', 'Cerco'], ['choose', 'Scegli'], ['confirm', 'Conferma'], ['install', 'Installo'], ['done', 'Fatto']];
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
+
+function steps(t) {
+  var names = STEPS.map(function (x) { return x[0]; });
+  var now = Math.max(0, names.indexOf(t.step));
+  var failed = !!t.error && !t.phase;
+  return '<ol class="steps">' + STEPS.map(function (x, n) {
+    var done = n < now || t.step === 'done';
+    return '<li class="' + (done ? 'done' : n === now ? 'now' + (failed ? ' fail' : '') : '') + '">' + (done ? '✓ ' : '') + esc(x[1]) + '</li>';
+  }).join('') + '</ol>';
+}
+
+function nowBox(t) {
+  var cls = '', msg;
+  var n = (t.devices || []).length;
+  if (!t.supported) {
+    cls = 'err'; msg = 'Serve un telefono con Android 8 o più recente.';
+  } else if (t.phase && t.step === 'confirm') {
+    cls = 'wait';
+    msg = '<span class="spin"></span><b>Guarda la TV</b>: se compare «Consentire il debug?», metti la spunta su <b>Consenti sempre da questo computer</b> e premi <b>OK</b> col telecomando.' +
+      '<p><small>Non compare niente? Premi il tasto <b>Home</b> del telecomando: su alcune TV la richiesta si vede solo dalla schermata Home.</small></p>';
+  } else if (t.phase) {
+    cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…');
+  } else if (t.error === 'INCOMPATIBILE') {
+    cls = 'err';
+    msg = 'Sulla TV c\'è una BunkerPlex TV con una firma diversa: va tolta prima di mettere questa.' +
+      '<div class="row"><button class="primary" data-act="replace" data-arg="' + esc(t.target) + '">Togli quella e installa</button></div>';
+  } else if (t.error) {
+    cls = 'err'; msg = esc(t.error);
+  } else if (t.step === 'done') {
+    cls = 'ok'; msg = 'Fatto: BunkerPlex è installata e si è aperta sulla TV. Da qui in poi si aggiorna da sola.';
+  } else if (t.scanned && !n) {
+    cls = 'err'; msg = 'Nessuna TV con il debug acceso. Segui i passi qui sotto, poi premi di nuovo <b>Cerca le TV</b>, oppure scrivi l\'indirizzo della TV.';
+  } else if (n > 1) {
+    msg = 'Ho trovato <b>' + n + ' dispositivi</b>. Scegli su quale installare: l\'indirizzo della TV lo trovi in Impostazioni → Rete.';
+  } else if (n === 1) {
+    cls = 'ok'; msg = 'TV trovata: premi <b>Installa</b> qui sotto.';
+  } else {
+    msg = 'Accendi il debug sulla TV (passi qui sotto, una volta sola), poi premi <b>Cerca le TV</b>.';
+  }
+  if (t.phase) msg += '<div class="row"><button data-act="cancel">Interrompi</button></div>';
+  return '<div class="now ' + cls + '">' + msg + '</div>';
+}
+
+function devRow(d, t) {
+  var label = d.name || 'TV o dispositivo Android';
+  var st = d.state === 'device' ? (d.installed ? (t.latest_code && d.installed < t.latest_code ? 'Collegata · app da aggiornare' : 'Collegata · app installata') : 'Collegata · app non installata')
+    : 'Debug acceso';
+  var again = d.state === 'device' && d.installed && !(t.latest_code && d.installed < t.latest_code);
+  return '<div class="dev"><div><b>' + esc(label) + '</b><small>' + esc(d.ip) + (d.port !== 5555 ? ':' + d.port : '') + ' · ' + st + '</small></div>' +
+    (t.phase ? '' : '<button class="' + (again ? '' : 'primary') + '" data-act="install" data-arg="' + esc(d.key) + '">' +
+      (again ? 'Reinstalla' : d.installed ? 'Aggiorna' : 'Installa') + '</button>') + '</div>';
+}
+
+function logBox(t) {
+  var log = t.log || [];
+  if (!log.length) return '';
+  return '<h2>Cosa sta succedendo</h2><div class="log" id="log">' + log.map(function (l) {
+    var d = new Date(l.at * 1000);
+    var hh = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ':' + ('0' + d.getSeconds()).slice(-2);
+    return '<div class="' + esc(l.kind) + '"><time>' + hh + '</time>' + esc(l.text) + '</div>';
+  }).join('') + '</div>';
+}
+
+function render(t) {
+  state = t;
+  var addr = $('addr') ? $('addr').value : '';
+  var devs = t.devices || [];
+  $('main').innerHTML = steps(t) + nowBox(t) +
+    (devs.length ? '<div>' + devs.map(function (d) { return devRow(d, t); }).join('') + '</div>' : '') +
+    (t.supported ? '<div class="row" style="margin-top:1rem"><button class="' + (devs.length ? '' : 'primary') + '" data-act="scan"' + (t.phase ? ' disabled' : '') + '>' +
+      (t.scanned ? 'Cerca di nuovo' : 'Cerca le TV') + '</button></div>' +
+    '<h2>Oppure scrivi l\'indirizzo della TV</h2><div class="row"><input id="addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.180">' +
+      '<button data-act="manual"' + (t.phase ? ' disabled' : '') + '>Installa</button></div>' : '') +
+    logBox(t);
+  if ($('addr')) $('addr').value = addr;
+  var lg = $('log'); if (lg) lg.scrollTop = lg.scrollHeight;
+  if (!t.scanned && !devs.length && !t.phase) $('guide').open = true;
+}
+
+// Lo stato arriva dall'app a ogni cambio (TvInstaller.listener)
+window.tvUpdate = function (t) { render(t); };
+window.fpBack = function () { return false; };
+
+document.addEventListener('click', function (e) {
+  var b = e.target.closest('[data-act]');
+  if (!b || !app) return;
+  var act = b.getAttribute('data-act'), arg = b.getAttribute('data-arg') || '';
+  if (act === 'scan') app.tvScan();
+  else if (act === 'install') app.tvInstall(arg, false);
+  else if (act === 'replace') app.tvInstall(arg, true);
+  else if (act === 'cancel') app.tvCancel();
+  else if (act === 'manual') {
+    var v = ($('addr').value || '').trim();
+    if (v) app.tvInstall(v, false); else $('addr').focus();
+  }
+});
+$('back').addEventListener('click', function () { if (app && app.tvClose) app.tvClose(); else history.back(); });
+
+if (app && app.tvState) {
+  render(JSON.parse(app.tvState()));
+  // La prima volta si cerca subito
+  if (!state.scanned && !state.phase && state.supported) app.tvScan();
+} else {
+  render({ supported: false, step: 'debug', devices: [], log: [] });
+}
+</script>
+</body>
+</html>

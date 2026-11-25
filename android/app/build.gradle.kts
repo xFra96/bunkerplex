@@ -73,4 +73,6 @@ dependencies {
     // Decodificatore audio interno (AC3, E-AC3, DTS, TrueHD...): la TV legge da sola
     // anche l'audio che non conosce, cosi' il PC non deve mai convertire per l'audio.
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
+    // adb in Kotlin: dal telefono installa l'app TV sulle TV di casa (TvInstaller)
+    implementation("dev.mobile:dadb:2.0.0")
 }
