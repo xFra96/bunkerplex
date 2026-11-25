@@ -566,7 +566,7 @@ async function phonePairPage(code) {
     '<p style="margin-top:1rem"><small>Il tuo account è già su questo PC? Allora sulla TV basta sceglierlo in «Chi guarda?».</small></p></div></div>';
 }
 
-// Account invitato dalla plancia: ha ancora il nome provvisorio, al primo accesso sceglie il suo
+// Account invitato da Amministrazione: ha ancora il nome provvisorio, al primo accesso sceglie il suo
 function needsName() {
   return !!(auth && auth.user && /^invito-[0-9a-f]{6}$/i.test(auth.user.name || ''));
 }
@@ -2743,7 +2743,7 @@ function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account']);
   if (auth && auth.user && auth.user.linked && !TV) out.push(['notices', 'Notifiche']);
-  if (adminHere()) out.push(['admin', 'Plancia']);
+  if (adminHere()) out.push(['admin', 'Amministrazione']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
     ['friends', 'Amici'], ['device', TV ? 'Questa TV' : 'Questo dispositivo'], ['pcs', 'PC e dispositivi']);
   if (!APP) out.push(['apps', 'App per TV e telefono']);
@@ -2754,7 +2754,7 @@ function settingsAreas() {
 // Aree che si aprono ma non stanno nel menu
 var SETTINGS_HIDDEN = ['people'];
 
-// La plancia di amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
+// Amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
 function adminHere() {
   return !!(auth && auth.user && auth.user.admin);
 }
@@ -2777,6 +2777,7 @@ var SICON = {
   device: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M12 16.5V20"/>',
   pcs: '<rect x="2.5" y="4" width="13" height="9" rx="1.3"/><path d="M6 16.5h6M9 13v3.5"/><rect x="17" y="8" width="4.5" height="11" rx="1"/>',
   news: '<path d="M12 3.5l2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.4 7.1 18.1l1.1-5.3-4-3.7 5.4-.6z"/>',
+  active: '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
   logout: '<path d="M14 4.5h4.5v15H14M10 8l-4 4 4 4M6 12h10"/>',
   apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>'
 };
@@ -2787,7 +2788,15 @@ function sicon(area) {
 // Il colore della piastrella di ogni area (tonalita'): come nelle impostazioni dei
 // telefoni, l'area si riconosce dal colore prima ancora di leggerla
 var STINT = { home: 150, account: 150, admin: 4, people: 200, libraries: 210, catalog: 32, subtitles: 32, friends: 280,
-  notices: 350, updates: 150, device: 190, apps: 255, pcs: 170, news: 45, logout: 0 };
+  notices: 350, updates: 150, device: 190, apps: 255, pcs: 170, news: 45, logout: 0, active: 150 };
+// Una riga con interruttore (acceso/spento): il nome a sinistra, l'interruttore a destra
+// note: una riga piccola sotto il nome (com'e' adesso)
+function swRow(label, on, attrs, note) {
+  return '<button class="setting swrow f' + (on ? ' on' : '') + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" ' + attrs + '>' +
+    '<span class="swt"><span>' + esc(label) + '</span>' + (note ? '<em class="swn">' + esc(note) + '</em>' : '') + '</span>' +
+    '<i class="swi" aria-hidden="true"></i></button>';
+}
+
 function stile(area) {
   return '<span class="stile" style="--h:' + (STINT[area] || 150) + '">' + sicon(area) + '</span>';
 }
@@ -2897,7 +2906,7 @@ function settingsRows(i, u, sh) {
     rows.push({ area: 'notices', label: 'Notifiche', desc: 'Avvisi su telefono e tablet', value: '', state: '' });
   }
   if (adminHere()) {
-    rows.push({ area: 'admin', label: 'Plancia', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
+    rows.push({ area: 'admin', label: 'Amministrazione', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
   }
   // Aggiornamenti: in fondo, con la versione (server e, nelle app, l'app)
   var tvOld = appOld(i);
@@ -3128,8 +3137,8 @@ function networkPanel(n) {
 
 // I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
 // gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato
-// La Plancia (solo amministratori) subito sotto l'account, in vista
-var SGROUPS = [['Amministrazione', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
+// Amministrazione (solo amministratori) subito sotto l'account, in vista
+var SGROUPS = [['', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
   ['Dispositivi', ['device', 'pcs', 'apps']], ['Info', ['updates', 'news']], ['', ['logout']]];
 
 function srowHtml(r, first) {
@@ -3244,7 +3253,7 @@ async function settingsArea(area) {
         '<div class="actions" style="margin-top:.4rem"><button class="btn danger f" data-act="pushlocal" data-key="pushlocal">Sovrascrivi l\'account con le raccolte di questo PC</button></div></div>'
       : '';
     return settingsShell('libraries', 'Raccolte',
-      'Ogni raccolta è una voce del menu (per esempio Film o Serie TV), con una o più cartelle di questo PC. Non sono le Collezioni: quelle raggruppano da sole i film della stessa saga. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.',
+      'Le voci del menu (Film, Serie TV…) con le cartelle di questo PC. BunkerPlex legge soltanto: non tocca mai i tuoi file.',
       '<div class="panel">' + (libsHtml || '<p>Ancora nessuna raccolta su questo PC.</p>') +
       '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div></div>' +
       accountPanelHtml);
@@ -3468,10 +3477,10 @@ async function noticesArea() {
   }
   if (!d.linked) { location.replace('#/settings/account'); return ''; }
   var prefs = d.prefs || {};
+  // Ogni tipo di avviso: una riga con l'interruttore a destra, come nelle app del telefono
   var kinds = NOTICE_KINDS.map(function (k) {
     var on = prefs[k[0]] !== false;
-    return '<dt>' + esc(k[1]) + '</dt><dd><button class="btn f' + (on ? ' on' : '') + '" data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) +
-      '" data-key="npref-' + k[0] + '">' + (on ? IC.check + ' Sì' : 'No') + '</button></dd>';
+    return swRow(k[1], on, 'data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) + '" data-key="npref-' + k[0] + '"');
   }).join('');
   var devs = (d.devices || []).map(function (v) {
     var what = v.kind === 'android' ? 'App Android' : v.kind === 'ios' ? 'iPhone / iPad' : 'Browser';
@@ -3484,7 +3493,7 @@ async function noticesArea() {
   var list = noticeRows(news, 'pgn-');
   return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.',
     '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
-    '<div class="panel"><h2>Cosa ti avvisa</h2><dl class="kv nkinds">' + kinds + '</dl></div>' +
+    '<div class="panel"><h2>Cosa ti avvisa</h2>' + kinds + '</div>' +
     '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
     '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
       (unreadNotices(news) ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgnall">Segna tutte come lette</button></div>' : '') +
@@ -3534,7 +3543,7 @@ function accountArea(i) {
   var tvlink = TV || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account.</p>' +
     '<div class="actions"><a class="btn primary f" href="#/tv" data-key="totv">Collega una TV</a></div></div>';
   // Cosa segue l'account (chiavi, preferenze, visti, raccolte) lo dice la riga sotto il
-  // nome; la Plancia sta nella Panoramica: qui solo quello che si fa con l'account
+  // nome; Amministrazione sta nella Panoramica: qui solo quello che si fa con l'account
   return settingsShell('account', 'Account', '', who + relogin + watchersPanel(u) + tvlink +
     '<div class="panel"><h2>Accesso</h2>' +
       '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Chiavi, preferenze, visti, La mia lista e raccolte ti seguono su ogni PC.</p>' +
@@ -3566,9 +3575,9 @@ function googlePanel(u) {
     '<div class="actions"><a class="btn f" href="#/google/link" data-key="glink">Collega Google</a></div>';
 }
 
-// ---------------------------------------------------------------- Plancia
+// ---------------------------------------------------------------- Amministrazione
 // Due ruoli per tutta BunkerPlex: base (guarda e gestisce le sue cose) e
-// amministratore (gestisce tutto). La plancia ha cinque schede.
+// amministratore (gestisce tutto). Amministrazione ha cinque schede.
 var ADMIN_TABS = [['home', 'Panoramica'], ['users', 'Utenti'], ['access', 'Accessi'], ['net', 'Server e rete'], ['server', 'Questo server']];
 
 function when(sec) {
@@ -3578,6 +3587,39 @@ function when(sec) {
 function deviceLabel(d) {
   d = String(d || '');
   return { tv: 'TV', browser: 'Browser', phone: 'Telefono', app: 'App' }[d] || d || 'Dispositivo';
+}
+
+// Pezzi di Amministrazione: un numero grande con la sua piastrella, una sezione (titolo,
+// una riga di spiegazione, elenco), lo stato di un servizio
+function akpi(area, value, label, sub) {
+  return '<div class="akpi">' + stile(area) + '<b class="num">' + esc(value) + '</b><span>' + esc(label) + '</span>' +
+    (sub ? '<small>' + esc(sub) + '</small>' : '') + '</div>';
+}
+
+function asection(title, note, rows, empty) {
+  return '<div class="panel asec"><h2>' + title + '</h2>' + (note ? '<p class="anote">' + note + '</p>' : '') +
+    (rows ? '<div class="accts">' + rows + '</div>' : '<p class="aempty">' + esc(empty || 'Nessuno.') + '</p>') + '</div>';
+}
+
+function astate(on, yes, no) {
+  return '<span class="achip ' + (on ? 'ok' : 'warn') + '">' + esc(on ? yes : no) + '</span>';
+}
+
+// Le azioni su un account, tutte in un menu: la riga resta pulita (e col telecomando
+// e' una pressione sola per arrivarci)
+function accMenu(id) {
+  var a = (cache.accounts || []).filter(function (x) { return String(x.id) === String(id); })[0];
+  if (!a) return;
+  var isMe = a.username.toLowerCase() === auth.user.name.toLowerCase();
+  var invited = /^invito-[0-9a-f]{6}$/i.test(a.username);
+  var opts = [];
+  if (!isMe) opts.push({ value: 'accrole', label: a.admin ? 'Rendi base' : 'Rendi amministratore' });
+  if (!isMe) opts.push({ value: 'accactive', label: a.disabled ? 'Riattiva' : 'Disattiva' });
+  opts.push({ value: 'accemail', label: a.email ? 'Cambia email' : 'Aggiungi email' });
+  if (a.must_change && (a.email || a.google)) opts.push({ value: 'acclink', label: 'Copia link di attivazione' });
+  opts.push({ value: 'accreset', label: invited ? 'Rimanda l\'invito' : 'Nuova password provvisoria' });
+  if (!isMe) opts.push({ value: 'accremove', label: invited ? 'Annulla invito' : 'Elimina account' });
+  openPicker(invited ? (a.email || a.username) : a.username, opts, null, function (v) { actions[v](a.id); });
 }
 
 async function adminArea() {
@@ -3593,7 +3635,7 @@ async function adminArea() {
     if (tab === 'users') list = res[1];
     if (tab === 'access') sess = res[1];
   } catch (e) {
-    return settingsShell('admin', 'Plancia', '', '<div class="panel"><p>' + dot(false) + ' ' + esc(e.message) + '</p></div>');
+    return settingsShell('admin', 'Amministrazione', '', '<div class="panel"><p>' + dot(false) + ' ' + esc(e.message) + '</p></div>');
   }
   cache.admin = data;
   var c = data.cloud, srv = data.server;
@@ -3605,26 +3647,38 @@ async function adminArea() {
 
   if (tab === 'home') {
     var n = c ? c.counts : null;
-    var stat = function (v, label) { return '<div class="stat"><b class="num">' + esc(v) + '</b><span>' + esc(label) + '</span></div>'; };
-    body = (n ? '<div class="panel"><h2>Tutta BunkerPlex</h2><div class="stats">' +
-        stat(n.users, 'account') + stat(n.admins, n.admins === 1 ? 'amministratore' : 'amministratori') + stat(n.base, 'base') +
-        (n.disabled ? stat(n.disabled, 'disattivati') : '') + (n.temp ? stat(n.temp, 'con password provvisoria') : '') +
-      '</div><div class="stats">' +
-        stat(n.sessions, 'accessi aperti') + stat(n.active, 'usati negli ultimi 7 giorni') +
-        stat(n.servers, 'server pubblicati') + stat(n.devices, 'dispositivi nella rete') +
-        stat(n.friends, 'amicizie') + (n.pending ? stat(n.pending, 'richieste di amicizia') : '') +
-      '</div><dl class="kv">' +
-        '<dt>Entra con Google</dt><dd>' + (c.services.google ? dot(true) + ' Attivo' : dot(false) + ' Non configurato') + '</dd>' +
-        '<dt>Rete Tailscale di BunkerPlex</dt><dd>' + (c.services.tailscale ? dot(true) + ' Attiva' : dot(false) + ' Non configurata') + '</dd>' +
+    // Cosa chiede attenzione: righe gialle che portano dove si sistema
+    var todo = [];
+    if (n && n.temp) todo.push(['users', n.temp === 1 ? 'Un account con la password provvisoria' : n.temp + ' account con la password provvisoria']);
+    if (n && n.disabled) todo.push(['users', n.disabled === 1 ? 'Un account disattivato' : n.disabled + ' account disattivati']);
+    if (n && n.pending) todo.push(['net', n.pending === 1 ? 'Una richiesta di amicizia in attesa' : n.pending + ' richieste di amicizia in attesa']);
+    if (srv.update) todo.push(['upd', 'Aggiornamento del server disponibile']);
+    var todoHtml = todo.length ? '<div class="atodo">' + todo.map(function (t, k) {
+      return t[0] === 'upd'
+        ? '<a class="atodorow f" href="#/settings/updates" data-key="atodo-' + k + '"><span class="salic">!</span><span>' + esc(t[1]) + '</span>' + CHEVRON + '</a>'
+        : '<button class="atodorow f" data-act="admintab" data-arg="' + t[0] + '" data-key="atodo-' + k + '"><span class="salic">!</span><span>' + esc(t[1]) + '</span>' + CHEVRON + '</button>';
+    }).join('') + '</div>' : '';
+    body = (n ? '<div class="akpis">' +
+        akpi('people', n.users, 'Account', n.admins + (n.admins === 1 ? ' amministratore' : ' amministratori') + ' · ' + n.base + ' base') +
+        akpi('active', n.active, 'Attivi', 'negli ultimi 7 giorni') +
+        akpi('pcs', n.servers, 'Server', 'pubblicati') +
+        akpi('device', n.devices, 'Dispositivi', 'nella rete') +
+      '</div>' + todoHtml +
+      '<div class="panel asec"><h2>Servizi</h2><dl class="kv">' +
+        '<dt>Entra con Google</dt><dd>' + astate(c.services.google, 'Attivo', 'Non configurato') + '</dd>' +
+        '<dt>Rete Tailscale di BunkerPlex</dt><dd>' + astate(c.services.tailscale, 'Attiva', 'Non configurata') + '</dd>' +
+        '<dt>Accessi aperti</dt><dd class="num">' + n.sessions + '</dd>' +
+        '<dt>Amicizie</dt><dd class="num">' + n.friends + '</dd>' +
       '</dl></div>' : cloudNote) +
-      '<div class="panel"><h2>Questo server · ' + esc(srv.name) + '</h2><dl class="kv">' +
-        '<dt>Versione</dt><dd>' + esc(srv.release || '—') + (srv.update ? ' · <a class="link f" href="#/settings/updates" data-key="adm-upd">aggiornamento disponibile</a>' : '') + '</dd>' +
-        '<dt>Aggiornamento automatico</dt><dd>' + (srv.auto_update ? 'Attivo' : 'Spento') + '</dd>' +
-        '<dt>Raccolte</dt><dd>' + srv.libraries + '</dd>' +
-        '<dt>Account entrati qui</dt><dd>' + srv.users.length + '</dd>' +
-        '<dt>Accessi aperti qui</dt><dd>' + srv.sessions.length + '</dd>' +
-        '<dt>Condivisione con gli amici</dt><dd>' + (srv.share ? 'Attiva' : 'Spenta') + '</dd>' +
-      '</dl></div>';
+      '<div class="panel asec"><h2>Questo server · ' + esc(srv.name) + '</h2><dl class="kv">' +
+        '<dt>Versione</dt><dd><span class="num">' + esc(srv.release || '—') + '</span>' + (srv.update ? ' ' + astate(false, '', 'Aggiornamento disponibile') : '') + '</dd>' +
+        '<dt>Aggiornamento automatico</dt><dd>' + astate(srv.auto_update, 'Attivo', 'Spento') + '</dd>' +
+        '<dt>Condivisione con gli amici</dt><dd>' + astate(srv.share, 'Attiva', 'Spenta') + '</dd>' +
+        '<dt>Raccolte</dt><dd class="num">' + srv.libraries + '</dd>' +
+        '<dt>Account entrati qui</dt><dd class="num">' + srv.users.length + '</dd>' +
+      '</dl></div>' +
+      '<div class="actions"><button class="btn primary f" data-act="admintab" data-arg="users" data-key="adm-invite">Invita una persona</button>' +
+        '<a class="btn f" href="#/settings/updates" data-key="adm-upd">Aggiornamenti</a></div>';
   }
 
   if (tab === 'users') {
@@ -3634,41 +3688,34 @@ async function adminArea() {
       var isMe = a.username.toLowerCase() === me;
       var invited = /^invito-[0-9a-f]{6}$/i.test(a.username);
       var title = invited ? (a.email || a.username) : a.username;
-      return '<div class="acct' + (a.disabled ? ' off' : '') + '">' + face(title, 'mid') +
+      // Lo stato piu' importante in una pastiglia; il resto in una riga piccola
+      var status = a.disabled ? '<span class="achip warn">Disattivato</span>'
+        : invited ? '<span class="achip warn">Invitato</span>'
+        : a.must_change ? '<span class="achip warn">Password provvisoria</span>' : '';
+      var meta = [a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : (invited ? 'Non ha ancora attivato l\'account' : 'Non è ancora entrato')];
+      if (a.email && !invited) meta.push(a.email);
+      if (a.google) meta.push(a.google_linked ? 'Google collegato' : 'Google da collegare');
+      if (a.servers) meta.push(a.servers + (a.servers === 1 ? ' accesso aperto' : ' accessi aperti'));
+      return '<div class="acct urow' + (a.disabled ? ' off' : '') + '">' + face(title, 'mid') +
         '<div class="ptext"><b>' + esc(title) + '</b>' +
-          (isMe ? '<span class="pill">Tu</span>' : '') +
-          '<span class="pill' + (a.admin ? ' admin' : '') + '">' + (a.admin ? 'Amministratore' : 'Base') + '</span>' +
-          (a.disabled ? '<span class="pill warn">Disattivato</span>' : '') +
-          (invited ? '<span class="pill warn">Invitato · non ha ancora fatto il primo accesso</span>'
-            : a.must_change ? '<span class="pill warn">Password provvisoria</span>' : '') +
-          (a.email && a.email !== a.google && !invited ? '<span class="pill">' + esc(a.email) + '</span>' : '') +
-          (a.google ? '<span class="pill">' + (a.google_linked ? 'Google · ' : 'Google (da collegare) · ') + esc(a.google) + '</span>' : '') +
-          '<small>' + (a.last_seen ? 'Ultimo accesso ' + ago(a.last_seen) : 'Non è ancora entrato') + ' · ' +
-            a.servers + (a.servers === 1 ? ' accesso aperto' : ' accessi aperti') + ' · creato il ' + when(a.created) + '</small></div>' +
-        '<div class="pacts">' +
-          (isMe ? '' : '<button class="btn f" data-act="accrole" data-arg="' + a.id + '" data-key="accrole-' + a.id + '">' + (a.admin ? 'Rendi base' : 'Rendi amministratore') + '</button>' +
-            '<button class="btn f" data-act="accactive" data-arg="' + a.id + '" data-key="accact-' + a.id + '">' + (a.disabled ? 'Riattiva' : 'Disattiva') + '</button>') +
-          '<button class="btn f" data-act="accemail" data-arg="' + a.id + '" data-key="acce-' + a.id + '">Email</button>' +
-          (a.must_change && (a.email || a.google) ? '<button class="btn f" data-act="acclink" data-arg="' + a.id + '" data-key="accl-' + a.id + '">Copia link di attivazione</button>' : '') +
-          '<button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">' + (invited ? 'Rimanda l\'invito' : 'Nuova password provvisoria') + '</button>' +
-          (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">' + (invited ? 'Annulla invito' : 'Elimina') + '</button>') +
-        '</div>' +
+          (isMe ? '<span class="achip">Tu</span>' : '') +
+          '<span class="achip' + (a.admin ? ' admin' : '') + '">' + (a.admin ? 'Amministratore' : 'Base') + '</span>' + status +
+          '<small>' + esc(meta.join(' · ')) + '</small></div>' +
+        '<div class="pacts"><button class="btn f" data-act="accmenu" data-arg="' + a.id + '" data-key="accm-' + a.id + '">Gestisci</button></div>' +
         (cache.editEmail === a.id ? '<div class="joined aedit"><input class="field f" id="acmail-' + a.id + '" data-key="acmail-' + a.id + '" type="email" autocapitalize="none" maxlength="120" placeholder="Vuota per toglierla" value="' + esc(a.email || '') + '" data-enter="accemailsave">' +
           '<button class="btn f" data-act="accemailsave" data-arg="' + a.id + '" data-key="acmails-' + a.id + '">Salva</button></div>' : '') +
         '</div>';
     }).join('');
     cache.newAdmin = false;
-    body = '<div class="panel"><p><b>Base</b>: guarda, gestisce le sue raccolte, la sua lista e i suoi amici. ' +
-        '<b>Amministratore</b>: in più gestisce tutta BunkerPlex da questa plancia. Un account <b>disattivato</b> non entra più da nessuna parte finché non lo riattivi.</p></div>' +
-      '<div class="panel accts">' + rows + '</div>' +
-      '<div class="panel"><h2>Invita una persona</h2>' +
-        '<p>Gli account li crei solo tu da qui. ' + (auth.reset ? 'All\'email arriva un link per attivare l\'account' : 'Ti mostro una password provvisoria da comunicare') +
-          ': la persona sceglie il suo nome e la sua password (o entra con Google) ed è dentro. Il link puoi anche copiarlo e mandarlo tu.</p>' +
-        '<label class="flabel" for="agoogle">Email</label>' +
-          '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it" data-enter="acccreate">' +
-          '<p class="kvnote">Entrerà con questa' + (auth.google ? ' (se è un account Google, anche con «Entra con Google»)' : '') + '.</p>' +
-        '<button class="setting f" data-act="accadmin" data-key="accadmin">Ruolo<small id="accadminv">Base</small></button>' +
-        '<div class="actions"><button class="btn primary f" data-act="acccreate" data-key="acccreate">Manda l\'invito</button></div></div>';
+    body = '<div class="panel asec ainvite"><h2>Invita una persona</h2>' +
+        '<p class="anote">' + (auth.reset ? 'Le arriva un link per attivare l\'account' : 'Ti mostro una password provvisoria da comunicare') +
+          ': sceglie nome e password (o entra con Google) ed è dentro. Il link puoi anche copiarlo da «Gestisci».</p>' +
+        '<div class="inline"><input class="field f" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it" data-enter="acccreate">' +
+          '<button class="btn primary f" data-act="acccreate" data-key="acccreate">Manda l\'invito</button></div>' +
+        '<button class="setting f" data-act="accadmin" data-key="accadmin">Ruolo<small id="accadminv">Base</small></button></div>' +
+      asection(list.length + ' account',
+        '<b>Base</b> guarda e gestisce le sue cose; <b>Amministratore</b> gestisce tutta BunkerPlex. Un account disattivato non entra più finché non lo riattivi.',
+        rows, 'Nessun account.');
   }
 
   if (tab === 'access') {
@@ -3682,11 +3729,10 @@ async function adminArea() {
         '<small>Entrato il ' + when(x.created) + ' · ultimo uso ' + ago(x.last_seen) + '</small></div>' +
         '<div class="pacts"><button class="btn danger f" data-act="admlsess" data-arg="' + x.id + '" data-key="alsess-' + x.id + '">Chiudi</button></div></div>';
     }).join('');
-    body = '<div class="panel"><h2>Server collegati agli account</h2><p>Ogni server BunkerPlex in cui un account è entrato. Chiudendolo, quel server smette di sincronizzare finché non si rientra con la password.</p></div>' +
-      (sess && sess.error ? '<div class="panel"><p>' + dot(false) + ' ' + esc(sess.error) + '</p></div>'
-        : '<div class="panel accts">' + (rowsA || '<p>Nessun accesso aperto.</p>') + '</div>') +
-      '<div class="panel"><h2>Su questo server</h2><p>Browser, TV e telefoni entrati in ' + esc(srv.name) + '. Chiudendone uno, su quel dispositivo si torna a «Chi guarda?».</p></div>' +
-      '<div class="panel accts">' + (rowsL || '<p>Nessun accesso.</p>') + '</div>';
+    body = (sess && sess.error ? '<div class="panel"><p>' + dot(false) + ' ' + esc(sess.error) + '</p></div>'
+        : asection('Server collegati agli account', 'Ogni server in cui un account è entrato. Chiudendolo smette di sincronizzare finché non si rientra con la password.',
+          rowsA, 'Nessun accesso aperto.')) +
+      asection('Su questo server', 'Browser, TV e telefoni entrati in ' + esc(srv.name) + '. Chiudendone uno, lì si torna a «Chi guarda?».', rowsL, 'Nessun accesso.');
   }
 
   if (tab === 'net') {
@@ -3707,12 +3753,9 @@ async function adminArea() {
           (x.status === 'ok' ? '<span class="pill">Amici</span>' : '<span class="pill warn">In attesa</span>') + '<small>' + ago(x.t) + '</small></div>' +
           '<div class="pacts"><button class="btn danger f" data-act="admfr" data-arg="' + x.a + ':' + x.b + '" data-key="afr-' + x.a + '-' + x.b + '">Togli</button></div></div>';
       }).join('');
-      body = '<div class="panel"><h2>Server pubblicati</h2><p>I server che si fanno trovare dagli amici o dagli altri PC dello stesso account.</p></div>' +
-        '<div class="panel accts">' + (srvRows || '<p>Nessuno.</p>') + '</div>' +
-        '<div class="panel"><h2>Dispositivi nella rete</h2><p>PC e app entrati nella rete Tailscale di BunkerPlex (al massimo 4 per account).</p></div>' +
-        '<div class="panel accts">' + (devRows || '<p>Nessuno.</p>') + '</div>' +
-        '<div class="panel"><h2>Amicizie</h2></div>' +
-        '<div class="panel accts">' + (frRows || '<p>Nessuna.</p>') + '</div>';
+      body = asection('Server pubblicati', 'I server che si fanno trovare dagli amici o dagli altri PC dello stesso account.', srvRows, 'Nessuno.') +
+        asection('Dispositivi nella rete', 'PC e app entrati nella rete Tailscale di BunkerPlex (al massimo 4 per account).', devRows, 'Nessuno.') +
+        asection('Amicizie', '', frRows, 'Nessuna.');
     }
   }
 
@@ -3730,10 +3773,10 @@ async function adminArea() {
       return '<div class="acct"><div class="ptext"><b>' + esc(x.name) + '</b>' + (x.approved ? '<span class="pill">Accettato</span>' : '<span class="pill warn">Da accettare</span>') +
         '<small>' + (x.last_seen ? 'Ultima visita ' + ago(x.last_seen) : 'Mai entrato') + '</small></div></div>';
     }).join('');
-    body = '<div class="panel"><h2>' + esc(srv.name) + '</h2><dl class="kv">' +
-        '<dt>Versione</dt><dd>' + esc(srv.release || '—') + '</dd>' +
-        '<dt>Aggiornamento automatico</dt><dd>' + (srv.auto_update ? 'Attivo' : 'Spento') + '</dd>' +
-        '<dt>Condivisione con gli amici</dt><dd>' + (srv.share ? 'Attiva' : 'Spenta') + '</dd></dl>' +
+    body = '<div class="panel asec"><h2>' + esc(srv.name) + '</h2><dl class="kv">' +
+        '<dt>Versione</dt><dd class="num">' + esc(srv.release || '—') + '</dd>' +
+        '<dt>Aggiornamento automatico</dt><dd>' + astate(srv.auto_update, 'Attivo', 'Spento') + '</dd>' +
+        '<dt>Condivisione con gli amici</dt><dd>' + astate(srv.share, 'Attiva', 'Spenta') + '</dd></dl>' +
         '<label class="flabel" for="pcname" style="margin-top:1rem">Nome del server</label>' +
         '<div class="joined"><input class="field f" id="pcname" data-key="pcname" maxlength="30" value="' + esc(srv.name) + '">' +
           '<button class="btn f" data-act="admpcname" data-key="admpcname">Salva</button></div>' +
@@ -3743,12 +3786,11 @@ async function adminArea() {
           '<a class="btn f" href="#/settings/friends" data-key="adm-fr">Amici</a>' +
           '<a class="btn f" href="#/settings/pcs" data-key="adm-pcs">PC e rete</a>' +
           '<button class="btn f" data-act="scan" data-key="adm-scan">Cerca file nuovi</button></div></div>' +
-      '<div class="panel"><h2>Account entrati qui</h2><p>Chi tolgo da qui non perde l\'account: può rientrare. Le sue raccolte passano al proprietario.</p></div>' +
-      '<div class="panel accts">' + uRows + '</div>' +
-      (gRows ? '<div class="panel"><h2>Amici che entrano da fuori</h2></div><div class="panel accts">' + gRows + '</div>' : '');
+      asection('Account entrati qui', 'Chi togli da qui non perde l\'account: può rientrare. Le sue raccolte passano al proprietario.', uRows, 'Nessuno.') +
+      (gRows ? asection('Amici che entrano da fuori', '', gRows) : '');
   }
 
-  return settingsShell('admin', 'Plancia', 'Gestisci tutta BunkerPlex. Sei <b>amministratore</b>.', tabs + body);
+  return settingsShell('admin', 'Amministrazione', 'Gestisci tutta BunkerPlex. Sei <b>amministratore</b>.', tabs + body);
 }
 
 // Amici: due BunkerPlex in case diverse si mostrano a vicenda le raccolte.
@@ -3800,12 +3842,12 @@ function myPcsPanel(af) {
       ? '<button class="btn f" data-act="pcupd" data-arg="' + m.n + '" data-key="pcupd-' + m.n + '">Aggiorna il server</button>' : '';
     return '<div class="folder"><div class="where"><b>' + esc(m.name || 'Il tuo altro PC') + '</b><small>' + st + '</small></div>' + upd + '</div>';
   }).join('');
-  var state = !af.self_reach ? 'Spento: da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
-    : af.reachable ? 'Attivo: ogni PC dove sei entrato vede le raccolte degli altri accesi'
-      : 'Attivo, ma gli altri tuoi PC non raggiungono ancora questo (Tailscale in avvio)';
+  var state = !af.self_reach ? 'Da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
+    : af.reachable ? 'Ogni PC dove sei entrato vede le raccolte degli altri accesi'
+      : 'Gli altri tuoi PC non raggiungono ancora questo (Tailscale in avvio)';
   return '<div class="panel"><h2>I tuoi PC</h2>' +
     (af.self_reach ? (rows ? '<div class="lib">' + rows + '</div>' : '<p>Nessun altro PC acceso con il tuo account, per ora.</p>') : '') +
-    '<button class="setting f" data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself">Raggiungi le tue raccolte dagli altri tuoi PC<small>' + esc(state) + '</small></button>' +
+    swRow('Raggiungi le tue raccolte dagli altri tuoi PC', !!af.self_reach, 'data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself"', state) +
     '<p class="kvnote">In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
 }
 
@@ -3906,8 +3948,8 @@ function accountFriendsPanel(af, sh) {
     return row(f, '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-undo-' + f.id + '">Annulla</button>', 'richiesta mandata: aspetta che accetti');
   }).join('');
   var sharing = af.sharing
-    ? (af.published ? 'Attiva: i tuoi amici vedono le tue raccolte' : 'Attiva, ma gli amici non ti raggiungono ancora')
-    : 'Spenta: i tuoi amici non vedono le tue raccolte (tu vedi le loro)';
+    ? (af.published ? 'I tuoi amici vedono le tue raccolte' : 'Gli amici non ti raggiungono ancora')
+    : 'I tuoi amici non vedono le tue raccolte (tu vedi le loro)';
   return head +
     (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
     (friends ? '<div class="lib">' + friends + '</div>' : '<p>Ancora nessun amico.</p>') +
@@ -3915,7 +3957,7 @@ function accountFriendsPanel(af, sh) {
     '<label class="flabel" for="afname">Aggiungi un amico: il nome del suo account BunkerPlex</label>' +
     '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
     '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>' +
-    '<button class="setting f" data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare">Condividi le tue raccolte con i tuoi amici<small>' + esc(sharing) + '</small></button>' +
+    swRow('Condividi le tue raccolte con i tuoi amici', !!af.sharing, 'data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare"', sharing) +
     (af.sharing && sh ? '<p>' + reachState(sh) + '</p>' : '') +
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
       '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
@@ -3969,10 +4011,10 @@ function friendsPanel(sh, cloud) {
   return '<div class="panel"><h2>Amici</h2>' +
     '<p>Uno dei due manda la richiesta, l\'altro la accetta: da quel momento, quando il PC dell\'amico è acceso, le sue raccolte compaiono nel menu e nella Home. ' +
     'Si guarda soltanto: nessuno può modificare la libreria dell\'altro.</p>' + lists +
-    '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Porta per gli amici su questo PC<small>' +
-      (sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') + '</small></button>' +
-    '<button class="setting f" data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport">Apri da solo la porta sul router<small>' +
-      (sh.auto_port ? 'Sì' : 'No: scrivi tu il tuo indirizzo, per esempio quello di Tailscale') + '</small></button>' +
+    swRow('Porta per gli amici su questo PC', !!sh.on, 'data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle"',
+      sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') +
+    swRow('Apri da solo la porta sul router', !!sh.auto_port, 'data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport"',
+      sh.auto_port ? '' : 'Scrivi tu il tuo indirizzo, per esempio quello di Tailscale') +
     '<p>' + reachState(sh) + '</p>' +
     // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
@@ -4011,7 +4053,7 @@ function devicePanel() {
       ' su ogni TV, telefono e PC dove entri. Restano di questo dispositivo solo l\'aspetto da TV e il riconoscimento dei dispositivi lenti.</p>' +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
-    (TV ? '' : '<button class="setting f" data-act="devtv" data-key="devtv">Aspetto da TV (per il browser di una smart TV)<small>' + (device.tv ? 'Attivo' : 'Spento') + '</small></button>') +
+    (TV ? '' : swRow('Aspetto da TV', !!device.tv, 'data-act="devtv" data-key="devtv"', 'Per il browser di una smart TV')) +
     '</div>';
 }
 
@@ -6048,6 +6090,7 @@ var actions = {
       }, function (e) { toast(e.message); });
     });
   },
+  accmenu: function (id) { accMenu(id); },
   // Il link di attivazione da mandare a mano (WhatsApp, messaggio...)
   acclink: function (id) {
     post('/accounts/' + id + '/link', {}).then(function (r) {

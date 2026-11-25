@@ -1500,6 +1500,7 @@ body.guest #rail .add { display: none; }
 .shead { margin: 1.6rem 0 .5rem .9rem; color: var(--ink3); font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .sgroup { background: var(--surface); border-radius: .9rem; overflow: hidden; }
 .sgroup + .sgroup { margin-top: .9rem; }
+.sblock > .sgroup:first-child { margin-top: .9rem; }
 .sgroup .srow { gap: .9rem; min-height: 3.6rem; padding: .65rem 1rem; border-radius: 0; }
 .sgroup .srow + .srow { border-top: 0; box-shadow: inset 4rem 1px 0 var(--surface), inset 0 1px 0 #ffffff0f; }
 .sgroup .srow.lead { min-height: 5rem; padding: .9rem 1rem; }
@@ -1533,9 +1534,87 @@ body:not(.kb) .snav:focus .stile { background: hsl(var(--h) 42% 24%); color: hsl
 .smain .panel p { font-size: .96rem; }
 .smain .setting { margin: 0; border-radius: 0; background: transparent; padding: .85rem .2rem; }
 .smain .setting + .setting { border-top: 1px solid #ffffff0f; }
-.smain .setting:hover { background: transparent; color: var(--accent-text); }
+@media (hover: hover) { .smain .setting:hover { background: transparent; color: var(--accent-text); } }
+.smain .setting:hover { background: transparent; }
 .smain .setting:focus { background: var(--ink); color: var(--bg); border-radius: var(--r); }
 body:not(.kb) .smain .setting:focus { background: transparent; color: inherit; }
+
+/* Interruttore (acceso/spento): il nome a sinistra (con la riga dello stato), l'interruttore a destra */
+.smain .swrow { gap: 1rem; text-align: left; }
+.swt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
+.swn { font-style: normal; color: var(--ink2); font-size: .86rem; font-weight: 400; line-height: 1.35; }
+.swi { position: relative; flex: none; width: 2.75rem; height: 1.6rem; margin-left: auto; border-radius: 999px; background: #ffffff26; transition: background .15s; }
+.swi::after { content: ""; position: absolute; top: .2rem; left: .2rem; width: 1.2rem; height: 1.2rem; border-radius: 50%; background: #fff; transition: transform .15s; }
+.swrow.on .swi { background: var(--accent); }
+.swrow.on .swi::after { transform: translateX(1.15rem); }
+.smain .swrow:focus .swn { color: var(--bg); }
+.smain .swrow:focus .swi { background: #060a0740; }
+.smain .swrow.on:focus .swi { background: var(--accent); }
+body:not(.kb) .smain .swrow:focus .swn { color: var(--ink2); }
+.smain .swrow:hover .swn { color: var(--ink2); }
+html.tv .swi { width: 3.2rem; height: 1.85rem; }
+html.tv .swi::after { width: 1.45rem; height: 1.45rem; }
+html.tv .swrow.on .swi::after { transform: translateX(1.35rem); }
+
+/* Nome e valore (indirizzi, versioni...): righe con un filo, non riquadri dentro i riquadri */
+.smain .kv dt, .smain .kv dd { background: none; border-radius: 0; padding: .75rem 0; border-top: 1px solid #ffffff0f; }
+.smain .kv dt:first-of-type, .smain .kv dt:first-of-type + dd { border-top: 0; }
+.smain .kv dt small, .smain .kv dd small { display: block; margin-top: .15rem; color: var(--ink3); font-size: .82rem; font-weight: 400; }
+
+/* «Salva» e simili accanto a un campo: sempre il pulsante principale */
+.smain .joined .btn, .smain .inline .btn { background: var(--accent); color: var(--accent-ink); }
+.smain .joined .btn:focus, .smain .inline .btn:focus { background: var(--ink); color: var(--bg); }
+
+/* ---------- Plancia ---------- */
+/* Le schede: un controllo a segmenti */
+.atabs { display: inline-flex; flex-wrap: nowrap; gap: .2rem; padding: .25rem; border-radius: 999px; background: var(--surface); max-width: 100%; overflow-x: auto; scrollbar-width: none; margin-bottom: 1.3rem; }
+.atab { flex: none; padding: .5rem 1rem; background: transparent; font-size: .95rem; }
+.atab.on { background: var(--surface2); color: var(--ink); box-shadow: 0 1px 0 #ffffff14 inset; }
+.atab:focus { background: var(--ink); color: var(--bg); }
+body:not(.kb) .atab:focus { background: transparent; color: var(--ink2); }
+body:not(.kb) .atab.on:focus { background: var(--surface2); color: var(--ink); }
+
+/* I numeri chiave: quattro riquadri con la piastrella e il numero grande */
+.akpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .8rem; margin-bottom: 1rem; }
+.akpi { display: flex; flex-direction: column; gap: .15rem; padding: 1rem 1.1rem; border-radius: .9rem; background: var(--surface); }
+.akpi .stile { margin-bottom: .55rem; }
+.akpi b { font-size: 2.1rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.05; }
+.akpi span { font-weight: 700; }
+.akpi small { color: var(--ink2); font-size: .82rem; line-height: 1.35; }
+
+/* Cosa chiede attenzione */
+.atodo { display: flex; flex-direction: column; gap: .45rem; margin-bottom: 1rem; }
+.atodorow { display: flex; align-items: center; gap: .8rem; width: 100%; padding: .75rem 1rem; border: 0; border-radius: .9rem;
+  background: #2c2410; color: #f3dca0; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.atodorow > span:nth-child(2) { flex: 1; min-width: 0; }
+.atodorow .chev { flex: none; width: 1.1rem; height: 1.1rem; stroke: #f3dca0; }
+.salic { flex: none; display: inline-grid; place-items: center; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--warn); color: #1d1503; font-weight: 900; font-size: .9rem; }
+.atodorow:focus { background: var(--ink); color: var(--bg); }
+.atodorow:focus .chev { stroke: var(--bg); }
+body:not(.kb) .atodorow:focus { background: #2c2410; color: #f3dca0; }
+body:not(.kb) .atodorow:focus .chev { stroke: #f3dca0; }
+
+/* Sezioni: titolo, una riga di spiegazione, elenco nello stesso riquadro */
+.panel.asec h2 { margin-bottom: .3rem; }
+.panel.asec p.anote { margin: 0 0 .7rem; color: var(--ink2); font-size: .9rem; line-height: 1.45; }
+.panel.asec p.aempty { margin: .2rem 0 0; color: var(--ink3); }
+.panel.asec .accts { margin: 0 -.2rem; }
+.panel.asec .acct { padding: .8rem .2rem; }
+.ainvite .inline { display: flex; gap: .5rem; margin-bottom: .4rem; }
+.ainvite .inline .field { flex: 1; min-width: 0; }
+.ainvite .inline .btn { margin: 0; flex: none; }
+
+/* Pastiglie di stato (ruolo, invitato, servizio attivo...) */
+.achip { display: inline-block; margin-right: .35rem; padding: 0 .6rem; border-radius: 999px; background: var(--surface2); color: var(--ink2);
+  font-size: .78rem; font-weight: 700; line-height: 1.75; white-space: nowrap; vertical-align: .12em; }
+.achip.admin { background: #1d3550; color: #9fcbff; }
+.achip.warn { background: #3a2f12; color: #f3d48a; }
+.achip.ok { background: #143a24; color: #8be0ad; }
+.urow .ptext small { margin-top: .3rem; }
+.urow .pacts .btn { padding: .5rem 1.1rem; }
+
+@media (max-width: 900px) { .akpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+html.tv .akpi b { font-size: 2.4rem; }
 
 /* Telefono (e finestre strette, non la TV): niente menu laterale, «‹ Impostazioni» in alto */
 @media (max-width: 720px) {
@@ -1549,6 +1628,8 @@ body:not(.kb) .smain .setting:focus { background: transparent; color: inherit; }
   .smain .panel { padding: 1.1rem 1.1rem; }
   /* Il valore di un'impostazione: testo grigio a destra, non una bolla (anche se lungo) */
   .smain .setting { gap: .8rem; }
+  .smain .kv dt { padding-bottom: .1rem; }
+  .smain .kv dd { border-top: 0; padding-top: 0; text-align: left; }
   .smain .setting small, body:not(.kb) .smain .setting:focus small { max-width: 55%; padding: 0; background: none; color: var(--ink2); text-align: right; font-size: .92rem; line-height: 1.35; }
   .sgroup .srow { display: flex; min-height: 3.3rem; padding: .55rem .9rem; gap: .8rem; }
   .sgroup .srow > .sval { max-width: 48%; font-size: .9rem; }

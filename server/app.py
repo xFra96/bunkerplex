@@ -536,7 +536,7 @@ def init_db():
                           ("users", "google TEXT"),
                           # Email con cui l'account entra (al posto del nome utente)
                           ("users", "email TEXT"),
-                          # 1 = disattivato dall'amministratore (dalla plancia): qui non si entra
+                          # 1 = disattivato dall'amministratore (da Amministrazione): qui non si entra
                           ("users", "disabled INT DEFAULT 0"),
                           # 1 = amico del proprietario: entra su questo server come ospite e vede
                           # le raccolte del proprietario (solo finche' restano amici)
@@ -3887,7 +3887,7 @@ async def auth_reset_finish(request: Request):
 
 
 def pending_name(name):
-    """Nome provvisorio di un account invitato dalla plancia: al primo accesso si sceglie il suo."""
+    """Nome provvisorio di un account invitato da Amministrazione: al primo accesso si sceglie il suo."""
     return bool(re.fullmatch(r"invito-[0-9a-f]{6}", str(name or ""), re.I))
 
 
@@ -4359,7 +4359,7 @@ async def accounts_delete(cloud_id: int):
     return await cloud("DELETE", f"/admin/users/{cloud_id}", token=admin_token())
 
 
-# ---- Plancia di amministrazione ------------------------------------------------
+# ---- Amministrazione -----------------------------------------------------------
 # Due ruoli per tutta BunkerPlex (li tiene il servizio account):
 # - base: guarda, gestisce le sue raccolte, la sua lista, i suoi amici;
 # - amministratore: in piu' gestisce gli account (ruoli, attivazioni, password),
@@ -4460,12 +4460,12 @@ def local_overview():
 async def admin_overview():
     u = CURRENT.get()
     if u is None or u.get("friend") or not u.get("admin"):
-        raise HTTPException(403, "La plancia è solo per gli amministratori")
+        raise HTTPException(403, "Amministrazione è solo per gli amministratori")
     out = {"server": await asyncio.to_thread(local_overview), "cloud": None, "cloud_error": ""}
     try:
         out["cloud"] = await cloud("GET", "/admin/overview", token=admin_token())
     except HTTPException as ex:
-        out["cloud_error"] = ("Il servizio account va aggiornato per la plancia completa"
+        out["cloud_error"] = ("Il servizio account va aggiornato per Amministrazione completa"
                               if ex.status_code == 404 else str(ex.detail))
     return out
 
@@ -4915,7 +4915,7 @@ def sync_loop():
 
 def refresh_role(uid, token):
     """Ruolo (base / amministratore) e password provvisoria come li vede adesso il
-    servizio: un cambio fatto dalla plancia arriva qui senza dover rientrare."""
+    servizio: un cambio fatto da Amministrazione arriva qui senza dover rientrare."""
     me = (accounts.call("GET", "/me", token=token) or {}).get("user") or {}
     if "admin" not in me:
         return
@@ -4933,7 +4933,7 @@ def refresh_role(uid, token):
 
 
 def set_disabled(cloud_id=None, uid=None, off=True):
-    """Account disattivato (o riattivato) dalla plancia: su questo PC non si entra
+    """Account disattivato (o riattivato) da Amministrazione: su questo PC non si entra
     piu', e chi ci sta dentro torna a «Chi guarda?»."""
     con = db(raw=True)
     try:
