@@ -848,6 +848,11 @@ async function ensureGoogle(env) {
   await env.DB.prepare('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS google_flows(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
     'state TEXT, link_user INTEGER, device TEXT, kind TEXT, user_id INTEGER, email TEXT, error TEXT, exp REAL NOT NULL)').run();
+  // Proposta di collegamento: Google con la stessa email di un account non ancora collegato
+  const fcols = (await env.DB.prepare('PRAGMA table_info(google_flows)').all()).results.map((c) => c.name);
+  if (!fcols.includes('offer_user')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_user INTEGER').run();
+  if (!fcols.includes('offer_sub')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_sub TEXT').run();
+  if (!fcols.includes('offer_hash')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_hash TEXT').run();
   googleCols = true;
 }
 
@@ -988,6 +993,60 @@ async function newActivation(env, userId) {
   await env.DB.prepare('INSERT OR REPLACE INTO activations(user_id, token_hash, exp) VALUES(?,?,?)')
     .bind(userId, await sha256(token), now() + ACTIVATE_TTL).run();
   return token;
+}
+
+// Link per entrare senza password («Mandami un link»): vale MAGIC_TTL e una volta sola.
+// A un account ancora da attivare arriva invece il link di attivazione.
+const MAGIC_TTL = 900;
+
+let magicTable = false;
+async function ensureMagic(env) {
+  if (magicTable) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS magic_links(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL, sent REAL NOT NULL)').run();
+  magicTable = true;
+}
+
+async function magicStart(env, email, origin) {
+  await ensureMagic(env);
+  const user = await userForEmail(env, email);
+  if (!user || user.disabled) return;
+  const old = await env.DB.prepare('SELECT sent FROM magic_links WHERE user_id = ?').bind(user.id).first();
+  if (old && now() - old.sent < RESET_GAP) return;
+  if (user.must_change) {
+    await env.DB.prepare('INSERT OR REPLACE INTO magic_links(user_id, token_hash, exp, sent) VALUES(?,?,?,?)')
+      .bind(user.id, '-', 0, now()).run();
+    const link = mailLink(origin, 'attiva', { email, t: await newActivation(env, user.id) });
+    await sendMail(env, email, 'Attiva il tuo account BunkerPlex',
+      'Ciao,\n\napri questo link per attivare il tuo account BunkerPlex (vale 14 giorni):\n' + link + '\n\n--\nBunkerPlex · Only for bunkers',
+      mailPage('Attiva il tuo account', '<p style="margin:0 0 16px">Ciao,</p>' +
+        '<p style="margin:0">tocca il pulsante per attivare il tuo account BunkerPlex: scegli nome e password e sei dentro.</p>' +
+        mailButton(link, 'Attiva il tuo account') +
+        '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Vale 14 giorni. Se non l\'hai chiesto tu, ignora questa email.</p>'));
+    return;
+  }
+  const token = randomHex(24);
+  await env.DB.prepare('INSERT OR REPLACE INTO magic_links(user_id, token_hash, exp, sent) VALUES(?,?,?,?)')
+    .bind(user.id, await sha256(token), now() + MAGIC_TTL, now()).run();
+  const link = mailLink(origin, 'entra', { email, t: token });
+  await sendMail(env, email, 'Il tuo link per entrare in BunkerPlex',
+    'Ciao ' + user.username + ',\n\napri questo link per entrare in BunkerPlex (vale 15 minuti, una volta sola):\n' + link +
+    '\n\nSe non l\'hai chiesto tu, ignora questa email.\n\n--\nBunkerPlex · Only for bunkers',
+    mailPage('Il tuo link per entrare', '<p style="margin:0 0 16px">Ciao <b>' + esc(user.username) + '</b>,</p>' +
+      '<p style="margin:0">tocca il pulsante per entrare in BunkerPlex, senza password.</p>' +
+      mailButton(link, 'Entra in BunkerPlex') +
+      '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Vale 15 minuti e una volta sola. Se non l\'hai chiesto tu, ignora questa email.</p>'));
+}
+
+async function magicFinish(env, email, token) {
+  await ensureMagic(env);
+  const bad = () => fail(400, 'Link scaduto o già usato: chiedine uno nuovo');
+  const user = await userForEmail(env, email);
+  if (!user) bad();
+  if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+  const row = await env.DB.prepare('SELECT * FROM magic_links WHERE user_id = ?').bind(user.id).first();
+  if (!row || row.exp < now() || !sameString(await sha256(String(token || '')), row.token_hash)) bad();
+  await env.DB.prepare('DELETE FROM magic_links WHERE user_id = ?').bind(user.id).run();
+  return user;
 }
 
 async function resetStart(env, email, origin) {
@@ -1180,6 +1239,28 @@ async function googleRoutes(request, env, url, path, method) {
     return Response.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + q, 303);
   }
 
+  // «Collega ed entra»: la conferma della proposta fatta dopo Google (vedi sotto)
+  const gl = /^\/g\/([A-Za-z0-9-]{1,12})\/collega$/.exec(path);
+  if (gl && method === 'POST') {
+    const code = cleanCode(gl[1]);
+    const f = await flowByCode(env, code);
+    const form = await request.formData().catch(() => null);
+    const nonce = form ? String(form.get('n') || '') : '';
+    if (!f || !f.offer_user || f.user_id || f.error || !f.offer_hash || !sameString(await sha256(nonce), f.offer_hash)) {
+      return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Continua con Google».</p>', 404);
+    }
+    const u = await env.DB.prepare('SELECT * FROM users WHERE id = ? AND google_sub IS NULL').bind(f.offer_user).first();
+    const taken = await env.DB.prepare('SELECT id FROM users WHERE google_sub = ?').bind(f.offer_sub).first();
+    let error = null;
+    if (!u || taken) error = 'Non riesco a collegare: l\'account è cambiato nel frattempo. Ricomincia da «Continua con Google».';
+    else await env.DB.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').bind(f.offer_sub, f.email, u.id).run();
+    await env.DB.prepare('UPDATE google_flows SET error = ?, user_id = ?, offer_hash = NULL WHERE code = ?')
+      .bind(error, error ? null : u.id, code).run();
+    if (error) return page('Non riuscito', '<h1>Non riuscito</h1><p class="err">' + esc(error) + '</p>', 409);
+    return page('Fatto', '<h1>Google collegato</h1><p>Stai entrando come <b>' + esc(u.username) + '</b>. Torna su BunkerPlex: ' +
+      (f.kind === 'tv' ? 'la TV entra da sola.' : 'continua da solo.') + '</p><p><small>Puoi chiudere questa pagina.</small></p>');
+  }
+
   // Google torna qui
   if (path === '/google/callback' && method === 'GET') {
     const state = String(url.searchParams.get('state') || '');
@@ -1237,6 +1318,21 @@ async function googleRoutes(request, env, url, path, method) {
         } else {
           await env.DB.prepare('UPDATE users SET google_sub = ? WHERE id = ?').bind(sub, u.id).run();
         }
+      }
+    }
+    if (!u && email) {
+      // Un account con la stessa email (confermata da Google) ma senza Google: lo propone
+      const same = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND google_sub IS NULL AND disabled = 0').bind(email).first();
+      if (same) {
+        const nonce = randomHex(16);
+        await env.DB.prepare('UPDATE google_flows SET offer_user = ?, offer_sub = ?, offer_hash = ?, email = ?, state = NULL WHERE code = ?')
+          .bind(same.id, sub, await sha256(nonce), email, code).run();
+        return page('Collega Google', '<h1>Collega Google</h1>' +
+          '<p>C\'è già l\'account BunkerPlex <b>' + esc(same.username) + '</b> con l\'email <b>' + esc(email) + '</b>.</p>' +
+          '<p>Lo colleghi a Google? Da ora entri con «Continua con Google», senza scrivere la password.</p>' +
+          '<form method="post" action="/g/' + code + '/collega"><input type="hidden" name="n" value="' + nonce + '">' +
+          '<button class="btn">Collega ed entra</button></form>' +
+          '<p><small>Non sei tu? Chiudi questa pagina: non cambia niente.</small></p>');
       }
     }
     if (!u) {
@@ -1696,6 +1792,20 @@ async function route(request, env) {
     return json({ username: await nameForEmail(env, email), activate: false, needs_name: false });
   }
 
+  // «Mandami un link»: entrare senza password (vedi magicStart)
+  if (path === '/magic/start' && method === 'POST') {
+    if (!resetOn(env)) fail(404, 'L\'accesso con il link non è attivo nel servizio account');
+    await ensureGoogle(env);
+    await magicStart(env, cleanEmail((await body(request)).email) || fail(400, 'Scrivi l\'email'), url.origin);
+    return json({ ok: true });
+  }
+  if (path === '/magic/finish' && method === 'POST') {
+    await ensureGoogle(env);
+    const b = await body(request);
+    const user = await magicFinish(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'), b.token);
+    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
+  }
+
   // Attivazione dal link dell'invito: email + gettone, poi nome (se serve) e password
   if (path === '/activate' && method === 'POST') {
     await ensureGoogle(env);
@@ -1789,6 +1899,23 @@ async function route(request, env) {
       env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').bind(user.id, user.token_hash)
     ]);
     return json({ ok: true, user: userJson({ ...user, username, must_change: 0 }) });
+  }
+
+  // Invitato entrato con Google: sceglie solo il nome. Da qui entra con Google (la
+  // password provvisoria smette di valere; una sua la puo' avere con «Password dimenticata?»).
+  if (path === '/name' && method === 'POST') {
+    if (!user.must_change || !user.google_sub) fail(400, 'Il nome si sceglie solo al primo accesso');
+    let username = user.username;
+    if (pendingName(user.username)) {
+      username = cleanName((await body(request)).username);
+      if (pendingName(username) || /^invito-/i.test(username)) fail(400, 'Scegli un nome tuo');
+      const other = await env.DB.prepare('SELECT id FROM users WHERE username = ? AND id <> ?').bind(username, user.id).first();
+      if (other) fail(409, 'Questo nome è già di un altro account: scegline un altro');
+    }
+    const pw = await passwordFields(randomHex(32));
+    await env.DB.prepare('UPDATE users SET username = ?, salt = ?, hash = ?, must_change = 0, no_password = 1 WHERE id = ?')
+      .bind(username, pw.salt, pw.hash, user.id).run();
+    return json({ ok: true, user: userJson({ ...user, username, must_change: 0, no_password: 1 }) });
   }
 
   // L'email con cui l'account entra (vuota: la toglie; resta il nome utente)
@@ -2171,11 +2298,18 @@ async function route(request, env) {
       return json({ ok: true });
     }
 
-    const m = /^\/admin\/users\/(\d+)(\/password|\/google|\/email|\/role|\/active)?$/.exec(path);
+    const m = /^\/admin\/users\/(\d+)(\/password|\/google|\/email|\/role|\/active|\/link)?$/.exec(path);
     if (m) {
       const id = Number(m[1]);
       const target = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
       if (!target) fail(404, 'Account non trovato');
+      // Il link di attivazione da mandare a mano (WhatsApp, messaggio...): l'invito senza email
+      if (m[2] === '/link' && method === 'POST') {
+        if (!target.must_change) fail(409, 'Questo account è già attivo');
+        const to = target.email || target.google_email;
+        if (!to) fail(409, 'Prima dai un\'email all\'account');
+        return json({ link: mailLink(url.origin, 'attiva', { email: to, t: await newActivation(env, id) }) });
+      }
       if (m[2] === '/email' && method === 'PUT') {
         const email = cleanEmail((await body(request)).email);
         if (email) await emailFree(env, email, id);
@@ -2241,11 +2375,13 @@ async function route(request, env) {
         await ensureNotices(env);
         await ensureCreds(env);
         await ensureActivate(env);
+        await ensureMagic(env);
         for (const c of (await env.DB.prepare('SELECT sid FROM server_creds WHERE owner_id = ?').bind(id).all()).results) {
           await dropServerDns(env, c.sid);
         }
         await env.DB.batch([
           env.DB.prepare('DELETE FROM activations WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM magic_links WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_devices WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM notice_prefs WHERE user_id = ?').bind(id),

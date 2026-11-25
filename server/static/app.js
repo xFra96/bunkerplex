@@ -702,7 +702,7 @@ function cloud(method, path, body) {
     throw new Error('Il servizio account non risponde: controlla la connessione');
   }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
-      if (r.status === 401 && C.token && !/^\/(login|resolve|lookup|activate|google|reset)/.test(path)) {
+      if (r.status === 401 && C.token && !/^\/(login|resolve|lookup|activate|magic|google|reset)/.test(path)) {
         cForget();
         setTimeout(render, 0);
       }
@@ -884,7 +884,24 @@ function cLoginPage() {
   }
   var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
   var back = '<button class="authlink f" data-act="cback" data-key="cback">Usa un\'altra email</button>';
+  var byMail = L.email.indexOf('@') > 0;
+  if (L.sent) {
+    return authShell('<h1>Controlla la posta</h1>' + who +
+      '<p class="authsub">Ti abbiamo mandato un link: aprilo ' + (L.activate ? 'per attivare l\'account' : 'ed entri') + ', senza password. Se non arriva, guarda nello spam.</p>' +
+      '<button class="btn block f" data-act="cmagic" data-key="cmagic" data-autofocus>Mandalo di nuovo</button>' +
+      back + note);
+  }
   if (L.activate) {
+    // Senza il link dell'email: il link si chiede con un tocco; la password provvisoria resta possibile
+    if (!L.token && !L.manual) {
+      return authShell('<h1>Attiva il tuo account</h1>' + who +
+        '<p class="authsub">Ti mandiamo un link: lo apri, scegli nome e password e sei dentro.</p>' +
+        '<button class="btn primary block f" data-act="cmagic" data-key="cmagic" data-autofocus>Mandami il link</button>' +
+        '<div class="author"><span>oppure</span></div>' +
+        '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' +
+        '<button class="authlink f" data-act="cmanual" data-key="cmanual">Ho la password provvisoria</button>' +
+        back + note);
+    }
     return authShell('<h1>' + (L.needs_name ? 'Attiva il tuo account' : 'Scegli la tua password') + '</h1>' + who +
       (L.needs_name ? '<input class="field f" id="cname" data-key="cname" data-autofocus autocapitalize="none" spellcheck="false" maxlength="32" placeholder="Il tuo nome utente">' : '') +
       (L.token ? '' : '<input class="field f" id="cold" data-key="cold" type="password" autocomplete="current-password"' + (L.needs_name ? '' : ' data-autofocus') + ' placeholder="Password provvisoria (dall\'email)">') +
@@ -897,8 +914,17 @@ function cLoginPage() {
     '<input type="email" autocomplete="username" value="' + esc(L.email) + '" hidden>' +
     '<input class="field f" id="lpass" data-key="lpass" data-autofocus type="password" autocomplete="current-password" data-enter="clogin" placeholder="Password">' +
     '<button class="btn primary block f" data-act="clogin" data-key="login">Entra</button>' +
+    (byMail ? '<button class="btn block f" data-act="cmagic" data-key="cmagic">Mandami un link per entrare</button>' : '') +
     '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' +
     back + note);
+}
+
+// Invitato entrato con Google: sceglie solo il nome, poi entra sempre con Google
+function cNamePage() {
+  return authShell('<h1>Come ti chiami?</h1><p class="authsub">Il nome con cui ti vedranno gli amici su BunkerPlex</p>' +
+    '<input class="field f" id="cname" data-key="cname" data-autofocus autocapitalize="none" spellcheck="false" maxlength="32" data-enter="cnamesave" placeholder="Il tuo nome utente">' +
+    '<button class="btn primary block f" data-act="cnamesave" data-key="cnamesave">Continua</button>' +
+    '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>');
 }
 
 function cResetPage() {
@@ -919,8 +945,23 @@ function cResetPage() {
 // nella pagina e l'indirizzo torna pulito (il gettone non resta nella cronologia)
 async function cMailLink() {
   var h = location.hash;
-  if (!/^#\/(attiva|reset)\?/.test(h)) return;
+  if (!/^#\/(attiva|reset|entra)\?/.test(h)) return;
   var p = hashParams();
+  // Link per entrare: dritti dentro
+  if (/^#\/entra/.test(h)) {
+    if (p.email && p.t) {
+      if (C.token) cForget();
+      try {
+        cEntered(await cloud('POST', '/magic/finish', { email: p.email, token: p.t, device: devName(), kind: 'pwa' }));
+      } catch (e) {
+        cache.cLogin = { email: p.email, username: '', activate: false };
+        try { cache.cLogin.username = (await cloud('POST', '/lookup', { email: p.email })).username; } catch (e2) {}
+        C.error = e.message;
+      }
+    }
+    location.replace('#/home');
+    return;
+  }
   // I dati prima, poi l'indirizzo pulito: il cambio di indirizzo ridisegna la pagina
   if (/^#\/reset/.test(h)) {
     if (!C.token && p.email) {
@@ -1002,7 +1043,7 @@ async function cGate() {
     lockScreen(true);
     return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
   }
-  if (C.user && C.user.must_change) { lockScreen(true); return cPasswordPage(); }
+  if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
   if (location.hash === '#/server') {
     cDrop();
     C.sid = '';
@@ -1035,6 +1076,32 @@ function cActions() {
       cache.cLogin = null;
       C.error = '';
       render();
+    },
+    // «Mandami un link»: per entrare, o per attivare l'account
+    cmagic: async function () {
+      var L = cache.cLogin;
+      if (!L) return;
+      try {
+        await cloud('POST', '/magic/start', { email: L.email });
+        L.sent = true;
+        C.error = '';
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cmanual: function () {
+      if (cache.cLogin) cache.cLogin.manual = true;
+      render();
+    },
+    cnamesave: async function () {
+      var name = fieldValue('cname').trim();
+      if (!name) { toast('Scegli il tuo nome utente'); return; }
+      try {
+        var r = await cloud('POST', '/name', { username: name });
+        C.user = r.user || C.user;
+        C.user.must_change = false;
+        cSave();
+        render();
+      } catch (e) { toast(e.message); }
     },
     clogin: async function () {
       var L = cache.cLogin, pass = fieldValue('lpass');
@@ -3463,6 +3530,7 @@ async function adminArea() {
           (isMe ? '' : '<button class="btn f" data-act="accrole" data-arg="' + a.id + '" data-key="accrole-' + a.id + '">' + (a.admin ? 'Rendi base' : 'Rendi amministratore') + '</button>' +
             '<button class="btn f" data-act="accactive" data-arg="' + a.id + '" data-key="accact-' + a.id + '">' + (a.disabled ? 'Riattiva' : 'Disattiva') + '</button>') +
           '<button class="btn f" data-act="accemail" data-arg="' + a.id + '" data-key="acce-' + a.id + '">Email</button>' +
+          (a.must_change && (a.email || a.google) ? '<button class="btn f" data-act="acclink" data-arg="' + a.id + '" data-key="accl-' + a.id + '">Copia link di attivazione</button>' : '') +
           '<button class="btn f" data-act="accreset" data-arg="' + a.id + '" data-key="accr-' + a.id + '">' + (invited ? 'Rimanda l\'invito' : 'Nuova password provvisoria') + '</button>' +
           (isMe ? '' : '<button class="btn danger f" data-act="accremove" data-arg="' + a.id + '" data-key="accd-' + a.id + '">' + (invited ? 'Annulla invito' : 'Elimina') + '</button>') +
         '</div>' +
@@ -3475,8 +3543,8 @@ async function adminArea() {
         '<b>Amministratore</b>: in più gestisce tutta BunkerPlex da questa plancia. Un account <b>disattivato</b> non entra più da nessuna parte finché non lo riattivi.</p></div>' +
       '<div class="panel accts">' + rows + '</div>' +
       '<div class="panel"><h2>Invita una persona</h2>' +
-        '<p>Gli account li crei solo tu da qui. ' + (auth.reset ? 'All\'email arriva una password provvisoria' : 'Ti mostro una password provvisoria da comunicare') +
-          ': al primo accesso la persona sceglie il suo nome e la sua password, poi crea il suo profilo.</p>' +
+        '<p>Gli account li crei solo tu da qui. ' + (auth.reset ? 'All\'email arriva un link per attivare l\'account' : 'Ti mostro una password provvisoria da comunicare') +
+          ': la persona sceglie il suo nome e la sua password (o entra con Google) ed è dentro. Il link puoi anche copiarlo e mandarlo tu.</p>' +
         '<label class="flabel" for="agoogle">Email</label>' +
           '<input class="field f" style="margin-bottom:.4rem" id="agoogle" data-key="agoogle" type="email" autocomplete="off" autocapitalize="none" placeholder="nome@esempio.it" data-enter="acccreate">' +
           '<p class="kvnote">Entrerà con questa' + (auth.google ? ' (se è un account Google, anche con «Entra con Google»)' : '') + '.</p>' +
@@ -5860,6 +5928,14 @@ var actions = {
       }, function (e) { toast(e.message); });
     });
   },
+  // Il link di attivazione da mandare a mano (WhatsApp, messaggio...)
+  acclink: function (id) {
+    post('/accounts/' + id + '/link', {}).then(function (r) {
+      return copyText(r.link).then(function (ok) {
+        toast(ok ? 'Link copiato: mandalo alla persona (vale 14 giorni)' : 'Non riesco a copiare: ' + r.link);
+      });
+    }, function (e) { toast(e.message); });
+  },
   accremove: function (id) {
     var a = (cache.accounts || []).filter(function (x) { return String(x.id) === String(id); })[0];
     if (!a) return;
@@ -6582,7 +6658,7 @@ var routes = [
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
   // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
-  [/^#\/(attiva|reset)\?/, function () { location.replace('#/home'); return ''; }],
+  [/^#\/(attiva|reset|entra)\?/, function () { location.replace('#/home'); return ''; }],
   [/^#\/tv$/, tvCodePage],
   [/^#\/password$/, function () {
     return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',

@@ -4348,6 +4348,12 @@ async def accounts_reset(cloud_id: int, request: Request):
     return {"ok": True, "mailed": bool(res.get("mailed"))}
 
 
+@app.post("/api/accounts/{cloud_id}/link")
+async def accounts_link(cloud_id: int):
+    """Il link di attivazione di un account invitato, da mandare a mano (vale 14 giorni)."""
+    return await cloud("POST", f"/admin/users/{cloud_id}/link", {}, admin_token())
+
+
 @app.delete("/api/accounts/{cloud_id}")
 async def accounts_delete(cloud_id: int):
     return await cloud("DELETE", f"/admin/users/{cloud_id}", token=admin_token())
