@@ -8,7 +8,11 @@
 #     automatico) lascia strumenti\richiesta-aggiornamento.json, lancia
 #     Aggiorna.ps1 -Auto: scarica le novita' e riallinea Docker;
 #   - scrive com'e' andata in strumenti\esito-aggiornamento.json e il
-#     racconto completo in strumenti\aggiornamento.log.
+#     racconto completo in strumenti\aggiornamento.log;
+#   - quando il server lascia strumenti\richiesta-cestino.json (un doppione da
+#     togliere, scelto da chi gestisce il server) sposta quel video nel Cestino
+#     di Windows, da cui si puo' sempre recuperare, e scrive l'esito in
+#     strumenti\esito-cestino.json.
 #
 #
 # Segue anche i dischi del PC: Docker Desktop vede da solo solo quelli che
@@ -33,6 +37,8 @@ $requestFile = Join-Path $here 'richiesta-aggiornamento.json'
 $resultFile = Join-Path $here 'esito-aggiornamento.json'
 $logFile = Join-Path $here 'aggiornamento.log'
 $updater = Join-Path $here 'Aggiorna.ps1'
+$trashRequest = Join-Path $here 'richiesta-cestino.json'
+$trashResult = Join-Path $here 'esito-cestino.json'
 
 $mutex = New-Object System.Threading.Mutex($false, 'Local\BunkerPlexAgente')
 try { $mine = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $mine = $true }
@@ -98,6 +104,42 @@ function Run-Update($id) {
         if (-not $msg) { $msg = 'Aggiornamento non riuscito sul PC: leggi strumenti\aggiornamento.log.' }
     }
     Write-Json $resultFile ([ordered]@{ id = $id; phase = 'done'; ok = $ok; message = $msg; at = (Now) })
+}
+
+# ---------------------------------------------------------------- cestino
+
+# Solo video, solo su un disco fisso (i dischi rimovibili non hanno il Cestino:
+# il file sparirebbe per sempre) e mai dentro la cartella di BunkerPlex
+$videoExt = '\.(mkv|mp4|m4v|avi|mov|wmv|ts|m2ts|mts|webm|mpg|mpeg|flv|ogv|3gp|vob|divx|xvid)$'
+
+function Run-Trash {
+    $id = ''
+    $files = @()
+    try {
+        $req = Get-Content -LiteralPath $trashRequest -Raw | ConvertFrom-Json
+        $id = "$($req.id)"
+        $files = @($req.files)
+    } catch { }
+    Remove-Item -LiteralPath $trashRequest -Force -ErrorAction SilentlyContinue
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $msg = ''
+    $done = @()
+    foreach ($f in $files) {
+        $p = "$f"
+        if ($p -notmatch '^[A-Za-z]:\\' -or $p -notmatch $videoExt -or $p.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+            $msg = "Non tocco questo file: $p"; break
+        }
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $msg = "Il file non c'e' piu': $p"; break }
+        try {
+            $drive = New-Object System.IO.DriveInfo ($p.Substring(0, 1))
+            if ($drive.DriveType -ne 'Fixed') { $msg = "Il disco $($p.Substring(0, 2)) non ha il Cestino: elimina il file a mano"; break }
+            [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin')
+            $done += $p
+        } catch {
+            $msg = "Non riesco a spostarlo nel Cestino: $($_.Exception.Message)"; break
+        }
+    }
+    Write-Json $trashResult ([ordered]@{ id = $id; ok = (-not $msg); message = $msg; done = $done; at = (Now) })
 }
 
 # ---------------------------------------------------------------- dischi
@@ -171,6 +213,10 @@ try {
         if (-not (Test-Path -LiteralPath $updater)) { break }
         if ((Now) - $lastBeat -ge 30) { Beat; $lastBeat = Now }
         try { Sync-Drives $false } catch { }
+
+        if (Test-Path -LiteralPath $trashRequest) {
+            try { Run-Trash } catch { }
+        }
 
         if (Test-Path -LiteralPath $requestFile) {
             $id = ''

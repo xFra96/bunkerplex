@@ -61,7 +61,8 @@ PROTECTED_DIRS = ("data", "apk", ".git", "android\\out", "android\\keystore")
 PROTECTED_FILES = {".env", "docker-compose.override.yml",
                    "strumenti\\github-token.txt", "strumenti\\versione.json",
                    "strumenti\\agente.json", "strumenti\\richiesta-aggiornamento.json",
-                   "strumenti\\esito-aggiornamento.json", "strumenti\\aggiornamento.log"}
+                   "strumenti\\esito-aggiornamento.json", "strumenti\\aggiornamento.log",
+                   "strumenti\\richiesta-cestino.json", "strumenti\\esito-cestino.json"}
 # Se cambiano questi non basta riavviare il server: va rilanciato "Installa BunkerPlex"
 NEEDS_HOST = {"server\\Dockerfile", "server\\requirements.txt", "docker-compose.yml"}
 BUSY_SECONDS = 10 * 60        # un film in corso: l'aggiornamento automatico aspetta
