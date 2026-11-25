@@ -6,6 +6,7 @@ i video in streaming.
 """
 import asyncio
 import calendar
+import collections
 import difflib
 import gzip
 import hashlib
@@ -1279,12 +1280,16 @@ def map_absolute(con, show):
     if not counts or counts[0][0] != 1 or max(r["episode"] for r in rows) <= counts[0][1]:
         return
     total = sum(c for _, c in counts)
+    taken = {(r["season"], r["episode"]) for r in con.execute(
+        "SELECT season, episode FROM items WHERE show_id=? AND season>1", (show["id"],))}
     for r in rows:
         n = r["episode"]
         if n <= counts[0][1] or n > total:
             continue
         for season, count in counts:
             if n <= count:
+                if (season, n) in taken:
+                    break     # c'e' gia' il file vero: 'Lost 1x25' non e' l'episodio 2x01
                 con.execute("UPDATE items SET season=?, episode=? WHERE id=?", (season, n, r["id"]))
                 break
             n -= count
@@ -1915,7 +1920,7 @@ def reclassify_catalog():
     separati da un trattino come 'House of Cards - S01 - 01'): si rilegge ogni video gia'
     in catalogo e quelli che ora risultano altro cambiano posto. Gli id dei
     video restano gli stessi, quindi visti e punti di ripresa non si perdono."""
-    if config.get("classifier", 1) not in (3, 4):   # prima va fatta la separazione delle serie
+    if config.get("classifier", 1) not in (3, 4, 5):   # prima va fatta la separazione delle serie
         return
     con = db()
     missing = False
@@ -1924,7 +1929,11 @@ def reclassify_catalog():
         show_ids.update({r["key"]: r["show_id"] for r in con.execute(
             "SELECT key, show_id FROM aliases WHERE show_id IN (SELECT id FROM shows)")})
         cache, touched = {}, set()
-        for it in con.execute("SELECT id, kind, path, show_id, library_id FROM items").fetchall():
+        rows = con.execute("SELECT id, kind, path, show_id, season, episode, library_id FROM items").fetchall()
+        # Quanti file ha ogni episodio salvato: due file sullo stesso episodio con nomi diversi
+        # ('S01 - 02' letto 1x01 dalla vecchia versione) vanno riletti
+        slots = collections.Counter((r["show_id"], r["season"], r["episode"]) for r in rows if r["kind"] == "episode")
+        for it in rows:
             p, root = Path(it["path"]), library_root(it["path"])
             if root is None or not p.is_file():
                 missing = missing or root is not None
@@ -1935,6 +1944,11 @@ def reclassify_catalog():
             title, year, season, number, ep_title = ep
             key = show_key(title)
             if it["kind"] == "episode" and show_ids.get(key) == it["show_id"]:
+                if (it["season"], it["episode"]) != (season, number) and \
+                        slots[(it["show_id"], it["season"], it["episode"])] > 1:
+                    print(f"Correggo {p.name} -> {season}x{number:02d}", flush=True)
+                    con.execute("UPDATE items SET season=?, episode=?, meta_done=0 WHERE id=?",
+                                (season, number, it["id"]))
                 continue
             if key not in show_ids:
                 show_ids[key] = con.execute(
@@ -1960,7 +1974,7 @@ def reclassify_catalog():
         con.close()
     if not missing:           # un disco scollegato: si riprova al prossimo avvio
         with config_lock:
-            config["classifier"] = 5
+            config["classifier"] = 6
             save_config()
 
 
