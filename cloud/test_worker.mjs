@@ -321,7 +321,8 @@ test('nome DNS del server nella rete di casa e indirizzo https in GET /servers',
     const s = (await t.call('GET', '/servers', undefined, await t.login('anna', 'pwa'))).body.servers[0];
     assert.equal(s.addresses.secure_lan, 'https://192-168-1-5.1234abcd.bpx.test:32443');
     const f = (await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'))).body.servers[0];
-    assert.equal(f.addresses.secure_lan, undefined);
+    // Anche l'amico lo riceve: si collega direttamente (in casa del proprietario)
+    assert.equal(f.addresses.secure_lan, 'https://192-168-1-5.1234abcd.bpx.test:32443');
     // Indirizzo di casa cambiato: nome nuovo, il vecchio sparisce
     await t.call('POST', '/server/heartbeat', { name: 'PC', lan: 'https://10.0.0.7:32501', pin: PIN, secure_port: 32443 }, cred);
     assert.deepEqual([...net.dns.values()].map((r) => r.name), ['10-0-0-7.1234abcd.bpx.test']);

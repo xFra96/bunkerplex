@@ -425,13 +425,16 @@ object CloudTv {
         val a = s.optJSONObject("addresses") ?: JSONObject()
         val out = mutableListOf<String>()
         a.optString("secure_lan").takeIf { it.startsWith("https://") }?.let { out.add(it) }
+        val mine = s.optString("role") == "owner"
         // L'indirizzo di casa che il server ha detto (https://IP:32501, per gli amici): la TV usa la 32500
         a.optString("lan").takeIf { it.isNotEmpty() }?.let { lan ->
             val host = Uri.parse(lan).host
             if (!host.isNullOrEmpty()) out.add("http://$host:32500")
         }
         prefs(ctx).getString("cloud_base_" + s.optString("sid"), null)?.let { if (it.isNotEmpty()) out.add(it) }
-        if (Api.home.isNotEmpty()) out.add(Api.home)
+        if (mine && Api.home.isNotEmpty()) out.add(Api.home)
+        // Fuori casa (o il server di un amico): l'indirizzo pubblico (Tailscale Funnel)
+        a.optString("public").takeIf { it.startsWith("https://") }?.let { out.add(it) }
         return out.distinct()
     }
 
@@ -482,13 +485,14 @@ object CloudTv {
      * Torna il src di Access ("here" o "f<n>"); IOException col motivo se non riesce.
      */
     fun open(ctx: Context, s: JSONObject, all: List<JSONObject>): String {
+        // Anche il server di un amico si apre direttamente: il servizio da' un gettone
+        // «friend» e quel server fa entrare l'amico come ospite
         val mine = s.optString("role") == "owner"
-        val hosts = all.filter { it.optString("role") == "owner" && it.opt("online") != false }
-        val host = if (mine) s else hosts.firstOrNull { it.optBoolean("local") } ?: hosts.firstOrNull()
-            ?: throw IOException("Per i server degli amici serve un tuo server acceso")
+        val host = s
         val sid = host.optString("sid")
         val base = reach(ctx, host)
-            ?: throw IOException("${host.optString("name").ifEmpty { "Il server" }} non risponde: la TV è nella stessa rete di casa?")
+            ?: throw IOException(if (mine) "${host.optString("name").ifEmpty { "Il server" }} non risponde: la TV è nella stessa rete di casa?"
+                else "Il server di ${s.optJSONObject("owner")?.optString("username")} non risponde: dev'essere acceso, con l'indirizzo pubblico se sei fuori casa")
         if (!sessionOk(base)) {
             val token = JSONObject(Remote.call(ctx, "POST", "/servers/$sid/access", "{}")).getString("token")
             Api.saveServer(ctx, base)
@@ -498,14 +502,7 @@ object CloudTv {
         }
         Api.base = base
         prefs(ctx).edit().putString("cloud_base_$sid", base).putString("cloud_sid", s.optString("sid")).apply()
-        if (mine) return "here"
-        val f = Api.obj("/api/account-friends")
-        f.optJSONArray("friends").objects().forEach { fr ->
-            fr.optJSONArray("servers").objects().forEach { x ->
-                if (x.optString("sid") == s.optString("sid") && !x.isNull("n")) return "f" + x.optInt("n")
-            }
-        }
-        throw IOException("Il tuo server non è ancora collegato a ${s.optJSONObject("owner")?.optString("username")}: riprova tra un minuto")
+        return "here"
     }
 }
 

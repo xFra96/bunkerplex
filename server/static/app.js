@@ -782,7 +782,7 @@ function cCandidates(s) {
   // Indirizzo di casa in http: va nell'app Android (che lo permette); un browser lo blocca subito
   var lan = s.addresses && /^https:\/\/([\d.]+):\d+$/.exec(s.addresses.lan || '');
   if (lan) out.push('http://' + lan[1] + ':32500');
-  out.push('http://localhost:32500');
+  if (s.role === 'owner') out.push('http://localhost:32500');
   // Fuori casa: l'indirizzo pubblico del server (Tailscale Funnel), se acceso
   if (s.addresses && s.addresses.public) out.push(s.addresses.public);
   return out;
@@ -795,16 +795,11 @@ async function cMediaKey(force) {
   if (r.ok && j.key) { C.mkey = j.key; C.mexp = j.exp; }
 }
 
-// Collegamento al server scelto: indirizzo, sessione, chiave dei video
+// Collegamento al server scelto: indirizzo, sessione, chiave dei video.
+// Anche il server di un amico si apre direttamente: il servizio da' un gettone
+// «friend» e quel server fa entrare l'amico come ospite (le raccolte condivise).
 async function cOpen(s) {
-  var mine = s.role === 'owner';
   var host = s;
-  if (!mine) {
-    // Il server di un amico si apre dal proprio server acceso (che lo collega)
-    var hosts = (C.list || []).filter(function (x) { return x.role === 'owner' && x.online !== false; });
-    host = hosts.filter(function (x) { return x.local; })[0] || hosts[0];
-    if (!host) throw new Error('Per i server degli amici serve un tuo server acceso');
-  }
   var base = await anyOf(cCandidates(host).map(function (c) { return cProbe(c, host.sid); }));
   var saved = cSessGet(host.sid);
   var session = saved && saved.base === base ? saved.session : '';
@@ -824,20 +819,11 @@ async function cOpen(s) {
   }
   C.base = base;
   C.session = session;
-  if (APP && tvApp.rememberServer) tvApp.rememberServer(base);     // senza Internet l'app lo ritrova
+  if (APP && tvApp.rememberServer && s.role === 'owner') tvApp.rememberServer(base);     // senza Internet l'app lo ritrova
   await cMediaKey(true);
   auth = null;
   await loadAuth();
-  // Quale parte mostrare: il server stesso, o quello dell'amico collegato da qui
-  var src = 'here';
-  if (!mine) {
-    var f = await api('/account-friends').catch(function () { return {}; });
-    (f.friends || []).forEach(function (fr) {
-      (fr.servers || []).forEach(function (x) { if (x.sid === s.sid && x.n) src = 'f' + x.n; });
-    });
-    if (src === 'here') throw new Error('Il tuo server non è ancora collegato a ' + s.owner.username + ': riprova tra un minuto');
-  }
-  setServer(src);
+  setServer('here');
   if (auth.user && !auth.user.must_change) await afterLogin([]);
 }
 
@@ -1090,7 +1076,8 @@ function cActions() {
       } catch (e) {
         cDrop();
         C.error = (s.name || 'PC') + ': ' + e.message +
-          (s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)' : '');
+          (s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)'
+            : ' (fuori casa il server di ' + s.owner.username + ' deve avere l\'indirizzo pubblico acceso)');
         render();
       }
     },
