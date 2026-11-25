@@ -2788,6 +2788,14 @@ function sicon(area) {
 // telefoni, l'area si riconosce dal colore prima ancora di leggerla
 var STINT = { home: 150, account: 150, admin: 4, people: 200, libraries: 210, catalog: 32, subtitles: 32, friends: 280,
   notices: 350, updates: 150, device: 190, apps: 255, pcs: 170, news: 45, logout: 0 };
+// Una riga con interruttore (acceso/spento): il nome a sinistra, l'interruttore a destra
+// note: una riga piccola sotto il nome (com'e' adesso)
+function swRow(label, on, attrs, note) {
+  return '<button class="setting swrow f' + (on ? ' on' : '') + '" role="switch" aria-checked="' + (on ? 'true' : 'false') + '" ' + attrs + '>' +
+    '<span class="swt"><span>' + esc(label) + '</span>' + (note ? '<em class="swn">' + esc(note) + '</em>' : '') + '</span>' +
+    '<i class="swi" aria-hidden="true"></i></button>';
+}
+
 function stile(area) {
   return '<span class="stile" style="--h:' + (STINT[area] || 150) + '">' + sicon(area) + '</span>';
 }
@@ -3244,7 +3252,7 @@ async function settingsArea(area) {
         '<div class="actions" style="margin-top:.4rem"><button class="btn danger f" data-act="pushlocal" data-key="pushlocal">Sovrascrivi l\'account con le raccolte di questo PC</button></div></div>'
       : '';
     return settingsShell('libraries', 'Raccolte',
-      'Ogni raccolta è una voce del menu (per esempio Film o Serie TV), con una o più cartelle di questo PC. Non sono le Collezioni: quelle raggruppano da sole i film della stessa saga. BunkerPlex legge soltanto: non modifica né cancella mai i tuoi file.',
+      'Le voci del menu (Film, Serie TV…) con le cartelle di questo PC. BunkerPlex legge soltanto: non tocca mai i tuoi file.',
       '<div class="panel">' + (libsHtml || '<p>Ancora nessuna raccolta su questo PC.</p>') +
       '<div class="actions" style="margin-top:.6rem"><a class="btn primary f" href="#/newlib" data-key="new-lib">+ Aggiungi raccolta</a></div></div>' +
       accountPanelHtml);
@@ -3468,10 +3476,10 @@ async function noticesArea() {
   }
   if (!d.linked) { location.replace('#/settings/account'); return ''; }
   var prefs = d.prefs || {};
+  // Ogni tipo di avviso: una riga con l'interruttore a destra, come nelle app del telefono
   var kinds = NOTICE_KINDS.map(function (k) {
     var on = prefs[k[0]] !== false;
-    return '<dt>' + esc(k[1]) + '</dt><dd><button class="btn f' + (on ? ' on' : '') + '" data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) +
-      '" data-key="npref-' + k[0] + '">' + (on ? IC.check + ' Sì' : 'No') + '</button></dd>';
+    return swRow(k[1], on, 'data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) + '" data-key="npref-' + k[0] + '"');
   }).join('');
   var devs = (d.devices || []).map(function (v) {
     var what = v.kind === 'android' ? 'App Android' : v.kind === 'ios' ? 'iPhone / iPad' : 'Browser';
@@ -3484,7 +3492,7 @@ async function noticesArea() {
   var list = noticeRows(news, 'pgn-');
   return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.',
     '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
-    '<div class="panel"><h2>Cosa ti avvisa</h2><dl class="kv nkinds">' + kinds + '</dl></div>' +
+    '<div class="panel"><h2>Cosa ti avvisa</h2>' + kinds + '</div>' +
     '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
     '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
       (unreadNotices(news) ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgnall">Segna tutte come lette</button></div>' : '') +
@@ -3800,12 +3808,12 @@ function myPcsPanel(af) {
       ? '<button class="btn f" data-act="pcupd" data-arg="' + m.n + '" data-key="pcupd-' + m.n + '">Aggiorna il server</button>' : '';
     return '<div class="folder"><div class="where"><b>' + esc(m.name || 'Il tuo altro PC') + '</b><small>' + st + '</small></div>' + upd + '</div>';
   }).join('');
-  var state = !af.self_reach ? 'Spento: da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
-    : af.reachable ? 'Attivo: ogni PC dove sei entrato vede le raccolte degli altri accesi'
-      : 'Attivo, ma gli altri tuoi PC non raggiungono ancora questo (Tailscale in avvio)';
+  var state = !af.self_reach ? 'Da qui non vedi le raccolte degli altri tuoi PC, e loro non vedono quelle di qui'
+    : af.reachable ? 'Ogni PC dove sei entrato vede le raccolte degli altri accesi'
+      : 'Gli altri tuoi PC non raggiungono ancora questo (Tailscale in avvio)';
   return '<div class="panel"><h2>I tuoi PC</h2>' +
     (af.self_reach ? (rows ? '<div class="lib">' + rows + '</div>' : '<p>Nessun altro PC acceso con il tuo account, per ora.</p>') : '') +
-    '<button class="setting f" data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself">Raggiungi le tue raccolte dagli altri tuoi PC<small>' + esc(state) + '</small></button>' +
+    swRow('Raggiungi le tue raccolte dagli altri tuoi PC', !!af.self_reach, 'data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself"', state) +
     '<p class="kvnote">In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
 }
 
@@ -3906,8 +3914,8 @@ function accountFriendsPanel(af, sh) {
     return row(f, '<button class="btn f" data-act="afremove" data-arg="' + f.id + ':no" data-key="af-undo-' + f.id + '">Annulla</button>', 'richiesta mandata: aspetta che accetti');
   }).join('');
   var sharing = af.sharing
-    ? (af.published ? 'Attiva: i tuoi amici vedono le tue raccolte' : 'Attiva, ma gli amici non ti raggiungono ancora')
-    : 'Spenta: i tuoi amici non vedono le tue raccolte (tu vedi le loro)';
+    ? (af.published ? 'I tuoi amici vedono le tue raccolte' : 'Gli amici non ti raggiungono ancora')
+    : 'I tuoi amici non vedono le tue raccolte (tu vedi le loro)';
   return head +
     (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
     (friends ? '<div class="lib">' + friends + '</div>' : '<p>Ancora nessun amico.</p>') +
@@ -3915,7 +3923,7 @@ function accountFriendsPanel(af, sh) {
     '<label class="flabel" for="afname">Aggiungi un amico: il nome del suo account BunkerPlex</label>' +
     '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
     '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>' +
-    '<button class="setting f" data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare">Condividi le tue raccolte con i tuoi amici<small>' + esc(sharing) + '</small></button>' +
+    swRow('Condividi le tue raccolte con i tuoi amici', !!af.sharing, 'data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare"', sharing) +
     (af.sharing && sh ? '<p>' + reachState(sh) + '</p>' : '') +
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
       '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
@@ -3969,10 +3977,10 @@ function friendsPanel(sh, cloud) {
   return '<div class="panel"><h2>Amici</h2>' +
     '<p>Uno dei due manda la richiesta, l\'altro la accetta: da quel momento, quando il PC dell\'amico è acceso, le sue raccolte compaiono nel menu e nella Home. ' +
     'Si guarda soltanto: nessuno può modificare la libreria dell\'altro.</p>' + lists +
-    '<button class="setting f" data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle">Porta per gli amici su questo PC<small>' +
-      (sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') + '</small></button>' +
-    '<button class="setting f" data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport">Apri da solo la porta sul router<small>' +
-      (sh.auto_port ? 'Sì' : 'No: scrivi tu il tuo indirizzo, per esempio quello di Tailscale') + '</small></button>' +
+    swRow('Porta per gli amici su questo PC', !!sh.on, 'data-act="sharetoggle" data-arg="' + (sh.on ? 0 : 1) + '" data-key="sharetoggle"',
+      sh.on ? 'Aperta' : 'Chiusa: nessun amico può entrare né mandare richieste') +
+    swRow('Apri da solo la porta sul router', !!sh.auto_port, 'data-act="shareport" data-arg="' + (sh.auto_port ? 0 : 1) + '" data-key="shareport"',
+      sh.auto_port ? '' : 'Scrivi tu il tuo indirizzo, per esempio quello di Tailscale') +
     '<p>' + reachState(sh) + '</p>' +
     // Dalla TV non si scrivono indirizzi e password: la richiesta si manda dal PC
     (TV ? '<p>Per collegare un amico apri <b>http://' + esc(location.host) + '</b> dal browser di un PC: qui sulla TV non serve nessun accesso.</p></div>' :
@@ -4011,7 +4019,7 @@ function devicePanel() {
       ' su ogni TV, telefono e PC dove entri. Restano di questo dispositivo solo l\'aspetto da TV e il riconoscimento dei dispositivi lenti.</p>' +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
-    (TV ? '' : '<button class="setting f" data-act="devtv" data-key="devtv">Aspetto da TV (per il browser di una smart TV)<small>' + (device.tv ? 'Attivo' : 'Spento') + '</small></button>') +
+    (TV ? '' : swRow('Aspetto da TV', !!device.tv, 'data-act="devtv" data-key="devtv"', 'Per il browser di una smart TV')) +
     '</div>';
 }
 
