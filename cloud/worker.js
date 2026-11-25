@@ -64,6 +64,15 @@ function fail(status, detail) {
 
 const now = () => Date.now() / 1000;
 
+// La rete da cui arriva una richiesta: l'IPv4 pubblico, o i primi 64 bit dell'IPv6
+// (in casa i dispositivi cambiano la seconda meta' dell'indirizzo, non la prima)
+function netKey(request) {
+  const ip = request.headers.get('CF-Connecting-IP') || '';
+  if (!ip.includes(':')) return ip;
+  const parts = ip.split(':');
+  return parts.length >= 4 && !ip.includes('::') ? parts.slice(0, 4).join(':') + '::/64' : ip;
+}
+
 // Le colonne aggiunte dopo alla tabella dei server (lan, friends): si aggiungono
 // da sole alla prima chiamata, cosi' il database non va ritoccato a mano.
 let serverCols = false;
@@ -218,6 +227,7 @@ async function serverRoutes(request, env, path, method) {
     const b = await body(request);
     const url = cleanUrl(b.url);
     const lan = cleanUrl(b.lan);
+    const pub = cleanUrl(b.public);
     const pin = String(b.pin || '');
     if (pin && !/^[0-9a-f]{64}$/.test(pin)) fail(400, 'Impronta non valida');
     const name = String(b.name || '').slice(0, 40);
@@ -227,10 +237,10 @@ async function serverRoutes(request, env, path, method) {
     await env.DB.batch([
       env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ? WHERE sid = ?')
         .bind(t, name, String(b.version || '').slice(0, 40), securePort, srv.sid),
-      env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,NULL) ' +
+      env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, public, friends, pin, t, ip, token_hash) VALUES(?,?,?,?,?,?,?,?,?,?,NULL) ' +
         'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
-        'friends = excluded.friends, pin = excluded.pin, t = excluded.t, token_hash = NULL')
-        .bind(srv.owner_id, srv.sid, name, url, lan, b.friends === true ? 1 : 0, pin, t)
+        'public = excluded.public, friends = excluded.friends, pin = excluded.pin, t = excluded.t, ip = excluded.ip, token_hash = NULL')
+        .bind(srv.owner_id, srv.sid, name, url, lan, pub, b.friends === true ? 1 : 0, pin, t, netKey(request))
     ]);
     // Il nome nella rete di casa (per il certificato valido): dall'indirizzo lan
     const names = await syncServerDns(env, srv.sid, lan ? new URL(lan).hostname : '');
@@ -298,33 +308,50 @@ async function userServerRoutes(request, env, path, method, user) {
     return json({ credential: 's_' + sid + '_' + secret, owner: { id: user.id, username: user.username } });
   }
 
-  // Tutti i server che si possono usare: i propri e quelli che gli amici condividono
+  // Tutti i server che si possono usare: i propri e quelli che gli amici condividono.
+  // local = la sua presenza arriva dalla stessa rete di chi chiede (e' «in casa»).
+  // friends = gli amici e le richieste, per la scelta del server (aggiungi/accetta).
   if (path === '/servers' && method === 'GET') {
+    await ensureServerCols(env);
     await ensureCertTables(env);
     const t = now();
+    const here = netKey(request);
     const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
-    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.pin, s.friends, s.t, c.last_seen, c.secure_port, ' +
+    const local = (s) => !!here && s.ip === here && online(s.last_seen) !== false;
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, s.ip, c.last_seen, c.secure_port, ' +
       '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
-      'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.pin, s.t, c.last_seen FROM servers s ' +
+      'SELECT s.user_id, u.username, s.sid, s.name, s.url, s.public, s.pin, s.t, s.ip, c.last_seen, c.secure_port, ' +
+      '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       "JOIN friends f ON f.status = 'ok' AND ((f.a = ? AND f.b = s.user_id) OR (f.b = ? AND f.a = s.user_id)) " +
       'JOIN users u ON u.id = s.user_id LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id ' +
       'WHERE s.friends = 1 AND u.disabled = 0').bind(user.id, user.id).all();
     const servers = [
       ...own.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
-        online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends,
-        addresses: { lan: s.lan || '', remote: s.url || '',
+        online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends, local: local(s),
+        addresses: { lan: s.lan || '', remote: s.url || '', public: s.public || '',
           secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       })),
       ...shared.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'friend', owner: { id: s.user_id, username: s.username },
-        online: online(s.last_seen), seen: s.last_seen || s.t, shared: true,
-        addresses: { lan: '', remote: s.url || '' }, pin: s.pin
+        online: online(s.last_seen), seen: s.last_seen || s.t, shared: true, local: local(s),
+        // Gli amici si collegano direttamente: nome di casa con certificato (se sono li')
+        // e indirizzo pubblico (Funnel) da fuori
+        addresses: { lan: '', remote: s.url || '', public: s.public || '',
+          secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       }))
     ];
-    return json({ me: { id: user.id, username: user.username }, servers });
+    const rel = await env.DB.prepare(
+      'SELECT f.a, f.b, f.status, ua.username AS ua, ub.username AS ub FROM friends f ' +
+      'JOIN users ua ON ua.id = f.a JOIN users ub ON ub.id = f.b WHERE f.a = ? OR f.b = ?'
+    ).bind(user.id, user.id).all();
+    const friends = rel.results.map((r) => ({
+      id: r.a === user.id ? r.b : r.a, username: r.a === user.id ? r.ub : r.ua,
+      status: r.status === 'ok' ? 'ok' : (r.a === user.id ? 'sent' : 'received')
+    }));
+    return json({ me: { id: user.id, username: user.username }, servers, friends });
   }
 
   // Un gettone per entrare in un server: proprio (owner) o di un amico (friend)
@@ -426,6 +453,11 @@ async function ensureCertTables(env) {
   ]);
   const cols = (await env.DB.prepare('PRAGMA table_info(server_creds)').all()).results.map((c) => c.name);
   if (!cols.includes('secure_port')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN secure_port INTEGER NOT NULL DEFAULT 0').run();
+  // Indirizzo pubblico del server (Tailscale Funnel): la PWA lo usa fuori casa
+  const scols = (await env.DB.prepare('PRAGMA table_info(servers)').all()).results.map((c) => c.name);
+  if (!scols.includes('public')) await env.DB.prepare("ALTER TABLE servers ADD COLUMN public TEXT NOT NULL DEFAULT ''").run();
+  // Da quale rete (IP pubblico) arriva la presenza: chi apre l'app dalla stessa rete lo ha «in casa»
+  if (!scols.includes('ip')) await env.DB.prepare("ALTER TABLE servers ADD COLUMN ip TEXT NOT NULL DEFAULT ''").run();
   certTables = true;
 }
 

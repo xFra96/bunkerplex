@@ -105,6 +105,37 @@ class GettoniAccesso(unittest.TestCase):
         # Un amico con il gettone non e' il proprietario: niente API complete
         self.assertIsNone(app.access_user(self.k.token(sub="8", role="friend")))
 
+    def entra(self, token):
+        async def body(_):
+            return {"token": token, "device": "Telefono"}
+        with mock.patch.object(app, "read_json", side_effect=body):
+            return asyncio.run(app.auth_access(None))
+
+    def test_amico_entra_direttamente_come_ospite(self):
+        tok = self.k.token(sub="8", name="bea", role="friend")
+        with mock.patch.object(app, "friends_shared", return_value=False):
+            with self.assertRaises(app.HTTPException) as e:
+                self.entra(tok)
+            self.assertEqual(e.exception.status_code, 403)
+        with mock.patch.object(app, "friends_shared", return_value=True):
+            r = self.entra(tok)
+            self.assertTrue(r["session"])
+            self.assertEqual(r["user"]["name"], "bea")
+            self.assertTrue(r["user"]["guest"])
+            u = app.session_user(r["session"])
+            self.assertTrue(u["guest"])
+            # La chiave dei video vale anche per l'ospite
+            self.assertTrue(app.guest_user(u["id"])["guest"])
+            # Una seconda volta: stesso ospite, niente doppioni
+            self.entra(self.k.token(sub="8", name="bea", role="friend", jti="j2"))
+        con = app.db(raw=True)
+        try:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM users WHERE cloud_id=8").fetchone()[0], 1)
+        finally:
+            con.close()
+        # Il proprietario entra come sempre
+        self.assertFalse(self.entra(self.k.token(jti="j3"))["user"]["guest"])
+
     def test_authgate_con_bearer(self):
         visto = {}
 

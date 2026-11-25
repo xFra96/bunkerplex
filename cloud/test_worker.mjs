@@ -41,8 +41,9 @@ const VER = 'a'.repeat(64);
 
 function setup() {
   const env = { DB: fakeD1(), SETUP_KEY: 'k' };
-  const call = async (method, path, body, token) => {
+  const call = async (method, path, body, token, ip) => {
     const headers = { 'Content-Type': 'application/json' };
+    if (ip) headers['CF-Connecting-IP'] = ip;
     if (token) headers.Authorization = 'Bearer ' + token;
     const res = await worker.fetch(new Request('https://acc.test' + path,
       { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }), env);
@@ -96,6 +97,25 @@ test('un server prende la credenziale, manda la presenza e compare in GET /serve
   // Le app di prima leggono ancora GET /friends
   const old = await t.call('GET', '/friends', undefined, await t.login('bob', 'app'));
   assert.equal(old.body.friends[0].servers[0].sid, SID);
+});
+
+test('GET /servers dice quale server e in casa (stessa rete) e porta amici e richieste', async () => {
+  const t = await twoFriends();
+  const carla = t.addUser('carla');
+  t.env.DB.raw.prepare("INSERT INTO friends(a, b, status, t) VALUES(?, ?, 'pending', 0)").run(carla, t.anna);
+  const cred = (await t.call('POST', `/servers/${SID}/claim`, {}, await t.login('anna', 'server'))).body.credential;
+  await t.call('POST', '/server/heartbeat', { name: 'PC', url: '', pin: PIN, friends: true }, cred, '5.6.7.8');
+  const tok = await t.login('anna', 'pwa');
+  const home = await t.call('GET', '/servers', undefined, tok, '5.6.7.8');
+  assert.equal(home.body.servers[0].local, true);
+  const away = await t.call('GET', '/servers', undefined, tok, '9.9.9.9');
+  assert.equal(away.body.servers[0].local, false);
+  const fr = Object.fromEntries(home.body.friends.map((f) => [f.username, f.status]));
+  assert.deepEqual(fr, { bob: 'ok', carla: 'received' });
+  // IPv6: stessa rete se i primi 64 bit sono uguali
+  await t.call('POST', '/server/heartbeat', { name: 'PC', url: '', pin: PIN, friends: true }, cred, '2a01:1:2:3:aaaa:1:1:1');
+  const v6 = await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'), '2a01:1:2:3:bbbb:2:2:2');
+  assert.equal(v6.body.servers[0].local, true);
 });
 
 test('un server solo in casa (senza indirizzo da fuori) non va alle app di prima', async () => {
@@ -301,7 +321,8 @@ test('nome DNS del server nella rete di casa e indirizzo https in GET /servers',
     const s = (await t.call('GET', '/servers', undefined, await t.login('anna', 'pwa'))).body.servers[0];
     assert.equal(s.addresses.secure_lan, 'https://192-168-1-5.1234abcd.bpx.test:32443');
     const f = (await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'))).body.servers[0];
-    assert.equal(f.addresses.secure_lan, undefined);
+    // Anche l'amico lo riceve: si collega direttamente (in casa del proprietario)
+    assert.equal(f.addresses.secure_lan, 'https://192-168-1-5.1234abcd.bpx.test:32443');
     // Indirizzo di casa cambiato: nome nuovo, il vecchio sparisce
     await t.call('POST', '/server/heartbeat', { name: 'PC', lan: 'https://10.0.0.7:32501', pin: PIN, secure_port: 32443 }, cred);
     assert.deepEqual([...net.dns.values()].map((r) => r.name), ['10-0-0-7.1234abcd.bpx.test']);

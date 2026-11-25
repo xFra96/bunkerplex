@@ -666,7 +666,7 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 // I server degli amici si aprono dal proprio server, come prima (src = f<n>).
 // Vedi docs/architettura.md.
 var CENTRAL = !!document.querySelector('meta[name="bp-central"]');
-var C = { token: '', user: null, sid: '', owner: 0, name: '', role: '', base: '', session: '', mkey: '', mexp: 0, list: null, error: '' };
+var C = { token: '', user: null, sid: '', owner: 0, name: '', role: '', base: '', session: '', mkey: '', mexp: 0, list: null, friends: [], error: '' };
 var C_SAVED = ['token', 'user', 'sid', 'owner', 'name', 'role'];
 
 function cSave() {
@@ -751,7 +751,7 @@ function cDrop() {
 // Via anche dall'account (su questo dispositivo)
 function cForget() {
   cDrop();
-  C.token = ''; C.user = null; C.sid = ''; C.list = null;
+  C.token = ''; C.user = null; C.sid = ''; C.list = null; C.friends = [];
   cSave();
 }
 
@@ -782,7 +782,9 @@ function cCandidates(s) {
   // Indirizzo di casa in http: va nell'app Android (che lo permette); un browser lo blocca subito
   var lan = s.addresses && /^https:\/\/([\d.]+):\d+$/.exec(s.addresses.lan || '');
   if (lan) out.push('http://' + lan[1] + ':32500');
-  out.push('http://localhost:32500');
+  if (s.role === 'owner') out.push('http://localhost:32500');
+  // Fuori casa: l'indirizzo pubblico del server (Tailscale Funnel), se acceso
+  if (s.addresses && s.addresses.public) out.push(s.addresses.public);
   return out;
 }
 
@@ -793,15 +795,11 @@ async function cMediaKey(force) {
   if (r.ok && j.key) { C.mkey = j.key; C.mexp = j.exp; }
 }
 
-// Collegamento al server scelto: indirizzo, sessione, chiave dei video
+// Collegamento al server scelto: indirizzo, sessione, chiave dei video.
+// Anche il server di un amico si apre direttamente: il servizio da' un gettone
+// «friend» e quel server fa entrare l'amico come ospite (le raccolte condivise).
 async function cOpen(s) {
-  var mine = s.role === 'owner';
   var host = s;
-  if (!mine) {
-    // Il server di un amico si apre dal proprio server acceso (che lo collega)
-    host = (C.list || []).filter(function (x) { return x.role === 'owner' && x.online !== false; })[0];
-    if (!host) throw new Error('Per i server degli amici serve un tuo server acceso');
-  }
   var base = await anyOf(cCandidates(host).map(function (c) { return cProbe(c, host.sid); }));
   var saved = cSessGet(host.sid);
   var session = saved && saved.base === base ? saved.session : '';
@@ -821,26 +819,60 @@ async function cOpen(s) {
   }
   C.base = base;
   C.session = session;
-  if (APP && tvApp.rememberServer) tvApp.rememberServer(base);     // senza Internet l'app lo ritrova
+  if (APP && tvApp.rememberServer && s.role === 'owner') tvApp.rememberServer(base);     // senza Internet l'app lo ritrova
   await cMediaKey(true);
   auth = null;
   await loadAuth();
-  // Quale parte mostrare: il server stesso, o quello dell'amico collegato da qui
-  var src = 'here';
-  if (!mine) {
-    var f = await api('/account-friends').catch(function () { return {}; });
-    (f.friends || []).forEach(function (fr) {
-      (fr.servers || []).forEach(function (x) { if (x.sid === s.sid && x.n) src = 'f' + x.n; });
-    });
-    if (src === 'here') throw new Error('Il tuo server non è ancora collegato a ' + s.owner.username + ': riprova tra un minuto');
-  }
-  setServer(src);
+  setServer('here');
   if (auth.user && !auth.user.must_change) await afterLogin([]);
 }
 
+// L'elenco dei server: prima quello in casa (stessa rete), poi gli accesi, i tuoi
+// prima di quelli degli amici, in fondo gli spenti. Con l'elenco arrivano anche gli
+// amici e le richieste (per aggiungerli da qui).
 async function cServers(force) {
-  if (!C.list || force) C.list = (await cloud('GET', '/servers')).servers || [];
+  if (!C.list || force) {
+    var r = await cloud('GET', '/servers');
+    var list = r.servers || [];
+    C.friends = r.friends || [];
+    var sorted = C.list = cSort(list);
+    // Il servizio riconosce la stessa rete dall'indirizzo pubblico; se non basta
+    // (IPv4 e IPv6 diversi) si prova il tuo server sulla rete di casa, senza aspettare
+    if (!list.some(function (s) { return s.local; })) {
+      cLocalProbe(list).then(function () {
+        if (C.list === sorted && list.some(function (s) { return s.local; })) {
+          C.list = cSort(C.list);
+          if (!C.base) render();
+        }
+      });
+    }
+  }
   return C.list;
+}
+
+function cSort(list) {
+  function rank(s) {
+    if (s.local) return 0;
+    if (s.online === false) return 4;
+    return s.role === 'owner' ? (s.online ? 1 : 3) : (s.online ? 2 : 3);
+  }
+  return list.map(function (s, i) { return { s: s, i: i }; })
+    .sort(function (a, b) { return rank(a.s) - rank(b.s) || a.i - b.i; })
+    .map(function (x) { return x.s; });
+}
+
+function cLocalProbe(list) {
+  var mine = list.filter(function (s) { return s.role === 'owner' && s.online !== false; });
+  return Promise.all(mine.map(function (s) {
+    var a = s.addresses || {}, c = [];
+    if (a.secure_lan) c.push(a.secure_lan);
+    var lan = /^https:\/\/([\d.]+):\d+$/.exec(a.lan || '');
+    if (lan && APP) c.push('http://' + lan[1] + ':32500');
+    if (!c.length) return null;
+    return Promise.race([anyOf(c.map(function (b) { return cProbe(b, s.sid); })),
+      new Promise(function (ok, ko) { setTimeout(ko, 1500); })])
+      .then(function () { s.local = true; }, function () { /* non in casa */ });
+  }));
 }
 
 // Il server scelto l'ultima volta (se c'e' ancora), altrimenti l'elenco
@@ -1011,17 +1043,36 @@ async function cServersPage() {
     var off = s.online === false;
     var friend = s.role === 'friend';
     var sub = friend ? 'di ' + esc(s.owner.username) : 'Il tuo server';
-    sub += off ? ' · spento o non raggiungibile' : (s.online ? ' · acceso' : '');
+    sub += off ? ' · spento o non raggiungibile' : s.local ? ' · in casa' : (s.online ? ' · acceso' : '');
     return '<button class="srv f' + (off ? ' off' : '') + (C.sid === s.sid ? ' on' : '') + '"' + (i === 0 ? ' data-autofocus' : '') +
       ' data-act="cpick" data-arg="' + i + '" data-key="csrv-' + esc(s.sid) + '-' + (friend ? s.owner.id : 0) + '">' +
       '<span class="srvico">' + (friend ? FRIEND_ICON : SRV_ICON) + '</span><span class="srvtxt"><b>' + esc(s.name || 'PC') + '</b><small>' + sub + '</small></span>' +
       '<i class="srvdot' + (off ? '' : ' live') + '"></i></button>';
   }
   var html = list.map(card).join('');
+  // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
+  var friends = C.friends || [];
+  friends.forEach(function (f) {
+    if (f.status !== 'ok' || list.some(function (s) { return s.role === 'friend' && s.owner.id === f.id; })) return;
+    html += '<button class="srv f off" data-act="cnoshare" data-arg="' + esc(f.username) + '" data-key="cfr-' + f.id + '">' +
+      '<span class="srvico">' + FRIEND_ICON + '</span><span class="srvtxt"><b>' + esc(f.username) + '</b><small>Amico · nessun server condiviso acceso</small></span>' +
+      '<i class="srvdot"></i></button>';
+  });
+  html += cache.cAdd
+    ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="caddsend" placeholder="Nome dell\'account del tuo amico">' +
+      '<button class="btn primary f" data-act="caddsend" data-key="caddsend">Invia</button></div>'
+    : '<button class="srv add f" data-act="cadd" data-key="cadd"><span class="srvico">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account: vedrai i suoi server accesi</small></span></button>';
+  var req = friends.filter(function (f) { return f.status === 'received'; }).map(function (f) {
+    return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
+      '<button class="btn f" data-act="cdecline" data-arg="' + f.id + '" data-key="cdec-' + f.id + '">Rifiuta</button>' +
+      '<button class="btn primary f" data-act="caccept" data-arg="' + f.id + '" data-key="cacc-' + f.id + '">Accetta</button></div>';
+  }).join('');
+  var sent = friends.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
   return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
-    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') +
-    (html ? '<div class="srvlist">' + html + '</div>'
-      : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
+    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
+    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
+    '<div class="srvlist">' + html + '</div>' +
+    (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
     '<button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button>', true);
 }
@@ -1209,11 +1260,36 @@ function cActions() {
       } catch (e) {
         cDrop();
         C.error = (s.name || 'PC') + ': ' + e.message +
-          (s.role === 'owner' ? ' (serve la stessa rete di casa con il nome https del server, o questo PC)' : '');
+          (s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)'
+            : ' (fuori casa il server di ' + s.owner.username + ' deve avere l\'indirizzo pubblico acceso)');
         render();
       }
     },
-    crefresh: function () { C.list = null; C.error = ''; render(); }
+    crefresh: function () { C.list = null; C.error = ''; render(); },
+    cnoshare: function (name) { toast(name + ' non ha server accesi da condividere: deve accendere la condivisione con gli amici sul suo server'); },
+    cadd: function () { cache.cAdd = true; render(); },
+    caddsend: async function () {
+      var name = fieldValue('afname').trim();
+      if (!name) { toast('Scrivi il nome dell\'account del tuo amico'); return; }
+      try {
+        var r = await cloud('POST', '/friends', { username: name });
+        toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username + ': quando accetta, i suoi server compaiono qui');
+        cache.cAdd = false;
+        C.list = null;
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    caccept: async function (id) {
+      try {
+        await cloud('POST', '/friends/' + id + '/accept', {});
+        toast('Ora siete amici: i suoi server compaiono qui');
+        C.list = null;
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    cdecline: async function (id) {
+      try { await cloud('DELETE', '/friends/' + id); C.list = null; render(); } catch (e) { toast(e.message); }
+    }
   };
 }
 
@@ -2815,7 +2891,8 @@ function settingsRows(i, u, sh) {
       state: tvOld || srvWarn ? 'warn' : 'ok' });
   }
   rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
-    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono' : 'Preferenze di visione, collegamento al server',
+    desc: TV ? 'Preferenze di visione, collegamento, app sul telefono'
+      : 'Preferenze di visione, collegamento al server' + (phoneTvOk() ? ', installa sulla TV' : ''),
     value: 'Animazioni ' + labelOf(ANIMS, device.anim).toLowerCase(), state: '' });
   if (!APP) {
     rows.push({ area: 'apps', label: 'App per TV e telefono',
@@ -3209,7 +3286,20 @@ async function settingsArea(area) {
     (APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
       '<a class="btn f" href="#/settings/updates" data-key="dev-upd">Versioni e aggiornamenti</a></div>' : '') +
     '</div>' +
-    (TV ? await apkPanel('App sul telefono') : ''));
+    (TV ? await apkPanel('App sul telefono') : '') + phoneTvPanel());
+}
+
+// Dall'app Android sul telefono: installa l'app TV sulle TV di casa con adb,
+// senza PC (la pagina e' nell'app, tvinstall.html)
+function phoneTvOk() {
+  try { return PHONE_APP && typeof tvApp.tvInstallSupported === 'function' && tvApp.tvInstallSupported(); } catch (e) { return false; }
+}
+
+function phoneTvPanel() {
+  if (!phoneTvOk()) return '';
+  return '<div class="panel"><h2>App sulla TV</h2>' +
+    '<p>Installa BunkerPlex sulla TV di casa direttamente da questo telefono: basta accendere una volta il debug sulla TV.</p>' +
+    '<div class="actions"><button class="btn primary f" data-act="phonetv" data-key="phonetv">Installa sulla TV</button></div></div>';
 }
 
 // ---------------------------------------------------------------- App sul telefono (PWA)
@@ -6129,6 +6219,7 @@ var actions = {
     tvSend('pair', { target: a.trim(), code: c.trim() });
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
+  phonetv: function () { if (phoneTvOk()) tvApp.openTvInstall(); },
   tvcancel: function () { tvSend('cancel'); },
   tvcopylog: function () {
     api('/tv/log').then(function (r) { return copyText(r.text || ''); }).then(function (ok) {

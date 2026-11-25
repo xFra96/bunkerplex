@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS servers(
   name TEXT,
   url TEXT NOT NULL,
   lan TEXT,                          -- indirizzo nella rete di casa (si prova per primo)
+  public TEXT NOT NULL DEFAULT '',   -- indirizzo pubblico (Tailscale Funnel), per la PWA fuori casa
+  ip TEXT NOT NULL DEFAULT '',       -- rete (IP pubblico) da cui arriva la presenza: «in casa» per chi e' li'
   friends INTEGER NOT NULL DEFAULT 1, -- 0 = solo per gli altri PC dello stesso account
   pin TEXT NOT NULL,
   t REAL NOT NULL,
