@@ -662,7 +662,22 @@ async function ensureNotices(env) {
     env.DB.prepare('CREATE TABLE IF NOT EXISTS notice_prefs(user_id INTEGER PRIMARY KEY, v TEXT)'),
     env.DB.prepare('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
   ]);
+  // read: 1 = letto (dalla campanella, da Impostazioni → Notifiche o da BP Avvisi)
+  const cols = (await env.DB.prepare('PRAGMA table_info(notices)').all()).results.map((c) => c.name);
+  if (!cols.includes('read')) await env.DB.prepare('ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 0').run();
   noticeTables = true;
+}
+
+// Segna letti alcuni avvisi (ids) o tutti quelli dell'account
+async function markRead(env, uid, b) {
+  const ids = Array.isArray(b.ids) ? b.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0).slice(0, 100) : [];
+  if (b.all) {
+    await env.DB.prepare('UPDATE notices SET read = 1 WHERE user_id = ? AND read = 0').bind(uid).run();
+  } else if (ids.length) {
+    await env.DB.prepare('UPDATE notices SET read = 1 WHERE user_id = ? AND id IN (' + ids.map(() => '?').join(',') + ')')
+      .bind(uid, ...ids).run();
+  }
+  return env.DB.prepare('SELECT COUNT(*) n FROM notices WHERE user_id = ? AND read = 0').bind(uid).first('n');
 }
 
 const te = new TextEncoder();
@@ -781,7 +796,7 @@ async function friendIds(env, uid) {
 }
 
 function noticeJson(r) {
-  return { id: r.id, kind: r.kind, title: r.title, body: r.body, t: r.t };
+  return { id: r.id, kind: r.kind, title: r.title, body: r.body, t: r.t, read: !!r.read };
 }
 
 async function noticeDevice(env, token) {
@@ -807,7 +822,7 @@ function avvisiPage(token, dev, keys) {
     '.btn{display:inline-block;border:0;border-radius:.6rem;padding:.75rem 1.2rem;font:600 1rem system-ui,sans-serif;background:#1a7f45;' +
     'color:#fff;text-decoration:none;cursor:pointer;margin:.3rem .4rem .3rem 0}.btn.alt{background:#1f2b23}' +
     'ol{padding-left:1.2rem;color:#c9d3cc}.n{padding:.7rem 0;border-top:1px solid #1f2b23}.n:first-child{border:0}' +
-    '.n b{display:block}.n small{color:#8b9a90}.err{color:#ff8f80}.ok{color:#38c172}</style></head><body><main>' +
+    '.n b{display:block}.n.new b:before{content:"● ";color:#38c172}.n small{color:#8b9a90}.err{color:#ff8f80}.ok{color:#38c172}</style></head><body><main>' +
     '<h1><b>BunkerPlex</b> Avvisi</h1><p>Le notifiche di BunkerPlex su questo dispositivo.</p>' +
     '<div class="box" id="state"></div><div class="box"><b>Ultimi avvisi</b><div id="list"><p>…</p></div></div>' +
     '</main><script>var C=' + cfg + ';' + AVVISI_JS + '</script></body></html>';
@@ -839,7 +854,7 @@ function paint(active){
  show('<p>Ricevi un avviso quando arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti.</p><button class="btn" id="a">Attiva le notifiche</button>'+open);
  document.getElementById('a').onclick=on}
 function when(t){return new Date(t*1000).toLocaleString('it-IT',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
-api('/list').then(function(j){ls.innerHTML=j.notices.length?j.notices.map(function(n){return '<div class="n"><b>'+esc(n.title)+'</b>'+esc(n.body)+'<br><small>'+when(n.t)+'</small></div>'}).join(''):'<p>Ancora nessun avviso.</p>';
+api('/list').then(function(j){if(j.notices.some(function(n){return !n.read}))api('/read','POST',{all:true});ls.innerHTML=j.notices.length?j.notices.map(function(n){return '<div class="n'+(n.read?'':' new')+'"><b>'+esc(n.title)+'</b>'+esc(n.body)+'<br><small>'+when(n.t)+'</small></div>'}).join(''):'<p>Ancora nessun avviso.</p>';
  var perm=window.Notification&&Notification.permission==='granted';
  if(perm&&'serviceWorker' in navigator)reg().then(function(r){return r.pushManager.getSubscription()}).then(function(s){if(s&&!j.push)return api('/push','POST',s.toJSON()).then(function(){return s});return s}).then(function(s){paint(!!s)});else paint(false)
 },function(e){ls.innerHTML='';show('<p class="err">'+esc(e.message)+'</p>')});
@@ -864,7 +879,7 @@ async function noticeRoutes(request, env, url, path, method) {
     return new Response(unb64u(ICON_PNG.replace(/\+/g, '-').replace(/\//g, '_')), {
       headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800' } });
   }
-  const m = /^\/avvisi\/([0-9a-f]{64})(\/manifest\.json|\/list|\/push|\/test)?$/.exec(path);
+  const m = /^\/avvisi\/([0-9a-f]{64})(\/manifest\.json|\/list|\/push|\/test|\/read)?$/.exec(path);
   if (!m) return null;
   const dev = await noticeDevice(env, m[1]);
   if (!dev) {
@@ -885,7 +900,7 @@ async function noticeRoutes(request, env, url, path, method) {
   }
   if (m[2] === '/list' && method === 'GET') {
     const since = Math.max(0, Number(url.searchParams.get('since') || 0) || 0);
-    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t FROM notices WHERE user_id = ? AND id > ? AND t >= ? ' +
+    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t, read FROM notices WHERE user_id = ? AND id > ? AND t >= ? ' +
       'ORDER BY id DESC LIMIT 30').bind(dev.user_id, since, dev.created - 60).all()).results;
     return json({ notices: rows.map(noticeJson), push: !!dev.endpoint });
   }
@@ -903,6 +918,9 @@ async function noticeRoutes(request, env, url, path, method) {
     await env.DB.prepare('UPDATE notice_devices SET endpoint = NULL, p256dh = NULL, auth = NULL WHERE token_hash = ?')
       .bind(dev.token_hash).run();
     return json({ ok: true });
+  }
+  if (m[2] === '/read' && method === 'POST') {
+    return json({ unread: await markRead(env, dev.user_id, await body(request)) });
   }
   if (m[2] === '/test' && method === 'POST') {
     if (!dev.endpoint) fail(409, 'Prima attiva le notifiche');
@@ -935,9 +953,13 @@ async function noticeAccountRoutes(request, env, url, path, method, user) {
     return json({ ok: true, sent: ids.filter(Boolean).length });
   }
   if (path === '/notices' && method === 'GET') {
-    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t FROM notices WHERE user_id = ? ORDER BY id DESC LIMIT 50')
+    const rows = (await env.DB.prepare('SELECT id, kind, title, body, t, read FROM notices WHERE user_id = ? ORDER BY id DESC LIMIT 50')
       .bind(user.id).all()).results;
-    return json({ notices: rows.map(noticeJson) });
+    const unread = await env.DB.prepare('SELECT COUNT(*) n FROM notices WHERE user_id = ? AND read = 0').bind(user.id).first('n');
+    return json({ notices: rows.map(noticeJson), unread });
+  }
+  if (path === '/notices/read' && method === 'POST') {
+    return json({ unread: await markRead(env, user.id, await body(request)) });
   }
   if (path === '/notices/prefs' && method === 'GET') return json({ prefs: await noticePrefs(env, user.id) });
   if (path === '/notices/prefs' && method === 'PUT') {

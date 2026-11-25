@@ -2742,14 +2742,15 @@ async function noticesArea() {
     return '<div class="lib"><div class="head">' + avatar(v.label || what) + '<div class="name"><b>' + esc(v.label || what) + '</b><small>' +
       esc(what + ' · ' + st) + '</small></div><button class="btn danger f" data-act="noticedel" data-arg="' + v.id + '" data-key="ndel-' + v.id + '">Togli</button></div></div>';
   }).join('');
-  var list = (d.notices || []).slice(0, 15).map(function (n) {
-    return '<dt>' + esc(n.title) + '<small>' + esc(noticeWhen(n.t)) + '</small></dt><dd>' + esc(n.body) + '</dd>';
-  }).join('');
+  var news = d.notices || [];
+  var list = noticeRows(news, 'pgn-');
   return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.',
     '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
     '<div class="panel"><h2>Cosa ti avvisa</h2><dl class="kv nkinds">' + kinds + '</dl></div>' +
     '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
-    '<div class="panel"><h2>Ultimi avvisi</h2>' + (list ? '<dl class="kv nlist">' + list + '</dl>' : '<p>Ancora nessun avviso.</p>') + '</div>');
+    '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
+      (unreadNotices(news) ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgnall">Segna tutte come lette</button></div>' : '') +
+      (list ? '<div class="nlist">' + list + '</div>' : '<p>Ancora nessun avviso.</p>') + '</div>');
 }
 
 function deviceLabel(kind) {
@@ -4883,6 +4884,24 @@ var actions = {
       render();
     }, function (e) { if (win) win.close(); toast(e.message); });
   },
+  noticeread: function (arg) {
+    var id = +arg, list = (act.info && act.info.notices) || [];
+    var n = list.filter(function (x) { return x.id === id; })[0];
+    var shown = document.querySelector('[data-act="noticeread"][data-arg="' + id + '"].unread');
+    if (n ? n.read : !shown) return;
+    if (n) n.read = true;
+    renderActivity();
+    markShown(id);
+    post('/notices/read', { ids: [id] }).catch(function (e) { if (n) n.read = false; renderActivity(); toast(e.message); });
+  },
+  noticeall: function () {
+    var list = (act.info && act.info.notices) || [];
+    list.forEach(function (n) { n.read = true; });
+    renderActivity();
+    document.querySelectorAll('.nlist .unread').forEach(function (el) { el.classList.replace('unread', 'read'); });
+    post('/notices/read', { all: true }).then(function () { toast('Tutti gli avvisi sono letti'); },
+      function (e) { toast(e.message); pollActivity(); });
+  },
   noticeoff: function () {
     if (typeof tvApp.noticesSet === 'function') tvApp.noticesSet('');
     toast('Notifiche spente su questo dispositivo');
@@ -6237,9 +6256,6 @@ function activityState() {
     notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
   }
-  (i.notices || []).forEach(function (n) {
-    notes.push({ key: 'n:' + n.id, title: n.title, text: n.body, href: '#/settings/notices' });
-  });
   if (i.devices_full) {
     notes.push({ key: 'devfull', href: '#/settings/friends', title: 'Troppi dispositivi nell\'account',
       text: 'Questo PC non raggiunge amici e tuoi PC: togli un dispositivo in Impostazioni → Amici e dispositivi' });
@@ -6270,7 +6286,29 @@ function activityState() {
   if (appOld(i)) {
     notes.push({ key: 'tvapp:' + appLatest(i).code, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
-  return { ops: ops, notes: notes };
+  return { ops: ops, notes: notes, news: i.notices || [] };
+}
+
+// Gli avvisi dell'account (nuovi titoli, amici, aggiornamenti): letti e non letti.
+// Toccandone uno si segna letto; «Segna tutte come lette» li azzera tutti.
+function noticeRows(list, prefix) {
+  return list.map(function (n) {
+    return '<button class="actrow f ' + (n.read ? 'read' : 'unread') + '" data-act="noticeread" data-arg="' + n.id + '" data-key="' + prefix + n.id + '">' +
+      '<span class="ndot" aria-hidden="true"></span><span class="acttxt"><b>' + esc(n.title) + '</b><small>' + esc(n.body) +
+      '</small><small class="nwhen">' + (n.read ? '' : 'Non letta · ') + esc(noticeWhen(n.t)) + '</small></span></button>';
+  }).join('');
+}
+
+function markShown(id) {
+  document.querySelectorAll('[data-act="noticeread"][data-arg="' + id + '"]').forEach(function (el) {
+    el.classList.replace('unread', 'read');
+    var w = el.querySelector('.nwhen');
+    if (w) w.textContent = w.textContent.replace('Non letta · ', '');
+  });
+}
+
+function unreadNotices(list) {
+  return (list || []).filter(function (n) { return !n.read; }).length;
 }
 
 function activityRows(st) {
@@ -6285,7 +6323,10 @@ function activityRows(st) {
   }).join('');
   return '<div class="sheet actsheet" role="dialog" aria-label="Attività e notifiche"><h3>Attività</h3>' +
     (ops ? '<div class="actgroup"><h4>In corso</h4>' + ops + '</div>' : '') +
-    '<div class="actgroup"><h4>Notifiche</h4>' + (notes || '<p class="actempty">Niente da segnalare: è tutto in ordine.</p>') + '</div></div>';
+    '<div class="actgroup"><h4>Notifiche</h4>' + (notes || '<p class="actempty">Niente da segnalare: è tutto in ordine.</p>') + '</div>' +
+    (st.news.length ? '<div class="actgroup"><h4>Avvisi' + (unreadNotices(st.news) ? ' · ' + unreadNotices(st.news) + ' da leggere' : '') + '</h4>' +
+      (unreadNotices(st.news) ? '<button class="actrow f allread" data-act="noticeall" data-key="nall"><span class="acttxt"><b>Segna tutte come lette</b></span></button>' : '') +
+      noticeRows(st.news, 'actn-') + '</div>' : '') + '</div>';
 }
 
 function activityOpen() { return !modal.hidden && modal.classList.contains('corner'); }
@@ -6410,7 +6451,7 @@ function renderActivity() {
   if (box.hidden) return;
   var st = activityState();
   var op = st.ops[0];
-  var unseen = st.notes.filter(function (n) { return !act.seen[n.key]; }).length;
+  var unseen = st.notes.filter(function (n) { return !act.seen[n.key]; }).length + unreadNotices(st.news);
   var html = op
     ? '<span class="spin" aria-hidden="true"></span><span class="acttext">' + esc(op.title) + (op.pct === null ? '' : ' ' + op.pct + '%') + '</span>'
     : IC.bell;
