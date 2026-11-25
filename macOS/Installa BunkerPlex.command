@@ -110,7 +110,7 @@ if ! docker compose up -d --build; then
 fi
 
 # Firewall del Mac: se e' acceso, deve lasciar entrare Docker (e' lui che
-# risponde sulle porte 32500 e 32501), altrimenti TV e telefoni restano su
+# risponde sulle porte 32500, 32501 e 32443), altrimenti TV e telefoni restano su
 # "Connessione..." per sempre. Si controlla senza permessi; se serve, macOS
 # chiede una volta la password per sistemarlo.
 fw=/usr/libexec/ApplicationFirewall/socketfilterfw
@@ -118,7 +118,7 @@ if [ -x "$fw" ] && "$fw" --getglobalstate 2>/dev/null | grep -q 'State = [12]'; 
   apps=()
   sleep 2
   # Il programma che ascolta davvero sulla porta, piu' quelli noti di Docker Desktop
-  for port in 32500 32501; do
+  for port in 32500 32501 32443; do
     for pid in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
       p=$(ps -o comm= -p "$pid" 2>/dev/null)
       [ -n "$p" ] && apps+=("$p")

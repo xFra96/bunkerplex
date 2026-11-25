@@ -51,6 +51,7 @@
       <button class="f" id="retry">Cerca di nuovo</button>
     </div>
     <div class="row"><button class="f" id="remote">Amici e tuoi PC fuori casa</button></div>
+    <div class="row"><button class="f" id="central">Entra con l'account</button></div>
   </div>
 </div>
 <script>
@@ -67,7 +68,7 @@ function showManual(title, error) {
   $('manual').hidden = false;
   $('mtitle').textContent = title;
   $('err').textContent = error || '';
-  var saved = app ? app.getServer() : '';
+  var saved = app ? (app.lastServer ? app.lastServer() : app.getServer()) : '';
   if (saved && !$('addr').value) $('addr').value = saved.replace(/^https?:\/\//, '').replace(/:32500$/, '');
   $('connect').focus();
 }
@@ -95,6 +96,7 @@ window.setupError = function (url) {
 $('connect').addEventListener('click', connect);
 $('retry').addEventListener('click', search);
 $('remote').addEventListener('click', function () { if (app && app.openRemote) app.openRemote(); });
+$('central').addEventListener('click', function () { if (app && app.openCentral) app.openCentral(); });
 $('addr').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.keyCode === 13) connect(); });
 
 // Frecce del telecomando tra campo e pulsanti

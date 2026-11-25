@@ -80,6 +80,8 @@ sealed class Screen {
     data object Phone : Screen()
     data class Link(val google: Boolean) : Screen()
     data object Servers : Screen()
+    data object CloudLogin : Screen()
+    data object CloudGoogle : Screen()
     data object Watchers : Screen()
     data class Reset(val email: String) : Screen()
     data class Google(val link: Boolean) : Screen()
@@ -117,7 +119,13 @@ class MainActivity : ComponentActivity() {
         Access.reset()                   // a ogni apertura: server e «Chi guarda?» da scegliere
         setupImages()
         update.start()
-        stack.add(if (Api.base.isEmpty()) Screen.Connect else Screen.Who)
+        // Con l'account: l'elenco dei server del servizio (e il server di prima). Senza:
+        // l'accesso, oppure il server scelto a mano come prima.
+        stack.add(when {
+            CloudTv.on(this) -> Screen.Servers
+            Api.base.isEmpty() -> Screen.CloudLogin
+            else -> Screen.Who
+        })
         setContent {
             Box(Modifier.fillMaxSize().background(C.bg)) {
                 val top = stack.last()
@@ -137,7 +145,12 @@ class MainActivity : ComponentActivity() {
                     Screen.Account -> AccountScreen(this@MainActivity, refresh)
                     is Screen.Login -> LoginScreen(this@MainActivity, top)
                     is Screen.Link -> LinkScreen(this@MainActivity, top.google)
-                    Screen.Servers -> key(refresh) { ServersScreen(this@MainActivity, refresh) }
+                    Screen.Servers -> key(refresh) {
+                        if (CloudTv.on(this@MainActivity)) CloudServersScreen(this@MainActivity, refresh)
+                        else ServersScreen(this@MainActivity, refresh)
+                    }
+                    Screen.CloudLogin -> CloudLoginScreen(this@MainActivity)
+                    Screen.CloudGoogle -> CloudGoogleScreen(this@MainActivity)
                     Screen.Watchers -> WatchersScreen(this@MainActivity)
                     is Screen.Reset -> ResetScreen(this@MainActivity, top)
                     Screen.Phone -> LinkScreen(this@MainActivity, false)
@@ -251,7 +264,8 @@ class MainActivity : ComponentActivity() {
                 Api.saveSession(this, "")
                 Api.user = null
                 Access.reset()
-                reset(Screen.Who)
+                CloudTv.resumed = true          // con l'account: di nuovo l'elenco, senza rientrare da soli
+                reset(if (CloudTv.on(this)) Screen.Servers else Screen.Who)
             }
         }.start()
     }
@@ -322,7 +336,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         when (intent.getStringExtra("go")) {
-            "home" -> reset(if (Api.home.isEmpty()) Screen.Connect else Screen.Who)
+            "home" -> reset(if (CloudTv.on(this)) Screen.Servers else if (Api.home.isEmpty()) Screen.Connect else Screen.Who)
             "setup" -> reset(Screen.Connect)
         }
     }
@@ -334,7 +348,7 @@ class MainActivity : ComponentActivity() {
         var status by remember { mutableStateOf("Cerco BunkerPlex sulla rete di casa…") }
         var searching by remember { mutableStateOf(true) }
         var manual by remember { mutableStateOf(false) }
-        var address by remember { mutableStateOf(Api.base.substringAfter("://").substringBefore(":")) }
+        var address by remember { mutableStateOf(Api.base.ifEmpty { Api.home }.substringAfter("://").substringBefore(":")) }
         var attempt by remember { mutableIntStateOf(0) }
 
         LaunchedEffect(attempt) {
@@ -377,7 +391,7 @@ class MainActivity : ComponentActivity() {
                     Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Btn("Cerca di nuovo", Modifier.focusRequester(fr), Ic.search, primary = true) { attempt++ }
                         Btn("Scrivi l'indirizzo") { manual = true }
-                        Btn("Amici e tuoi PC") { remote("friends") }
+                        Btn("Entra con l'account") { reset(Screen.CloudLogin) }
                     }
                     LaunchedEffect(Unit) { fr.requestFocus() }
                 }

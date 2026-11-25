@@ -14,6 +14,7 @@ import hmac
 import http.client
 import io
 import ipaddress
+import base64
 import json
 import math
 import mimetypes
@@ -2627,6 +2628,8 @@ def startup():
     threading.Thread(target=friends_loop, daemon=True).start()
     cast.scan_later()     # la lista di «Guarda su» pronta quando serve
     threading.Thread(target=sync_loop, daemon=True).start()
+    if SECURE_PORT:
+        threading.Thread(target=secure_loop, daemon=True).start()
     if SHARE_PORT:
         threading.Thread(target=share_listener, daemon=True).start()
         threading.Thread(target=public_listener, daemon=True).start()
@@ -2940,7 +2943,8 @@ class AuthGate:
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        if (scope.get("server") or ("", 0))[1] == PUBLIC_PORT and (scope["type"] != "http" or not auth_on()):
+        port = (scope.get("server") or ("", 0))[1]
+        if port and port in (PUBLIC_PORT, SECURE_PORT) and (scope["type"] != "http" or not auth_on()):
             # Da Internet solo con gli account (e i loro login): mai il PC aperto a tutti
             await self._reply(send, 403, "Non disponibile")
             return
@@ -2948,6 +2952,12 @@ class AuthGate:
             await self.inner(scope, receive, send)
             return
         path = scope["path"]
+        keyed = KEY_PATH.fullmatch(path)
+        if keyed:
+            # La PWA: video e immagini con la chiave nel percorso (vedi access_media).
+            # Nel percorso, e non nella domanda, resta anche ai segmenti HLS relativi.
+            scope = dict(scope, path=keyed.group(2), raw_path=keyed.group(2).encode())
+            path = scope["path"]
         if path.startswith("/api/share/") or (scope.get("server") or ("", 0))[1] == SHARE_PORT:
             # Un amico: con l'account vede (in sola lettura) solo le raccolte del profilo
             # che lo ha come amico; con il vecchio collegamento a password, tutto il PC
@@ -2965,6 +2975,14 @@ class AuthGate:
             await self._reply(send, 403, "Non disponibile")
             return
         user = session_user(session_token(scope))
+        if user is None:
+            bearer = bearer_of(scope)
+            if bearer:                   # gettone d'accesso del servizio account (vedi access_user)
+                user = await asyncio.to_thread(access_user, bearer)
+            elif keyed and scope.get("method") in ("GET", "HEAD"):
+                user = await asyncio.to_thread(media_user, keyed.group(1))
+            elif media_key_of(scope):    # chiave dei video (vedi access_media)
+                user = await asyncio.to_thread(media_user, media_key_of(scope))
         ctx = CURRENT.set(user)
         try:
             if path.startswith("/api/") and not path.startswith(OPEN_PATHS) and user is None:
@@ -3767,6 +3785,15 @@ def forget_account_friends(uid, token):
         had = (config.get("presence") or {}).pop(str(uid), None)
         if had:
             save_config()
+    cred = server_cred()
+    if cred:
+        con = db(raw=True)
+        try:
+            others = con.execute("SELECT 1 FROM users WHERE cloud_id=? AND id<>?", (cred["owner"], uid)).fetchone()
+        finally:
+            con.close()
+        if not others:               # era il proprietario: il server esce dall'account
+            drop_server_cred()
     if had and token:
         try:
             accounts.call("DELETE", f"/servers/{pc_id()}", token=token, timeout=6)
@@ -3787,7 +3814,7 @@ async def auth_setup(request: Request):
         raise HTTPException(400, "Su questo PC non c'è la chiave per creare l'amministratore")
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     res = await cloud("POST", "/setup", {"setup_key": key, "username": name, "verifier": ver,
-                                         "device": SERVER_NAME})
+                                         "device": SERVER_NAME, "kind": "server"})
     SETUP_FILE.unlink(missing_ok=True)
     cloud_status["at"] = 0.0
     return await finish_login(res, ver, body.get("device") or "browser")
@@ -3803,7 +3830,7 @@ async def auth_login(request: Request):
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
-                                      {"username": name, "verifier": ver, "device": SERVER_NAME})
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
     except accounts.CloudError as ex:
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
@@ -3855,7 +3882,7 @@ async def auth_reset_finish(request: Request):
     name = await login_name(email)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     res = await cloud("POST", "/reset/finish", {"email": email, "code": code, "verifier": ver,
-                                                "device": SERVER_NAME})
+                                                "device": SERVER_NAME, "kind": "server"})
     return await finish_login(res, ver, body.get("device") or "browser")
 
 
@@ -4097,7 +4124,7 @@ async def auth_pair_finish(code: str, request: Request):
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
-                                      {"username": name, "verifier": ver, "device": SERVER_NAME})
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
         if res["user"].get("must_change"):
             if not new:
                 raise HTTPException(409, "La password è provvisoria: scegline una tua")
@@ -5326,7 +5353,7 @@ def info():
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL, "login": True,
                 "release": updater.release(), "commit": updater.current_commit()[:7],
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
-                "addresses": other_addresses(), "cloud": accounts.cloud_url(), **tv}
+                "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id(), **tv}
     con = db()
     try:
         key = tmdb_key()
@@ -5334,7 +5361,7 @@ def info():
             "app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL,
             # Numero di versione del programma (es. 2026.11.23.2) e commit installato
             "release": updater.release(), "commit": updater.current_commit()[:7],
-            "addresses": other_addresses(), "cloud": accounts.cloud_url(),
+            "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id(),
             # Questo PC non entra nella rete di BunkerPlex: l'account ha gia' 4 dispositivi
             "devices_full": tailnet["limit"] is not None,
             "movies": con.execute("SELECT COUNT(*) FROM items WHERE kind='movie'").fetchone()[0],
@@ -6824,8 +6851,12 @@ def audio_plan(track, aout=""):
         return ["-c:a", "copy"]
     if aout in ("tv", "ac3") and ch > 2:
         return ["-c:a", "ac3", "-b:a", "640k"] + (["-ac", "6"] if ch > 6 else [])
+    sync = ["-af", "aresample=async=1:first_pts=0"]      # riallinea l'audio al video
     if aout == "aac" and ch > 2:
-        return ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
+        return sync + ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
+    if not aout and codec == "aac" and ch > 2:
+        # AAC surround per il browser: resta 5.1 (ricodificato, non copiato, per tenerlo in sincrono)
+        return sync + ["-c:a", "aac", "-b:a", "384k"] + (["-ac", "6"] if ch > 6 else [])
     # Per il browser l'audio si ricodifica sempre (anche l'AAC): copiarlo lasciava
     # l'offset di partenza del file e l'audio slittava rispetto al video. Ricodificando,
     # aresample lo riallinea; costa pochissimo processore.
@@ -7384,37 +7415,452 @@ async def share_ticket(request: Request):
             raise HTTPException(403, "Questo PC non si fa raggiungere dagli altri tuoi PC")
     elif not (friends_shared(p["id"]) and share_on()):
         raise HTTPException(404, "Su questo server quell'account non condivide")
+    return await in_thread(lambda: share_account_token(who, p["id"]))
+
+
+def share_account_token(who, profile):
+    """Ingresso (gettone /api/share) per un account amico, o per un altro PC o app dello
+    stesso account, dopo un biglietto o un gettone d'accesso del servizio account."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id FROM accounts WHERE cloud_from=? AND profile=?", (who["id"], profile)).fetchone()
+        if r:
+            account = r["id"]
+            con.execute("UPDATE accounts SET approved=1 WHERE id=?", (account,))
+        else:
+            base = "@" + re.sub(r"[^\w.\-]", "", str(who.get("username") or ""))[:24]
+            name, i = base, 1
+            while con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
+                i += 1
+                name = f"{base} {i}"
+            salt = secrets.token_bytes(16)   # nessuna password: si entra solo con i biglietti
+            account = con.execute(
+                "INSERT INTO accounts(name, salt, hash, approved, created, cloud_from, profile) "
+                "VALUES(?,?,?,1,?,?,?)", (name, salt, password_hash(secrets.token_urlsafe(24), salt),
+                                          time.time(), who["id"], profile)).lastrowid
+        token = new_session(con, account)
+        con.commit()
+        return {"ok": True, "token": token, "approved": True, "server": pc_name()}
+    finally:
+        con.close()
+
+
+@app.post("/api/share/access")
+async def share_access(request: Request):
+    """Come /api/share/ticket, ma con un gettone d'accesso del servizio account
+    (POST /servers/<sid>/access): firmato, si controlla qui (vedi access_claims)."""
+    if not share_open():
+        raise HTTPException(403, "La condivisione è spenta su questo server")
+    body = await read_json(request)
+    c = await asyncio.to_thread(access_claims, str(body.get("token") or ""))
+    if not c:
+        raise HTTPException(403, "Gettone non valido o scaduto")
+    con = db(raw=True)
+    try:
+        p = con.execute("SELECT id FROM users WHERE cloud_id=?", (c["own"],)).fetchone()
+    finally:
+        con.close()
+    if not p:
+        raise HTTPException(404, "Su questo server quell'account non c'è")
+    who = {"id": int(c["sub"]), "username": str(c.get("name") or "")}
+    if who["id"] == c["own"]:
+        if not self_reach(p["id"]):
+            raise HTTPException(403, "Questo PC non si fa raggiungere dagli altri tuoi PC")
+    elif c["role"] != "friend" or not (friends_shared(p["id"]) and share_on()):
+        raise HTTPException(404, "Su questo server quell'account non condivide")
+    return await in_thread(lambda: share_account_token(who, p["id"]))
+
+
+@app.post("/api/auth/access")
+async def auth_access(request: Request):
+    """La PWA centrale: un gettone d'accesso del servizio account (del proprietario)
+    in cambio di una sessione di questo server, da mandare come X-BP-Session.
+    Cosi' valgono come sempre «Chi guarda?», Esci e il resto."""
+    body = await read_json(request)
+    c = await asyncio.to_thread(access_claims, str(body.get("token") or ""))
+    if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
+        raise HTTPException(403, "Gettone non valido o scaduto")
 
     def work():
         con = db(raw=True)
         try:
-            r = con.execute("SELECT id FROM accounts WHERE cloud_from=? AND profile=?", (who["id"], p["id"])).fetchone()
-            if r:
-                account = r["id"]
-                con.execute("UPDATE accounts SET approved=1 WHERE id=?", (account,))
-            else:
-                base = "@" + re.sub(r"[^\w.\-]", "", str(who.get("username") or ""))[:24]
-                name, i = base, 1
-                while con.execute("SELECT 1 FROM accounts WHERE name=? COLLATE NOCASE", (name,)).fetchone():
-                    i += 1
-                    name = f"{base} {i}"
-                salt = secrets.token_bytes(16)   # nessuna password: si entra solo con i biglietti
-                account = con.execute(
-                    "INSERT INTO accounts(name, salt, hash, approved, created, cloud_from, profile) "
-                    "VALUES(?,?,?,1,?,?,?)", (name, salt, password_hash(secrets.token_urlsafe(24), salt),
-                                              time.time(), who["id"], p["id"])).lastrowid
-            token = new_session(con, account)
+            u = con.execute("SELECT * FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0", (c["own"],)).fetchone()
+            if not u:
+                raise HTTPException(404, "Su questo server il tuo account non c'è: entra una volta dal server")
+            token = open_session(con, u["id"], str(body.get("device") or "PWA"))
+            con.execute("UPDATE users SET last_login=? WHERE id=?", (time.time(), u["id"]))
             con.commit()
-            return {"ok": True, "token": token, "approved": True, "server": pc_name()}
+            return {"ok": True, "session": token, "user": user_json(u)}
         finally:
             con.close()
-
     return await in_thread(work)
+
+
+# ---- Gettoni d'accesso del servizio account ----------------------------------------
+# Firmati ES256 dal servizio account (POST /servers/<sid>/access), validi poche ore,
+# solo per questo server (sid). Si controllano qui con la chiave pubblica (GET /keys)
+# se c'e' il pacchetto cryptography; nelle immagini Docker di prima lo fa il servizio
+# account (POST /server/verify, con la credenziale del server).
+
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+except ImportError:
+    ec = None
+
+access_keys = {"at": 0.0, "keys": {}}
+access_seen = {}                 # impronta del gettone -> (dati, scadenza)
+
+
+def b64url(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def access_key(kid):
+    """La chiave pubblica del servizio account con quel kid (None se non c'e' o se
+    manca cryptography). Una chiave nuova si va a prendere al massimo una volta al minuto."""
+    if ec is None or not kid:
+        return None
+    if kid not in access_keys["keys"] and time.time() - access_keys["at"] > 60:
+        access_keys["at"] = time.time()
+        try:
+            res = accounts.call("GET", "/keys", timeout=6)
+            keys = {}
+            for k in res.get("keys") or []:
+                if isinstance(k, dict) and k.get("kty") == "EC" and k.get("crv") == "P-256" and k.get("kid"):
+                    x, y = (int.from_bytes(b64url(k[c]), "big") for c in ("x", "y"))
+                    keys[str(k["kid"])] = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1()).public_key()
+            access_keys["keys"] = keys
+        except Exception:
+            pass
+    return access_keys["keys"].get(kid)
+
+
+def access_claims(token):
+    """I dati di un gettone d'accesso valido per questo server, o None."""
+    if not token or len(token) > 2000 or token.count(".") != 2:
+        return None
+    key = token_hash(token)
+    hit = access_seen.get(key)
+    if hit and hit[1] > time.time():
+        return hit[0]
+    try:
+        h, p, s = token.split(".")
+        head, claims, sig = json.loads(b64url(h)), json.loads(b64url(p)), b64url(s)
+    except Exception:
+        return None
+    if not isinstance(head, dict) or not isinstance(claims, dict) or head.get("alg") != "ES256":
+        return None
+    exp = claims.get("exp")
+    if (claims.get("iss") != "bunkerplex" or claims.get("sid") != pc_id() or claims.get("role") not in ("owner", "friend")
+            or not isinstance(exp, (int, float)) or exp < time.time() or not str(claims.get("sub") or "").isdigit()):
+        return None
+    cred = server_cred()
+    owner = cred["owner"] if cred else cloud_id_of(server_owner())
+    if owner is None or claims.get("own") != owner:
+        return None
+    pub = access_key(str(head.get("kid") or ""))
+    if pub is not None:
+        if len(sig) != 64:
+            return None
+        try:
+            pub.verify(encode_dss_signature(int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")),
+                       (h + "." + p).encode(), ec.ECDSA(hashes.SHA256()))
+        except InvalidSignature:
+            return None
+    else:
+        if not cred:
+            return None
+        try:
+            res = accounts.call("POST", "/server/verify", {"token": token}, cred["secret"], timeout=8)
+        except Exception:
+            return None
+        if (res.get("claims") or {}).get("jti") != claims.get("jti"):
+            return None
+    if len(access_seen) > 500:
+        access_seen.clear()
+    access_seen[key] = (claims, exp)
+    return claims
+
+
+def bearer_of(scope):
+    for k, v in scope.get("headers") or ():
+        if k == b"authorization":
+            m = re.fullmatch(r"Bearer\s+([\w-]+\.[\w-]+\.[\w-]+)", v.decode("latin-1").strip())
+            return m.group(1) if m else ""
+    return ""
+
+
+def access_user(token):
+    """Il proprietario di questo server entrato con un gettone d'accesso (come una
+    sessione: stesse raccolte e permessi), o None."""
+    c = access_claims(token)
+    if not c or c["role"] != "owner" or str(c["own"]) != str(c["sub"]):
+        return None
+    return owner_user("cloud_id=?", c["own"])
+
+
+def owner_user(where, value):
+    """Il proprietario di questo server (account attivo) come «utente» della
+    richiesta, senza sessione: per i gettoni d'accesso e le chiavi dei video."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id, name, admin, must_change FROM users WHERE " + where + " AND COALESCE(disabled, 0)=0 "
+                        "AND cloud_id IS NOT NULL AND id=(" + OWNER_SQL + ")", (value,)).fetchone()
+    finally:
+        con.close()
+    if not r:
+        return None
+    return {"id": r["id"], "name": r["name"], "admin": bool(r["admin"]), "linked": True, "guest": False,
+            "must_change": bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": "",
+            "sid": r["id"], "profile": None, "pname": r["name"], "access": True}
+
+
+# ---- Chiavi dei video ---------------------------------------------------------------
+# <video> e <img> non mandano l'intestazione Authorization: la PWA chiede qui una
+# chiave breve (6 ore, firmata con un segreto di questo PC) e la aggiunge agli
+# indirizzi dei video e delle immagini come ?bpk=... (solo richieste GET).
+
+MEDIA_TTL = 6 * 3600
+
+
+def media_secret():
+    with config_lock:
+        if not config.get("media_secret"):
+            config["media_secret"] = secrets.token_hex(32)
+            save_config()
+        return config["media_secret"]
+
+
+def media_sign(msg):
+    return hmac.new(media_secret().encode(), msg.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+@app.post("/api/access/media")
+def access_media():
+    u = CURRENT.get()
+    if not u or u.get("friend") or u.get("guest") or not u.get("linked"):
+        raise HTTPException(403, "Chiavi dei video solo per il proprietario")
+    exp = int(time.time()) + MEDIA_TTL
+    msg = f"{u['id']}.{exp}"
+    return {"key": f"{msg}.{media_sign(msg)}", "exp": exp, "param": "bpk"}
+
+
+def media_user(key):
+    m = re.fullmatch(r"(\d{1,12})\.(\d{10})\.([0-9a-f]{32})", key or "")
+    if not m or int(m.group(2)) < time.time():
+        return None
+    if not hmac.compare_digest(m.group(3), media_sign(f"{m.group(1)}.{m.group(2)}")):
+        return None
+    return owner_user("id=?", int(m.group(1)))
+
+
+KEY_PATH = re.compile(r"/k/(\d{1,12}\.\d{10}\.[0-9a-f]{32})(/api/.*)")
+
+
+def media_key_of(scope):
+    if scope.get("method") not in ("GET", "HEAD"):
+        return ""
+    for k, v in urllib.parse.parse_qsl((scope.get("query_string") or b"").decode("latin-1")):
+        if k == "bpk":
+            return v
+    return ""
+
+
+# ---- HTTPS valido nella rete di casa -------------------------------------------------
+# Il servizio account da' a questo server un nome nella rete di casa
+# (<ip-con-trattini>.<pc_id>.<dominio>) e un certificato vero *.<pc_id>.<dominio>:
+# la chiave resta qui, al servizio va solo la richiesta (CSR). Con quello BunkerPlex
+# risponde in https sulla porta SECURE_PORT (tutto BunkerPlex, come la 32500), e la
+# PWA ci arriva da una pagina https. Serve il pacchetto cryptography e un servizio
+# account con il dominio configurato (vedi cloud/worker.js, «Nomi e certificati»).
+# La porta non si apre sul router: solo rete di casa (e Tailscale).
+
+SECURE_PORT = int(os.environ.get("SECURE_PORT", "32443") or 0)
+TLS_DIR = DATA / "tls"
+secure = {"domain": "", "names": {}, "on": False, "exp": 0.0, "error": "", "ctx": None}
+secure_wake = threading.Event()
+SECURE_RENEW = 30 * 86400        # si rinnova a 30 giorni dalla scadenza
+
+
+def secure_files():
+    return TLS_DIR / "secure.key", TLS_DIR / "secure.crt"
+
+
+def secure_name():
+    return f"*.{pc_id()}.{secure['domain']}" if secure["domain"] else ""
+
+
+def secure_cert_info():
+    """(scadenza, nomi) del certificato salvato, o None."""
+    kf, cf = secure_files()
+    if ec is None or not kf.exists() or not cf.exists():
+        return None
+    from cryptography import x509
+    try:
+        cert = x509.load_pem_x509_certificate(cf.read_bytes())
+        names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.DNSName)
+        return cert.not_valid_after_utc.timestamp(), names
+    except Exception:
+        return None
+
+
+def secure_request(cred):
+    """Chiede un certificato nuovo al servizio account (ci vuole al massimo qualche minuto)."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.x509.oid import NameOID
+    name = secure_name()
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+           .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=False)
+           .sign(key, hashes.SHA256()))
+    der = base64.urlsafe_b64encode(csr.public_bytes(serialization.Encoding.DER)).rstrip(b"=").decode()
+    res = accounts.call("POST", "/server/cert/start", {"csr": der}, cred["secret"])
+    deadline = time.time() + 600
+    while res.get("status") != "valid":
+        if res.get("status") == "invalid":
+            raise RuntimeError(res.get("error") or "certificato rifiutato")
+        if time.time() > deadline:
+            raise RuntimeError("il certificato non è arrivato in tempo")
+        time.sleep(min(30, max(3, int(res.get("retry") or 10))))
+        res = accounts.call("POST", "/server/cert/poll", {}, cred["secret"])
+    pem = str(res.get("cert") or "")
+    if "BEGIN CERTIFICATE" not in pem:
+        raise RuntimeError("certificato non valido")
+    TLS_DIR.mkdir(parents=True, exist_ok=True)
+    kf, cf = secure_files()
+    tmp = kf.with_suffix(".tmp")
+    tmp.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                      serialization.NoEncryption()))
+    os.replace(tmp, kf)
+    tmp = cf.with_suffix(".tmp")
+    tmp.write_text(pem, "ascii")
+    os.replace(tmp, cf)
+
+
+def secure_check():
+    """Certificato presente, giusto e non in scadenza; poi la porta https accesa."""
+    if not SECURE_PORT or ec is None:
+        return
+    cred = server_cred()
+    if not cred or not secure["domain"]:
+        return
+    info = secure_cert_info()
+    if not info or secure_name() not in info[1] or info[0] - time.time() < SECURE_RENEW:
+        secure_request(cred)
+        info = secure_cert_info()
+        if not info:
+            raise RuntimeError("certificato salvato ma illeggibile")
+    kf, cf = secure_files()
+    ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ctx.load_cert_chain(str(cf), str(kf))
+    secure.update(ctx=ctx, exp=info[0], error="")
+    if not secure["on"]:
+        secure["on"] = True
+        threading.Thread(target=secure_listener, daemon=True).start()
+        sync_soon()                  # la porta https va detta subito al servizio account
+
+
+def secure_listener():
+    try:
+        import uvicorn
+        kf, cf = secure_files()
+        cfg = uvicorn.Config(app, host="0.0.0.0", port=SECURE_PORT, lifespan="off", log_level="warning",
+                             ssl_certfile=str(cf), ssl_keyfile=str(kf))
+        cfg.load()
+
+        def sni(sslobj, server_name, ctx):
+            if secure["ctx"] is not None:     # certificato rinnovato: si usa quello nuovo senza riaccendere
+                sslobj.context = secure["ctx"]
+        cfg.ssl.sni_callback = sni
+        uvicorn.Server(cfg).run()
+    except BaseException as ex:
+        print("Porta https non disponibile:", SECURE_PORT, ex, flush=True)
+    secure.update(on=False, error=f"porta {SECURE_PORT} non disponibile")
+
+
+def secure_loop():
+    while True:
+        try:
+            secure_check()
+        except Exception as ex:
+            secure["error"] = str(ex)[:200]
+            print("Certificato https:", secure["error"], flush=True)
+        secure_wake.wait(6 * 3600 if secure["on"] else 1800)
+        secure_wake.clear()
+
+
+# ---- Chiamate dalla PWA (CORS) ---------------------------------------------------
+# La PWA sta su un altro indirizzo (quello del servizio account, o quelli in
+# BUNKERPLEX_PWA_ORIGINS separati da virgole): il browser le lascia leggere le
+# risposte di questo server solo con queste intestazioni. Niente cookie tra siti
+# diversi: la PWA entra con il gettone (Authorization) e la chiave dei video.
+
+cors_cache = {"at": 0.0, "origins": frozenset()}
+
+
+def cors_origins():
+    if time.time() - cors_cache["at"] > 60:
+        out = set()
+        base = accounts.cloud_url()
+        if base:
+            u = urllib.parse.urlsplit(base)
+            out.add(f"{u.scheme}://{u.netloc}")
+        for o in os.environ.get("BUNKERPLEX_PWA_ORIGINS", "").split(","):
+            if o.strip():
+                out.add(o.strip().rstrip("/"))
+        cors_cache.update(at=time.time(), origins=frozenset(out))
+    return cors_cache["origins"]
+
+
+def header_of(scope, name):
+    for k, v in scope.get("headers") or ():
+        if k == name:
+            return v.decode("latin-1").strip()
+    return ""
+
+
+class Cors:
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        origin = header_of(scope, b"origin") if scope["type"] == "http" else ""
+        if not origin or origin not in cors_origins():
+            await self.inner(scope, receive, send)
+            return
+        extra = [(b"access-control-allow-origin", origin.encode("latin-1")), (b"vary", b"Origin")]
+        if scope["method"] == "OPTIONS" and header_of(scope, b"access-control-request-method"):
+            headers = extra + [(b"access-control-allow-methods", b"GET, POST, PUT, PATCH, DELETE, OPTIONS"),
+                               (b"access-control-allow-headers",
+                                b"Authorization, Content-Type, X-Share-Token, X-BP-Session, Range"),
+                               (b"access-control-max-age", b"600"), (b"content-length", b"0")]
+            if header_of(scope, b"access-control-request-private-network") == "true":
+                headers.append((b"access-control-allow-private-network", b"true"))
+            await send({"type": "http.response.start", "status": 204, "headers": headers})
+            await send({"type": "http.response.body", "body": b""})
+            return
+
+        async def send_cors(m):
+            if m["type"] == "http.response.start":
+                m = dict(m)
+                m["headers"] = list(m.get("headers") or []) + extra + [
+                    (b"access-control-expose-headers", b"Content-Range, Content-Length, Accept-Ranges")]
+            await send(m)
+        await self.inner(scope, receive, send_cors)
+
+
+app.add_middleware(Cors)
 
 
 @app.get("/api/sharing")
 def sharing_status():
     """Per Impostazioni (rete di casa): stato della condivisione e amici registrati."""
+    manager_only()
     con = db()
     try:
         accounts = [{"id": r["id"], "name": r["name"], "approved": bool(r["approved"]),
@@ -7462,6 +7908,7 @@ async def sharing_set(request: Request):
 async def sharing_approve(account: int, request: Request):
     """Accetta (o sospende) la richiesta di un amico. Accettando, lo scambio e'
     reciproco: se lui ha offerto le sue raccolte, compaiono qui da sole."""
+    manager_only()
     body = await read_json(request)
     con = db()
     try:
@@ -7486,6 +7933,7 @@ async def sharing_approve(account: int, request: Request):
 @app.delete("/api/sharing/accounts/{account}")
 def sharing_remove(account: int):
     """Toglie un amico: non entra piu' qui, e le sue raccolte spariscono da questo server."""
+    manager_only()
     con = db()
     try:
         r = con.execute("SELECT back_url FROM accounts WHERE id=?", (account,)).fetchone()
@@ -9210,6 +9658,7 @@ def friends_list():
 async def friends_add(request: Request):
     """Collega il server di un amico: ci si registra da lui (o si accede con un
     account gia' fatto). La password non viene conservata: resta solo il gettone."""
+    manager_only()
     body = await read_json(request)
     name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:30]
     url = friend_address(body.get("url"))
@@ -9300,6 +9749,7 @@ def friend_store(name, url, user, token, account=None, pin=None, extra=None):
 @app.delete("/api/friends/{n}")
 def friends_remove(n: int):
     """Toglie un amico: spariscono le sue raccolte e lui non entra piu' qui."""
+    manager_only()
     f = friend_by_n(n)
     if f and f.get("account"):
         account_drop(f["account"])
@@ -9334,6 +9784,7 @@ def friends_refresh(n: int):
 
 @app.post("/api/friends/quality")
 async def friends_quality(request: Request):
+    manager_only()
     body = await read_json(request)
     q = str(body.get("quality") or "")
     if q not in QUALITIES:
@@ -9377,7 +9828,120 @@ def lan_url():
     return f"https://{ip}:{SHARE_PORT}"
 
 
+# ---- Credenziale del server e presenza -------------------------------------------
+# Il server ha una credenziale sua nel servizio account, presa una volta con il
+# gettone del proprietario (POST /servers/<sid>/claim). Con quella manda presenza e
+# indirizzi a ogni giro di sincronizzazione (POST /server/heartbeat) e fa verificare
+# i gettoni d'accesso (vedi access_claims). Con il servizio account di prima (404)
+# resta tutto come prima: PUT /servers con il gettone del proprietario.
+# Vedi docs/architettura.md.
+
+CRED_KEY = "server_cred"
+cloud_v2 = {"on": None, "error": ""}      # on: None = non si sa ancora, False = servizio di prima
+
+
+def server_cred():
+    with config_lock:
+        c = config.get(CRED_KEY)
+    return dict(c) if isinstance(c, dict) and c.get("secret") else None
+
+
+def set_server_cred(cred):
+    with config_lock:
+        if cred:
+            config[CRED_KEY] = cred
+        else:
+            config.pop(CRED_KEY, None)
+        save_config()
+
+
+def cloud_id_of(uid):
+    if uid is None:
+        return None
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT cloud_id FROM users WHERE id=?", (uid,)).fetchone()
+    finally:
+        con.close()
+    return r["cloud_id"] if r else None
+
+
+def claim_cred(token):
+    res = accounts.call("POST", f"/servers/{pc_id()}/claim", {"name": pc_name()}, token)
+    owner = res.get("owner") or {}
+    secret = str(res.get("credential") or "")
+    if not re.fullmatch(r"s_[0-9a-f]{8}_[0-9a-f]{64}", secret) or not isinstance(owner.get("id"), int):
+        raise accounts.CloudError(502, "Risposta non valida dal servizio account")
+    cred = {"secret": secret, "owner": owner["id"], "owner_name": str(owner.get("username") or "")}
+    set_server_cred(cred)
+    return cred
+
+
+def drop_server_cred():
+    """Il server esce dall'account (cambio di proprietario, account tolto dal PC)."""
+    cred = server_cred()
+    if cred:
+        try:
+            accounts.call("DELETE", "/server", token=cred["secret"], timeout=6)
+        except Exception:
+            pass
+    set_server_cred(None)
+
+
+def heartbeat_body(uid):
+    friends = bool(friends_shared(uid) and share_on())
+    pin = share_tls["pin"] if share_tls["on"] else ""
+    return {"name": pc_name(), "url": presence_url() if (friends or self_reach(uid)) else "",
+            "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION,
+            "secure_port": SECURE_PORT if secure["on"] else 0}
+
+
+def heartbeat(body, cred):
+    res = accounts.call("POST", "/server/heartbeat", body, cred["secret"])
+    domain = str(res.get("domain") or "")
+    if not re.fullmatch(r"[a-z0-9.-]{3,200}", domain):
+        domain = ""
+    new = domain != secure["domain"]
+    secure.update(domain=domain, names=res.get("names") if isinstance(res.get("names"), dict) else {})
+    if new and domain:
+        secure_wake.set()           # dominio nuovo: si chiede il certificato
+
+
+def presence_v2(uid, token):
+    """Presenza con la credenziale del server. False = va fatta come prima (PUT /servers)."""
+    if cloud_v2["on"] is False or uid != server_owner():
+        return False
+    me = cloud_id_of(uid)
+    cred = server_cred()
+    try:
+        if cred and cred["owner"] != me:
+            drop_server_cred()                       # il PC ha cambiato proprietario
+            cred = None
+        if not cred:
+            cred = claim_cred(token)
+        body = heartbeat_body(uid)
+        try:
+            heartbeat(body, cred)
+        except accounts.CloudError as ex:
+            if ex.status != 401:
+                raise
+            set_server_cred(None)                    # credenziale persa o ripresa: si riprende
+            cred = claim_cred(token)
+            heartbeat(body, cred)
+    except accounts.CloudError as ex:
+        if ex.status == 404:                         # servizio account di prima
+            cloud_v2.update(on=False, error="")
+            return False
+        cloud_v2.update(on=True, error=ex.detail)
+        print("Presenza nel servizio account:", ex.detail, flush=True)
+        return True
+    cloud_v2.update(on=True, error="")
+    return True
+
+
 def publish_presence(uid, token):
+    if presence_v2(uid, token):
+        return
     want = None
     friends = friends_shared(uid) and share_on()
     if (friends or self_reach(uid)) and presence_url():
@@ -9617,7 +10181,7 @@ async def account_friends():
         for s in fr.get("servers") or []:
             lf = local.get((fr["id"], s.get("sid")))
             st = (friend_status.get(lf["n"]) if lf else None) or {}
-            servers.append({"name": str(s.get("name") or ""), "online": st.get("online"),
+            servers.append({"name": str(s.get("name") or ""), "online": st.get("online"), "sid": s.get("sid"),
                             "error": st.get("error") or "", "n": lf["n"] if lf else None})
         out.append({"id": fr["id"], "username": fr.get("username") or "", "status": fr.get("status"),
                     "servers": servers})

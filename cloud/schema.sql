@@ -19,13 +19,15 @@ CREATE TABLE IF NOT EXISTS users(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub);
 
--- Un gettone per ogni server BunkerPlex collegato all'account (si salva solo l'impronta).
+-- Un gettone per ogni server BunkerPlex o app collegati all'account (si salva solo l'impronta).
+-- device: nome del dispositivo (il server usa il suo nome, l'app «Telefono ...»).
 CREATE TABLE IF NOT EXISTS sessions(
   token_hash TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   device TEXT,
   created REAL NOT NULL,
-  last_seen REAL NOT NULL
+  last_seen REAL NOT NULL,           -- dopo 180 giorni senza usarla scade
+  kind TEXT                          -- server / pwa / tv / app / browser (NULL = di prima)
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 
@@ -73,7 +75,46 @@ CREATE TABLE IF NOT EXISTS servers(
   friends INTEGER NOT NULL DEFAULT 1, -- 0 = solo per gli altri PC dello stesso account
   pin TEXT NOT NULL,
   t REAL NOT NULL,
+  token_hash TEXT,                   -- sessione del PC che l'ha registrato: solo lui lo aggiorna
   PRIMARY KEY(user_id, sid)
+);
+
+-- Credenziale di ogni server (si salva l'impronta del segreto): con questa il server
+-- manda presenza e indirizzi (/server/heartbeat). owner_id = account del proprietario.
+CREATE TABLE IF NOT EXISTS server_creds(
+  sid TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL,
+  secret_hash TEXT NOT NULL,
+  name TEXT,
+  version TEXT,
+  created REAL NOT NULL,
+  last_seen REAL NOT NULL DEFAULT 0, -- ultima presenza: acceso se recente (10 minuti)
+  secure_port INTEGER NOT NULL DEFAULT 0 -- porta https con certificato valido (0 = non ancora)
+);
+CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id);
+
+-- Nomi DNS dei server: <ip-con-trattini>.<sid>.<SERVER_DOMAIN> -> indirizzo di casa.
+CREATE TABLE IF NOT EXISTS server_dns(
+  name TEXT PRIMARY KEY,
+  sid TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  record_id TEXT NOT NULL,           -- id del record su Cloudflare
+  t REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS server_dns_sid ON server_dns(sid);
+
+-- Richieste di certificato in corso (ACME, verifica DNS-01): una per server, 30 minuti.
+CREATE TABLE IF NOT EXISTS cert_orders(
+  sid TEXT PRIMARY KEY,
+  order_url TEXT NOT NULL,
+  authz_url TEXT NOT NULL,
+  chall_url TEXT,
+  finalize_url TEXT NOT NULL,
+  txt_id TEXT,                       -- record TXT _acme-challenge su Cloudflare
+  csr TEXT NOT NULL,
+  status TEXT NOT NULL,              -- pending / ready / finalizing
+  triggered REAL NOT NULL DEFAULT 0,
+  created REAL NOT NULL
 );
 
 -- Biglietti per entrare dal server di un amico: 5 minuti, una volta sola (si salva l'impronta).
@@ -108,4 +149,53 @@ CREATE TABLE IF NOT EXISTS google_flows(
   email TEXT,
   error TEXT,
   exp REAL NOT NULL
+);
+
+-- «Password dimenticata»: un codice di 6 cifre per email, 15 minuti (si salva l'impronta).
+CREATE TABLE IF NOT EXISTS reset_codes(
+  user_id INTEGER PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  exp REAL NOT NULL,
+  tries INTEGER NOT NULL DEFAULT 0,
+  sent REAL NOT NULL
+);
+
+-- Notifiche (campanella, BP Avvisi, web push).
+CREATE TABLE IF NOT EXISTS notices(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  kind TEXT,
+  title TEXT,
+  body TEXT,
+  t REAL NOT NULL,
+  from_user INTEGER,
+  read INTEGER NOT NULL DEFAULT 0     -- 1 = letto
+);
+CREATE INDEX IF NOT EXISTS notices_user ON notices(user_id, id);
+
+-- Dispositivi che ricevono le notifiche (gettone nell'indirizzo, si salva l'impronta).
+CREATE TABLE IF NOT EXISTS notice_devices(
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  label TEXT,
+  kind TEXT,
+  open_url TEXT,
+  endpoint TEXT,                     -- web push
+  p256dh TEXT,
+  auth TEXT,
+  created REAL NOT NULL,
+  last_seen REAL
+);
+CREATE INDEX IF NOT EXISTS notice_devices_user ON notice_devices(user_id);
+
+CREATE TABLE IF NOT EXISTS notice_prefs(
+  user_id INTEGER PRIMARY KEY,
+  v TEXT
+);
+
+-- Valori del servizio (chiavi VAPID delle web push, chiave dei gettoni d'accesso 'access',
+-- account presso Let's Encrypt 'acme').
+CREATE TABLE IF NOT EXISTS kv(
+  k TEXT PRIMARY KEY,
+  v TEXT
 );

@@ -1,5 +1,8 @@
 package it.bunkerplex.atv
 
+import android.content.Context
+import android.net.Uri
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -35,10 +38,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import it.bunkerplex.tv.Net
+import it.bunkerplex.tv.Remote
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Ogni volta che si apre l'app: 1) l'accesso (se e' ancora valido si salta; la prima
@@ -68,7 +76,7 @@ fun MainActivity.proceed() {
         val user = try { Api.obj("/api/auth/state").optJSONObject("user") } catch (_: Exception) { null }
         runOnUiThread {
             when {
-                user == null -> reset(Screen.Who)
+                user == null -> reset(if (CloudTv.on(this)) Screen.Servers else Screen.Who)
                 Access.src == null -> reset(Screen.Servers)
                 !Access.whoDone && (user.optJSONArray("watchers")?.length() ?: 0) > 1 -> reset(Screen.Watchers)
                 else -> reset(Screen.Home)
@@ -351,4 +359,296 @@ fun WatchersScreen(act: MainActivity) {
             Btn("Esci") { act.switchProfile() }
         }
     }
+}
+
+// ---------------------------------------------------------------- Con l'account, senza server principale
+//
+// La TV entra con l'account direttamente nel servizio account (Remote), prende da li'
+// l'elenco dei server (i tuoi e quelli che gli amici condividono) e si collega al
+// server scelto: prima il nome https nella rete di casa, poi l'indirizzo di casa che
+// il server ha detto al servizio (porta 32500), poi l'ultimo che ha funzionato, e
+// solo alla fine cerca sulla rete. Il server da' una sessione in cambio del gettone
+// d'accesso del servizio (/api/auth/access): da li' la TV lavora come sempre
+// (X-BP-Session). I server degli amici si aprono dal tuo server, come prima (src f<n>).
+// Vedi docs/architettura.md.
+
+object CloudTv {
+    /** Ultimo tentativo di riaprire il server di prima, una volta per apertura dell'app. */
+    @Volatile
+    var resumed = false
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE)
+
+    /** La TV usa l'account del servizio (non un server scelto a mano). */
+    fun on(ctx: Context) = Remote.token(ctx).isNotEmpty()
+
+    fun lastSid(ctx: Context) = prefs(ctx).getString("cloud_sid", "") ?: ""
+
+    fun servers(ctx: Context): List<JSONObject> =
+        JSONObject(Remote.call(ctx, "GET", "/servers", null)).optJSONArray("servers").objects()
+
+    /** Nome utente o email (con l'email si chiede prima il nome, come fanno i server). */
+    fun login(ctx: Context, name: String, password: String) {
+        var user = name.trim()
+        if ("@" in user) {
+            user = JSONObject(Remote.call(ctx, "POST", "/resolve", JSONObject().put("email", user).toString())).getString("username")
+        }
+        Remote.login(ctx, user, password, "TV " + (Build.MODEL ?: "Android"), "tv")
+    }
+
+    fun logout(ctx: Context) {
+        try { Remote.call(ctx, "POST", "/logout", "{}") } catch (_: Exception) {}
+        Remote.logout(ctx)
+        Api.saveSession(ctx, "")
+        prefs(ctx).edit().remove("cloud_sid").apply()
+        resumed = false
+    }
+
+    /** Gli indirizzi da provare per un tuo server, in ordine. */
+    private fun candidates(ctx: Context, s: JSONObject): List<String> {
+        val a = s.optJSONObject("addresses") ?: JSONObject()
+        val out = mutableListOf<String>()
+        a.optString("secure_lan").takeIf { it.startsWith("https://") }?.let { out.add(it) }
+        // L'indirizzo di casa che il server ha detto (https://IP:32501, per gli amici): la TV usa la 32500
+        a.optString("lan").takeIf { it.isNotEmpty() }?.let { lan ->
+            val host = Uri.parse(lan).host
+            if (!host.isNullOrEmpty()) out.add("http://$host:32500")
+        }
+        prefs(ctx).getString("cloud_base_" + s.optString("sid"), null)?.let { if (it.isNotEmpty()) out.add(it) }
+        if (Api.home.isNotEmpty()) out.add(Api.home)
+        return out.distinct()
+    }
+
+    /** Il primo indirizzo che risponde ed e' proprio quel server (sid), provandoli tutti insieme. */
+    private fun reach(ctx: Context, s: JSONObject): String? {
+        val sid = s.optString("sid")
+        val list = candidates(ctx, s)
+        val answers = LinkedBlockingQueue<String>()
+        list.forEach { url ->
+            Thread {
+                val info = Net.info(url, 3500)
+                answers.offer(if (info != null && info.optString("sid") == sid) url else "")
+            }.start()
+        }
+        repeat(list.size) {
+            val url = answers.poll(6, TimeUnit.SECONDS) ?: return@repeat
+            if (url.isNotEmpty()) return url
+        }
+        // Ultima prova: BunkerPlex sulla rete di casa (se e' quello giusto)
+        val found = Net.discover() ?: return null
+        return found.takeIf { Net.info(it, 3500)?.optString("sid") == sid }
+    }
+
+    /** Il servizio account risponde? (false = niente Internet, o servizio fermo) */
+    fun reachable(ctx: Context): Boolean =
+        try { Remote.call(ctx, "GET", "/", null); true } catch (e: Remote.CloudError) { e.status != 0 }
+
+    /**
+     * Senza servizio account: l'ultimo server usato, con la sessione che la TV ha gia'
+     * (il server la riconosce anche senza Internet). false = non risponde o va rifatto
+     * l'accesso: allora la ricerca sulla rete di casa.
+     */
+    fun offline(ctx: Context): Boolean {
+        val base = prefs(ctx).getString("cloud_base_" + lastSid(ctx), null)?.ifEmpty { null } ?: Api.home
+        if (base.isEmpty() || Net.info(base, 3500) == null) return false
+        Api.base = base
+        return sessionOk(base)
+    }
+
+    /** La sessione salvata vale ancora su quel server? */
+    private fun sessionOk(base: String): Boolean {
+        if (Api.home != base || Net.session.isEmpty()) return false
+        return try { Api.obj("/api/auth/state").optJSONObject("user") != null } catch (_: Exception) { false }
+    }
+
+    /**
+     * Collega la TV al server scelto (da un thread, non da quello dell'interfaccia).
+     * Torna il src di Access ("here" o "f<n>"); IOException col motivo se non riesce.
+     */
+    fun open(ctx: Context, s: JSONObject, all: List<JSONObject>): String {
+        val mine = s.optString("role") == "owner"
+        val host = if (mine) s else all.firstOrNull { it.optString("role") == "owner" && it.opt("online") != false }
+            ?: throw IOException("Per i server degli amici serve un tuo server acceso")
+        val sid = host.optString("sid")
+        val base = reach(ctx, host)
+            ?: throw IOException("${host.optString("name").ifEmpty { "Il server" }} non risponde: la TV è nella stessa rete di casa?")
+        if (!sessionOk(base)) {
+            val token = JSONObject(Remote.call(ctx, "POST", "/servers/$sid/access", "{}")).getString("token")
+            Api.saveServer(ctx, base)
+            val (body, _) = Api.post("/api/auth/access",
+                JSONObject().put("token", token).put("device", "TV " + (Build.MODEL ?: "Android")))
+            Api.saveSession(ctx, JSONObject(body).getString("session"))
+        }
+        Api.base = base
+        prefs(ctx).edit().putString("cloud_base_$sid", base).putString("cloud_sid", s.optString("sid")).apply()
+        if (mine) return "here"
+        val f = Api.obj("/api/account-friends")
+        f.optJSONArray("friends").objects().forEach { fr ->
+            fr.optJSONArray("servers").objects().forEach { x ->
+                if (x.optString("sid") == s.optString("sid") && !x.isNull("n")) return "f" + x.optInt("n")
+            }
+        }
+        throw IOException("Il tuo server non è ancora collegato a ${s.optJSONObject("owner")?.optString("username")}: riprova tra un minuto")
+    }
+}
+
+/** Entrare con l'account: nome (o email) e password, oppure Google dal telefono. */
+@Composable
+fun CloudLoginScreen(act: MainActivity) {
+    var name by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val fr = remember { FocusRequester() }
+    val passFr = remember { FocusRequester() }
+    // Niente servizio account (niente Internet): si va dritti al server sulla rete di casa
+    LaunchedEffect(Unit) {
+        if (!withContext(Dispatchers.IO) { CloudTv.reachable(act) }) act.reset(Screen.Connect)
+    }
+    fun send() {
+        if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente (o email) e password"; return }
+        if (busy) return
+        busy = true
+        msg = "Entro…"
+        Thread {
+            try {
+                CloudTv.login(act, name, pass)
+                act.runOnUiThread { Access.reset(); act.reset(Screen.Servers) }
+            } catch (e: Remote.CloudError) {
+                act.runOnUiThread { if (e.status == 0) act.reset(Screen.Connect) else { msg = e.message; busy = false } }
+            } catch (e: Exception) {
+                act.runOnUiThread { msg = e.message; busy = false }
+            }
+        }.start()
+    }
+    AuthPage {
+        Title("Entra con il tuo account", size = 32.sp, lines = 1)
+        Txt("Poi scegli il server: il tuo, o quelli dei tuoi amici.", Modifier.padding(top = 8.dp, bottom = 24.dp), size = 18.sp, color = C.ink2)
+        Field(name, { name = it }, "Nome utente o email", Modifier.focusRequester(fr)) { runCatching { passFr.requestFocus() } }
+        Box(Modifier.padding(top = 12.dp))
+        Field(pass, { pass = it }, "Password", Modifier.focusRequester(passFr), secret = true) { send() }
+        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
+        Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Btn("Entra", primary = true) { send() }
+            Btn("Entra con Google") { act.go(Screen.CloudGoogle) }
+        }
+    }
+    AutoFocus(fr)
+}
+
+/** «Entra con Google» dalla TV: indirizzo e codice da aprire sul telefono. */
+@Composable
+fun CloudGoogleScreen(act: MainActivity) {
+    var start by remember { mutableStateOf<JSONObject?>(null) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        try {
+            val s = JSONObject(withContext(Dispatchers.IO) { Remote.googleStart(act, true) })
+            start = s
+            val poll = s.optString("poll")
+            val until = System.currentTimeMillis() + s.optLong("ttl", 600) * 1000
+            while (System.currentTimeMillis() < until) {
+                delay(2500)
+                val r = JSONObject(withContext(Dispatchers.IO) { Remote.googlePoll(act, poll) })
+                if (r.optString("token").isNotEmpty()) {
+                    Access.reset()
+                    act.reset(Screen.Servers)
+                    return@LaunchedEffect
+                }
+            }
+            msg = "Tempo scaduto: torna indietro e riprova"
+        } catch (e: Exception) {
+            msg = e.message
+        }
+    }
+    val back = remember { FocusRequester() }
+    AuthPage {
+        Title("Entra con Google", size = 32.sp, lines = 1)
+        val s = start
+        if (s == null) Txt("…", Modifier.padding(top = 20.dp), color = C.ink3)
+        else {
+            Txt("Sul telefono o sul PC apri", Modifier.padding(top = 16.dp), size = 20.sp, color = C.ink2)
+            Txt(s.optString("short").substringAfter("://"), Modifier.padding(top = 8.dp), size = 26.sp, weight = FontWeight.Bold, lines = 2)
+            Txt("e scrivi il codice", Modifier.padding(top = 18.dp), size = 20.sp, color = C.ink2)
+            Txt(s.optString("code"), Modifier.padding(top = 8.dp), size = 44.sp, weight = FontWeight.ExtraBold, lines = 1)
+        }
+        msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.warn, lines = 2) }
+        Row(Modifier.padding(top = 28.dp)) { Btn("Indietro", Modifier.focusRequester(back)) { act.reset(Screen.CloudLogin) } }
+    }
+    AutoFocus(back)
+}
+
+/** «Cosa guardi oggi?» con l'elenco del servizio account; collegamento diretto al server scelto. */
+@Composable
+fun CloudServersScreen(act: MainActivity, refresh: Int) {
+    var list by remember { mutableStateOf<List<JSONObject>?>(null) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf<String?>(null) }
+    var round by remember { mutableIntStateOf(0) }
+    fun pick(s: JSONObject, all: List<JSONObject>) {
+        if (busy != null) return
+        busy = "Mi collego a ${s.optString("name").ifEmpty { "PC" }}…"
+        msg = null
+        Thread {
+            try {
+                val src = CloudTv.open(act, s, all)
+                act.runOnUiThread { busy = null; Access.src = src; act.proceed() }
+            } catch (e: Exception) {
+                act.runOnUiThread { busy = null; msg = e.message }
+            }
+        }.start()
+    }
+    LaunchedEffect(refresh, round) {
+        try {
+            val l = withContext(Dispatchers.IO) { CloudTv.servers(act) }
+            list = l
+            // All'apertura si torna da soli sul server di prima (una volta)
+            val last = CloudTv.lastSid(act)
+            if (!CloudTv.resumed && last.isNotEmpty()) {
+                CloudTv.resumed = true
+                l.firstOrNull { it.optString("sid") == last }?.let { pick(it, l) }
+            }
+        } catch (e: Exception) {
+            if (e is Remote.CloudError && e.status == 0) {
+                // Niente Internet: l'ultimo server con la sessione di prima, altrimenti la ricerca
+                if (withContext(Dispatchers.IO) { CloudTv.offline(act) }) { Access.src = "here"; act.proceed() }
+                else act.reset(Screen.Connect)
+                return@LaunchedEffect
+            }
+            msg = e.message
+            list = list ?: emptyList()
+            if (!CloudTv.on(act)) act.reset(Screen.CloudLogin)      // accesso scaduto
+        }
+    }
+    val first = remember { FocusRequester() }
+    AuthPage {
+        Title("Cosa guardi oggi?", size = 34.sp, lines = 1)
+        Txt("Scegli il server: i tuoi e quelli dei tuoi amici", Modifier.padding(top = 8.dp, bottom = 24.dp), size = 18.sp, color = C.ink2)
+        val l = list
+        if (l == null) Txt("…", color = C.ink3)
+        else if (l.isEmpty()) Txt("Nessun server nel tuo account: installa BunkerPlex su un PC ed entra lì con il tuo account.",
+            Modifier.width(620.dp), color = C.ink2, lines = 3)
+        else Nearest {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                l.forEachIndexed { i, s ->
+                    val friend = s.optString("role") == "friend"
+                    val off = s.opt("online") == false
+                    val sub = (if (friend) "di " + (s.optJSONObject("owner")?.optString("username") ?: "") else "Il tuo server") +
+                        (if (off) " · spento o non raggiungibile" else if (s.opt("online") == true) " · acceso" else "")
+                    SrvCard(if (i == 0) Modifier.focusRequester(first) else Modifier,
+                        if (friend) Ic.friends else Ic.screen, s.optString("name").ifEmpty { "PC" }, sub, !off) { pick(s, l) }
+                }
+            }
+        }
+        busy?.let { Txt(it, Modifier.padding(top = 14.dp), color = C.ink2, lines = 2) }
+        msg?.let { Txt(it, Modifier.padding(top = 14.dp), color = C.warn, lines = 3) }
+        Row(Modifier.padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Btn("Aggiorna", icon = Ic.restart) { round++ }
+            Btn("Amici e tuoi PC fuori casa") { act.remote("friends") }
+            Btn("Esci dall'account") {
+                Thread { CloudTv.logout(act); act.runOnUiThread { Access.reset(); act.reset(Screen.CloudLogin) } }.start()
+            }
+        }
+    }
+    LaunchedEffect(list != null) { if (list != null) repeat(5) { if (runCatching { first.requestFocus() }.isSuccess) return@LaunchedEffect; delay(16) } }
 }

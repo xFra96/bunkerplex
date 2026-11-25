@@ -59,6 +59,25 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("server", value).apply()
         }
 
+    /** L'ultimo server raggiunto nella rete di casa (anche con l'account): senza Internet
+     *  si prova per primo e si scrive gia' nel campo dell'indirizzo (setup.html). */
+    private var lastServer: String?
+        get() = prefs.getString("last_server", null)?.ifEmpty { null }
+        set(value) {
+            val v = value?.let { lanForm(it) } ?: ""
+            if (v.isNotEmpty()) prefs.edit().putString("last_server", v).apply()
+        }
+
+    /** Come si scrive nella rete di casa: http://IP:32500 (anche dal nome https
+     *  <ip-con-trattini>.<sid>.<dominio>); "" per questo stesso dispositivo. */
+    private fun lanForm(url: String): String {
+        val host = android.net.Uri.parse(url).host ?: return ""
+        Regex("^(\\d{1,3})-(\\d{1,3})-(\\d{1,3})-(\\d{1,3})\\.").find(host)?.let { m ->
+            return "http://" + m.groupValues.drop(1).joinToString(".") + ":32500"
+        }
+        return if (host == "localhost" || host == "127.0.0.1") "" else url
+    }
+
     /** Gli altri indirizzi dello stesso PC (es. Tailscale), da provare fuori casa: li dice il server. */
     private var others: List<String>
         get() = (prefs.getString("server_others", "") ?: "").split(' ').filter { it.isNotBlank() }
@@ -83,6 +102,8 @@ class MainActivity : AppCompatActivity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.mediaPlaybackRequiresUserGesture = false
+        // BunkerPlex con l'account (pagina https del servizio) parla col server di casa in http
+        web.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
         Posters.init(this)
@@ -123,7 +144,8 @@ class MainActivity : AppCompatActivity() {
         updateFile.delete()   // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
-        if (server == null) showSetup(false) else openServer()
+        // Senza un server scelto a mano: BunkerPlex con l'account (elenco dei server dal servizio)
+        if (server == null) showCentral() else openServer()
         Notices.ensure(this)
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
@@ -155,6 +177,7 @@ class MainActivity : AppCompatActivity() {
                     showRemote("ask")       // niente server in casa: si propongono amici e tuoi PC
                 } else {
                     active = found
+                    lastServer = found
                     onSetup = false
                     clearHistoryOnLoad = true
                     web.loadUrl("$found/#/home")
@@ -178,6 +201,17 @@ class MainActivity : AppCompatActivity() {
         onSetup = true
         clearHistoryOnLoad = true
         web.loadUrl("file:///android_asset/remote.html#$hash")
+    }
+
+    /** BunkerPlex con l'account: la pagina del servizio account (accesso, scelta del
+     *  server, poi collegamento diretto). Se non si carica (niente Internet), lost()
+     *  porta alla ricerca del server sulla rete di casa. */
+    private fun showCentral() {
+        onSetup = false
+        active = null
+        clearHistoryOnLoad = true
+        lastOpen = System.currentTimeMillis()
+        web.loadUrl(Remote.cloud(this) + "/")
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -338,7 +372,9 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun play(json: String) {
-            val base = active ?: server ?: return
+            // Con l'account la pagina dice lei il server (server_base); altrimenti quello aperto
+            val chosen = try { org.json.JSONObject(json).optString("server_base") } catch (_: Exception) { "" }
+            val base = chosen.ifEmpty { null } ?: active ?: server ?: return
             runOnUiThread {
                 cameFromPlayer = true
                 startActivity(
@@ -418,6 +454,16 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun getServer(): String = active ?: server ?: ""
 
+        /** L'ultimo server raggiunto (per scriverlo gia' nel campo dell'indirizzo). */
+        @JavascriptInterface
+        fun lastServer(): String = lastServer ?: server ?: ""
+
+        /** BunkerPlex con l'account: il server a cui la pagina si e' collegata. */
+        @JavascriptInterface
+        fun rememberServer(url: String) {
+            if (url.startsWith("http://") || url.startsWith("https://")) lastServer = url
+        }
+
         /** Notifiche su questo telefono/tablet: "on", "denied" (accese ma senza permesso) o "off". */
         @JavascriptInterface
         fun noticesState(): String = when {
@@ -457,6 +503,10 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }
 
+        /** Dalla ricerca del server: BunkerPlex con l'account. */
+        @JavascriptInterface
+        fun openCentral() = runOnUiThread { server = null; showCentral() }
+
         @JavascriptInterface
         fun saveServer(input: String) {
             val url = Net.normalize(input)
@@ -487,9 +537,11 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun discover() {
             thread {
-                val url = Net.discover()
+                // Prima l'ultimo server che ha risposto, poi la ricerca su tutta la rete di casa
+                val url = lastServer?.takeIf { Net.isBunkerPlex(it, 2500) } ?: Net.discover()
                 if (url != null) {
                     server = url
+                    lastServer = url
                     others = emptyList()
                     js("setupFound(${JSONObject.quote(url)})")
                     Thread.sleep(900)

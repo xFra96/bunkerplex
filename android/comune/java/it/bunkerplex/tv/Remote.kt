@@ -81,10 +81,11 @@ object Remote {
         }
     }
 
-    fun login(ctx: Context, username: String, password: String): JSONObject {
+    fun login(ctx: Context, username: String, password: String,
+              device: String = "Telefono " + (Build.MODEL ?: "Android"), kind: String = "app"): JSONObject {
         val name = username.trim()
         val body = JSONObject().put("username", name).put("verifier", verifier(name, password))
-            .put("device", "Telefono " + (Build.MODEL ?: "Android"))
+            .put("device", device).put("kind", kind)
         prefs(ctx).edit().remove("cloud_token").apply()
         val res = JSONObject(call(ctx, "POST", "/login", body.toString()))
         prefs(ctx).edit().putString("cloud_token", res.getString("token"))
