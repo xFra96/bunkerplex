@@ -195,11 +195,24 @@ def get_libraries():
     u = CURRENT.get()
     if u is not None and u.get("friend"):        # un amico: solo le raccolte di quel profilo
         out = [lib for lib in out if lib.get("owner") == u["id"]]
+    elif u is not None and u.get("guest"):       # amico entrato qui: quelle del proprietario
+        ids = set(u.get("libs") or [])
+        out = [dict(lib, mine=False) for lib in out if lib["id"] in ids]
     elif u is not None:
         out = [lib for lib in out if lib.get("owner") == u["id"] or lib.get("shared")]
         for lib in out:
             lib["mine"] = lib.get("owner") == u["id"]
     return out
+
+
+def guest_libs():
+    """Cosa vede un amico entrato qui come ospite: le raccolte del proprietario,
+    se il proprietario le condivide con gli amici."""
+    owner = server_owner()
+    if owner is None or not friends_shared(owner):
+        return []
+    with config_lock:
+        return [lib["id"] for lib in config.get("libraries") or [] if lib.get("owner") == owner]
 
 
 def visible_libs(uid):
@@ -513,6 +526,9 @@ def init_db():
                           ("users", "email TEXT"),
                           # 1 = disattivato dall'amministratore (dalla plancia): qui non si entra
                           ("users", "disabled INT DEFAULT 0"),
+                          # 1 = amico del proprietario: entra su questo server come ospite e vede
+                          # le raccolte del proprietario (solo finche' restano amici)
+                          ("users", "guest INT DEFAULT 0"),
                           # Il profilo scelto su questo dispositivo: NULL = ancora da scegliere,
                           # 0 = quello principale (l'account), altrimenti l'id in profiles
                           ("user_sessions", "profile INT")):
@@ -2605,10 +2621,11 @@ def session_user(token):
         con = db(raw=True)
         try:
             r = con.execute("SELECT s.user_id, s.last_seen, s.profile, p.id AS pid, p.name AS pname, "
-                            "u.id, u.name, u.admin, u.must_change, u.cloud_id "
+                            "u.id, u.name, u.admin, u.must_change, u.cloud_id, COALESCE(u.guest, 0) AS guest "
                             "FROM user_sessions s JOIN users u ON u.id=s.user_id "
                             "LEFT JOIN profiles p ON p.id=s.profile AND p.user_id=u.id WHERE s.token=? "
-                            "AND COALESCE(u.disabled, 0)=0 AND u.id=COALESCE((" + OWNER_SQL + "), u.id)",
+                            "AND COALESCE(u.disabled, 0)=0 AND (u.id=COALESCE((" + OWNER_SQL + "), u.id) "
+                            "OR COALESCE(u.guest, 0)=1)",
                             (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
                 con.execute("UPDATE user_sessions SET last_seen=? WHERE token=?", (time.time(), key))
@@ -2622,9 +2639,11 @@ def session_user(token):
     if not r:
         return None
     linked = r["cloud_id"] is not None
+    guest = bool(r["guest"])
     # sid: di chi sono visti, ripresa e lista (l'account, o -id del profilo scelto)
-    return {"id": r["id"], "name": r["name"], "admin": linked and bool(r["admin"]), "linked": linked,
-            "must_change": linked and bool(r["must_change"]), "libs": visible_libs(r["id"]), "session": token,
+    return {"id": r["id"], "name": r["name"], "admin": linked and bool(r["admin"]) and not guest, "linked": linked,
+            "guest": guest, "must_change": linked and bool(r["must_change"]),
+            "libs": guest_libs() if guest else visible_libs(r["id"]), "session": token,
             "sid": -r["pid"] if r["pid"] else r["id"],
             "profile": r["pid"] or (0 if r["profile"] is not None else None), "pname": r["pname"] or r["name"]}
 
@@ -2777,8 +2796,10 @@ async def cloud(method, path, body=None, token=None):
 def user_json(u):
     linked = u["cloud_id"] is not None
     admin = linked and bool(u["admin"])
-    return {"id": u["id"], "name": u["name"], "linked": linked, "admin": admin,
-            "role": "admin" if admin else "base", "must_change": linked and bool(u["must_change"])}
+    guest = bool(u["guest"]) if "guest" in u.keys() else False
+    admin = admin and not guest
+    return {"id": u["id"], "name": u["name"], "linked": linked, "admin": admin, "guest": guest,
+            "role": "admin" if admin else "base", "must_change": linked and bool(u["must_change"]) and not guest}
 
 
 def login_fields(body, key="password"):
@@ -2838,10 +2859,12 @@ def owner_only_error(owner):
 
 def open_session(con, uid, device):
     """Un ingresso nuovo per un dispositivo. Su un server con il proprietario entra
-    solo lui: gli altri vedono i suoi video come amici, dal loro server."""
+    lui e, come ospiti, i suoi amici (users.guest, vedi complete_login)."""
     owner = owner_row(con)
     if owner and owner["id"] != uid:
-        raise owner_only_error(owner)
+        g = con.execute("SELECT guest FROM users WHERE id=?", (uid,)).fetchone()
+        if not g or not g["guest"]:
+            raise owner_only_error(owner)
     token = secrets.token_urlsafe(32)
     con.execute("INSERT INTO user_sessions(token, user_id, device, created, last_seen) VALUES(?,?,?,?,?)",
                 (token_hash(token), uid, str(device or "")[:60], time.time(), time.time()))
@@ -2851,13 +2874,17 @@ def open_session(con, uid, device):
 KEY_SETTINGS = ("tmdb_key", "opensubtitles")
 
 
-def store_user(con, cloud_user, token, ver):
+def store_user(con, cloud_user, token, ver, guest=False):
     """Copia locale dell'account appena entrato (con l'impronta per entrare anche offline).
     Se l'account su questo PC non c'e' ancora e c'e' l'utente di questo PC (senza
-    account), l'account prende quello con tutto quello che ha. Torna l'id."""
+    account), l'account prende quello con tutto quello che ha. Torna l'id.
+    guest: un amico del proprietario. Non si sincronizza da qui (gettone NULL): le sue
+    raccolte e impostazioni restano sul suo server."""
     owner = owner_row(con)
-    if owner and owner["cloud_id"] != cloud_user["id"]:
+    if owner and owner["cloud_id"] != cloud_user["id"] and not guest:
         raise owner_only_error(owner)
+    if guest:
+        token = None
     row = con.execute("SELECT id, vsalt, vcheck FROM users WHERE cloud_id=?", (cloud_user["id"],)).fetchone()
     if ver:
         vsalt = secrets.token_hex(16)
@@ -2867,21 +2894,22 @@ def store_user(con, cloud_user, token, ver):
     fields = (cloud_user["username"], int(cloud_user["admin"]), int(cloud_user["must_change"]),
               token, vsalt, vcheck, time.time(), cloud_user.get("google") or None,
               (cloud_user.get("email") or "").lower() or None)
-    if not row:
+    if not row and not guest:
         row = con.execute("SELECT id FROM users WHERE cloud_id IS NULL ORDER BY created, id LIMIT 1").fetchone()
         if row:
             link_local(con, row["id"], cloud_user["id"])
     if row:
         con.execute("UPDATE users SET name=?, admin=?, must_change=?, token=?, vsalt=?, vcheck=?, last_login=?, "
-                    "google=?, email=?, disabled=0 WHERE id=?", (*fields, row["id"]))
+                    "google=?, email=?, disabled=0, guest=? WHERE id=?", (*fields, int(guest), row["id"]))
         uid = row["id"]
     else:
         uid = con.execute("INSERT INTO users(name, admin, must_change, token, vsalt, vcheck, last_login, "
-                          "google, email, cloud_id, created) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                          (*fields, cloud_user["id"], time.time())).lastrowid
+                          "google, email, cloud_id, created, guest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                          (*fields, cloud_user["id"], time.time(), int(guest))).lastrowid
     con.commit()
     user_cache.clear()
-    adopt_legacy(uid)
+    if not guest:
+        adopt_legacy(uid)
     return uid
 
 
@@ -3183,17 +3211,76 @@ async def finish_login(res, ver, device):
     return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts}, token)
 
 
-async def complete_login(res, ver, device):
-    """Account entrato: copia locale, ingresso, impostazioni da confrontare."""
+class NeedFriend(Exception):
+    """Un account che non e' del proprietario e non e' (ancora) suo amico."""
+    def __init__(self, data):
+        self.data = data
+
+
+@app.exception_handler(NeedFriend)
+async def need_friend_reply(request, ex):
+    return JSONResponse({"detail": "Questo server è di " + ex.data["owner"] +
+                         ": per vederlo chiedigli l'amicizia.", "ask": ex.data}, status_code=403)
+
+
+ASK_TTL = 1800
+asks = {}                        # biglietto -> {"at", "res", "ver", "device", "owner", "owner_cloud"}
+asks_lock = threading.Lock()
+
+
+def friend_status_with(token, cloud_id):
+    """Com'e' l'amicizia tra l'account del gettone e cloud_id: ok, sent, received o ''."""
+    res = accounts.call("GET", "/friends", token=token)
+    for f in res.get("friends") or []:
+        if isinstance(f, dict) and f.get("id") == cloud_id:
+            return str(f.get("status") or "")
+    return ""
+
+
+async def guest_check(res, ver, device):
+    """Entra un account che non e' il proprietario: se e' suo amico entra come ospite,
+    altrimenti si prepara la richiesta d'amicizia (NeedFriend)."""
     con = db(raw=True)
     try:
-        uid = store_user(con, res["user"], res["token"], ver)
+        owner = owner_row(con)
+    finally:
+        con.close()
+    if not owner or owner["cloud_id"] == res["user"]["id"]:
+        return False
+    try:
+        status = await asyncio.to_thread(friend_status_with, res["token"], owner["cloud_id"])
+    except accounts.CloudError as ex:
+        raise HTTPException(502, ex.detail)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Il server non raggiunge il servizio account: riprova tra poco")
+    if status == "ok":
+        return True
+    ticket = secrets.token_urlsafe(18)
+    with asks_lock:
+        for k in [k for k, a in asks.items() if time.time() - a["at"] > ASK_TTL]:
+            asks.pop(k, None)
+        if len(asks) > 50:
+            asks.pop(min(asks, key=lambda k: asks[k]["at"]), None)
+        asks[ticket] = {"at": time.time(), "res": res, "ver": ver, "device": device,
+                        "owner": owner["name"], "owner_cloud": owner["cloud_id"]}
+    raise NeedFriend({"ticket": ticket, "owner": owner["name"], "server": pc_name(),
+                      "user": res["user"].get("username") or "", "status": status})
+
+
+async def complete_login(res, ver, device):
+    """Account entrato: copia locale, ingresso, impostazioni da confrontare."""
+    guest = await guest_check(res, ver, device)
+    con = db(raw=True)
+    try:
+        uid = store_user(con, res["user"], res["token"], ver, guest=guest)
         token = open_session(con, uid, device)
         con.commit()
         u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     finally:
         con.close()
     conflicts = []
+    if guest:
+        return u, token, conflicts
     if not u["must_change"]:
         try:                       # impostazioni e raccolte subito; visti in sottofondo
             await asyncio.to_thread(pull_settings, uid, res["token"])
@@ -3230,7 +3317,7 @@ def auth_state():
         if me:
             linked = me["cloud_id"] is not None
             user = dict(user_json(me), tv_quick=bool(me["tv_quick"]), online=linked and bool(me["token"]),
-                        manager=can_manage(me["id"], linked and bool(me["admin"])),
+                        manager=not me["guest"] and can_manage(me["id"], linked and bool(me["admin"])),
                         google=me["google"] or "", email=me["email"] or "",
                         last_sync=me["last_sync"] or 0,
                         pending=pending_changes(con, me["id"]) if linked else 0,
@@ -3242,7 +3329,7 @@ def auth_state():
             "setup": cloud_on and SETUP_FILE.is_file() and cloud_ready() is False,
             "google": cloud_on and bool(cloud_status.get("google")),
             "reset": cloud_on and bool(cloud_status.get("reset")),
-            "server": SERVER_NAME}
+            "server": SERVER_NAME, "pc": pc_name(), "owner": owner["name"] if owner else ""}
 
 
 # ---- Profili dell'account («Chi guarda?» dopo il login) ---------------------------
@@ -3658,6 +3745,46 @@ async def auth_options(request: Request):
 # Serve per gli account che su questo PC non sono ancora entrati: quelli che
 # ci sono gia' si scelgono in «Chi guarda?».
 
+def ask_get(ticket):
+    with asks_lock:
+        a = asks.get(str(ticket or ""))
+    if not a or time.time() - a["at"] > ASK_TTL:
+        raise HTTPException(404, "Richiesta scaduta: rientra con il tuo account")
+    return a
+
+
+@app.post("/api/auth/ask/{ticket}")
+async def auth_ask_send(ticket: str):
+    """Dalla pagina «Questo server è di ...»: manda la richiesta d'amicizia al proprietario."""
+    a = ask_get(ticket)
+    try:
+        r = await asyncio.to_thread(accounts.call, "POST", "/friends", {"username": a["owner"]}, a["res"]["token"])
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (400, 404, 409, 429) else 502, ex.detail)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Il server non raggiunge il servizio account: riprova tra poco")
+    status = str((r or {}).get("status") or "sent")
+    if status == "ok":
+        return await auth_ask_poll(ticket)
+    return {"done": False, "status": status}
+
+
+@app.get("/api/auth/ask/{ticket}")
+async def auth_ask_poll(ticket: str):
+    """Il proprietario ha accettato? Allora si entra come ospite (una volta sola)."""
+    a = ask_get(ticket)
+    try:
+        status = await asyncio.to_thread(friend_status_with, a["res"]["token"], a["owner_cloud"])
+    except (accounts.CloudError, accounts.CloudOffline):
+        return {"done": False, "status": "", "retry": True}
+    if status != "ok":
+        return {"done": False, "status": status}
+    with asks_lock:
+        asks.pop(ticket, None)
+    u, token, conflicts = await complete_login(a["res"], a["ver"], a["device"])
+    return with_session({"done": True, "ok": True, "user": user_json(u), "conflicts": conflicts}, token)
+
+
 PAIR_TTL = 600
 PAIR_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 pairs = {}                       # codice -> {"at", "token", "user", "conflicts", "name"}
@@ -3733,6 +3860,19 @@ async def auth_pair_finish(code: str, request: Request):
     if p["token"]:
         return {"ok": True, "name": p["name"]}
     body = await read_json(request)
+    me = CURRENT.get()
+    if me is not None and body.get("session") and not body.get("password"):
+        # Dal telefono o dal PC gia' entrati: basta il codice, la TV entra con lo stesso account
+        con = db(raw=True)
+        try:
+            token = open_session(con, me["id"], "tv")
+            con.commit()
+            u = con.execute("SELECT * FROM users WHERE id=?", (me["id"],)).fetchone()
+        finally:
+            con.close()
+        with pairs_lock:
+            p.update(token=token, user=user_json(u), conflicts=[], name=u["name"])
+        return {"ok": True, "name": u["name"]}
     name, password = login_fields(body)
     name = await login_name(name)
     new = str(body.get("new") or "")
@@ -3984,7 +4124,7 @@ def can_manage(uid, admin):
 
 def manager_only():
     u = CURRENT.get()
-    if u is None or u.get("friend") or not can_manage(u["id"], u.get("admin")):
+    if u is None or u.get("friend") or u.get("guest") or not can_manage(u["id"], u.get("admin")):
         raise HTTPException(403, "Solo un amministratore o il proprietario di questo server può cambiarlo")
     return u
 
@@ -5148,7 +5288,11 @@ def set_show_fav(con, show_id, fav):
 
 
 @app.get("/api/home")
-def home():
+def home(src: str = ""):
+    """src: il server scelto all'apertura. "here" = solo questo, "f<n>" = solo quello
+    dell'amico (o il tuo altro PC) n; vuoto = tutto insieme."""
+    if src.startswith("f") and src[1:].isdigit():
+        return friend_home(int(src[1:]))
     con = db()
     try:
         shows = {r["id"]: r for r in con.execute("SELECT * FROM shows")}
@@ -5194,8 +5338,9 @@ def home():
                              "items": [x for _, x in recent[:24]]})
         sagas = sorted((collection_json(con, r) for r in collection_rows(con)),
                        key=lambda c: c["latest"] or 0, reverse=True)[:24]
-        cont = friend_continue(con, cont)
-        rows += friend_home_rows()
+        if src != "here":
+            cont = friend_continue(con, cont)
+            rows += friend_home_rows()
         return {"continue": cont, "nextup": nextup, "libraries": rows, "collections": sagas,
                 "top_movies": top_movies, "mylist": my_list(con)[:24], "has_libraries": bool(libs)}
     finally:
@@ -7481,6 +7626,8 @@ def get_friends():
     with config_lock:
         out = json.loads(json.dumps(config.get("friends") or []))
     u = CURRENT.get()
+    if u is not None and u.get("guest"):
+        return []                    # gli amici del proprietario non sono suoi
     if u is not None and not u.get("friend"):
         out = [f for f in out if not f.get("owner") or f["owner"] == u["id"]]
     return out
@@ -8188,6 +8335,22 @@ def friend_home_rows():
     return rows
 
 
+def friend_n_of(vid):
+    return (vid - FRIEND_BASE) // FRIEND_SPAN + 1 if isinstance(vid, int) and vid >= FRIEND_BASE else 0
+
+
+def friend_home(n):
+    """La Home di un solo server di un amico (o di un tuo altro PC)."""
+    rows = [r for r in friend_home_rows() if friend_n_of(r["id"]) == n] if friend_by_n(n) else []
+    con = db()
+    try:
+        cont = [c for c in friend_continue(con, []) if friend_n_of(c.get("id")) == n]
+    finally:
+        con.close()
+    return {"continue": cont, "nextup": [], "libraries": rows, "collections": [], "top_movies": [],
+            "mylist": [], "has_libraries": bool(rows), "friend": n}
+
+
 def friend_continue(con, cont):
     """Aggiunge a «Continua a guardare» i titoli degli amici lasciati a meta'."""
     try:
@@ -8541,6 +8704,21 @@ def sync_friends(uid, token):
         con.close()
     for a in gone:
         account_drop(a)
+    # 2b. Gli amici entrati qui come ospiti: se il proprietario non e' piu' loro amico, fuori
+    if uid == server_owner():
+        friends_ok = {f["id"] for f in ok}
+        con = db(raw=True)
+        try:
+            out = [r["id"] for r in con.execute("SELECT id, cloud_id FROM users WHERE guest=1")
+                   if r["cloud_id"] not in friends_ok]
+            for gid in out:
+                con.execute("UPDATE users SET guest=0 WHERE id=?", (gid,))
+                con.execute("DELETE FROM user_sessions WHERE user_id=?", (gid,))
+            con.commit()
+        finally:
+            con.close()
+        if out:
+            user_cache.clear()
     # 3. Il proprio indirizzo nella rubrica (se il profilo condivide)
     publish_presence(uid, token)
 

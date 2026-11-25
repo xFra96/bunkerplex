@@ -118,7 +118,7 @@ fun HomeScreen(act: MainActivity, refresh: Int) {
 
     LaunchedEffect(refresh) {
         try {
-            val d = withContext(Dispatchers.IO) { parseHome(Api.obj("/api/home")) }
+            val d = withContext(Dispatchers.IO) { parseHome(Api.obj(Access.homePath())) }
             HomeMemory.data = d
             data = d
             error = null
@@ -329,6 +329,7 @@ fun Rail(act: MainActivity, libs: List<Pair<Int, String>>, current: String) {
                 }
             }
         }
+        RailItem(Ic.screen, null, null, "Cambia server", open) { Access.src = null; act.reset(Screen.Servers) }
         Api.user?.let { u -> RailItem(null, null, u, u, open) { act.section(Screen.Settings) } }
         RailItem(Ic.gear, null, null, "Impostazioni", open, current == "settings", at("settings")) {
             act.section(Screen.Settings)
