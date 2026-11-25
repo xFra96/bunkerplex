@@ -78,6 +78,9 @@ sealed class Screen {
     data object Account : Screen()
     data class Login(val name: String?, val google: Boolean) : Screen()
     data object Phone : Screen()
+    data class Link(val google: Boolean) : Screen()
+    data object Servers : Screen()
+    data object Watchers : Screen()
     data class Reset(val email: String) : Screen()
     data class Google(val link: Boolean) : Screen()
     data object NewPassword : Screen()
@@ -111,6 +114,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Api.load(this)
+        Access.reset()                   // a ogni apertura: server e «Chi guarda?» da scegliere
         setupImages()
         update.start()
         stack.add(if (Api.base.isEmpty()) Screen.Connect else Screen.Who)
@@ -132,8 +136,11 @@ class MainActivity : ComponentActivity() {
                     Screen.NewVersion -> NewVersionScreen(this@MainActivity)
                     Screen.Account -> AccountScreen(this@MainActivity, refresh)
                     is Screen.Login -> LoginScreen(this@MainActivity, top)
+                    is Screen.Link -> LinkScreen(this@MainActivity, top.google)
+                    Screen.Servers -> key(refresh) { ServersScreen(this@MainActivity, refresh) }
+                    Screen.Watchers -> WatchersScreen(this@MainActivity)
                     is Screen.Reset -> ResetScreen(this@MainActivity, top)
-                    Screen.Phone -> PairScreen(this@MainActivity)
+                    Screen.Phone -> LinkScreen(this@MainActivity, false)
                     is Screen.Google -> GoogleScreen(this@MainActivity, top)
                     Screen.NewPassword -> NewPasswordScreen(this@MainActivity)
                     is Screen.Conflicts -> ConflictsScreen(this@MainActivity, top)
@@ -244,6 +251,7 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 Api.saveSession(this, "")
                 Api.user = null
+                Access.reset()
                 reset(Screen.Who)
             }
         }.start()
@@ -267,7 +275,7 @@ class MainActivity : ComponentActivity() {
     fun afterLogin(j: JSONObject) {
         val conflicts = j.optJSONArray("conflicts")
         if (conflicts != null && conflicts.length() > 0) reset(Screen.Conflicts(conflicts.toString()))
-        else reset(Screen.Home)
+        else proceed()
     }
 
     override fun onDestroy() {
@@ -402,7 +410,10 @@ class MainActivity : ComponentActivity() {
                 val user = s.optJSONObject("user")
                 if (user != null) {
                     Api.user = user.optString("name").ifEmpty { null }
-                    reset(Screen.Home)
+                    proceed()
+                } else if (s.optBoolean("cloud") && !s.optBoolean("setup")) {
+                    // Prima configurazione: QR e codice da confermare dal telefono o dal PC
+                    reset(Screen.Link(s.optBoolean("google")))
                 } else state = s
             } catch (e: Exception) {
                 error = "Non riesco a raggiungere BunkerPlex (${Api.base})."

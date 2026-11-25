@@ -1364,6 +1364,103 @@ html.tv .srow > .sval { max-width: none; }
 @keyframes sheetup { from { transform: translateY(100%); } }
 html.lite .sheet { animation: none !important; }
 
+/* ---- Accesso: login, scelta del server, collegamento della TV ---- */
+.auth { min-height: 100vh; min-height: 100dvh; display: flex; padding: 2rem 1rem;
+  background: radial-gradient(ellipse 80% 60% at 50% -10%, #1a7f4530, transparent 70%), var(--bg); }
+.authcard { width: 100%; max-width: 26rem; margin: auto; display: flex; flex-direction: column; animation: authin .35s ease-out; }
+.authcard.wide { max-width: 34rem; }
+@keyframes authin { from { opacity: 0; transform: translateY(.6rem); } }
+.authbrand { display: flex; align-items: center; justify-content: center; gap: .6rem; margin-bottom: 2.2rem; font-size: 1.6rem; letter-spacing: -.02em; }
+.authbrand svg { width: 2.4rem; height: 2.4rem; }
+.authbrand b { font-weight: 800; }
+.authcard h1, .tvlink h1 { font-size: 1.9rem; font-weight: 700; letter-spacing: -.02em; text-align: center; margin: 0 0 .4rem; }
+.authsub { text-align: center; color: var(--ink2); margin: 0 0 1.8rem; }
+.authsub b { color: var(--ink); }
+.authcard > p { color: var(--ink2); line-height: 1.55; text-align: center; margin: 0 0 1.4rem; }
+.authcard > p b { color: var(--ink); }
+.authcard .field { margin-bottom: .8rem; font-size: 1.08rem; padding: .95rem 1.1rem; border-radius: .6rem; }
+.btn.block { display: flex; justify-content: center; width: 100%; margin: .4rem 0 0; padding: .95rem 1.5rem; border-radius: .6rem; font-size: 1.08rem; }
+.btn.block:focus { transform: none; box-shadow: 0 0 0 3px var(--ink); }
+.authlink { display: block; align-self: center; margin-top: 1.1rem; padding: .3rem .6rem; border-radius: var(--r); color: var(--ink2); font-weight: 600; font-size: .95rem; text-align: center; }
+.authlink:hover { color: var(--ink); }
+.authlink:focus { background: var(--ink); color: var(--bg); }
+.author { display: flex; align-items: center; gap: .9rem; margin: 1.6rem 0 1.2rem; color: var(--ink3); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+.author::before, .author::after { content: ""; flex: 1; height: 1px; background: var(--surface2); }
+.gbtn { display: flex; align-items: center; justify-content: center; gap: .75rem; width: 100%; padding: .9rem 1.2rem; border-radius: .6rem;
+  background: #ffffff; color: #1f1f1f; font-weight: 600; font-size: 1.05rem; transition: transform .12s ease-out; }
+.gbtn svg { width: 1.3rem; height: 1.3rem; flex: none; }
+.gbtn:hover { background: #f1f3f4; }
+.gbtn:focus { box-shadow: 0 0 0 3px var(--accent-text); }
+.authico { align-self: center; width: 4rem; height: 4rem; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; margin-bottom: 1.2rem; }
+.authico svg { width: 2rem; height: 2rem; fill: none; stroke: var(--accent-text); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.authwait { display: flex; align-items: center; gap: .9rem; padding: 1rem 1.1rem; border-radius: .6rem; background: var(--surface); color: var(--ink2); line-height: 1.45; }
+.authwait b { color: var(--ink); }
+.authwait .spinner { width: 1.4rem; height: 1.4rem; flex: none; border-radius: 50%; border: .2rem solid var(--surface2); border-top-color: var(--accent-text); animation: authspin 1s linear infinite; }
+@keyframes authspin { to { transform: rotate(360deg); } }
+.authnote { color: var(--ink3); font-size: .9rem; text-align: center; margin-top: 1rem; }
+
+.srvlist { display: flex; flex-direction: column; gap: .7rem; }
+.srv { display: flex; align-items: center; gap: 1rem; width: 100%; padding: 1rem 1.1rem; border-radius: .8rem; background: var(--surface); border: 2px solid transparent; text-align: left; transition: transform .12s ease-out, background .12s; }
+.srv:hover { background: var(--surface2); }
+.srv:focus { background: var(--ink); color: var(--bg); transform: scale(1.02); }
+.srv.on { border-color: var(--accent); }
+.srv.off { opacity: .5; }
+.srvico { width: 3rem; height: 3rem; flex: none; border-radius: .7rem; background: var(--surface2); display: flex; align-items: center; justify-content: center; }
+.srvico svg { width: 1.6rem; height: 1.6rem; fill: none; stroke: var(--ink); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.srv:focus .srvico { background: var(--bg); }
+.srvtxt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.srvtxt b { font-size: 1.1rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srvtxt small { color: var(--ink2); margin-top: .15rem; font-size: .9rem; }
+.srv:focus .srvtxt small { color: var(--bg); opacity: .75; }
+.srvdot { width: .65rem; height: .65rem; flex: none; border-radius: 50%; background: var(--ink3); }
+.srvdot.live { background: var(--ok); box-shadow: 0 0 0 .25rem #4cbf7f26; }
+.srv.add { background: transparent; border: 2px dashed var(--surface2); }
+.srv.add .srvico svg { stroke: var(--accent-text); }
+.srv.add:focus { background: var(--ink); border-color: var(--ink); }
+.srvadd { display: flex; gap: .6rem; }
+.srvadd .field { margin: 0; flex: 1; min-width: 0; }
+.srvadd .btn { margin: 0; border-radius: .6rem; }
+.srvreq { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; margin-bottom: .9rem; border-radius: .8rem; background: #1a7f4522; color: var(--ink2); }
+.srvreq span { flex: 1; }
+.srvreq b { color: var(--ink); }
+.srvreq .btn { margin: 0; }
+.railitem.srvswitch span { font-weight: 700; }
+
+/* TV: QR da una parte, codice dall'altra */
+.tvlink { width: 100%; max-width: 62rem; margin: auto; display: flex; flex-direction: column; align-items: center; animation: authin .35s ease-out; }
+.tvlink .authsub { margin-bottom: 2.4rem; }
+.tvcols { display: flex; align-items: stretch; justify-content: center; width: 100%; gap: 0; }
+.tvcol { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem; border-radius: 1rem; background: var(--surface); }
+.tvcol b { font-size: 1.25rem; margin-top: 1.2rem; }
+.tvcol small { color: var(--ink2); line-height: 1.5; margin-top: .4rem; max-width: 22rem; }
+.tvcol small b { color: var(--ink); font-size: inherit; margin: 0; }
+.qrtile.big { width: 14rem; height: 14rem; padding: .7rem; border-radius: .8rem; }
+.tvor { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 1.6rem; color: var(--ink3); text-transform: uppercase; letter-spacing: .1em; font-size: .85rem; }
+.tvor::before, .tvor::after { content: ""; flex: 1; width: 1px; background: var(--surface2); margin: .6rem 0; }
+.tvstep { margin: 0 0 1.4rem !important; font-size: 1rem; }
+.tvcode { display: flex; align-items: center; gap: .6rem; font-size: 3.6rem; font-weight: 800; letter-spacing: .14em; color: var(--ink); line-height: 1; padding: 1.1rem 1.6rem; border-radius: .8rem; background: var(--bg); border: 2px solid var(--surface2); }
+.tvcode i { width: .25rem; }
+.tvmore { display: flex; flex-wrap: wrap; justify-content: center; margin-top: 2rem; }
+.tvmore .btn svg { width: 1.1rem; height: 1.1rem; margin-right: .5rem; }
+@media (max-width: 720px) {
+  .tvcols { flex-direction: column; }
+  .tvor { flex-direction: row; padding: 1rem 0; }
+  .tvor::before, .tvor::after { width: auto; height: 1px; flex: 1; margin: 0 .8rem; }
+  .tvcode { font-size: 2.4rem; }
+  .authbrand { margin-bottom: 1.6rem; }
+}
+html.tv .tvlink .authbrand { margin-bottom: 1.2rem; }
+html.tv .tvlink .authsub { margin-bottom: 1.6rem; }
+body.guest #rail .add { display: none; }
+.whopick { justify-content: center; gap: 1.2rem; margin-bottom: .6rem; }
+.whopick .profile { background: transparent; width: 9rem; }
+.whopick .profile:focus { background: var(--ink); color: var(--bg); transform: scale(1.06); }
+.authrow { display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem 1.2rem; }
+.authrow .authlink { margin-top: 1.4rem; }
+.gqr { display: flex; flex-direction: column; align-items: center; text-align: center; color: var(--ink2); }
+.gqr p { margin: 1rem 0 .8rem; line-height: 1.5; }
+.gqr p b { color: var(--ink); }
+.tvcode.small { font-size: 2rem; padding: .7rem 1.2rem; }
 /* Notifiche (Impostazioni → Notifiche) */
 .steps { margin: .4rem 0 1rem; padding-left: 1.3rem; color: var(--ink2); }
 .steps li { margin: .25rem 0; }

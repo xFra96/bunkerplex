@@ -278,8 +278,9 @@ function profilesPage() {
     '<div class="profiles">' + list + '</div>' + (body ? '<div style="margin-top:1.4rem">' + body + '</div>' : '') + more + '</div></div>';
 }
 
-// Sulla TV: si entra con un account scrivendo nome e password sul telefono.
-// La TV mostra un codice (e il suo QR) e intanto chiede al server se il telefono ha finito.
+// Sulla TV, alla prima configurazione: a sinistra il QR da inquadrare col telefono,
+// a destra il codice da scrivere in BunkerPlex sul telefono o sul PC (Collega una TV).
+// Intanto la TV chiede al server se qualcuno ha confermato.
 async function tvLoginPage() {
   var p = cache.pair;
   if (!p || Date.now() - p.at > (p.ttl - 60) * 1000) {
@@ -287,9 +288,10 @@ async function tvLoginPage() {
     p.at = Date.now();
     cache.pair = p;
   }
+  var here = location.hash;
   clearInterval(cache.pairTimer);
   cache.pairTimer = setInterval(function () {
-    if (location.hash !== '#/tvlogin') { clearInterval(cache.pairTimer); return; }
+    if (location.hash !== here || (auth && auth.user)) { clearInterval(cache.pairTimer); return; }
     api('/auth/pair/' + p.code).then(function (r) {
       if (!r.done) return;
       clearInterval(cache.pairTimer);
@@ -298,16 +300,30 @@ async function tvLoginPage() {
       enterApp(r);
     }, function () { clearInterval(cache.pairTimer); cache.pair = null; render(); });   // scaduto: codice nuovo
   }, 2000);
-  var inside = auth && auth.user;
-  var where = p.url ? '<p>Oppure apri dal telefono questo indirizzo:</p><p class="apkurl num">' + esc(p.url) + '</p>' : '';
-  return '<div class="page"><div class="panel login wide"><h1>Entra dal telefono</h1>' +
-    '<div class="apkqr">' + (p.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare dal telefono">' + p.svg + '</div>' : '') +
-    '<div class="apktext"><p>Inquadra il QR con la fotocamera del telefono (collegato alla rete di casa) e scrivi lì nome e password del tuo account: la TV entra da sola.</p>' + where +
-    '<p style="margin-bottom:0"><small>Codice della TV, lo ritrovi sul telefono:</small></p>' +
-    '<p class="paircode num">' + esc(p.code.slice(0, 3) + ' ' + p.code.slice(3)) + '</p>' +
-    '<p><small>' + (inside && !auth.user.linked ? 'Quello che hai già qui passa al tuo account: visti, lista e raccolte si uniscono a quelli dell\'account.'
-      : 'Se hai già usato il tuo account su questo PC non serve: torna indietro e scegli il tuo nome in «Chi guarda?».') + '</small></p>' +
-    '<div class="actions"><a class="btn f" data-autofocus href="' + (inside ? '#/settings/account' : '#/home') + '" data-key="pairback">Indietro</a></div></div></div></div></div>';
+  var site = p.base ? p.base.replace(/^https?:\/\//, '') + '/#/tv' : '';
+  return '<div class="auth"><div class="tvlink">' +
+    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
+    '<h1>Collega questa TV</h1><p class="authsub">Accedi una volta dal telefono: la TV entra da sola' + (auth.pc ? ' su <b>' + esc(auth.pc) + '</b>' : '') + '.</p>' +
+    '<div class="tvcols">' +
+      '<div class="tvcol">' + (p.svg ? '<div class="qrtile big" role="img" aria-label="Codice QR per collegare la TV">' + p.svg + '</div>' : '') +
+        '<b>Inquadra il QR</b><small>con la fotocamera del telefono, sulla rete di casa</small></div>' +
+      '<div class="tvor"><span>oppure</span></div>' +
+      '<div class="tvcol"><small class="tvstep">Apri BunkerPlex sul telefono o sul PC, vai in <b>Collega una TV</b>' + (site ? ' (o su <span class="num">' + esc(site) + '</span>)' : '') + ' e scrivi</small>' +
+        '<div class="tvcode num">' + esc(p.code.slice(0, 3)) + '<i></i>' + esc(p.code.slice(3)) + '</div>' +
+        '<small>Il codice cambia ogni 10 minuti</small></div>' +
+    '</div>' +
+    '<div class="tvmore"><a class="btn f" data-autofocus href="#/login" data-key="tvpw">Usa il telecomando</a>' +
+      (auth.google ? '<a class="btn f" href="#/google" data-key="tvgoogle">' + GOOGLE_G + ' Google</a>' : '') +
+      (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>' +
+    '</div></div>';
+}
+
+// «Collega una TV» dal telefono o dal PC gia' entrati: si scrive il codice della TV
+function tvCodePage() {
+  return settingsShell('account', 'Collega una TV', 'Scrivi il codice che vedi sulla TV: entra con il tuo account, senza password.',
+    '<div class="panel"><label class="flabel" for="tvcode">Codice della TV</label>' +
+    '<div class="inline"><input class="field f num" id="tvcode" data-key="tvcode" data-autofocus maxlength="7" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="tvcodego" placeholder="ABC 123">' +
+    '<button class="btn primary f" data-act="tvcodego" data-key="tvcodego">Collega</button></div></div>');
 }
 
 // «Entra con Google» (link: collega Google all'account). Google si apre nel browser
@@ -340,6 +356,7 @@ async function googlePage(link) {
     }, function (e) {
       clearInterval(cache.gTimer);
       cache.gflow = null;
+      if (e.data && e.data.ask) { cache.ask = e.data.ask; location.replace('#/home'); render(); return; }
       if (location.hash !== here) return;
       cache.gError = e.message;
       render();
@@ -349,6 +366,14 @@ async function googlePage(link) {
   cache.gError = '';
   var canOpen = !APP || (tvApp && typeof tvApp.openUrl === 'function');
   var back = link || (auth && auth.user) ? '#/settings/account' : '#/home';
+  if (!link && !(auth && auth.user)) {
+    return authShell('<h1>Continua con Google</h1>' + (err ? '<p class="authsub"><span class="nodot">●</span> ' + esc(err) + '</p>' : '<p class="authsub">Con l\'account Google collegato al tuo BunkerPlex</p>') +
+      (TV || !canOpen ? '' : '<button class="gbtn f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">' + GOOGLE_G + '<span>Scegli l\'account Google</span></button>' +
+        '<div class="author"><span>oppure dal telefono</span></div>') +
+      '<div class="gqr">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
+      '<p>Inquadra il QR, oppure apri <b class="num">' + esc(g.short.replace(/^https:\/\//, '')) + '</b> e scrivi</p><div class="tvcode small num">' + esc(g.code) + '</div></div>' +
+      '<a class="authlink f"' + (TV ? ' data-autofocus' : '') + ' href="#/home" data-key="gback">Torna all\'accesso</a>', false);
+  }
   return '<div class="page"><div class="panel login wide"><h1>' + (link ? 'Collega Google' : 'Entra con Google') + '</h1>' +
     (err ? '<p><span class="nodot">●</span> ' + esc(err) + '</p>' : '') +
     (TV || !canOpen ? '' : '<p>' + (link ? 'Scegli l\'account Google da collegare: poi potrai entrare con quello, senza password.'
@@ -362,12 +387,169 @@ async function googlePage(link) {
     '<div class="actions"><a class="btn f"' + (TV ? ' data-autofocus' : '') + ' href="' + back + '" data-key="gback">Indietro</a></div></div></div></div></div>';
 }
 
-// Sul telefono: la pagina che apre il QR della TV
-function phonePairPage(code) {
+// ---------------------------------------------------------------- Accesso
+// Ogni volta che si apre BunkerPlex: 1) l'accesso (se e' ancora valido si salta),
+// 2) quale server guardare (questo, i tuoi altri PC, quelli degli amici),
+// 3) «Chi guarda?» se l'account ha piu' profili.
+
+var LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a7f45"/><path d="M25 18l22 14-22 14z" fill="#ffffff"/></svg>';
+var GOOGLE_G = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+var SRV_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+var FRIEND_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 14.6c2.6.2 4.4 1.9 5 4.9"/></svg>';
+var PLUS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+
+function authShell(inner, wide) {
+  return '<div class="auth"><div class="authcard' + (wide ? ' wide' : '') + '">' +
+    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + inner + '</div></div>';
+}
+
+function googleWide() {
+  if (!auth || !auth.google) return '';
+  return '<div class="author"><span>oppure</span></div>' +
+    '<a class="gbtn f" href="#/google" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></a>';
+}
+
+// Passo 1: email (o nome) e password, sotto Google. Niente altro.
+function loginPage() {
+  var where = auth.pc || '';
+  return authShell('<h1>Accedi</h1>' +
+    '<p class="authsub">' + (where ? 'al server <b>' + esc(where) + '</b>' : 'con il tuo account BunkerPlex') + '</p>' +
+    '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" placeholder="Email o nome utente" value="' + esc(fieldValue('lname')) + '">' +
+    '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password" data-enter="login" placeholder="Password">' +
+    '<button class="btn primary block f" data-act="login" data-key="login">Entra</button>' +
+    (auth.reset ? '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' : '') +
+    googleWide() +
+    (TV ? '<a class="authlink f" href="#/home" data-key="who-phone">Entra con il telefono (QR o codice)</a>' : '') +
+    (APP || IOS_APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : ''));
+}
+
+// Non e' il server del tuo account: lo vedi solo se il proprietario e' tuo amico
+function askPage() {
+  var a = cache.ask;
+  var sent = a.status === 'sent';
+  var body;
+  if (a.status === 'received') {
+    body = '<p><b>' + esc(a.owner) + '</b> ti ha già chiesto l\'amicizia: accettala dal tuo server o dall\'app BunkerPlex, poi torna qui.</p>';
+  } else if (sent) {
+    body = '<div class="authwait"><i class="spinner"></i><span>Richiesta mandata a <b>' + esc(a.owner) + '</b>. Quando accetta entri da solo.</span></div>';
+  } else {
+    body = '<p>Per guardare i suoi titoli chiedi l\'amicizia a <b>' + esc(a.owner) + '</b>: quando accetta, entri qui con il tuo account.</p>' +
+      '<button class="btn primary block f" data-autofocus data-act="asksend" data-key="asksend">Chiedi l\'amicizia a ' + esc(a.owner) + '</button>';
+  }
+  if (sent || a.status === 'received') askPoll();
+  return authShell('<div class="authico">' + FRIEND_ICON + '</div>' +
+    '<h1>Questo server è di ' + esc(a.owner) + '</h1>' +
+    '<p class="authsub">' + esc(a.server || '') + (a.user ? ' · sei entrato come <b>' + esc(a.user) + '</b>' : '') + '</p>' + body +
+    '<button class="authlink f"' + (sent ? ' data-autofocus' : '') + ' data-act="askback" data-key="askback">Entra con un altro account</button>');
+}
+
+function askPoll() {
+  clearTimeout(cache.askTimer);
+  cache.askTimer = setTimeout(function () {
+    var a = cache.ask;
+    if (!a || (auth && auth.user)) return;
+    api('/auth/ask/' + a.ticket).then(function (r) {
+      if (!cache.ask) return;
+      if (r.done) { cache.ask = null; toast('Ora siete amici: benvenuto'); enterApp(r); return; }
+      if (r.status && r.status !== a.status) { a.status = r.status; render(); return; }
+      askPoll();
+    }, function () { cache.ask = null; toast('Richiesta scaduta: rientra'); render(); });
+  }, 4000);
+}
+
+function loginFailed(e) {
+  if (e && e.data && e.data.ask) { cache.ask = e.data.ask; render(); return true; }
+  return false;
+}
+
+// Passo 2: quale server. Si chiede a ogni apertura (sessionStorage), per account.
+function serverKey() { return 'fpServer:' + (auth && auth.user ? auth.user.id : ''); }
+function currentServer() {
+  try { return sessionStorage.getItem(serverKey()); } catch (e) { return 'here'; }
+}
+function setServer(v) {
+  try { sessionStorage.setItem(serverKey(), v); } catch (e) { /* niente */ }
+}
+function needServer() {
+  var u = auth && auth.user;
+  return !!(u && auth.cloud && !u.must_change && currentServer() === null);
+}
+// Per le API: '' = tutto (prima della scelta), 'here', 'f<n>'
+function serverSrc() { return currentServer() || ''; }
+
+async function serversPage() {
+  var u = auth.user;
+  var data = cache.srvData;
+  if (!data || Date.now() - data.at > 20000) {
+    data = { at: Date.now(), friends: [], mine: [] };
+    if (u.linked && !u.guest) {
+      try {
+        var r = await Promise.race([api('/account-friends'), new Promise(function (ok, ko) { setTimeout(function () { ko(new Error('lento')); }, 5000); })]);
+        data.friends = r.friends || [];
+        data.mine = r.mine || [];
+      } catch (e) { data.error = true; }
+    }
+    cache.srvData = data;
+  }
+  var cur = currentServer();
+  function card(arg, ico, name, sub, on, first) {
+    var off = on === false;
+    return '<button class="srv f' + (off ? ' off' : '') + (cur === arg ? ' on' : '') + '"' + (first ? ' data-autofocus' : '') +
+      ' data-act="' + (off ? 'srvoff' : 'srvpick') + '" data-arg="' + esc(arg) + '" data-key="srv-' + esc(arg) + '">' +
+      '<span class="srvico">' + ico + '</span><span class="srvtxt"><b>' + esc(name) + '</b><small>' + sub + '</small></span>' +
+      '<i class="srvdot' + (off ? '' : ' live') + '"></i></button>';
+  }
+  var html = card('here', SRV_ICON, auth.pc || 'Questo server',
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Il tuo server · questo PC', true, true);
+  data.mine.forEach(function (m) {
+    if (!m.n) return;
+    html += card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Il tuo PC · spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true);
+  });
+  var waiting = [];
+  data.friends.forEach(function (f) {
+    if (f.status === 'received') { waiting.push(f); return; }
+    if (f.status !== 'ok') return;
+    var servers = (f.servers || []).filter(function (s) { return s.n; });
+    if (!servers.length) {
+      html += card('none', FRIEND_ICON, f.username, 'nessun server acceso', false);
+      return;
+    }
+    servers.forEach(function (s) {
+      html += card('f' + s.n, FRIEND_ICON, f.username + (servers.length > 1 && s.name ? ' · ' + s.name : ''),
+        s.online === false ? 'Amico · non raggiungibile ora' : 'Amico' + (s.name && servers.length === 1 ? ' · ' + esc(s.name) : ''), s.online === false ? false : true);
+    });
+  });
+  var add = '';
+  if (u.linked && !u.guest) {
+    add = cache.srvAdd
+      ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="srvaddsend" placeholder="Nome dell\'account del tuo amico">' +
+        '<button class="btn primary f" data-act="srvaddsend" data-key="srvaddsend">Invia</button></div>'
+      : '<button class="srv add f" data-act="srvadd" data-key="srvadd"><span class="srvico">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account: vedrai i suoi server accesi</small></span></button>';
+  }
+  var req = waiting.map(function (f) {
+    return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
+      '<button class="btn primary f" data-act="srvaccept" data-arg="' + f.id + '" data-key="srvacc-' + f.id + '">Accetta</button></div>';
+  }).join('');
+  return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server' + (u.guest ? '' : ': il tuo e quelli dei tuoi amici') + '</p>' +
+    req + '<div class="srvlist">' + html + add + '</div>' +
+    (data.error ? '<p class="authnote">Amici non raggiungibili ora: riprova tra poco.</p>' : '') +
+    '<button class="authlink f" data-act="logout" data-key="srvlogout">Esci da ' + esc(u.name) + '</button>', true);
+}
+
+// Sul telefono (o sul PC): la pagina che apre il QR o il codice della TV
+async function phonePairPage(code) {
+  if (!auth) { try { await loadAuth(); } catch (e) { /* si chiede la password */ } }
   var done = cache.pairDone && cache.pairDone.code === code ? cache.pairDone.name : '';
   if (done) {
     return '<div class="page"><div class="panel login"><h1>Fatto</h1><p>La TV sta entrando come <b>' + esc(done) + '</b>. Puoi chiudere questa pagina.</p>' +
       '<div class="actions"><a class="btn f" href="#/home" data-key="pairhome">Apri BunkerPlex qui</a></div></div></div>';
+  }
+  if (auth && auth.user && cache.pairPw !== code) {
+    return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Collega la TV</h1>' +
+      '<p class="authsub">Codice <b class="num">' + esc(code.slice(0, 3) + ' ' + code.slice(3)) + '</b></p>' +
+      '<p>La TV entra con il tuo account, <b>' + esc(auth.user.name) + '</b>. Poi lì scegli il server e chi guarda.</p>' +
+      '<button class="btn primary block f" data-autofocus data-act="pairme" data-arg="' + esc(code) + '" data-key="pairme">Collega come ' + esc(auth.user.name) + '</button>' +
+      '<button class="authlink f" data-act="pairother" data-arg="' + esc(code) + '" data-key="pairother">Usa un altro account</button>');
   }
   var needNew = cache.pairNeedNew === code;
   return '<div class="page"><div class="panel login"><h1>Entra sulla TV</h1>' +
@@ -496,7 +678,7 @@ function api(path, opt) {
 // Pagine gia' viste (Home, raccolte, schede): si mostrano subito con i dati
 // dell'ultima volta e intanto si chiedono quelli nuovi al server; se sono cambiati
 // la pagina si ridisegna da sola. Tornare indietro col telecomando e' immediato.
-var KEEP = /^\/(home|mylist|movies|shows|collections|libraries\/\d+\/items|items\/\d+|shows\/\d+|collections\/\d+)$/;
+var KEEP = /^\/(home(\?src=\w+)?|mylist|movies|shows|collections|libraries\/\d+\/items|items\/\d+|shows\/\d+|collections\/\d+)$/;
 var kept = { map: {}, order: [] };
 var keptRedraw = 0;
 
@@ -648,11 +830,16 @@ async function loadLibs(force) {
   friends = res[1].friends || [];
   friendQuality = res[1].quality || '720';
   libsLoadedAt = Date.now();
+  // Il server scelto all'apertura: solo le sue raccolte nel menu
+  var src = serverSrc(), only = /^f\d+$/.test(src) ? +src.slice(1) : 0;
+  var shownLibs = only ? [] : libs, shownFriends = src === 'here' ? [] : only ? friends.filter(function (fr) { return fr.n === only; }) : friends;
+  var pick = auth && auth.cloud && auth.user ? '<a class="f railitem srvswitch" href="#/server" data-key="nav-server">' + SRV_ICON + '<span>' +
+    esc(only ? (shownFriends[0] ? shownFriends[0].name : 'Server') : (auth.pc || 'Questo server')) + '</span></a>' : '';
   // Una raccolta che sta tutta su un altro tuo PC acceso compare sotto quel PC
-  var html = libs.filter(function (l) { return !l.remote; }).map(function (l) {
+  var html = pick + shownLibs.filter(function (l) { return !l.remote; }).map(function (l) {
     return '<a class="f railitem" href="#/lib/' + l.id + '" data-key="nav-lib-' + l.id + '">' +
       avatar(l.name) + '<span>' + esc(l.name) + '</span></a>';
-  }).join('') + friends.map(function (fr) {
+  }).join('') + shownFriends.map(function (fr) {
     if (!fr.libraries.length) return '';
     var off = fr.online === false;
     return '<div class="raillabel"><span>' + (fr.self ? 'Tuo PC · ' : '') + esc(fr.name) + (off ? ' · non raggiungibile' : '') + '</span></div>' +
@@ -825,9 +1012,19 @@ function cover(x) {
 // ---------------------------------------------------------------- Home
 
 async function home() {
-  var d = await cached('/home');
+  var src = serverSrc();
+  var d = await cached('/home' + (src ? '?src=' + src : ''));
   var recent = [];
   d.libraries.forEach(function (l) { recent = recent.concat(l.items); });
+  if (d.friend && !d.continue.length && !recent.length) {
+    return '<div class="page"><div class="empty center"><h2>Niente da vedere qui, per ora</h2>' +
+      '<p>Questo server non condivide titoli o non risponde in questo momento.</p>' +
+      '<div class="actions"><a class="btn primary f" href="#/server" data-key="to-server">Cambia server</a></div></div></div>';
+  }
+  if (!d.continue.length && !d.nextup.length && !recent.length && auth.user && auth.user.guest) {
+    return '<div class="page"><div class="empty center"><h2>' + esc(auth.owner) + ' non condivide ancora titoli</h2>' +
+      '<p>Quando accende la condivisione con gli amici, i suoi film e le sue serie compaiono qui.</p></div></div>';
+  }
   if (!d.continue.length && !d.nextup.length && !recent.length) return emptyLibrary(d.has_libraries);
   var mine = d.mylist || [];
 
@@ -1745,6 +1942,7 @@ function syncState() {
 
 // La voce dell'account nel menu laterale: il volto e il nome di chi sta guardando
 function markMe() {
+  document.body.classList.toggle('guest', !!(auth && auth.user && auth.user.guest));
   var el = document.getElementById('navme');
   if (!el) return;
   var u = auth && auth.user;
@@ -2519,7 +2717,9 @@ function accountArea(i) {
   var relogin = u.online ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
     '<p>L\'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). ' +
     'Qui funziona tutto lo stesso; per riprendere la sincronizzazione scrivi la password.</p>' + accountForm(u.name, true) + '</div>';
-  return settingsShell('account', 'Account', '', who + relogin + watchersPanel(u) +
+  var tvlink = TV || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account.</p>' +
+    '<div class="actions"><a class="btn primary f" href="#/tv" data-key="totv">Collega una TV</a></div></div>';
+  return settingsShell('account', 'Account', '', who + relogin + watchersPanel(u) + tvlink +
     '<div class="panel"><h2>Ti segue su ogni PC</h2>' +
       '<dl class="kv">' +
         '<dt>Chiave TMDB</dt><dd>' + (i.tmdb ? 'Attiva · ' + esc(i.tmdb_hint) : '<a class="link f" href="#/settings/catalog" data-key="kv-tmdb">Non impostata</a>') + '</dd>' +
@@ -4419,9 +4619,55 @@ var actions = {
     if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
     toast('Entro…');
     post('/auth/login', { username: name, password: pass, device: devName() }).then(enterApp, function (e) {
+      if (loginFailed(e)) return;
       toast(e.message);
       loadAuth().then(render);
     });
+  },
+  asksend: function () {
+    var a = cache.ask;
+    if (!a) return;
+    post('/auth/ask/' + a.ticket).then(function (r) {
+      if (r.done) { cache.ask = null; enterApp(r); return; }
+      a.status = r.status || 'sent';
+      toast('Richiesta mandata a ' + a.owner);
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  askback: function () {
+    cache.ask = null;
+    clearTimeout(cache.askTimer);
+    location.replace('#/home');
+    render();
+  },
+  srvpick: function (v) {
+    setServer(v);
+    dropCached();
+    libsLoadedAt = 0;
+    railSignature = '';
+    cache.srvAdd = false;
+    location.replace('#/home');
+    render();
+  },
+  srvoff: function () { toast('Questo server ora non è raggiungibile: dev\'essere acceso'); },
+  srvadd: function () { cache.srvAdd = true; render(); },
+  srvaddsend: function () {
+    var name = fieldValue('afname').trim();
+    if (!name) { toast('Scrivi il nome dell\'account del tuo amico'); return; }
+    post('/account-friends', { username: name }).then(function (r) {
+      toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username + ': quando accetta, i suoi server compaiono qui');
+      cache.srvAdd = false;
+      cache.srvData = null;
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  srvaccept: function (id) {
+    post('/account-friends/' + id + '/accept').then(function () {
+      toast('Ora siete amici: i suoi server compaiono tra poco');
+      cache.srvData = null;
+      libsLoadedAt = 0;
+      render();
+    }, function (e) { toast(e.message); });
   },
   setup: function () {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
@@ -4439,6 +4685,7 @@ var actions = {
   },
   watcher: function (id) {
     post('/profiles/select', { id: +id }).then(watcherChanged).then(function () {
+      try { sessionStorage.setItem('fpWho:' + auth.user.id, '1'); } catch (e) { /* niente */ }
       toast('Ciao ' + watcherName());
       location.replace('#/home');
       render();
@@ -4614,6 +4861,18 @@ var actions = {
       }, function (e) { toast(e.message); });
     });
   },
+  pairme: function (code) {
+    post('/auth/pair/' + code, { session: 1 }).then(function (r) {
+      cache.pairDone = { code: code, name: r.name };
+      render();
+    }, function (e) { toast(e.message); });
+  },
+  pairother: function (code) { cache.pairPw = code; render(); },
+  tvcodego: function () {
+    var code = fieldValue('tvcode').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (code.length !== 6) { toast('Il codice della TV ha 6 caratteri'); return; }
+    location.hash = '#/pair/' + code;
+  },
   pairsend: function (code) {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass'), pw = fieldValue('pnew');
     if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
@@ -4646,8 +4905,14 @@ var actions = {
     }, function (e) { toast(e.message); });
   },
   logout: function () {
+    var who = auth && auth.user ? auth.user.id : '';
     post('/auth/logout').catch(function () {}).then(function () {
-      try { sessionStorage.setItem('fpNoAuto', '1'); } catch (e) { /* niente */ }
+      try {
+        sessionStorage.setItem('fpNoAuto', '1');
+        sessionStorage.removeItem('fpServer:' + who);
+        sessionStorage.removeItem('fpWho:' + who);
+      } catch (e) { /* niente */ }
+      cache.srvData = null;
       auth = null;
       conflicts = null;
       location.replace('#/home');
@@ -5516,6 +5781,9 @@ var routes = [
   }],
   // «Cambia profilo»: la scelta la mostra gate(); senza profili si torna alla Home
   [/^#\/chi$/, function () { location.replace('#/home'); return ''; }],
+  // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
+  [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
+  [/^#\/tv$/, tvCodePage],
   [/^#\/password$/, function () {
     return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',
       '<div class="panel">' +
@@ -5552,13 +5820,20 @@ async function gate() {
     }
     if (!auth.user) {
       lockScreen(true);
+      if (cache.ask) return askPage();
       if (location.hash === '#/google' && auth.google) return googlePage(false);
       if (location.hash === '#/reset' && auth.reset) return resetPage();
-      return location.hash === '#/tvlogin' && auth.cloud ? tvLoginPage() : profilesPage();
+      if (!auth.cloud || auth.setup) return profilesPage();
+      // La TV parte dal QR e dal codice; nome e password col telecomando solo se li chiedi
+      if (TV && location.hash !== '#/login') return tvLoginPage();
+      return location.hash === '#/tvlogin' ? tvLoginPage() : loginPage();
     }
   }
+  cache.ask = null;
   if (auth.user.must_change && (needsName() || !pwLater())) { lockScreen(true); return passwordPage(true); }
   if (conflicts) { lockScreen(true); return conflictsPage(); }
+  // Quale server: a ogni apertura (e da «Cambia server»)
+  if (needServer() || (location.hash === '#/server' && auth.cloud)) { lockScreen(true); return serversPage(); }
   // «Chi guarda?» dei profili dell'account: dopo il login, mai al posto della password
   if (needWatcher() || (location.hash === '#/chi' && hasWatchers())) { lockScreen(true); return watchersPage(); }
   lockScreen(false);
@@ -5575,7 +5850,10 @@ function hasWatchers() {
 }
 
 function needWatcher() {
-  return hasWatchers() && (auth.user.watcher === null || auth.user.watcher === undefined);
+  if (!hasWatchers()) return false;
+  if (auth.user.watcher === null || auth.user.watcher === undefined) return true;
+  // A ogni apertura si richiede chi guarda (il profilo resta proposto per primo)
+  try { return sessionStorage.getItem('fpWho:' + auth.user.id) !== '1'; } catch (e) { return false; }
 }
 
 function watcherName() {
@@ -5592,12 +5870,12 @@ function watchersPage() {
     return '<button class="profile f' + (p.id === cur ? ' on' : '') + '"' + (on ? ' data-autofocus' : '') + ' data-act="watcher" data-arg="' + p.id + '" data-key="watch-' + p.id + '">' +
       face(p.name, 'big') + '<span>' + esc(p.name) + '</span></button>';
   }).join('');
-  return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
-    '<div class="profiles">' + list + '</div>' +
-    '<p style="margin-top:1.2rem"><small>Profili dell\'account ' + esc(u.name) + ': ognuno ha i suoi visti, la sua ripresa e la sua lista.</small></p>' +
-    '<div class="actions" style="margin-top:1rem">' +
-      (cur == null ? '' : '<a class="btn f" href="#/settings/account" data-key="watch-manage">Gestisci profili</a>') +
-      '<button class="btn f" data-act="logout" data-key="watch-logout">Esci dall\'account</button></div></div></div>';
+  return authShell('<h1>Chi guarda?</h1><p class="authsub">Ognuno ha i suoi visti, la sua ripresa e la sua lista</p>' +
+    '<div class="profiles whopick">' + list + '</div>' +
+    '<div class="authrow">' +
+      (cur == null ? '' : '<a class="authlink f" href="#/settings/account" data-key="watch-manage">Gestisci profili</a>') +
+      (auth.cloud ? '<a class="authlink f" href="#/server" data-key="watch-server">Cambia server</a>' : '') +
+      '<button class="authlink f" data-act="logout" data-key="watch-logout">Esci</button></div>', true);
 }
 
 function watchersPanel(u) {
@@ -5684,7 +5962,7 @@ async function render() {
     out = pairing ? null : await gate();
     if (pairing) {
       lockScreen(true);
-      out = phonePairPage(match[1].toUpperCase());
+      out = await phonePairPage(match[1].toUpperCase());
     } else if (out) {
       h = '#/login';
     } else {

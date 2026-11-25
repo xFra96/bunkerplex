@@ -428,6 +428,11 @@ object Ic {
     val play by lazy { solid("M7.5 4.8v14.4a.8.8 0 0 0 1.2.7l11.6-7.2a.8.8 0 0 0 0-1.4L8.7 4.1a.8.8 0 0 0-1.2.7z") }
     val restart by lazy { line("M4.5 12a7.5 7.5 0 1 0 2.2-5.3", "M4.5 4v4.5H9", w = 2.2f) }
     val plus by lazy { line("M12 5v14M5 12h14", w = 2.4f) }
+    val screen by lazy { line("M5 4h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M8 20h8M12 16v4") }
+    val friends by lazy {
+        line("M12.5 8a3.5 3.5 0 1 1-7 0a3.5 3.5 0 1 1 7 0z", "M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5",
+            "M19.6 9a2.6 2.6 0 1 1-5.2 0a2.6 2.6 0 1 1 5.2 0z", "M16.5 14.6c2.6.2 4.4 1.9 5 4.9")
+    }
     val check by lazy { line("m5 12.5 4.5 4.5L19 7.5", w = 2.6f) }
     val eye by lazy { line("M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z", "M14.5 12a2.5 2.5 0 1 1-5 0a2.5 2.5 0 1 1 5 0z") }
     val lock by lazy { line("M6.5 11h11v9h-11z", "M8.5 11V8a3.5 3.5 0 0 1 7 0v3", w = 2f) }

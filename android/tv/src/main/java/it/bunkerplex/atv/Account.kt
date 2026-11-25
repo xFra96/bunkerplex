@@ -375,7 +375,7 @@ fun ConflictsScreen(act: MainActivity, s: Screen.Conflicts) {
                 Api.post("/api/auth/resolve", JSONObject().put("keep", which))
                 act.runOnUiThread {
                     act.toast(if (which == "local") "Fatto: l'account ora ha le impostazioni di qui" else "Fatto: usi le impostazioni dell'account")
-                    act.reset(Screen.Home)
+                    act.proceed()
                 }
             } catch (e: Exception) {
                 act.runOnUiThread { msg = e.message }
