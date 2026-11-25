@@ -42,19 +42,24 @@ object Releases {
         return false
     }
 
-    /** Chiede a GitHub l'ultima release della linea (es. "tv-v", "BunkerPlexTV.apk"). Fuori dal thread principale. */
+    /** Chiede a GitHub l'ultima release della linea (es. "tv-v", "BunkerPlexTV.apk"). Fuori dal thread principale.
+     *  Si parte dai tag della linea, non dall'elenco delle release: quelle del server
+     *  escono a ogni modifica e spingerebbero indietro quelle delle app. */
     fun fetch(prefix: String, apk: String): Latest? {
-        val list = JSONArray(Net.get("https://api.github.com/repos/$REPO/releases?per_page=50", 10000, auth = false))
-        var best: JSONObject? = null
-        var bestVer: List<Int>? = null
-        for (i in 0 until list.length()) {
-            val rel = list.getJSONObject(i)
-            if (rel.optBoolean("draft") || rel.optBoolean("prerelease")) continue
-            val ver = parse(rel.optString("tag_name"), prefix) ?: continue
-            if (bestVer == null || newer(ver, bestVer)) { best = rel; bestVer = ver }
+        val api = "https://api.github.com/repos/$REPO"
+        val refs = JSONArray(Net.get("$api/git/matching-refs/tags/$prefix", 10000, auth = false))
+        val tags = (0 until refs.length()).map { refs.getJSONObject(it).optString("ref").removePrefix("refs/tags/") }
+            .mapNotNull { t -> parse(t, prefix)?.let { t to it } }
+            .sortedWith { a, b -> if (newer(a.second, b.second)) -1 else if (newer(b.second, a.second)) 1 else 0 }
+        // La piu' nuova con una release pubblicata (un tag appena creato puo' non averla ancora)
+        var rel: JSONObject? = null
+        for ((tag, _) in tags.take(3)) {
+            rel = try { JSONObject(Net.get("$api/releases/tags/$tag", 10000, auth = false)) } catch (_: Exception) { null }
+            if (rel != null && !rel.optBoolean("draft") && !rel.optBoolean("prerelease")) break
+            rel = null
         }
-        val rel = best ?: return null
-        val assets = rel.optJSONArray("assets") ?: return null
+        val found = rel ?: return null
+        val assets = found.optJSONArray("assets") ?: return null
         fun asset(name: String): String? {
             for (i in 0 until assets.length()) {
                 val a = assets.getJSONObject(i)
@@ -68,7 +73,7 @@ object Releases {
         } ?: return null
         val code = meta.optLong("code", 0)
         if (code <= 0) return null
-        val name = meta.optString("version").ifEmpty { rel.optString("tag_name").removePrefix(prefix) }
+        val name = meta.optString("version").ifEmpty { found.optString("tag_name").removePrefix(prefix) }
         return Latest(name, code, url, meta.optInt("min_server_api", 1))
     }
 

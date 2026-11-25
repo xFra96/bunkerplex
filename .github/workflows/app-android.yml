@@ -1,0 +1,129 @@
+# App Android per telefoni, tablet e TV (android/ tranne android/tv): ha release e
+# versione sue, indipendenti dal server e dall'app TV nativa. A ogni push su main
+# che la tocca pubblica la release app-vX.Y con:
+#   - BunkerPlex.apk: l'app;
+#   - BunkerPlex.json: numero di versione (code) e livello minimo delle API del
+#     server (Releases.MIN_SERVER_API in android/comune): l'app lo legge da sola per
+#     sapere se c'e' un aggiornamento, senza passare dal server.
+# Il numero lo calcola .github/versione.py dai tag app-v precedenti.
+# Firmata con la chiave di sempre (segreto ANDROID_KEYSTORE_B64), se no la TV e il
+# telefono rifiutano l'aggiornamento: senza segreto il giro si ferma.
+
+name: Pubblica l'app Android
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", "!android/tv/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Stesso gruppo della release del server: la copia dell'APK nella release fissa
+# app-tv (per i server di prima) non si accavalla con la sua ricreazione
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Numero di versione
+        id: ver
+        run: |
+          python3 .github/versione.py --test > /dev/null
+          ver=$(python3 .github/versione.py app)
+          min=$(grep -oP 'const val MIN_SERVER_API = \K\d+' android/comune/java/it/bunkerplex/tv/Releases.kt)
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "name=${ver#app-v}" >> "$GITHUB_OUTPUT"
+          echo "code=$(( $(date +%s) / 60 ))" >> "$GITHUB_OUTPUT"
+          echo "min=${min:-1}" >> "$GITHUB_OUTPUT"
+          echo "Versione: $ver · server minimo: API ${min:-1}"
+
+      - name: Chiave di firma
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Manca il segreto ANDROID_KEYSTORE_B64 (la chiave di firma)."
+            exit 1
+          fi
+          mkdir -p android/keystore
+          echo "$KEYSTORE_B64" | base64 -d > android/keystore/bunkerplex.jks
+          keytool -list -keystore android/keystore/bunkerplex.jks -storepass bunkerplex -alias bunkerplex > /dev/null
+
+      # Stessi strumenti del Dockerfile di strumenti/sviluppo/"Compila APK.bat"
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.11.1"
+          cache-provider: basic
+
+      # Tailscale dentro l'app (android/tsnet): Go e gomobile, con l'NDK gia' sul server di GitHub
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: android/tsnet/go.mod
+          cache-dependency-path: android/tsnet/go.sum
+
+      - name: Libreria Tailscale
+        working-directory: android
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh tsnet/build.sh
+
+      - name: Compila l'APK
+        working-directory: android
+        env:
+          BUNKERPLEX_VERSION: ${{ steps.ver.outputs.name }}
+          BUNKERPLEX_CODE: ${{ steps.ver.outputs.code }}
+        run: |
+          gradle --no-daemon :app:assembleRelease
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk ../out/BunkerPlex.apk
+          rm -f keystore/bunkerplex.jks
+          ls -l ../out/BunkerPlex.apk
+
+      # Release a parte, mai «latest»: quella resta del server (app-tv)
+      - name: Pubblica
+        env:
+          VER: ${{ steps.ver.outputs.ver }}
+          NAME: ${{ steps.ver.outputs.name }}
+          CODE: ${{ steps.ver.outputs.code }}
+          MIN: ${{ steps.ver.outputs.min }}
+        run: |
+          printf '{"version": "%s", "code": %s, "min_server_api": %s}\n' "$NAME" "$CODE" "$MIN" > out/BunkerPlex.json
+          cat out/BunkerPlex.json
+          if ! git rev-parse -q --verify "refs/tags/$VER" > /dev/null; then
+            git tag "$VER" HEAD
+            git push origin "refs/tags/$VER"
+          fi
+          prev=$(git describe --tags --abbrev=0 --match 'app-v*' HEAD^ 2>/dev/null || true)
+          {
+            echo "**Novità**"
+            git log --no-merges --format='- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))' \
+              ${prev:+$prev..}HEAD -- android ':(exclude)android/tv' | head -50
+            echo
+            echo "---"
+            echo "BunkerPlex.apk: l'app per telefoni e tablet Android, Android TV, Google TV e Fire TV."
+            echo "Si aggiorna da sola da qui, senza bisogno di aggiornare il server."
+          } > notes.md
+          if gh release view "$VER" > /dev/null 2>&1; then
+            gh release upload "$VER" out/BunkerPlex.apk out/BunkerPlex.json --clobber
+          else
+            gh release create "$VER" out/BunkerPlex.apk out/BunkerPlex.json --title "BunkerPlex Android $NAME" \
+              --notes-file notes.md --verify-tag --latest=false
+          fi
+          # I server e le app di prima prendono l'app dalla release fissa app-tv
+          gh release upload app-tv out/BunkerPlex.apk --clobber || true

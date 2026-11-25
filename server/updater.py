@@ -808,17 +808,24 @@ def _line_version(tag, prefix):
     return (int(m[1]), int(m[2]), int(m[3] or 0)) if m else None
 
 
-def latest_app_asset(releases, prefix, name):
-    """L'APK dell'ultima release della linea (es. tv-v1.7), o None."""
-    best, best_v = None, None
-    for rel in releases if isinstance(releases, list) else []:
+def latest_app_asset(cfg, tok, prefix, name):
+    """L'APK dell'ultima release della linea (es. tv-v1.7), o None. Si parte dai
+    tag della linea: le release del server escono a ogni modifica e
+    spingerebbero quelle delle app fuori dall'elenco."""
+    refs = json.loads(_api(cfg, f"git/matching-refs/tags/{prefix}", tok, timeout=20))
+    tags = [str(r.get("ref") or "").removeprefix("refs/tags/") for r in refs if isinstance(r, dict)]
+    tags = sorted((t for t in tags if _line_version(t, prefix)), key=lambda t: _line_version(t, prefix), reverse=True)
+    for tag in tags[:3]:              # un tag appena creato puo' non avere ancora la release
+        try:
+            rel = json.loads(_api(cfg, f"releases/tags/{tag}", tok, timeout=20))
+        except urllib.error.HTTPError:
+            continue
         if rel.get("draft") or rel.get("prerelease"):
             continue
-        v = _line_version(rel.get("tag_name"), prefix)
         asset = next((a for a in rel.get("assets") or [] if a.get("name") == name), None)
-        if v and asset and (best_v is None or v > best_v):
-            best, best_v = asset, v
-    return best
+        if asset:
+            return asset
+    return None
 
 
 def refresh_apps(force=False):
@@ -833,12 +840,14 @@ def refresh_apps(force=False):
         if not cfg or not PROGRAM.is_dir():
             return APK_FILE.is_file()
         tok = token()
-        releases = json.loads(_api(cfg, "releases?per_page=60", tok, timeout=20))
         for prefix, name, dest in APPS:
-            asset = latest_app_asset(releases, prefix, name)
+            asset = latest_app_asset(cfg, tok, prefix, name)
             if not asset and prefix == "app-v":
                 # Prima delle release app-v l'app stava nella release fissa del server
-                rel = next((r for r in releases if r.get("tag_name") == cfg["apk_release"]), None) or {}
+                try:
+                    rel = json.loads(_api(cfg, f"releases/tags/{cfg['apk_release']}", tok, timeout=20))
+                except urllib.error.HTTPError:
+                    rel = {}
                 asset = next((a for a in rel.get("assets") or [] if a.get("name") == name), None)
             asset = _newer(asset, dest)
             if asset:
