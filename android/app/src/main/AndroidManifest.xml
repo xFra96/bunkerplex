@@ -66,6 +66,12 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
+        <!-- Controllo periodico degli aggiornamenti dell'app: notifica quando ne esce uno (AppUpdates) -->
+        <service
+            android:name=".AppUpdateJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <!-- Passa all'installatore della TV l'APK dell'aggiornamento appena scaricato -->
         <provider
             android:name="androidx.core.content.FileProvider"

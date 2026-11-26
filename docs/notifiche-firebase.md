@@ -39,6 +39,16 @@ Se resta «per ora l'app controlla gli avvisi ogni 15 minuti circa»: il segreto
 oppure il telefono non ha Google Play. Appena il segreto è giusto l'app passa da sola alle notifiche istantanee
 (al primo controllo o alla prossima apertura).
 
+## Aggiornamenti dell'app
+
+Indipendente dagli avvisi dell'account e da Firebase: l'app Android (telefono e tablet, non TV) controlla da
+sola ogni 6 ore circa, anche chiusa, l'ultima release `app-v*` su GitHub (`AppUpdates.kt`, `AppUpdateJob`).
+Se è più nuova di quella installata mostra **«Aggiornamento di BunkerPlex disponibile»** sul canale
+«Aggiornamenti dell'app», una volta per versione; toccandola si apre l'app, che propone «Aggiorna ora».
+Con l'app aperta non si notifica (lo propone già la pagina). Serve il permesso delle notifiche: da Android 13
+l'app lo chiede una volta sola al primo avvio (preferenza `notify_asked`); chi dice di no può darlo dopo con
+«Attiva le notifiche» o dalle impostazioni di Android.
+
 ## Privacy: nessun indirizzo personale
 
 Il progetto è stato creato con un account Google personale, ma quell'indirizzo non compare da nessuna parte:

@@ -209,6 +209,23 @@ class MainActivity : AppCompatActivity() {
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server:
         // a ogni apertura si chiede subito, e la pagina propone la versione nuova (checkUpdate)
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", true) } catch (_: Exception) {} }
+        // Con l'app chiusa: ogni 6 ore circa una notifica se e' uscita una versione nuova (AppUpdates)
+        if (!isTelevision) {
+            AppUpdates.schedule(this)
+            // Da Android 13 senza permesso la notifica non si vede: lo si chiede una volta sola
+            // (chi dice di no lo puo' dare dopo con «Attiva le notifiche» o dalle impostazioni di Android)
+            if (Build.VERSION.SDK_INT >= 33 && !Notices.allowed(this) && !prefs.getBoolean("notify_asked", false)) {
+                prefs.edit().putBoolean("notify_asked", true).apply()
+                requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), NOTICE_PERMISSION)
+            }
+        }
+    }
+
+    /** Notifica «Aggiornamento disponibile» toccata con l'app gia' aperta: la pagina lo
+     *  propone subito, anche dopo un «Più tardi» (all'avvio lo propone gia' da sola). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(AppUpdates.EXTRA, false)) js("window.fpOfferUpdate&&fpOfferUpdate()")
     }
 
     private val isTelevision by lazy {
@@ -450,6 +467,8 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         web.onResume()
+        AppUpdates.foreground = true
+        AppUpdates.cancel(this)      // aperta l'app, l'aggiornamento lo propone la pagina
         if (waitingPermission) {
             waitingPermission = false
             if (canInstall() && updateFile.isFile) install()
@@ -469,6 +488,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        AppUpdates.foreground = false
         web.onPause()
         super.onPause()
     }

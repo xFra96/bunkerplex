@@ -6460,6 +6460,9 @@ function offerUpdate(i, manual) {
       });
 }
 
+// Notifica «Aggiornamento disponibile» toccata con l'app gia' aperta: si propone subito
+window.fpOfferUpdate = function () { checkUpdate(true); };
+
 // L'app Android racconta qui come procede l'aggiornamento
 window.fpUpdate = function (state, value) {
   var mine = modalState && modalState.update;
