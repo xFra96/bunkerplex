@@ -1705,3 +1705,51 @@ body.kb .snav.on:focus { background: var(--ink); }
   html.tv .stile { width: 2.5rem; height: 2.5rem; }
   html.tv .stile .sic { width: 1.45rem; height: 1.45rem; }
 }
+
+/* ---------- Invito a installare l'app, dall'indirizzo pubblico (*.ts.net) ----------
+   Sulla pagina d'accesso una scheda sopra il modulo; dopo l'accesso una barra in basso
+   (sul telefono sopra il menu), mai durante i video. */
+#gaslot { display: flex; flex-direction: column; }
+.getapp { display: flex; flex-direction: column; margin: 0 0 2rem; padding: 1.1rem 1.2rem .8rem; border-radius: .7rem; background: var(--surface); border: 1px solid var(--surface2); }
+.getapp.insheet { margin: 0; padding: 1.5rem 1.6rem 1rem; border: 0; background: none; }
+.gahead { display: flex; align-items: center; gap: .9rem; margin-bottom: 1rem; }
+.gahead b { display: block; font-size: 1.12rem; line-height: 1.3; }
+.gahead small { display: block; margin-top: .2rem; color: var(--ink2); font-size: .92rem; line-height: 1.4; }
+.gaico { flex: none; width: 2.8rem; height: 2.8rem; border-radius: .6rem; background: var(--accent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; }
+.gaico svg, .gamini svg, .gasteps svg, .gax svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.gaico svg { width: 1.6rem; height: 1.6rem; }
+.getapp .btn.block { margin: 0; }
+.ganote { margin: .7rem 0 0; color: var(--accent-text); font-size: .9rem; line-height: 1.4; text-align: center; }
+.ganote b { color: inherit; }
+.gasteps { margin: 1rem 0 .2rem; padding: 0; list-style: none; counter-reset: ga; }
+.gasteps li { position: relative; margin: 0 0 .75rem; padding-left: 2.2rem; color: var(--ink2); font-size: .95rem; line-height: 1.45; counter-increment: ga; }
+.gasteps li::before { content: counter(ga); position: absolute; left: 0; top: 0; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--surface2); color: var(--ink); font-size: .8rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.gasteps b { color: var(--ink); }
+.gasteps svg { width: 1.1em; height: 1.1em; vertical-align: -.2em; color: var(--ink); stroke-width: 2.2; }
+.garow { display: flex; flex-wrap: wrap; justify-content: center; gap: .1rem .8rem; margin-top: .5rem; }
+.galink { padding: .4rem .5rem; border-radius: var(--r); color: var(--ink2); font-weight: 600; font-size: .92rem; }
+.galink:hover { color: var(--ink); }
+.galink:focus-visible, body.kb .galink:focus { background: var(--ink); color: var(--bg); }
+.gamini { display: flex; align-items: center; gap: .6rem; align-self: center; margin: -.8rem 0 1.8rem; padding: .55rem 1.1rem; border-radius: 999px; background: var(--surface); border: 1px solid var(--surface2); color: var(--ink); font-weight: 600; font-size: .95rem; }
+.gamini svg { width: 1.2rem; height: 1.2rem; flex: none; color: var(--accent-text); }
+.gamini:hover { background: var(--surface2); }
+.gamini:focus-visible, body.kb .gamini:focus { background: var(--ink); color: var(--bg); }
+.gasheet { width: 30rem; overflow-y: auto; }
+#getapp { position: fixed; right: 1.2rem; bottom: 1.2rem; z-index: 40; width: 26rem; max-width: calc(100vw - 2.4rem); display: flex; align-items: center; gap: .75rem;
+  padding: .65rem .6rem .65rem .7rem; border-radius: .7rem; background: var(--surface2); border: 1px solid #ffffff14; }
+#getapp[hidden], body.locked #getapp, body.playing #getapp { display: none; }
+#getapp .gaico { width: 2.4rem; height: 2.4rem; }
+#getapp .gaico svg { width: 1.35rem; height: 1.35rem; }
+.gatxt { flex: 1; min-width: 0; }
+.gatxt b { display: block; font-size: .98rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gatxt small { display: block; color: var(--ink2); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#getapp .btn { flex: none; margin: 0; }
+.gax { flex: none; width: 2.2rem; height: 2.2rem; border-radius: 50%; color: var(--ink2); display: flex; align-items: center; justify-content: center; }
+.gax:hover { color: var(--ink); background: #ffffff14; }
+.gax svg { width: 1.1rem; height: 1.1rem; stroke-width: 2.4; }
+.gax:focus-visible, body.kb .gax:focus { background: var(--ink); color: var(--bg); }
+@media (max-width: 720px) {
+  #getapp { left: .5rem; right: .5rem; bottom: calc(4.7rem + env(safe-area-inset-bottom)); width: auto; max-width: none; }
+  body.gaon:not(.locked) #view { padding-bottom: calc(11rem + env(safe-area-inset-bottom)); }
+  .getapp { margin-bottom: 1.6rem; }
+}
