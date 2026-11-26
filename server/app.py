@@ -550,6 +550,9 @@ def init_db():
                           # Il profilo scelto su questo dispositivo: NULL = ancora da scegliere,
                           # 0 = quello principale (l'account), altrimenti l'id in profiles
                           ("user_sessions", "profile INT"),
+                          # 1 = entrato senza password dalla rete di casa mentre mancava Internet
+                          # (vedi auth_home): vale solo finche' la rete non torna
+                          ("user_sessions", "home INT DEFAULT 0"),
                           # Id IMDb della scheda (tt...), da TMDB o dai nomi / file .nfo
                           ("items", "imdb_id TEXT"), ("shows", "imdb_id TEXT"),
                           # Voto IMDb e numero di voti (vedi imdb_ratings), NULL = non ancora letto
@@ -2920,8 +2923,8 @@ def session_user(token):
     if not known or time.time() - known[1] > 30:
         con = db(raw=True)
         try:
-            r = con.execute("SELECT s.user_id, s.last_seen, s.profile, p.id AS pid, p.name AS pname, "
-                            "p.cloud_pid, COALESCE(p.kids, 0) AS kids, u.p_name, "
+            r = con.execute("SELECT s.user_id, s.last_seen, s.profile, COALESCE(s.home, 0) AS home, "
+                            "p.id AS pid, p.name AS pname, p.cloud_pid, COALESCE(p.kids, 0) AS kids, u.p_name, "
                             "u.id, u.name, u.admin, u.must_change, u.cloud_id, COALESCE(u.guest, 0) AS guest "
                             "FROM user_sessions s JOIN users u ON u.id=s.user_id "
                             "LEFT JOIN profiles p ON p.id=s.profile AND p.user_id=u.id WHERE s.token=? "
@@ -2939,6 +2942,17 @@ def session_user(token):
     r = known[0]
     if not r:
         return None
+    # Entrato da casa senza Internet: quando il servizio account torna a rispondere
+    # quell'ingresso finisce e si rientra come sempre (dal telefono)
+    if r["home"] and cloud_link["online"] is True:
+        con = db(raw=True)
+        try:
+            con.execute("DELETE FROM user_sessions WHERE token=?", (key,))
+            con.commit()
+        finally:
+            con.close()
+        user_cache.pop(key, None)
+        return None
     linked = r["cloud_id"] is not None
     guest = bool(r["guest"])
     kids = bool(r["pid"] and r["kids"])
@@ -2953,7 +2967,7 @@ def session_user(token):
             "libs": libs, "session": token, "kids": kids,
             "sid": -r["pid"] if r["pid"] else r["id"],
             "profile": profile_public_id(linked, r["pid"], r["cloud_pid"]) if r["pid"] else (0 if r["profile"] is not None else None),
-            "pname": r["pname"] or r["p_name"] or r["name"]}
+            "pname": r["pname"] or r["p_name"] or r["name"], "home": bool(r["home"])}
 
 
 def share_token_of(scope):
@@ -3660,12 +3674,14 @@ def auth_state():
                         pending=pending_changes(con, me["id"]) if linked else 0,
                         # «Chi guarda?» dopo il login: i profili dell'account e quello scelto qui
                         watchers=profiles_of(con, me), watcher=u.get("profile"), kids=bool(u.get("kids")),
-                        profiles_cloud=linked)
+                        profiles_cloud=linked, home=bool(u.get("home")))
             if user["kids"]:
                 user["manager"] = False
     finally:
         con.close()
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,
+            # Senza Internet si puo' entrare senza password dalla rete di casa (vedi auth_home)
+            "home": offline and bool(owner) and home_offline_on(), "home_offline": home_offline_on(),
             "setup": cloud_on and SETUP_FILE.is_file() and cloud_ready() is False,
             "google": cloud_on and bool(cloud_status.get("google")),
             "reset": cloud_on and bool(cloud_status.get("reset")),
@@ -4350,6 +4366,86 @@ async def auth_options(request: Request):
     return {"ok": True}
 
 
+# ---- Senza Internet: chi e' in casa entra senza password -----------------------
+# Con il servizio account si entra sempre con l'account (dalla TV: dal telefono).
+# Senza Internet non si puo': allora un dispositivo della rete di casa entra senza
+# password come il proprietario di questo server. Solo se:
+# - il PC non raggiunge davvero Internet (ne' il servizio account ne' altri indirizzi
+#   noti): senza Internet nessuno da fuori arriva fin qui, nemmeno dalla porta aperta;
+# - chi chiede ha un indirizzo della rete di casa (o e' questo PC);
+# - il proprietario non l'ha spento (Impostazioni → Account).
+# L'ingresso e' segnato (user_sessions.home): non cambia le impostazioni e finisce
+# quando il servizio torna a rispondere (vedi session_user).
+
+def home_offline_on():
+    return config.get("home_offline", True) is not False
+
+
+def internet_reachable():
+    """Il PC raggiunge Internet? (Indirizzi noti, oltre al servizio account.)"""
+    for host, port in (("1.1.1.1", 443), ("8.8.8.8", 53), ("9.9.9.9", 443)):
+        try:
+            socket.create_connection((host, port), timeout=2).close()
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def home_client(request):
+    """Chi chiede e' nella rete di casa (indirizzo privato) o su questo PC? Mai dalla
+    porta dell'indirizzo pubblico (Funnel), che arriva anche lei da 127.0.0.1."""
+    if (request.scope.get("server") or ("", 0))[1] in (PUBLIC_PORT, SHARE_PORT):
+        return False
+    try:
+        a = ipaddress.ip_address(request.client.host if request.client else "")
+    except ValueError:
+        return False
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    return a.is_loopback or a.is_private
+
+
+@app.post("/api/auth/home")
+async def auth_home(request: Request):
+    body = await read_json(request)
+    if not auth_on():
+        raise HTTPException(400, "Qui non serve: scegli chi guarda")
+    if not home_offline_on():
+        raise HTTPException(403, "Il proprietario di questo server ha spento l'ingresso senza Internet")
+    if not home_client(request):
+        raise HTTPException(403, "Senza password si entra solo dalla rete di casa")
+    if await asyncio.to_thread(cloud_ping):
+        raise HTTPException(409, "C'è Internet: entra con il tuo account dal telefono")
+    if await asyncio.to_thread(internet_reachable):
+        raise HTTPException(503, "Il servizio account non risponde, ma Internet sì: riprova tra poco")
+    con = db(raw=True)
+    try:
+        owner = owner_row(con)
+        if not owner:
+            raise HTTPException(404, "Questo server non ha ancora un proprietario: la prima volta serve Internet")
+        u = con.execute("SELECT * FROM users WHERE id=?", (owner["id"],)).fetchone()
+        if u["disabled"]:
+            raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
+        token = open_session(con, u["id"], body.get("device") or "tv")
+        con.execute("UPDATE user_sessions SET home=1 WHERE token=?", (token_hash(token),))
+        con.commit()
+    finally:
+        con.close()
+    return with_session({"ok": True, "user": user_json(u), "offline": True, "home": True}, token)
+
+
+@app.post("/api/auth/home-offline")
+async def auth_home_offline(request: Request):
+    """Acceso o spento: senza Internet, chi e' in casa entra senza password."""
+    manager_only()
+    on = bool((await read_json(request)).get("on"))
+    with config_lock:
+        config["home_offline"] = on
+        save_config()
+    return {"ok": True, "home_offline": on}
+
+
 # ---- Accesso dalla TV con il telefono ------------------------------------------
 # Sulla TV scrivere nome e password col telecomando e' scomodo: la TV mostra un
 # codice (e il suo QR), il telefono di casa apre l'indirizzo e scrive li' nome e
@@ -4506,8 +4602,26 @@ async def auth_pair_finish(code: str, request: Request):
     except accounts.CloudError as ex:
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
+        # Senza Internet: come /api/auth/login, vale l'ultima password usata su questo PC
+        # (la TV non scrive mai la password: senza questo, offline non entrerebbe)
         mark_cloud(False)
-        raise HTTPException(503, "Il PC non raggiunge il servizio account: serve Internet per entrare con un account")
+        con = db(raw=True)
+        try:
+            u = con.execute("SELECT * FROM users WHERE name=? AND cloud_id IS NOT NULL AND vcheck IS NOT NULL",
+                            (name,)).fetchone()
+            ok = u and hmac.compare_digest(hashlib.sha256((u["vsalt"] + ver).encode()).hexdigest(), u["vcheck"])
+            if not ok:
+                raise HTTPException(503, "Il PC non raggiunge il servizio account e su questo PC non risulta "
+                                         "questo accesso: serve Internet")
+            if u["disabled"]:
+                raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
+            token = open_session(con, u["id"], "tv")
+            con.commit()
+        finally:
+            con.close()
+        with pairs_lock:
+            p.update(token=token, user=user_json(u), conflicts=[], name=u["name"])
+        return {"ok": True, "name": u["name"]}
     u, token, conflicts = await complete_login(res, ver, "tv")
     with pairs_lock:
         p.update(token=token, user=user_json(u), conflicts=conflicts, name=u["name"])
@@ -4742,6 +4856,8 @@ def can_manage(uid, admin):
 
 def manager_only():
     u = CURRENT.get()
+    if u is not None and u.get("home"):
+        raise HTTPException(403, "Senza Internet, entrati da casa, si guarda soltanto: le impostazioni si cambiano quando torna la rete")
     if u is None or u.get("friend") or u.get("guest") or u.get("kids") or not can_manage(u["id"], u.get("admin")):
         raise HTTPException(403, "Solo un amministratore o il proprietario di questo server può cambiarlo")
     return u

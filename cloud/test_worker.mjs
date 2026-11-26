@@ -668,3 +668,39 @@ test('collegamento con il codice: nuovo server, sostituzione sulla stessa macchi
   const bobTk = (await t.call('POST', '/profiles/0/open', {}, await t.login('bob', 'pwa'))).body.ticket;
   assert.equal((await t.call('POST', '/server/verify', { token: bobTk }, c2.credential)).status, 403);
 });
+
+test('la TV entra dal telefono: codice, conferma con l\'account, gettone una volta sola', async () => {
+  const t = setup();
+  t.addUser('anna');
+  t.addUser('bob');
+  const start = await t.call('POST', '/tv/start', { device: 'TV Sony' });
+  assert.equal(start.status, 200);
+  const { code, poll } = start.body;
+  assert.match(code, /^[A-Z2-9]{8}$/);
+  assert.equal(start.body.url, 'https://acc.test/#/tv/' + code);
+  assert.deepEqual((await t.call('POST', '/tv/poll', { poll })).body, { done: false });
+  // Il segreto per ritirare il gettone non e' il codice
+  assert.equal((await t.call('POST', '/tv/poll', { poll: code })).status, 404);
+  // Senza account non si conferma
+  assert.equal((await t.call('POST', '/tv/' + code, {})).status, 401);
+  const phone = await t.login('anna', 'pwa');
+  const info = await t.call('GET', '/tv/' + code.slice(0, 4) + '-' + code.slice(4).toLowerCase(), undefined, phone);
+  assert.equal(info.body.device, 'TV Sony');
+  assert.equal((await t.call('POST', '/tv/' + code, {}, phone)).body.ok, true);
+  // Un altro account non se la prende
+  assert.equal((await t.call('POST', '/tv/' + code, {}, await t.login('bob', 'pwa'))).status, 409);
+  const done = await t.call('POST', '/tv/poll', { poll });
+  assert.equal(done.body.done, true);
+  assert.equal(done.body.user.username, 'anna');
+  const me = await t.call('GET', '/me', undefined, done.body.token);
+  assert.equal(me.body.user.username, 'anna');
+  const devs = await t.call('GET', '/devices', undefined, done.body.token);
+  assert.ok(devs.body.devices.some((d) => d.kind === 'tv' && d.label === 'TV Sony' && d.current));
+  // Una volta sola
+  assert.equal((await t.call('POST', '/tv/poll', { poll })).status, 404);
+  assert.equal((await t.call('GET', '/tv/' + code, undefined, phone)).status, 404);
+  // Scritto a mano nel browser: alla pagina della PWA
+  const r = await worker.fetch(new Request('https://acc.test/tv'), t.env);
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('Location'), 'https://acc.test/#/tv');
+});

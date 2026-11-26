@@ -1245,6 +1245,83 @@ async function tsDeleteDevice(ts, d) {
   if (!r.ok && r.status !== 404) fail(502, 'Tailscale non ha tolto il dispositivo (errore ' + r.status + ')');
 }
 
+// ---- La TV entra dal telefono
+//
+// Sulla TV non si scrive mai una password. La TV chiede un codice (/tv/start, senza
+// account) e mostra un QR con l'indirizzo della PWA (/#/tv/<codice>) e il codice da
+// scrivere a mano (/tv sul telefono). Dal telefono si entra nella PWA come sempre
+// (password, Google, link via email...) e si conferma (POST /tv/<codice>). La TV,
+// che intanto chiede ogni 2-3 secondi con il suo segreto (/tv/poll, che non sta nel
+// QR), riceve il gettone dell'account: una sessione nuova di tipo «tv».
+
+const TV_TTL = 600;
+
+let tvTable = false;
+async function ensureTvLinks(env) {
+  if (tvTable) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS tv_links(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
+    'device TEXT, user_id INTEGER, exp REAL NOT NULL)').run();
+  tvTable = true;
+}
+
+async function tvLink(env, raw) {
+  await ensureTvLinks(env);
+  const code = cleanCode(raw);
+  const r = code.length === 8 ? await env.DB.prepare('SELECT * FROM tv_links WHERE code = ?').bind(code).first() : null;
+  if (!r || r.exp < now()) fail(404, 'Codice sbagliato o scaduto: sulla TV ne compare uno nuovo');
+  return r;
+}
+
+// Senza account: la TV chiede il codice e poi se e' stato confermato
+async function tvPublicRoutes(request, env, url, path, method) {
+  if (path === '/tv/start' && method === 'POST') {
+    await ensureTvLinks(env);
+    const b = await body(request);
+    await env.DB.prepare('DELETE FROM tv_links WHERE exp < ?').bind(now()).run();
+    const n = await env.DB.prepare('SELECT COUNT(*) n FROM tv_links').first('n');
+    if (n > 300) fail(429, 'Troppe TV in attesa: riprova tra qualche minuto');
+    const a = new Uint8Array(8);
+    crypto.getRandomValues(a);
+    const code = [...a].map((x) => CODE_CHARS[x % CODE_CHARS.length]).join('');
+    const poll = randomHex(32);
+    await env.DB.prepare('INSERT INTO tv_links(code, poll_hash, device, exp) VALUES(?,?,?,?)')
+      .bind(code, await sha256(poll), String(b.device || 'TV').slice(0, 80), now() + TV_TTL).run();
+    return json({ code, poll, url: url.origin + '/#/tv/' + code, short: url.origin + '/tv', ttl: TV_TTL });
+  }
+  // Confermato? Il gettone si consegna una volta sola
+  if (path === '/tv/poll' && method === 'POST') {
+    await ensureTvLinks(env);
+    const ph = await sha256(String((await body(request)).poll || ''));
+    const r = await env.DB.prepare('SELECT * FROM tv_links WHERE poll_hash = ?').bind(ph).first();
+    if (!r || r.exp < now()) fail(404, 'Codice scaduto');
+    if (!r.user_id) return json({ done: false });
+    await env.DB.prepare('DELETE FROM tv_links WHERE code = ?').bind(r.code).run();
+    const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(r.user_id).first();
+    if (!u) fail(404, 'Account non trovato');
+    return json({ done: true, token: await newSession(env, u, r.device, 'tv'), user: userJson(u) });
+  }
+  // L'indirizzo da scrivere a mano (o quello del QR aperto senza la PWA): la pagina giusta della PWA
+  const pm = /^\/tv(?:\/([A-Za-z0-9-]{1,12}))?$/.exec(path);
+  if (pm && method === 'GET' && !request.headers.get('Authorization')) {
+    return new Response(null, { status: 302, headers: { Location: url.origin + '/#/tv' + (pm[1] ? '/' + cleanCode(pm[1]) : ''),
+      'Cache-Control': 'no-store' } });
+  }
+  return null;
+}
+
+// Dal telefono, con l'account: quale TV e' (per mostrarlo prima di confermare) e la conferma
+async function tvUserRoutes(request, env, path, method, user) {
+  const m = /^\/tv\/([A-Za-z0-9-]{1,12})$/.exec(path);
+  if (!m) return null;
+  const r = await tvLink(env, m[1]);
+  if (method === 'GET') return json({ code: r.code, device: r.device || 'TV', done: r.user_id === user.id, exp: Math.floor(r.exp) });
+  if (method !== 'POST') return null;
+  if (r.user_id && r.user_id !== user.id) fail(409, 'Questa TV è già stata collegata a un altro account');
+  if (user.must_change) fail(409, 'Scegli prima la tua password');
+  await env.DB.prepare('UPDATE tv_links SET user_id = ? WHERE code = ?').bind(user.id, r.code).run();
+  return json({ ok: true, device: r.device || 'TV', user: userJson(user) });
+}
+
 // ---- Entra con Google
 //
 // Un solo flusso per tutti (browser, PWA, app sul telefono, TV), sul modello del
@@ -2439,6 +2516,8 @@ async function route(request, env) {
 
   const g = await googleRoutes(request, env, url, path, method);
   if (g) return g;
+  const tp = await tvPublicRoutes(request, env, url, path, method);
+  if (tp) return tp;
   const nr = await noticeRoutes(request, env, url, path, method);
   if (nr) return nr;
   // L'immagine di un server (pubblica: e' solo la copertina, l'indirizzo cambia a ogni modifica)
@@ -2460,6 +2539,8 @@ async function route(request, env) {
   const user = (await serverAsOwner(request, env, path, method)) || await auth(request, env);
   const dr = await deviceRoutes(env, path, method, user);
   if (dr) return dr;
+  const tu = await tvUserRoutes(request, env, path, method, user);
+  if (tu) return tu;
   const na = await noticeAccountRoutes(request, env, url, path, method, user);
   if (na) return na;
 

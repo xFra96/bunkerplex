@@ -263,3 +263,6 @@ CREATE TABLE IF NOT EXISTS server_look(
 -- Attivazione dal link dell'invito e link per entrare senza password (si salva l'impronta).
 CREATE TABLE IF NOT EXISTS activations(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS magic_links(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL, sent REAL NOT NULL);
+
+-- La TV entra dal telefono: codice (QR) confermato dalla PWA, la TV ritira il gettone con poll.
+CREATE TABLE IF NOT EXISTS tv_links(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, device TEXT, user_id INTEGER, exp REAL NOT NULL);
