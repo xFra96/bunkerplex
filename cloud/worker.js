@@ -238,10 +238,10 @@ async function serverRoutes(request, env, path, method) {
     const name = String(b.name || '').slice(0, 40);
     const securePort = Number.isInteger(b.secure_port) && b.secure_port > 0 && b.secure_port < 65536 ? b.secure_port : 0;
     const t = now();
-    await ensureCertTables(env);
+    await ensureClaims(env);
     await env.DB.batch([
-      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ? WHERE sid = ?')
-        .bind(t, name, String(b.version || '').slice(0, 40), securePort, srv.sid),
+      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ?, machine = COALESCE(?, machine) WHERE sid = ?')
+        .bind(t, name, String(b.version || '').slice(0, 40), securePort, cleanMachine(b.machine) || null, srv.sid),
       env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, public, friends, pin, t, ip, token_hash) VALUES(?,?,?,?,?,?,?,?,?,?,NULL) ' +
         'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
         'public = excluded.public, friends = excluded.friends, pin = excluded.pin, t = excluded.t, ip = excluded.ip, token_hash = NULL')
@@ -257,7 +257,9 @@ async function serverRoutes(request, env, path, method) {
   // Qui si ricontrolla anche l'amicizia (un amico tolto non entra piu' subito).
   if (path === '/server/verify' && method === 'POST') {
     const c = await readAccess(env, (await body(request)).token);
-    if (!c || c.sid !== srv.sid || c.own !== srv.owner_id) fail(403, 'Gettone non valido');
+    // Biglietto di un profilo: vale per i profili del proprietario
+    if (c && c.typ === 'profile' && Number(c.sub) === srv.owner_id) return json({ claims: c });
+    if (!c || c.typ || c.sid !== srv.sid || c.own !== srv.owner_id) fail(403, 'Gettone non valido');
     if (c.role === 'friend' && !await areFriends(env, Number(c.sub), srv.owner_id)) fail(403, 'Non siete più amici');
     return json({ claims: c });
   }
@@ -286,6 +288,327 @@ async function serverRoutes(request, env, path, method) {
 async function hasCredential(env, uid, sid) {
   await ensureCreds(env);
   return !!await env.DB.prepare('SELECT 1 FROM server_creds WHERE sid = ? AND owner_id = ?').bind(sid, uid).first();
+}
+
+// ---- Profili dell'account («Chi guarda?», come Netflix)
+//
+// Un account ha fino a 6 profili: il principale (id 0, l'account stesso) e fino a 5
+// aggiunti. Ognuno ha nome, avatar, colore, eventualmente un PIN e il segno «bambini»
+// (vede solo le raccolte per bambini e non cambia le impostazioni). Visti, punti di
+// ripresa e La mia lista sono del profilo e valgono su tutti i server: il principale
+// in `state` (come prima), gli altri in `pstate`.
+// Si sceglie un profilo con POST /profiles/:id/open (PIN se c'e'): torna un biglietto
+// firmato (ES256, 30 giorni) che il server verifica da solo, come i gettoni d'accesso.
+
+const MAX_PROFILES = 5;            // oltre al principale
+const PROFILE_TTL = 30 * 86400;
+const PROFILE_AVATARS = ['', 'cat', 'fox', 'panda', 'frog', 'lion', 'penguin', 'octopus', 'unicorn', 'rocket', 'ball', 'game', 'film'];
+const PROFILE_COLORS = ['', '#e50914', '#f5a623', '#2ecc71', '#1abc9c', '#3498db', '#9b59b6', '#e84393', '#7f8c8d'];
+const PIN_FAILS = 5;
+const PIN_LOCK = 300;
+
+let profileTables = false;
+async function ensureProfiles(env) {
+  if (profileTables) return;
+  await env.DB.batch([
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS profiles(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, ' +
+      'main INTEGER NOT NULL DEFAULT 0, name TEXT, avatar TEXT, color TEXT, kids INTEGER NOT NULL DEFAULT 0, ' +
+      'pin_hash TEXT, pin_fails INTEGER NOT NULL DEFAULT 0, pin_locked REAL NOT NULL DEFAULT 0, created REAL NOT NULL)'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS profiles_user ON profiles(user_id)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS pstate(user_id INTEGER NOT NULL, pid INTEGER NOT NULL, k TEXT NOT NULL, ' +
+      'pos REAL NOT NULL DEFAULT 0, w INTEGER NOT NULL DEFAULT 0, fav REAL NOT NULL DEFAULT 0, lp REAL NOT NULL DEFAULT 0, ' +
+      't REAL NOT NULL, rev INTEGER NOT NULL, PRIMARY KEY(user_id, pid, k))'),
+    env.DB.prepare('CREATE INDEX IF NOT EXISTS pstate_rev ON pstate(user_id, pid, rev)')
+  ]);
+  profileTables = true;
+}
+
+function profileJson(user, r) {
+  const main = !r || !!r.main;
+  return { id: main ? 0 : r.id, name: (r && r.name) || user.username, avatar: (r && r.avatar) || '',
+    color: (r && r.color) || '', kids: !main && !!(r && r.kids), pin: !!(r && r.pin_hash), main };
+}
+
+async function profileRows(env, user) {
+  await ensureProfiles(env);
+  return (await env.DB.prepare('SELECT * FROM profiles WHERE user_id = ? ORDER BY main DESC, created, id').bind(user.id).all()).results;
+}
+
+async function profilesOf(env, user) {
+  const rows = await profileRows(env, user);
+  const main = rows.find((r) => r.main);
+  return [profileJson(user, main), ...rows.filter((r) => !r.main).map((r) => profileJson(user, r))];
+}
+
+// La riga di un profilo dell'account (id 0: il principale, che puo' non avere ancora una riga)
+async function profileRow(env, user, id) {
+  await ensureProfiles(env);
+  if (id === 0) return await env.DB.prepare('SELECT * FROM profiles WHERE user_id = ? AND main = 1').bind(user.id).first();
+  const r = await env.DB.prepare('SELECT * FROM profiles WHERE user_id = ? AND id = ? AND main = 0').bind(user.id, id).first();
+  if (!r) fail(404, 'Questo profilo non c\'è più');
+  return r;
+}
+
+function profileName(raw) {
+  const name = String(raw == null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!name) fail(400, 'Scrivi un nome');
+  if (name.length > 24) fail(400, 'Nome troppo lungo (al massimo 24 caratteri)');
+  return name;
+}
+
+async function profileNameFree(env, user, name, id) {
+  const all = await profilesOf(env, user);
+  if (all.some((p) => p.id !== id && p.name.toLowerCase() === name.toLowerCase())) fail(409, 'C\'è già un profilo con questo nome');
+}
+
+// I campi che si possono cambiare (quelli che mancano restano come sono)
+async function profileFields(b, user, id) {
+  const out = {};
+  if (b.name !== undefined) out.name = profileName(b.name);
+  if (b.avatar !== undefined) {
+    if (!PROFILE_AVATARS.includes(String(b.avatar || ''))) fail(400, 'Avatar non valido');
+    out.avatar = String(b.avatar || '');
+  }
+  if (b.color !== undefined) {
+    if (!PROFILE_COLORS.includes(String(b.color || ''))) fail(400, 'Colore non valido');
+    out.color = String(b.color || '');
+  }
+  if (b.kids !== undefined && id !== 0) out.kids = b.kids ? 1 : 0;
+  if (b.pin !== undefined) {
+    const pin = String(b.pin == null ? '' : b.pin);
+    if (pin && !/^\d{4}$/.test(pin)) fail(400, 'Il PIN è di 4 cifre');
+    out.pin_hash = pin ? await pinHash(user.id, id, pin) : null;
+  }
+  return out;
+}
+
+// Il PIN di un profilo: 4 cifre, impronta legata ad account e profilo; dopo 5 errori 5 minuti di blocco
+const pinHash = (uid, pid, pin) => sha256('bunkerplex-pin:' + uid + ':' + pid + ':' + pin);
+
+async function profileTicket(env, user, id) {
+  const iat = Math.floor(now());
+  return await signAccess(env, { iss: 'bunkerplex', typ: 'profile', sub: String(user.id), pid: id, iat,
+    exp: iat + PROFILE_TTL, jti: randomHex(8) });
+}
+
+async function profileRoutes(request, env, url, path, method, user) {
+  if (path === '/profiles' && method === 'GET') {
+    return json({ profiles: await profilesOf(env, user), max: MAX_PROFILES + 1, avatars: PROFILE_AVATARS, colors: PROFILE_COLORS });
+  }
+  if (path === '/profiles' && method === 'POST') {
+    const b = await body(request);
+    const rows = await profileRows(env, user);
+    if (rows.filter((r) => !r.main).length >= MAX_PROFILES) fail(400, `Al massimo ${MAX_PROFILES + 1} profili per account`);
+    const f = await profileFields({ ...b, name: b.name === undefined ? '' : b.name, pin: undefined }, user, -1);
+    await profileNameFree(env, user, f.name, -1);
+    const res = await env.DB.prepare('INSERT INTO profiles(user_id, main, name, avatar, color, kids, created) VALUES(?,0,?,?,?,?,?)')
+      .bind(user.id, f.name, f.avatar || '', f.color || '', f.kids || 0, now()).run();
+    const id = res.meta.last_row_id;
+    // Il PIN dipende dall'id del profilo: si scrive dopo
+    if (b.pin) {
+      const pf = await profileFields({ pin: b.pin }, user, id);
+      await env.DB.prepare('UPDATE profiles SET pin_hash = ? WHERE id = ?').bind(pf.pin_hash, id).run();
+    }
+    const profiles = await profilesOf(env, user);
+    return json({ ok: true, profile: profiles.find((p) => p.id === id), profiles });
+  }
+  const pm = /^\/profiles\/(\d{1,12})$/.exec(path);
+  if (pm && method === 'PUT') {
+    const id = Number(pm[1]);
+    const row = await profileRow(env, user, id);
+    const f = await profileFields(await body(request), user, id);
+    if (f.name) await profileNameFree(env, user, f.name, id);
+    if (id === 0 && !row) {
+      await env.DB.prepare('INSERT INTO profiles(user_id, main, name, avatar, color, kids, pin_hash, created) VALUES(?,1,?,?,?,0,?,?)')
+        .bind(user.id, f.name || null, f.avatar || '', f.color || '', f.pin_hash || null, now()).run();
+    } else if (Object.keys(f).length) {
+      const cols = Object.keys(f);
+      await env.DB.prepare('UPDATE profiles SET ' + cols.map((c) => c + ' = ?').join(', ') +
+        (f.pin_hash !== undefined ? ', pin_fails = 0, pin_locked = 0' : '') + ' WHERE id = ?')
+        .bind(...cols.map((c) => f[c]), row.id).run();
+    }
+    const profiles = await profilesOf(env, user);
+    return json({ ok: true, profile: profiles.find((p) => p.id === id), profiles });
+  }
+  if (pm && method === 'DELETE') {
+    const id = Number(pm[1]);
+    if (id === 0) fail(400, 'Il profilo principale è l\'account: non si toglie');
+    const row = await profileRow(env, user, id);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM pstate WHERE user_id = ? AND pid = ?').bind(user.id, row.id),
+      env.DB.prepare('DELETE FROM profiles WHERE id = ?').bind(row.id)
+    ]);
+    return json({ ok: true, profiles: await profilesOf(env, user) });
+  }
+  // Scegliere un profilo (con il PIN, se ne ha uno): biglietto per i server
+  const om = /^\/profiles\/(\d{1,12})\/open$/.exec(path);
+  if (om && method === 'POST') {
+    const id = Number(om[1]);
+    const row = await profileRow(env, user, id);
+    if (row && row.pin_hash) {
+      if (row.pin_locked > now()) fail(429, 'Troppi PIN sbagliati: riprova tra qualche minuto');
+      const pin = String((await body(request)).pin || '');
+      if (!sameString(await pinHash(user.id, id, pin), row.pin_hash)) {
+        const fails = row.pin_fails + 1;
+        const locked = fails >= PIN_FAILS ? now() + PIN_LOCK : 0;
+        await env.DB.prepare('UPDATE profiles SET pin_fails = ?, pin_locked = ? WHERE id = ?').bind(locked ? 0 : fails, locked, row.id).run();
+        fail(pin ? 401 : 412, pin ? 'PIN sbagliato' : 'Questo profilo ha un PIN');
+      }
+      if (row.pin_fails) await env.DB.prepare('UPDATE profiles SET pin_fails = 0 WHERE id = ?').bind(row.id).run();
+    }
+    return json({ ok: true, ticket: await profileTicket(env, user, id), exp: Math.floor(now()) + PROFILE_TTL,
+      profile: profileJson(user, row) });
+  }
+  return null;
+}
+
+// Il profilo per visti e ripresa (?profile=<id>): 0 = il principale (tabella state)
+async function stateProfile(env, user, url) {
+  const id = Number(url.searchParams.get('profile') || 0);
+  if (!Number.isInteger(id) || id < 0) fail(400, 'Profilo non valido');
+  if (id) await profileRow(env, user, id);
+  return id;
+}
+
+// ---- Collegamento di un server all'account (come plex.tv/claim)
+//
+// Un server nuovo non entra da solo nell'account del primo che ci fa login: chiede un
+// codice (POST /claim/start, senza account) e lo mostra; il proprietario lo conferma da
+// un suo dispositivo (POST /claim/:code) dandogli un nome. Il server intanto chiede
+// (POST /claim/poll) e riceve la sua credenziale. machine = impronta della macchina:
+// reinstallando BunkerPlex sullo stesso PC si propone di sostituire il server di prima
+// (spento), che cosi' tiene nome, aspetto, amici e nome DNS (il server nuovo ne prende il sid).
+
+const CLAIM_TTL = 15 * 60;
+const CLAIM_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+let claimTable = false;
+async function ensureClaims(env) {
+  if (claimTable) return;
+  await ensureCreds(env);
+  await ensureCertTables(env);
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS claims(code TEXT PRIMARY KEY, sid TEXT NOT NULL, machine TEXT, ' +
+    'name TEXT, version TEXT, poll_hash TEXT NOT NULL, user_id INTEGER, target TEXT, secret TEXT, exp REAL NOT NULL)').run();
+  const cols = (await env.DB.prepare('PRAGMA table_info(server_creds)').all()).results.map((c) => c.name);
+  if (!cols.includes('machine')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN machine TEXT').run();
+  claimTable = true;
+}
+
+const cleanMachine = (raw) => (/^[0-9a-f]{16,64}$/.test(String(raw || '')) ? String(raw) : '');
+
+function claimCode() {
+  const a = new Uint8Array(8);
+  crypto.getRandomValues(a);
+  return [...a].map((b) => CLAIM_ALPHABET[b % CLAIM_ALPHABET.length]).join('');
+}
+
+async function claimRow(env, raw) {
+  await ensureClaims(env);
+  const code = cleanCode(raw);
+  const c = code.length === 8 ? await env.DB.prepare('SELECT * FROM claims WHERE code = ?').bind(code).first() : null;
+  if (!c || c.exp < now()) fail(404, 'Codice sbagliato o scaduto: sul server ne compare uno nuovo');
+  return c;
+}
+
+// I propri server sulla stessa macchina (per proporre la sostituzione)
+async function sameMachine(env, user, machine, sid) {
+  if (!machine) return [];
+  const t = now();
+  const rows = await env.DB.prepare('SELECT c.sid, COALESCE(s.name, c.name) AS name, c.last_seen, c.version FROM server_creds c ' +
+    'LEFT JOIN servers s ON s.sid = c.sid AND s.user_id = c.owner_id WHERE c.owner_id = ? AND c.machine = ? AND c.sid <> ?')
+    .bind(user.id, machine, sid).all();
+  return rows.results.map((r) => ({ sid: r.sid, name: r.name || 'PC', seen: r.last_seen || 0, version: r.version || '',
+    online: !!r.last_seen && t - r.last_seen < ONLINE_SECONDS }));
+}
+
+async function claimPublicRoutes(request, env, path, method) {
+  if (path === '/claim/start' && method === 'POST') {
+    await ensureClaims(env);
+    const b = await body(request);
+    const sid = String(b.sid || '');
+    if (!/^[0-9a-f]{8}$/.test(sid)) fail(400, 'Server non valido');
+    await env.DB.prepare('DELETE FROM claims WHERE exp < ? OR sid = ?').bind(now(), sid).run();
+    const poll = randomHex(32);
+    const code = claimCode();
+    await env.DB.prepare('INSERT INTO claims(code, sid, machine, name, version, poll_hash, exp) VALUES(?,?,?,?,?,?,?)')
+      .bind(code, sid, cleanMachine(b.machine) || null, String(b.name || '').slice(0, 40), String(b.version || '').slice(0, 40),
+        await sha256(poll), now() + CLAIM_TTL).run();
+    return json({ code, poll, exp: Math.floor(now() + CLAIM_TTL) });
+  }
+  if (path === '/claim/poll' && method === 'POST') {
+    await ensureClaims(env);
+    const b = await body(request);
+    const c = await env.DB.prepare('SELECT * FROM claims WHERE code = ?').bind(cleanCode(b.code)).first();
+    if (!c || !sameString(c.poll_hash, await sha256(String(b.poll || '')))) fail(404, 'Codice scaduto');
+    if (!c.secret) {
+      if (c.exp < now()) fail(404, 'Codice scaduto');
+      return json({ status: 'pending', exp: Math.floor(c.exp) });
+    }
+    await env.DB.prepare('DELETE FROM claims WHERE code = ?').bind(c.code).run();
+    const owner = await env.DB.prepare('SELECT id, username FROM users WHERE id = ?').bind(c.user_id).first();
+    return json({ status: 'done', credential: 's_' + c.target + '_' + c.secret, sid: c.target, name: c.name,
+      owner: { id: owner.id, username: owner.username } });
+  }
+  return null;
+}
+
+async function claimUserRoutes(request, env, path, method, user) {
+  const m = /^\/claim\/([A-Za-z0-9-]{8,12})$/.exec(path);
+  if (!m) return null;
+  const c = await claimRow(env, m[1]);
+  const other = await env.DB.prepare('SELECT owner_id FROM server_creds WHERE sid = ?').bind(c.sid).first();
+  if (method === 'GET') {
+    return json({ code: c.code, sid: c.sid, name: c.name || '', version: c.version || '',
+      taken: !!other && other.owner_id !== user.id, mine: !!other && other.owner_id === user.id,
+      same_machine: await sameMachine(env, user, c.machine, c.sid) });
+  }
+  if (method !== 'POST') return null;
+  if (c.secret) fail(409, 'Questo codice è già stato usato');
+  if (other && other.owner_id !== user.id) fail(409, 'Questo server è già collegato a un altro account');
+  const b = await body(request);
+  const name = String(b.name || c.name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  if (!name) fail(400, 'Dai un nome al server');
+  let target = c.sid;
+  if (b.replace) {
+    const old = (await sameMachine(env, user, c.machine, c.sid)).find((s) => s.sid === b.replace);
+    if (!old) fail(404, 'Il server da sostituire non è sulla stessa macchina');
+    if (old.online) fail(409, `«${old.name}» è acceso: spegnilo prima di sostituirlo`);
+    target = old.sid;
+  }
+  const dup = await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid <> ? AND name = ? COLLATE NOCASE')
+    .bind(user.id, target, name).first();
+  if (dup) fail(409, 'Hai già un server con questo nome');
+  const secret = randomHex(32);
+  const t = now();
+  const stmts = [
+    env.DB.prepare('INSERT INTO server_creds(sid, owner_id, secret_hash, name, version, created, last_seen, machine) VALUES(?,?,?,?,?,?,0,?) ' +
+      'ON CONFLICT(sid) DO UPDATE SET owner_id = excluded.owner_id, secret_hash = excluded.secret_hash, name = excluded.name, ' +
+      'version = excluded.version, last_seen = 0, machine = excluded.machine')
+      .bind(target, user.id, await sha256(secret), name, c.version || '', t, c.machine || null),
+    env.DB.prepare("INSERT INTO servers(user_id, sid, name, url, pin, t, friends) VALUES(?,?,?,'','',?,0) " +
+      'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name').bind(user.id, target, name, t),
+    env.DB.prepare('UPDATE claims SET user_id = ?, target = ?, secret = ?, name = ?, exp = ? WHERE code = ?')
+      .bind(user.id, target, secret, name, t + CLAIM_TTL, c.code)
+  ];
+  // Il sid nuovo era gia' stato registrato (vecchio collegamento automatico): sparisce, resta quello sostituito
+  if (target !== c.sid && other) stmts.push(env.DB.prepare('DELETE FROM server_creds WHERE sid = ?').bind(c.sid),
+    env.DB.prepare('DELETE FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, c.sid));
+  await env.DB.batch(stmts);
+  return json({ ok: true, sid: target, name, replaced: target !== c.sid });
+}
+
+// Con la credenziale del server si leggono e scrivono i dati del proprietario che
+// servono al server (impostazioni, visti, profili): cosi' funziona anche quando sul PC
+// il proprietario e' entrato solo dalla PWA o dalla TV (gettone d'accesso, nessuna password).
+const SERVER_AS_OWNER = [['GET', /^\/me$/], ['GET', /^\/settings$/], ['PUT', /^\/settings$/], ['GET', /^\/state$/],
+  ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/]];
+
+async function serverAsOwner(request, env, path, method) {
+  if (!/^Bearer s_/.test(request.headers.get('Authorization') || '')) return null;
+  if (!SERVER_AS_OWNER.some(([m, re]) => m === method && re.test(path))) fail(403, 'Non permesso alla credenziale del server');
+  const srv = await authServer(request, env);
+  const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(srv.owner_id).first();
+  return { ...u, token_hash: 'server:' + srv.sid, s_device: srv.name || '', via_server: srv.sid };
 }
 
 // ---- L'aspetto dei server: un'icona tra poche o un'immagine (scelta dal proprietario).
@@ -323,6 +646,8 @@ async function ownsServer(env, uid, sid) {
 
 // Rotte dell'utente sui server (dopo il controllo della password provvisoria)
 async function userServerRoutes(request, env, path, method, user) {
+  const cu = await claimUserRoutes(request, env, path, method, user);
+  if (cu) return cu;
   // Un server prende (o riprende) la sua credenziale con il gettone del proprietario
   const cm = /^\/servers\/([0-9a-f]{8})\/claim$/.exec(path);
   if (cm && method === 'POST') {
@@ -332,6 +657,11 @@ async function userServerRoutes(request, env, path, method, user) {
     const b = await body(request);
     const c = await env.DB.prepare('SELECT owner_id, last_seen FROM server_creds WHERE sid = ?').bind(sid).first();
     if (c && c.owner_id !== user.id) fail(409, 'Questo server è già collegato a un altro account');
+    // Un server nuovo entra nell'account solo con il codice (POST /claim/:code); questa via
+    // resta per riprendere la credenziale di un server che l'account ha gia'.
+    if (!c && !await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sid).first()) {
+      fail(428, 'Per aggiungere questo server al tuo account serve il codice di collegamento');
+    }
     if (c) {
       // Riprenderla (il server l'ha persa) la puo' una sessione di un server, o
       // chiunque dell'account se il server tace da un po': un gettone di un telefono
@@ -356,7 +686,8 @@ async function userServerRoutes(request, env, path, method, user) {
     const here = netKey(request);
     const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
     const local = (s) => !!here && s.ip === here && online(s.last_seen) !== false;
-    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, s.ip, c.last_seen, c.secure_port, ' +
+    await ensureClaims(env);
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, s.ip, c.last_seen, c.secure_port, c.machine, c.version, ' +
       '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
@@ -369,6 +700,7 @@ async function userServerRoutes(request, env, path, method, user) {
       ...own.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
         online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends, local: local(s),
+        machine: s.machine || '', version: s.version || '',
         addresses: { lan: s.lan || '', remote: s.url || '', public: s.public || '',
           secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       })),
@@ -2122,8 +2454,10 @@ async function route(request, env) {
   }
   const sr = await serverRoutes(request, env, path, method);
   if (sr) return sr;
+  const cp = await claimPublicRoutes(request, env, path, method);
+  if (cp) return cp;
 
-  const user = await auth(request, env);
+  const user = (await serverAsOwner(request, env, path, method)) || await auth(request, env);
   const dr = await deviceRoutes(env, path, method, user);
   if (dr) return dr;
   const na = await noticeAccountRoutes(request, env, url, path, method, user);
@@ -2190,6 +2524,8 @@ async function route(request, env) {
 
   const us = await userServerRoutes(request, env, path, method, user);
   if (us) return us;
+  const pr = await profileRoutes(request, env, url, path, method, user);
+  if (pr) return pr;
 
   // ---- Impostazioni: {chiave: {v, t}}; vince il valore con t piu' recente
   if (path === '/settings' && method === 'GET') {
@@ -2218,7 +2554,10 @@ async function route(request, env) {
   // ---- Visti / ripresa / lista. Chiavi: m<tmdb> film, s<tmdb> serie, e<tmdb>:<stagione>:<episodio>
   if (path === '/state' && method === 'GET') {
     const since = Number(url.searchParams.get('since') || 0);
-    const rows = await env.DB.prepare(
+    const pid = await stateProfile(env, user, url);
+    const rows = pid ? await env.DB.prepare(
+      'SELECT k, pos, w, fav, lp, t, rev FROM pstate WHERE user_id = ? AND pid = ? AND rev > ? ORDER BY rev LIMIT 2000'
+    ).bind(user.id, pid, since).all() : await env.DB.prepare(
       'SELECT k, pos, w, fav, lp, t, rev FROM state WHERE user_id = ? AND rev > ? ORDER BY rev LIMIT 2000'
     ).bind(user.id, since).all();
     return json({ rows: rows.results, more: rows.results.length === 2000 });
@@ -2227,9 +2566,19 @@ async function route(request, env) {
     const b = await body(request);
     const rows = Array.isArray(b.rows) ? b.rows.slice(0, MAX_ROWS) : [];
     const rev = Date.now();
+    const pid = await stateProfile(env, user, url);
     const stmts = [];
     for (const r of rows) {
       if (!r || !/^(m\d+|s\d+|e\d+:\d+:\d+)$/.test(String(r.k)) || typeof r.t !== 'number') continue;
+      if (pid) {
+        stmts.push(env.DB.prepare(
+          'INSERT INTO pstate(user_id, pid, k, pos, w, fav, lp, t, rev) VALUES(?,?,?,?,?,?,?,?,?) ' +
+          'ON CONFLICT(user_id, pid, k) DO UPDATE SET pos = excluded.pos, w = excluded.w, fav = excluded.fav, ' +
+          'lp = excluded.lp, t = excluded.t, rev = excluded.rev WHERE excluded.t > pstate.t'
+        ).bind(user.id, pid, r.k, Number(r.pos) || 0, r.w ? 1 : 0, Number(r.fav) || 0, Number(r.lp) || 0,
+          Math.min(r.t, now() + 60), rev));
+        continue;
+      }
       stmts.push(env.DB.prepare(
         'INSERT INTO state(user_id, k, pos, w, fav, lp, t, rev) VALUES(?,?,?,?,?,?,?,?) ' +
         'ON CONFLICT(user_id, k) DO UPDATE SET pos = excluded.pos, w = excluded.w, fav = excluded.fav, ' +
