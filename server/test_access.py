@@ -251,5 +251,40 @@ class Presenza(unittest.TestCase):
         self.assertEqual(self.calls[0][0], "DELETE")
 
 
+class IndirizzoPubblico(unittest.TestCase):
+    """Dall'indirizzo pubblico (*.ts.net) l'invito su Android scarica l'APK prima
+    dell'accesso: /BunkerPlex.apk passa senza login, le API no."""
+
+    def passa(self, path):
+        visto = []
+
+        async def inner(scope, receive, send):
+            visto.append(scope["path"])
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        sent = []
+
+        async def send(m):
+            sent.append(m)
+
+        scope = {"type": "http", "path": path, "headers": [], "server": ("127.0.0.1", app.PUBLIC_PORT),
+                 "client": ("127.0.0.1", 5000)}
+        asyncio.run(app.AuthGate(inner)(scope, None, send))
+        return bool(visto), sent[0]["status"]
+
+    def setUp(self):
+        for p in (mock.patch.object(app, "DATA_PROBLEM", ""), mock.patch.object(app, "auth_on", return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_apk_senza_accesso(self):
+        self.assertEqual(self.passa("/BunkerPlex.apk"), (True, 200))
+        self.assertEqual(self.passa("/"), (True, 200))
+
+    def test_api_chiedono_l_accesso(self):
+        self.assertEqual(self.passa("/api/home"), (False, 401))
+
+
 if __name__ == "__main__":
     unittest.main()
