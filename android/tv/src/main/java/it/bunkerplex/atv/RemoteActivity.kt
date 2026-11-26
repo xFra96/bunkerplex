@@ -81,6 +81,9 @@ class RemoteActivity : AppCompatActivity() {
             cameFromPlayer = true
         }
 
+        /** Un server su questa rete: lo apre la scelta del server dell'app TV, che lo trova in casa. */
+        override fun openLocal(url: String) = back("home")
+
         @JavascriptInterface
         fun isTv(): Boolean = true
 

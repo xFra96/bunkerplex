@@ -19,6 +19,9 @@ abstract class RemoteBridge(private val act: Activity, private val web: WebView,
     /** Sta per partire il player: al ritorno la pagina si aggiorna. */
     protected abstract fun playerStarting()
 
+    /** Un server che risponde sulla rete di questo dispositivo: lo apre l'app (url senza / finale). */
+    protected abstract fun openLocal(url: String)
+
     private fun js(code: String) = act.runOnUiThread { web.evaluateJavascript(code, null) }
 
     /** Risposta a una richiesta lenta della pagina: remoteDone(n, ok, testo). */
@@ -108,6 +111,32 @@ abstract class RemoteBridge(private val act: Activity, private val web: WebView,
 
     @JavascriptInterface
     fun remoteToken(hostport: String, token: String) = Remote.setToken(hostport, token)
+
+    /** Questo server risponde da qui, sulla rete in cui si trova il dispositivo? Risponde con
+     *  il suo /api/info (dice anche chi e': sid). Senza gettoni: puo' essere il server di un amico. */
+    @JavascriptInterface
+    fun remoteProbe(url: String, cb: Int) {
+        val base = url.trim().trimEnd('/')
+        if (!base.startsWith("http://") && !base.startsWith("https://")) {
+            done(cb, false, "")
+            return
+        }
+        thread {
+            val info = try {
+                JSONObject(Net.get("$base/api/info", 2500, auth = false)).takeIf { it.optString("app") == "bunkerplex" }
+            } catch (_: Exception) {
+                null
+            }
+            done(cb, info != null, info?.toString() ?: "")
+        }
+    }
+
+    /** Apre per intero un server raggiunto sulla rete di questo dispositivo. */
+    @JavascriptInterface
+    fun remoteOpen(url: String) {
+        val base = url.trim().trimEnd('/')
+        if (base.startsWith("http://") || base.startsWith("https://")) act.runOnUiThread { openLocal(base) }
+    }
 
     /** Avvia un video di un PC raggiunto da fuori: base = proxy verso quel PC. */
     @JavascriptInterface
