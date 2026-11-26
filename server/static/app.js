@@ -3002,26 +3002,31 @@ function showSecret(title, name, pass, label) {
 // Ogni area ha la sua vista (#/settings/<area>) con il suo nome come titolo.
 // La panoramica (#/settings) dice com'e' messa ogni area e cosa va guardato.
 
-// Le aree nel menu delle impostazioni, in due gruppi che non si mescolano:
+// Le aree nel menu delle impostazioni, in gruppi che non si mescolano, ognuno per
+// quello a cui si riferisce:
+// - «Il tuo account»: ti segue su ogni server e dispositivo (account, amici,
+//   amministrazione di tutta BunkerPlex);
 // - «Server · <nome>»: valgono per il server aperto, per chiunque lo usi da qualsiasi
-//   dispositivo (raccolte, schede, amici, PC, aggiornamenti del server);
+//   dispositivo (raccolte, schede, PC, aggiornamenti del server);
 // - «Questo dispositivo» / «Questa TV»: valgono solo qui (collegamento, visione,
-//   notifiche e, nell'app Android, l'app con la sua versione).
-// L'account sta sopra, da solo. Poche voci, per il telecomando:
+//   notifiche e, nell'app Android, l'app con la sua versione);
+// - «Altri dispositivi» (solo dal browser): portare l'app su TV e telefoni.
+// Poche voci, per il telecomando:
 // - Persone (solo amministratore) si apre da Account;
 // - Sottotitoli stanno in «Schede e sottotitoli»; sulla TV il QR per il telefono in «Collegamento e visione».
 // Le vecchie pagine (#/settings/subtitles, #/settings/apps sulla TV) rimandano a quelle nuove.
 // Ogni voce: [area, nome, gruppo]
 function settingsAreas() {
   var out = [];
-  if (auth && auth.user) out.push(['account', 'Account', '']);
-  if (adminHere()) out.push(['admin', 'Amministrazione', 'server']);
+  if (auth && auth.user) out.push(['account', 'Account', 'account']);
+  out.push(['friends', 'Amici', 'account']);
+  if (adminHere()) out.push(['admin', 'Amministrazione', 'account']);
   out.push(['libraries', 'Raccolte', 'server'], ['catalog', 'Schede e sottotitoli', 'server'],
-    ['friends', 'Amici', 'server'], ['pcs', 'PC e dispositivi', 'server']);
-  if (!APP) out.push(['apps', 'App per TV e telefono', 'server']);
-  out.push(['updates', 'Aggiornamenti', 'server'], ['device', 'Collegamento e visione', 'device']);
+    ['pcs', 'PC e dispositivi', 'server'], ['updates', 'Aggiorna server', 'server'],
+    ['device', 'Collegamento e visione', 'device']);
   if (APP) out.push(['app', appLabel(), 'device']);
   if (noticesLinked() && !TV) out.push(['notices', 'Notifiche', 'device']);
+  if (!APP) out.push(['apps', 'App per TV e telefono', 'others']);
   return out;
 }
 
@@ -3030,7 +3035,8 @@ var SETTINGS_HIDDEN = ['people'];
 
 // Il gruppo di un'area, e come si chiama
 function settingsGroup(area) {
-  if (area === 'people' || area === 'news') return 'server';
+  if (area === 'people') return 'account';
+  if (area === 'news') return 'server';
   var a = settingsAreas().filter(function (x) { return x[0] === area; })[0];
   return a ? a[2] : '';
 }
@@ -3050,6 +3056,14 @@ function appLabel(inText) {
 // Il titolo di un gruppo: per il server anche come ci arrivi (locale / online).
 // mini: per l'elenco a sinistra (stretto)
 function groupHead(group, mini) {
+  if (group === 'account') {
+    return '<span class="sghname">Il tuo account</span>' +
+      (mini ? '' : '<small>Ti segue su ogni server e dispositivo</small>');
+  }
+  if (group === 'others') {
+    return '<span class="sghname">Altri dispositivi</span>' +
+      (mini ? '' : '<small>Porta BunkerPlex su TV e telefoni</small>');
+  }
   if (group === 'server') {
     var k = hereReach();
     return '<span class="sghname">Server · <b>' + esc(srvLabel()) + '</b></span>' + reachTag(k) +
@@ -3230,7 +3244,7 @@ function settingsRows(i, u, sh) {
   }
   // Aggiornamenti del server, con la sua versione (l'app Android ha la sua riga, sotto)
   var srvWarn = !!(u && u.enabled && (u.error || u.access === false || u.available || u.phase));
-  rows.push({ area: 'updates', label: 'Aggiornamenti',
+  rows.push({ area: 'updates', label: 'Aggiorna server',
     desc: 'Il server BunkerPlex sul PC · versione ' + serverVer(i),
     value: !(u && u.enabled) ? serverVer(i)
       : u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Disponibile' : 'Aggiornato')),
@@ -3462,10 +3476,11 @@ function networkPanel(n) {
 
 // I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
 // gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato.
-// Due gruppi che non si mescolano: il server aperto (con locale / online) e questo
-// dispositivo. Amministrazione (solo amministratori) in cima al gruppo del server.
-var SGROUPS = [['server', ['admin', 'libraries', 'catalog', 'friends', 'pcs', 'apps', 'updates', 'news']],
-  ['device', ['device', 'app', 'notices']], ['', ['logout']]];
+// Gruppi che non si mescolano (vedi settingsAreas): l'account (con amici e
+// amministrazione), il server aperto (con locale / online), questo dispositivo e gli altri.
+var SGROUPS = [['account', ['account', 'friends', 'admin']],
+  ['server', ['libraries', 'catalog', 'pcs', 'updates', 'news']],
+  ['device', ['device', 'app', 'notices']], ['others', ['apps']], ['', ['logout']]];
 
 function srowHtml(r, first) {
   var inner = (r.face ? face(r.face, 'mid') : stile(r.area)) +
@@ -3500,9 +3515,10 @@ async function settings() {
   rows.forEach(function (r) { byArea[r.area] = r; });
   // Cosa va sistemato si vede nella sua riga (stato in giallo): niente doppioni in cima
   var acc = byArea.account;
-  var html = acc ? '<div class="sgroup">' + srowHtml({ area: 'account', face: acc.face, label: acc.label,
-    desc: acc.desc + (acc.value ? ' · ' + acc.value : ''), value: '', state: acc.state }, true) + '</div>' : '';
-  var first = !acc;
+  if (acc) byArea.account = { area: 'account', face: acc.face, label: acc.label,
+    desc: acc.desc + (acc.value ? ' · ' + acc.value : ''), value: '', state: acc.state };
+  var html = '';
+  var first = true;
   SGROUPS.forEach(function (g) {
     var list = g[1].map(function (a) { return byArea[a]; }).filter(Boolean);
     if (!list.length) return;
@@ -3653,7 +3669,7 @@ async function settingsArea(area) {
   // dispositivo ha la sua area («App Android» / «App TV»); la PWA non si aggiorna.
   if (area === 'updates') {
     var u = res[2];
-    return settingsShell('updates', 'Aggiornamenti del server', 'Qui si aggiorna BunkerPlex sul PC <b>' + esc(srvLabel()) + '</b>: ' +
+    return settingsShell('updates', 'Aggiorna server', 'Qui si aggiorna BunkerPlex sul PC <b>' + esc(srvLabel()) + '</b>: ' +
         'versione <b class="num">' + esc(serverVer(i)) + '</b>.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
       (APP ? '<p class="snote">L\'' + appLabel(true) + ' di ' + (TV ? 'questa TV' : 'questo dispositivo') + ' si aggiorna a parte: ' +
@@ -3974,13 +3990,16 @@ function getAppSheet() {
   if (first) first.focus();
 }
 
-// iPhone e computer dopo l'accesso: la barra in basso (nascosta sulle pagine d'accesso e durante i video)
+// iPhone e computer dopo l'accesso: la barra in basso (nascosta sulle pagine d'accesso e durante i video).
+// Chiusa con la X («Non ora») resta solo la sua icona, tonda in basso a destra: un clic e torna la barra.
 function markGetApp() {
   if (!currentHash) return;          // prima pagina non ancora disegnata
   var kind = getAppKind();
-  var on = !!kind && !getAppOnly() && !getAppState();
+  var st = kind && !getAppOnly() ? getAppState() : 'done';
+  var on = st !== 'done';
+  var mini = st === 'later';
   var bar = document.getElementById('getapp');
-  document.body.classList.toggle('gaon', on);
+  document.body.classList.toggle('gaon', on && !mini);
   if (!on) { if (bar) bar.hidden = true; return; }
   if (!bar) {
     bar = document.createElement('div');
@@ -3990,6 +4009,12 @@ function markGetApp() {
     document.body.appendChild(bar);
   }
   var t = GA_TEXT[kind];
+  bar.classList.toggle('mini', mini);
+  if (mini) {
+    bar.innerHTML = '<button class="gaico gare f" data-act="gashow" data-key="gashow" aria-label="' + esc(t.mini) + '" title="' + esc(t.mini) + '">' + t.ico + '</button>';
+    bar.hidden = false;
+    return;
+  }
   bar.innerHTML = '<span class="gaico">' + t.ico + '</span><span class="gatxt"><b>' + t.bar + '</b><small>' + t.barsub + '</small></span>' +
     '<button class="btn primary small f" data-act="gaopen" data-key="gaopen">' + t.btn + '</button>' +
     '<button class="gax f" data-act="galater" data-key="gax" aria-label="Non ora" title="Non ora">' + GA_X + '</button>';
