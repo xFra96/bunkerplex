@@ -93,6 +93,9 @@
   .srvbadge svg { width: 1.15rem; height: 1.15rem; }
   .srvart > svg { width: 2.4rem; height: 2.4rem; }
   .srvtag { position: absolute; right: .6rem; bottom: .6rem; padding: .15rem .55rem; border-radius: 1rem; background: #0008; color: #fff; font-size: .75rem; font-weight: 700; }
+  /* Come nell'interfaccia del server: verde = locale (stessa rete), blu = online (via Internet) */
+  .srvtag.local { background: #1a7f45e0; }
+  .srvtag.net { background: #1d4f8ae0; }
   .srvtxt { display: flex; flex-direction: column; min-width: 0; padding: .75rem .9rem .9rem; }
   .srvtxt b { font-size: 1.05rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .srvtxt small { color: var(--ink2); margin-top: .15rem; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -572,7 +575,7 @@ function srvHue(text) {
   return h;
 }
 
-// c: {act, arg, key, name, sub, icon, off, wait, first, local, find, look: {icon, image}, nodot}
+// c: {act, arg, key, name, sub, icon, off, wait, first, reach ('local'|'net'), find, look: {icon, image}, nodot}
 function srvCard(c) {
   var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
   var look = c.look || {};
@@ -586,7 +589,7 @@ function srvCard(c) {
     ' data-find="' + esc((c.name + ' ' + (c.find || '')).toLowerCase()) + '">' +
     '<span class="srvart' + (pic ? ' img' : '') + '" style="--h:' + srvHue(c.name) + (pic ? ';background-image:url(\'' + esc(pic) + '\')' : '') + '">' + face +
       (c.icon ? '<span class="srvbadge">' + c.icon + '</span>' : '') + dot +
-      (c.local ? '<span class="srvtag">In casa</span>' : '') + '</span>' +
+      (c.reach === 'local' ? '<span class="srvtag local">Locale</span>' : c.reach === 'net' ? '<span class="srvtag net">Online</span>' : '') + '</span>' +
     '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small></span></button>';
 }
 
@@ -689,7 +692,7 @@ function loadingPage(text) {
 // Dove si raggiunge un server da qui, in parole
 function where(pc, st) {
   if (pc.updating) return 'si aggiorna…';
-  if (st === 'local') return 'su questa rete';
+  if (st === 'local') return 'nella stessa rete';
   if (st === 'net') return 'via Internet';
   if (st === 'wait') return 'controllo…';
   if (pc.cloudOn === false) return 'spento';
@@ -703,7 +706,8 @@ function statusLine(list) {
   list.forEach(function (p) { n[reach(p)]++; });
   var ok = n.local + n.net, t;
   if (n.wait) t = '<i class="wait"></i>Controllo quali server rispondono da qui…';
-  else if (ok) t = '<i class="live"></i>' + ok + (ok === 1 ? ' raggiungibile' : ' raggiungibili') + ' da qui' + (n.local ? ' · ' + n.local + ' su questa rete' : '');
+  else if (ok) t = '<i class="live"></i>' + ok + (ok === 1 ? ' raggiungibile' : ' raggiungibili') + ' da qui · ' +
+    [n.local ? n.local + (n.local === 1 ? ' locale (stessa rete)' : ' locali (stessa rete)') : '', n.net ? n.net + ' online (via Internet)' : ''].filter(Boolean).join(', ');
   else t = '<i></i>Da qui nessun server risponde';
   return '<div class="srvstat">' + t + '</div>';
 }
@@ -732,7 +736,7 @@ function serversPage() {
     var w = where(pc, st);
     var sub = pc.self ? esc(w.charAt(0).toUpperCase() + w.slice(1)) : 'di ' + esc(pc.ownerName) + ' · ' + esc(w);
     (pc.self ? mine : theirs).push(srvCard({ act: 'pick', arg: pc.key, key: 'srv-' + pc.key, name: pc.name, sub: sub,
-      icon: pc.self ? SRV_ICON : FRIEND_ICON, off: st === 'off', wait: st === 'wait', local: st === 'local',
+      icon: pc.self ? SRV_ICON : FRIEND_ICON, off: st === 'off', wait: st === 'wait', reach: st,
       first: TV && !adding && pc === best, find: pc.self ? '' : pc.ownerName, look: pc.look }));
   });
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
