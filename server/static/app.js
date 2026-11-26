@@ -557,7 +557,8 @@ function loginPage() {
     (auth.reset ? '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' : '') +
     googleWide() +
     (TV ? '<a class="authlink f" href="#/home" data-key="who-phone">Entra con il telefono (QR o codice)</a>' : '') +
-    (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : ''));
+    (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') +
+    claimBox());
 }
 
 // Non e' il server del tuo account: lo vedi solo se il proprietario e' tuo amico
@@ -813,8 +814,11 @@ if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 // I server degli amici si aprono dal proprio server, come prima (src = f<n>).
 // Vedi docs/architettura.md.
 var CENTRAL = !!document.querySelector('meta[name="bp-central"]');
-var C = { token: '', user: null, sid: '', owner: 0, name: '', role: '', base: '', session: '', mkey: '', mexp: 0, list: null, friends: [], error: '' };
-var C_SAVED = ['token', 'user', 'sid', 'owner', 'name', 'role'];
+// profiles: i profili dell'account (GET /profiles, null = non ancora letti o servizio
+// irraggiungibile); pid: il profilo scelto in «Chi guarda?» su questo dispositivo
+var C = { token: '', user: null, sid: '', owner: 0, name: '', role: '', base: '', session: '', mkey: '', mexp: 0, list: null, friends: [], error: '',
+  profiles: null, pid: null };
+var C_SAVED = ['token', 'user', 'sid', 'owner', 'name', 'role', 'pid'];
 
 function cSave() {
   var o = {};
@@ -849,7 +853,8 @@ function cloud(method, path, body) {
     throw new Error('Il servizio account non risponde: controlla la connessione');
   }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) {
-      if (r.status === 401 && C.token && !/^\/(login|resolve|lookup|activate|magic|google|reset)/.test(path)) {
+      // (un PIN sbagliato e' 401 ma non vuol dire che l'accesso e' scaduto)
+      if (r.status === 401 && C.token && !/^\/(login|resolve|lookup|activate|magic|google|reset|profiles\/\d+\/open)/.test(path)) {
         cForget();
         setTimeout(render, 0);
       }
@@ -898,8 +903,82 @@ function cDrop() {
 // Via anche dall'account (su questo dispositivo)
 function cForget() {
   cDrop();
-  C.token = ''; C.user = null; C.sid = ''; C.list = null; C.friends = [];
+  C.token = ''; C.user = null; C.sid = ''; C.list = null; C.friends = []; C.profiles = null; C.pid = null;
+  cache.pinAsk = null; cache.pEdit = null;
+  try { sessionStorage.removeItem('bpWho'); } catch (e) { /* niente */ }
   cSave();
+}
+
+// Il biglietto di un profilo (POST /profiles/:id/open, 30 giorni): si tiene per
+// profilo e si ripassa a ogni server, cosi' il PIN si chiede solo quando si sceglie
+function cTicketKey(pid) { return 'bpTicket:' + (C.user && (C.user.id || C.user.username) || '') + ':' + pid; }
+function cTicketGet(pid) {
+  if (pid === null || pid === undefined) return '';
+  try {
+    var t = JSON.parse(localStorage.getItem(cTicketKey(pid)));
+    return t && t.ticket && t.exp - Date.now() / 1000 > 300 ? t.ticket : '';
+  } catch (e) { return ''; }
+}
+function cTicketSet(pid, ticket, exp) {
+  try {
+    if (ticket) localStorage.setItem(cTicketKey(pid), JSON.stringify({ ticket: ticket, exp: exp || 0 }));
+    else localStorage.removeItem(cTicketKey(pid));
+  } catch (e) { /* niente */ }
+}
+
+// I profili dell'account dal servizio: una volta per apertura (e dopo ogni modifica)
+async function cProfiles(force) {
+  if (C.profiles && !force) return C.profiles;
+  // Non riuscito da poco (servizio irraggiungibile o di prima): non si richiede a ogni pagina
+  if (!force && Date.now() - (cProfiles.failed || 0) < 60000) return C.profiles;
+  try {
+    var r = await cloud('GET', '/profiles');
+    C.profiles = r.profiles || [];
+    if (C.pid !== null && !C.profiles.some(function (p) { return p.id === C.pid; })) { C.pid = null; cSave(); }
+  } catch (e) {
+    // Servizio irraggiungibile (o di prima, senza profili): C.profiles resta null e
+    // «Chi guarda?» lo chiede il server, come prima
+    cProfiles.failed = Date.now();
+  }
+  return C.profiles;
+}
+
+// Si chiede «Chi guarda?» (come Netflix): con piu' profili, o con un solo profilo con il PIN.
+// A ogni apertura dell'app; il profilo di prima resta proposto per primo.
+function cNeedWho() {
+  var list = C.profiles || [];
+  if (!list.length) return false;
+  if (list.length === 1 && !list[0].pin) {
+    if (C.pid !== list[0].id) { C.pid = list[0].id; cSave(); }
+    return false;
+  }
+  if (C.pid === null || !profById(C.pid)) return true;
+  if ((profById(C.pid) || {}).pin && !cTicketGet(C.pid)) return true;
+  try { return sessionStorage.getItem('bpWho') !== '1'; } catch (e) { return false; }
+}
+
+// Apre un profilo nel servizio (con il PIN, se ne ha uno): biglietto per i server.
+// Se c'e' gia' un tuo server aperto, il profilo cambia anche li'.
+async function cWhoOpen(id, pin) {
+  var r = await cloud('POST', '/profiles/' + id + '/open', pin ? { pin: pin } : {});
+  cTicketSet(id, r.ticket, r.exp);
+  C.pid = id;
+  cSave();
+  if (C.base && C.role === 'owner' && auth && auth.user) {
+    try { await post('/profiles/select', { id: id, ticket: r.ticket }); } catch (e) { toast(e.message); }
+    await watcherChanged();
+  }
+}
+
+// Sul tuo server aperto il profilo e' un altro (sessione ripresa): si porta quello scelto
+async function cSyncProfile() {
+  if (!C.profiles || C.pid === null || C.role !== 'owner' || !auth || !auth.user || auth.user.watcher === C.pid) return;
+  var t = cTicketGet(C.pid);
+  if (!t && C.pid !== 0) return;
+  try {
+    await post('/profiles/select', t ? { id: C.pid, ticket: t } : { id: C.pid });
+    await loadAuth();
+  } catch (e) { /* il server chiedera' lui chi guarda */ }
 }
 
 function anyOf(list) {
@@ -965,8 +1044,12 @@ async function cOpen(s) {
   if (!session) {
     // Il server di un amico: il servizio deve sapere di chi e' (senza, lo cerca tra i tuoi)
     var a = await cloud('POST', '/servers/' + host.sid + '/access', s.role === 'friend' && s.owner ? { owner: s.owner.id } : {});
+    // Il profilo scelto in «Chi guarda?»: sul tuo server la sessione nasce gia' su di lui
+    var ab = { token: a.token, device: devName() };
+    var ticket = s.role === 'owner' && C.profiles ? cTicketGet(C.pid) : '';
+    if (ticket) { ab.profile = C.pid; ab.profile_ticket = ticket; }
     var r = await fetch(base + '/api/auth/access', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: a.token, device: devName() }) });
+      body: JSON.stringify(ab) });
     var j = await r.json().catch(function () { return {}; });
     if (!r.ok || !j.session) {
       var se = new Error(j.detail || 'Il server non ha accettato l\'accesso');
@@ -986,6 +1069,8 @@ async function cOpen(s) {
   auth = null;
   await loadAuth();
   setServer('here');
+  C.role = s.role;
+  await cSyncProfile();
   if (auth.user && !auth.user.must_change) await afterLogin([]);
 }
 
@@ -1211,6 +1296,10 @@ async function cServersPage() {
       '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>', true);
   }
   var mine = [], theirs = [], kinds = [];
+  // I tuoi server sulla stessa macchina (stessa impronta): raggruppati, per riconoscere
+  // quello vecchio, spento, rimasto da un'installazione di prima
+  var machines = {}, groups = {};
+  list.forEach(function (s) { if (s.role === 'owner' && s.machine) machines[s.machine] = (machines[s.machine] || 0) + 1; });
   list.forEach(function (s, i) {
     var off = s.online === false;
     var friend = s.role === 'friend';
@@ -1220,14 +1309,25 @@ async function cServersPage() {
     var where = off ? 'non raggiungibile' : REACH[reach] ? REACH[reach].how
       // Acceso ma senza indirizzo pubblico («Da ovunque» spento): si apre solo dalla sua rete
       : s.online ? 'acceso, solo dalla sua rete' : '';
+    // I tuoi: acceso o spento, e la versione
     var sub = friend ? 'di ' + esc(s.owner.username) + (where ? ' · ' + where : '')
-      : !off && REACH[reach] ? REACH[reach].card
-      : where ? where.charAt(0).toUpperCase() + where.slice(1) : 'Il tuo server';
+      : (off ? 'Spento' : REACH[reach] ? REACH[reach].card : s.online ? 'Acceso, solo dalla sua rete' : 'Il tuo server') +
+        (s.version ? ' · ' + esc(srvVersion(s.version)) : '');
     var edit = !friend && cache.cEdit;
-    (friend ? theirs : mine).push(srvCard({ act: edit ? 'clook' : 'cpick', arg: edit ? s.sid : i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
+    var card = srvCard({ act: edit ? 'clook' : !friend && off ? 'csrvoff' : 'cpick', arg: edit ? s.sid : i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
       name: s.name || 'PC', sub: sub, icon: friend ? FRIEND_ICON : SRV_ICON, off: off && !edit, on: C.sid === s.sid,
-      first: i === 0, reach: reach, find: friend ? s.owner.username : '', look: s.look, edit: edit }));
+      first: i === 0, reach: reach, find: friend ? s.owner.username : '', look: s.look, edit: edit });
+    if (friend) theirs.push(card);
+    else if (s.machine && machines[s.machine] > 1) (groups[s.machine] = groups[s.machine] || []).push(card);
+    else mine.push(card);
   });
+  var same = Object.keys(groups).map(function (m) {
+    return { title: 'Stessa macchina', cards: groups[m] };
+  });
+  // Un profilo bambini non aggiunge, non personalizza e non toglie server
+  var kids = kidsNow();
+  var addSrv = cache.cEdit || kids ? '' : '<button class="srv add f" data-act="cclaim" data-key="cclaim"><span class="srvart">' + PLUS_ICON + '</span>' +
+    '<span class="srvtxt"><b>Aggiungi un server</b><small>Con il codice che compare sul server</small></span></button>';
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
   var friends = C.friends || [];
   friends.forEach(function (f) {
@@ -1247,12 +1347,14 @@ async function cServersPage() {
   var sent = friends.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
   return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' + reachLegend(kinds) +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
-    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
-    srvGrid([{ title: 'I tuoi server', cards: mine,
-      tool: mine.length ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' },
-      { title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }], mine.length + theirs.length) +
+    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC: lì compare un codice da scrivere qui in «Aggiungi un server».</p>') +
+    srvGrid([{ title: 'I tuoi server', cards: mine, extra: addSrv,
+      tool: !kids && (mine.length || same.length) ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' }]
+      .concat(same, [{ title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }]),
+      mine.length + theirs.length + same.reduce(function (n, g) { return n + g.cards.length; }, 0)) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
-    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' + cAppLink() +
+    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
+    (C.profiles && C.profiles.length > 1 ? '<a class="authlink f" href="#/chi" data-key="cwho">Cambia profilo</a>' : '') + cAppLink() +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
@@ -1299,6 +1401,16 @@ async function cGate() {
     return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
+  // «Chi guarda?» subito dopo l'accesso, con i profili dell'account (come Netflix), poi il server
+  await cProfiles(false);
+  if (C.profiles) {
+    if (location.hash === '#/profili' || location.hash === '#/chi') {
+      if (kidsNow() && location.hash === '#/profili') { location.replace('#/chi'); return '<div class="page"></div>'; }
+      lockScreen(true);
+      return location.hash === '#/profili' ? profilesManagePage() : whoPage();
+    }
+    if (cNeedWho()) { lockScreen(true); return whoPage(); }
+  }
   if (location.hash === '#/server') {
     cDrop();
     C.sid = '';
@@ -1367,8 +1479,114 @@ function cPickImage() {
   });
 }
 
+// «1.2» → «versione 1.2»
+function srvVersion(v) {
+  v = String(v || '');
+  return /^\d/.test(v) ? 'versione ' + v : v;
+}
+
+// Un tuo server spento: com'era, chi c'e' sulla stessa macchina, provarlo o toglierlo dall'elenco
+function cOffSheet(idx) {
+  var s = (C.list || [])[Number(idx)];
+  if (!s) return;
+  var twins = s.machine ? (C.list || []).filter(function (x) { return x !== s && x.role === 'owner' && x.machine === s.machine; }) : [];
+  modalState = { options: [], onPick: function () {}, returnFocus: document.activeElement };
+  modal.innerHTML = '<div class="sheet srvlook claimsheet"><h3>' + esc(s.name || 'PC') + '</h3>' +
+    '<p class="secretnote">Spento o non raggiungibile' + (s.seen ? ' · visto ' + esc(ago(s.seen)) : '') +
+      (s.version ? ' · ' + esc(srvVersion(s.version)) : '') + '.</p>' +
+    (twins.length ? '<p class="secretnote">Sulla stessa macchina: ' + twins.map(function (t) {
+      return '<b>' + esc(t.name || 'PC') + '</b> (' + (t.online === false ? 'spento' : 'acceso') + ')';
+    }).join(', ') + '. Se l\'hai reinstallato, questo è quello di prima: puoi toglierlo.</p>' : '') +
+    '<div class="actions"><button class="btn f" data-act="cpick" data-arg="' + esc(idx) + '" data-key="off-try">Prova a collegarti</button>' +
+      (kidsNow() ? '' : '<button class="btn danger f" data-act="cforget" data-arg="' + esc(s.sid) + '" data-key="off-forget">Togli dall\'elenco</button>') +
+      '<button class="btn f" data-act="closemodal" data-key="off-close">Chiudi</button></div></div>';
+  modal.hidden = false;
+  var first = modal.querySelector('.f');
+  if (first) first.focus();
+}
+
+// Server nuovo da aggiungere con il codice (come plex.tv/claim): codice, poi anteprima,
+// nome e (se sulla stessa macchina c'e' un tuo server spento) sostituirlo o tenerlo
+function cClaimSheet() {
+  var st = cache.cClaim || (cache.cClaim = {});
+  var info = st.info;
+  var body;
+  if (!info) {
+    body = '<p class="secretnote">Sul PC con BunkerPlex appena installato compare un codice di 8 caratteri ' +
+      '(nella pagina di accesso e in Impostazioni → Account). Scrivilo qui: il server entra nel tuo account.</p>' +
+      '<input class="field f num claimcode" id="clcode" data-key="clcode" maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="cclaimcheck" placeholder="ABCD2345" value="' + esc(st.code || '') + '">' +
+      '<div class="actions"><button class="btn primary f" data-act="cclaimcheck" data-key="clcheck">Continua</button>' +
+      '<button class="btn f" data-act="closemodal" data-key="clclose">Annulla</button></div>';
+  } else if (info.taken || info.mine) {
+    body = '<p class="secretnote">' + (info.taken ? 'Questo server è già collegato a un altro account: lo può aggiungere solo il suo proprietario.'
+      : '«' + esc(info.name || 'PC') + '» è già tra i tuoi server.') + '</p>' +
+      '<div class="actions"><button class="btn f" data-act="closemodal" data-key="clclose">Chiudi</button></div>';
+  } else {
+    body = '<p class="secretnote">Codice <b class="num">' + esc(info.code) + '</b>' + (info.version ? ' · ' + esc(srvVersion(info.version)) : '') + '</p>' +
+      '<label class="flabel" for="clname">Nome del server</label>' +
+      '<input class="field f" id="clname" data-key="clname" maxlength="40" autocomplete="off" data-enter="cclaimgo" value="' + esc(st.name) + '">' +
+      sameMachineHtml(info.same_machine || [], st.replace, 'cclaimpick') +
+      '<div class="actions"><button class="btn primary f" data-act="cclaimgo" data-key="clgo">' + (st.replace ? 'Sostituisci' : 'Aggiungi') + '</button>' +
+      '<button class="btn f" data-act="closemodal" data-key="clclose">Annulla</button></div>';
+  }
+  modalState = { options: [], onPick: function () {}, returnFocus: modalState && modalState.returnFocus || document.activeElement };
+  modal.innerHTML = '<div class="sheet srvlook claimsheet"><h3>Aggiungi un server</h3>' + body + '</div>';
+  modal.hidden = false;
+  var first = modal.querySelector('.f');
+  if (first) first.focus();
+}
+
 function cActions() {
   return {
+    csrvoff: function (idx) { cOffSheet(idx); },
+    cforget: function (sid) {
+      var s = (C.list || []).filter(function (x) { return x.sid === sid && x.role === 'owner'; })[0];
+      confirmBox('Togliere «' + (s ? s.name || 'PC' : 'il server') + '» dall\'elenco dei tuoi server? Se lo riaccendi andrà ricollegato con il codice.',
+        'Sì, togli dall\'elenco', async function () {
+          try {
+            await cloud('POST', '/servers/' + sid + '/forget', {});
+            if (C.sid === sid) { C.sid = ''; cSave(); }
+            C.list = null;
+            toast('Server tolto dall\'elenco');
+            render();
+          } catch (e) { toast(e.message); }
+        });
+    },
+    cclaim: function () { cache.cClaim = {}; cClaimSheet(); },
+    cclaimcheck: async function () {
+      var code = fieldValue('clcode').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (code.length !== 8) { toast('Il codice è di 8 caratteri'); return; }
+      try {
+        var info = await cloud('GET', '/claim/' + code);
+        // Proposta: sostituire il primo tuo server spento sulla stessa macchina (prende il suo nome)
+        var old = (info.same_machine || []).filter(function (x) { return !x.online; })[0];
+        cache.cClaim = { code: code, info: info, replace: old ? old.sid : '', name: old ? old.name : (info.name || '') };
+        cClaimSheet();
+      } catch (e) { toast(e.message); }
+    },
+    cclaimpick: function (sid) {
+      var st = cache.cClaim;
+      if (!st || !st.info) return;
+      st.name = claimPickName(st.info.same_machine || [], st.replace, sid, fieldValue('clname'), st.info.name);
+      st.replace = sid || '';
+      cClaimSheet();
+      var b = modal.querySelector('[data-key="cl-' + (sid || 'new') + '"]');
+      if (b) b.focus();
+    },
+    cclaimgo: async function () {
+      var st = cache.cClaim;
+      if (!st || !st.info) return;
+      var name = fieldValue('clname').trim();
+      if (!name) { toast('Dai un nome al server'); return; }
+      try {
+        var r = await cloud('POST', '/claim/' + st.code, st.replace ? { name: name, replace: st.replace } : { name: name });
+        cache.cClaim = null;
+        closeModal(true);
+        toast(r.replaced ? '«' + r.name + '» ora è il server nuovo: tra poco risulta acceso' : 'Server «' + r.name + '» aggiunto: tra poco risulta acceso');
+        C.list = null;
+        render();
+      } catch (e) { toast(e.message); }
+    },
     cedit: function () { cache.cEdit = !cache.cEdit; lastHtml = ''; render(); },
     clook: function (sid) { cLookSheet(sid); },
     clookset: async function (arg) {
@@ -1583,7 +1801,7 @@ function cLogout() {
     fetch(C.base + '/api/auth/logout', { method: 'POST', headers: { 'X-BP-Session': C.session } }).catch(function () {});
   }
   try {
-    Object.keys(localStorage).forEach(function (k) { if (k.indexOf('bpSess:') === 0) localStorage.removeItem(k); });
+    Object.keys(localStorage).forEach(function (k) { if (k.indexOf('bpSess:') === 0 || k.indexOf('bpTicket:') === 0) localStorage.removeItem(k); });
   } catch (e) { /* niente */ }
   if (tok) cloud('POST', '/logout', {}).catch(function () {});
   cForget();
@@ -1633,6 +1851,7 @@ function api(path, opt) {
       if (!r.ok) {
         var err = new Error(j.detail || ('Errore ' + r.status));
         err.data = j;   // es. 'missing': il disco scollegato e dove dovrebbe stare il file
+        err.status = r.status;   // es. 412/401/429 del PIN di un profilo
         throw err;
       }
       return j;
@@ -2936,16 +3155,19 @@ function syncState() {
 // La voce dell'account nel menu laterale: il volto e il nome di chi sta guardando
 function markMe() {
   document.body.classList.toggle('guest', !!(auth && auth.user && auth.user.guest));
+  // Profilo bambini: niente impostazioni ne' raccolte nuove nel menu
+  document.body.classList.toggle('kids', kidsNow());
   var el = document.getElementById('navme');
   if (!el) return;
   var u = auth && auth.user;
   el.hidden = !u;
   if (!u) return;
   var name = watcherName();
+  var p = curProfile();
   // Con piu' profili il volto porta a «Chi guarda?», come su Netflix
-  var href = hasWatchers() ? '#/chi' : '#/settings/account';
+  var href = hasWatchers() || kidsNow() ? '#/chi' : '#/settings/account';
   if (el.getAttribute('href') !== href) el.setAttribute('href', href);
-  var html = face(name) + '<span>' + esc(name) + '</span>';
+  var html = (p ? pface(p) : face(name)) + '<span>' + esc(name) + '</span>';
   if (el.getAttribute('data-sig') !== html) {
     el.innerHTML = html;
     el.setAttribute('data-sig', html);
@@ -3583,6 +3805,9 @@ async function settingsArea(area) {
         '<button class="btn f" data-act="refreshmenu" data-arg="' + l.id + '" data-key="' + k + '-upd">Aggiorna</button>' +
         '<a class="btn f" href="#/rename/' + l.id + '" data-key="' + k + '-ren">Rinomina</a>' +
         '<button class="btn danger f" data-act="dellib" data-arg="' + l.id + '" data-key="' + k + '-del">Elimina</button></div>' +
+        // Per bambini: la vedono anche i profili bambini (che vedono solo queste)
+        '<div class="libkids">' + swRow('Per bambini', !!l.kids, 'data-act="libkids" data-arg="' + l.id + ':' + (l.kids ? 0 : 1) + '" data-key="' + k + '-kids"',
+          l.kids ? 'La vedono anche i profili bambini' : 'I profili bambini non la vedono') + '</div>' +
         (l.folders.length ? l.folders.map(function (f, n) {
           return '<div class="folder"><div class="where"><b>' + esc(f.display) + '</b><small>' +
             (f.online ? dot(true) + ' ' + f.count + ' video'
@@ -4320,7 +4545,7 @@ function noticeLabel(kind) {
 function accountArea(i) {
   var u = auth.user, s = syncState();
   var many = (auth.profiles || []).length > 1;
-  var who = '<div class="panel who">' + face(u.name, 'big') +
+  var who = claimPanel() + '<div class="panel who">' + face(u.name, 'big') +
     '<div class="whotext"><h2>' + esc(u.name) + '</h2>' +
     '<p>' + (u.linked ? (u.admin ? 'Account amministratore' : 'Account') : 'Su questo PC, senza account') + ' · ' + esc(auth.server || 'BunkerPlex') + '</p>' +
     '<p class="sync ' + s.state + '">' + esc(s.text) + '</p></div></div>';
@@ -6472,45 +6697,57 @@ var actions = {
       loadAuth().then(render);
     });
   },
-  watcher: function (id) {
-    post('/profiles/select', { id: +id }).then(watcherChanged).then(function () {
-      try { sessionStorage.setItem('fpWho:' + auth.user.id, '1'); } catch (e) { /* niente */ }
-      toast('Ciao ' + watcherName());
-      location.replace('#/home');
-      render();
-    }, function (e) { toast(e.message); loadAuth().then(render); });
+  // --- «Chi guarda?» e «Gestisci profili» (vedi Profili dell'account)
+  watcher: function (id) { whoChoose(+id, ''); },
+  pinkey: function (k) {
+    var input = document.getElementById('pin');
+    if (!input) return;
+    if (k === 'del') input.value = input.value.slice(0, -1);
+    else if (input.value.length < 4) input.value += k;
+    if (input.value.length === 4) actions.pinok();
   },
-  watcheradd: function () {
-    var name = fieldValue('wname').trim();
-    if (!name) { toast('Scrivi il nome del profilo'); return; }
-    post('/profiles', { name: name }).then(watcherChanged).then(function () {
-      toast('Profilo «' + name + '» aggiunto');
-      render();
-    }, function (e) { toast(e.message); });
+  pinok: function () {
+    var a = cache.pinAsk, pin = fieldValue('pin').replace(/\D/g, '');
+    if (!a) return;
+    if (pin.length !== 4) { toast('Il PIN è di 4 cifre'); return; }
+    whoChoose(a.id, pin);
   },
-  watcherrename: function (id) {
-    cache.wRename = id ? +id : null;
+  pincancel: function () { cache.pinAsk = null; render(); },
+  pedit: function (id) {
+    var p = profById(+id);
+    if (!p) return;
+    cache.pEdit = { id: p.id, name: p.name, avatar: p.avatar || '', color: p.color || '', kids: !!p.kids, pin: !!p.pin, main: !!p.main, pinOp: '' };
     render();
   },
-  watchersave: function (id) {
-    id = id || cache.wRename;
-    var name = fieldValue('wren').trim();
-    if (!id || !name) { toast('Scrivi il nome del profilo'); return; }
-    post('/profiles/' + id + '/rename', { name: name }).then(watcherChanged).then(function () {
-      cache.wRename = null;
-      render();
-    }, function (e) { toast(e.message); });
+  pnew: function () {
+    if (profList().length >= MAX_PROFILES) { toast('Al massimo ' + MAX_PROFILES + ' profili per account'); return; }
+    cache.pEdit = { id: null, name: '', avatar: '', color: '', kids: false, pin: false, main: false, pinOp: '' };
+    render();
   },
-  watcherdel: function (id) {
-    var p = (auth.user.watchers || []).filter(function (x) { return String(x.id) === id; })[0];
-    confirmBox('Togliere il profilo «' + (p ? p.name : '') + '»? Si perdono i suoi visti, la sua ripresa e la sua lista. L\'account e le raccolte non si toccano.',
-      'Sì, togli il profilo', function () {
-        send('DELETE', '/profiles/' + id).then(watcherChanged).then(function () {
-          toast('Profilo tolto');
-          render();
-        }, function (e) { toast(e.message); });
-      });
+  pavatar: function (k) { pEditKeep(); cache.pEdit.avatar = k || ''; render(); },
+  pcolor: function (c) { pEditKeep(); cache.pEdit.color = c || ''; render(); },
+  pkids: function () { pEditKeep(); cache.pEdit.kids = !cache.pEdit.kids; render(); },
+  ppin: function (op) { pEditKeep(); cache.pEdit.pinOp = cache.pEdit.pinOp === op ? '' : op; render(); },
+  pcancel: function () { cache.pEdit = null; render(); },
+  psave: function () { profileSave(); },
+  pdel: function () {
+    var ed = cache.pEdit;
+    if (!ed || ed.id === null || ed.main) return;
+    confirmBox('Togliere il profilo «' + ed.name + '»? Si perdono i suoi visti, la sua ripresa e la sua lista, su ogni server. L\'account e le raccolte non si toccano.',
+      'Sì, togli il profilo', function () { profileDelete(ed.id); });
   },
+  // --- collegamento di questo server a un account (codice, o direttamente)
+  claimcode: function () { claimShowCode(); },
+  claimprep: function () { claimPrepare(); },
+  claimpick: function (sid) {
+    var st = cache.claimPrev;
+    if (!st) return;
+    st.name = claimPickName(st.same_machine || [], st.replace, sid, fieldValue('claimname'), (auth.claim || {}).name);
+    st.replace = sid || '';
+    render();
+  },
+  claimgo: function () { claimConfirm(); },
+  claimcancel: function () { cache.claimPrev = null; render(); },
   whomode: function (mode) {
     cache.whoMode = cache.whoMode === mode ? '' : mode;
     render();
@@ -6757,6 +6994,7 @@ var actions = {
         sessionStorage.removeItem('fpWho:' + who);
       } catch (e) { /* niente */ }
       cache.srvData = null;
+      cache.pinAsk = null; cache.pEdit = null; cache.claimPrev = null;
       auth = null;
       conflicts = null;
       location.replace('#/home');
@@ -6934,6 +7172,13 @@ var actions = {
     confirmBox('Eliminare l\'account «' + a.username + '»? Perde impostazioni, visti e lista su tutti i PC.', 'Sì, elimina', function () {
       api('/accounts/' + a.id, { method: 'DELETE' }).then(function () { toast('Account eliminato'); render(); }, function (e) { toast(e.message); });
     });
+  },
+  libkids: function (arg) {
+    var parts = arg.split(':');
+    send('PATCH', '/libraries/' + parts[0], { kids: parts[1] === '1' }).then(function () {
+      toast(parts[1] === '1' ? 'Ora la vedono anche i profili bambini' : 'I profili bambini non la vedono più');
+      return loadLibs(true).then(render);
+    }).catch(function (e) { toast(e.message); });
   },
   libshare: function (arg) {
     var parts = arg.split(':');
@@ -7763,8 +8008,8 @@ var routes = [
     if (!auth.cloud || auth.user.linked) { location.replace('#/settings/account'); return ''; }
     return tvLoginPage();
   }],
-  // «Cambia profilo»: la scelta la mostra gate(); senza profili si torna alla Home
-  [/^#\/chi$/, function () { location.replace('#/home'); return ''; }],
+  // «Cambia profilo» e «Gestisci profili»: li mostra gate(); se no si torna alla Home
+  [/^#\/(chi|profili)$/, function () { location.replace('#/home'); return ''; }],
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
   // Impostazioni dell'app: le mostra gate() nella PWA centrale dell'app; altrove alla Home
@@ -7828,74 +8073,476 @@ async function gate() {
   if (conflicts) { lockScreen(true); return conflictsPage(); }
   // Quale server: a ogni apertura (e da «Cambia server»)
   if (needServer() || (location.hash === '#/server' && auth.cloud)) { lockScreen(true); return serversPage(); }
-  // «Chi guarda?» dei profili dell'account: dopo il login, mai al posto della password
-  if (needWatcher() || (location.hash === '#/chi' && hasWatchers())) { lockScreen(true); return watchersPage(); }
+  // «Gestisci profili» e «Chi guarda?» dei profili dell'account: dopo il login, mai al posto
+  // della password (nella PWA centrale li mostra cGate, con i profili del servizio)
+  var cp = CENTRAL && C.profiles;
+  if (!cp && location.hash === '#/profili' && canManageProfiles()) { lockScreen(true); return profilesManagePage(); }
+  if (!cp && (needWatcher() || (location.hash === '#/chi' && profList().length))) { lockScreen(true); return whoPage(); }
+  // Profilo bambini: niente impostazioni e niente pagine che cambiano le raccolte (il server dice comunque no)
+  if (kidsNow() && /^#\/(settings|newlib|rename|browse|match|posters|password|tv$|doppioni|accounts|profili)/.test(location.hash)) {
+    location.replace('#/home');
+    return '<div class="page"></div>';
+  }
   lockScreen(false);
   return null;
 }
 
 // ---------------------------------------------------------------- Profili dell'account
-// Dentro un account ci possono essere piu' profili (famiglia): ognuno con i suoi
-// visti, punti di ripresa e La mia lista. Si sceglie dopo essere entrati con la
-// password; ogni dispositivo ricorda il suo finche' non si cambia o si esce.
-function hasWatchers() {
-  var u = auth && auth.user;
-  return !!(u && u.watchers && u.watchers.length > 1);
+// Come Netflix: un account ha fino a 6 profili (il principale, id 0, e fino a 5 aggiunti),
+// ognuno con visti, ripresa e La mia lista suoi, avatar, colore, PIN facoltativo e
+// «bambini» (solo le raccolte per bambini, niente impostazioni). Con l'account i profili
+// stanno nel servizio account e sono gli stessi su ogni server, TV e telefono (stessi id).
+// Si sceglie in «Chi guarda?», sempre dopo essere entrati con l'account: nella PWA
+// centrale con i profili del servizio (POST /profiles/:id/open da' un biglietto che si
+// passa ai server, vedi cWhoOpen), servita dal server con /api/profiles.
+// Ogni dispositivo ricorda il suo finche' non si cambia o si esce.
+var MAX_PROFILES = 6;
+var PROFILE_AVATARS = { cat: '🐱', fox: '🦊', panda: '🐼', frog: '🐸', lion: '🦁', penguin: '🐧', octopus: '🐙',
+  unicorn: '🦄', rocket: '🚀', ball: '⚽', game: '🎮', film: '🎬' };
+var PROFILE_COLORS = ['#e50914', '#f5a623', '#2ecc71', '#1abc9c', '#3498db', '#9b59b6', '#e84393', '#7f8c8d'];
+var LOCK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+var PEN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>';
+
+// Il volto di un profilo: l'avatar (emoji) o l'iniziale, sul suo colore o sulla tinta del nome
+function pface(p, cls) {
+  var emo = PROFILE_AVATARS[p.avatar] || '';
+  var col = PROFILE_COLORS.indexOf(p.color) >= 0 ? p.color : '';
+  return '<i class="uface' + (cls ? ' ' + cls : '') + (emo ? ' emo' : '') + (col ? ' pc' : '') + '" style="--h:' + hue(p.name) +
+    (col ? ';--pc:' + col : '') + '" aria-hidden="true">' + (emo || esc(personInitial(p.name))) + '</i>';
 }
 
+// I profili: nella PWA centrale quelli del servizio (se raggiungibile), se no quelli del server
+function profList() {
+  if (CENTRAL && C.profiles) return C.profiles;
+  var u = auth && auth.user;
+  return (u && u.watchers) || [];
+}
+
+// Il profilo scelto (id; null = ancora da scegliere)
+function profCur() {
+  if (CENTRAL && C.profiles) return C.pid;
+  var u = auth && auth.user;
+  return u ? u.watcher : null;
+}
+
+function profById(id) {
+  if (id === null || id === undefined) return null;
+  return profList().filter(function (p) { return String(p.id) === String(id); })[0] || null;
+}
+
+function curProfile() { return profById(profCur()); }
+
+// Sta guardando un profilo bambini?
+function kidsNow() {
+  if (auth && auth.user && auth.user.kids) return true;
+  var p = CENTRAL && C.profiles ? curProfile() : null;
+  return !!(p && p.kids);
+}
+
+function hasWatchers() { return profList().length > 1; }
+
+// Aggiungere, cambiare, togliere profili: mai da un profilo bambini ne' da ospite
+function canManageProfiles() {
+  if (kidsNow()) return false;
+  if (CENTRAL && C.profiles) return true;
+  var u = auth && auth.user;
+  return !!(u && !u.guest && !u.friend);
+}
+
+// «Chi guarda?» gia' risposto in questa apertura dell'app
+function whoKey() {
+  return CENTRAL && C.profiles ? 'bpWho' : 'fpWho:' + (auth && auth.user ? auth.user.id : '');
+}
+
+// Servita dal server: con piu' profili (o uno solo con il PIN) si chiede a ogni apertura
 function needWatcher() {
-  if (!hasWatchers()) return false;
-  if (auth.user.watcher === null || auth.user.watcher === undefined) return true;
+  if (CENTRAL && C.profiles) return false;
+  var u = auth && auth.user, list = profList();
+  if (!u || !list.length) return false;
+  if (list.length === 1 && !list[0].pin) return false;
+  if (u.watcher === null || u.watcher === undefined) return true;
   // A ogni apertura si richiede chi guarda (il profilo resta proposto per primo)
-  try { return sessionStorage.getItem('fpWho:' + auth.user.id) !== '1'; } catch (e) { return false; }
+  try { return sessionStorage.getItem(whoKey()) !== '1'; } catch (e) { return false; }
 }
 
 function watcherName() {
+  var p = curProfile();
+  if (p) return p.name;
   var u = auth && auth.user;
-  if (!u) return '';
-  var w = (u.watchers || []).filter(function (p) { return p.id === u.watcher; })[0];
-  return w ? w.name : u.name;
+  return u ? u.name : (C.user && C.user.username) || '';
 }
 
-function watchersPage() {
-  var u = auth.user, cur = u.watcher;
-  var list = u.watchers.map(function (p, n) {
-    var on = p.id === cur || (cur == null && n === 0);
-    return '<button class="profile f' + (p.id === cur ? ' on' : '') + '"' + (on ? ' data-autofocus' : '') + ' data-act="watcher" data-arg="' + p.id + '" data-key="watch-' + p.id + '">' +
-      face(p.name, 'big') + '<span>' + esc(p.name) + '</span></button>';
+function whoPage() {
+  var list = profList(), cur = profCur(), ask = cache.pinAsk;
+  var askP = ask ? profById(ask.id) : null;
+  if (askP) return pinPage(askP, ask.err);
+  cache.pinAsk = null;
+  var chosen = !!profById(cur);
+  var cards = list.map(function (p, n) {
+    var me = chosen && String(p.id) === String(cur);
+    return '<button class="profile f' + (me ? ' on' : '') + '"' + (me || (!chosen && n === 0) ? ' data-autofocus' : '') +
+      ' data-act="watcher" data-arg="' + p.id + '" data-key="watch-' + p.id + '"' +
+      ' aria-label="' + esc(p.name + (p.pin ? ', con PIN' : '') + (p.kids ? ', bambini' : '')) + '">' +
+      '<i class="pfwrap">' + pface(p, 'big') + (p.pin ? '<i class="plock">' + LOCK_ICON + '</i>' : '') + '</i>' +
+      '<span>' + esc(p.name) + '</span>' + (p.kids ? '<em class="pkids">Bambini</em>' : '') + '</button>';
   }).join('');
+  var need = CENTRAL && C.profiles ? cNeedWho() : needWatcher();
+  // Nella PWA centrale il server si sceglie dopo il profilo; servita dal server, prima
+  var server = CENTRAL ? !need : !!(auth && auth.cloud);
   return authShell('<h1>Chi guarda?</h1><p class="authsub">Ognuno ha i suoi visti, la sua ripresa e la sua lista</p>' +
-    '<div class="profiles whopick">' + list + '</div>' +
+    '<div class="profiles whopick">' + cards + '</div>' +
     '<div class="authrow">' +
-      (cur == null ? '' : '<a class="authlink f" href="#/settings/account" data-key="watch-manage">Gestisci profili</a>') +
-      (auth.cloud ? '<a class="authlink f" href="#/server" data-key="watch-server">Cambia server</a>' : '') +
-      '<button class="authlink f" data-act="logout" data-key="watch-logout">Esci</button></div>', true);
+      (canManageProfiles() ? '<a class="authlink f" href="#/profili" data-key="watch-manage">Gestisci profili</a>' : '') +
+      (need ? '' : '<a class="authlink f" href="#/home" data-key="watch-back">Indietro</a>') +
+      (server ? '<a class="authlink f" href="#/server" data-key="watch-server">Cambia server</a>' : '') +
+      '<button class="authlink f" data-act="logout" data-key="watch-logout">Esci</button></div>', 'grid');
 }
 
-function watchersPanel(u) {
-  var list = (u.watchers || []).map(function (p) {
-    var id = p.id;
-    return '<div class="folder"><div class="where">' + face(p.name) + ' <b>' + esc(p.name) + '</b><small>' +
-        (p.main ? (u.linked ? 'Profilo principale · si sincronizza con l\'account' : 'Profilo principale') : 'Solo su questo server') + (id === u.watcher ? ' · in uso qui' : '') + '</small></div>' +
-      (p.main ? '' : cache.wRename === id ? '<div class="actions"><input class="field f" id="wren" data-key="wren" data-autofocus maxlength="24" data-enter="watchersave" value="' + esc(p.name) + '">' +
-        '<button class="btn primary f" data-act="watchersave" data-arg="' + id + '" data-key="wsave-' + id + '">Salva</button>' +
-        '<button class="btn f" data-act="watcherrename" data-arg="" data-key="wcancel-' + id + '">Annulla</button></div>' :
-        '<div class="actions"><button class="btn f" data-act="watcherrename" data-arg="' + id + '" data-key="wren-' + id + '">Rinomina</button>' +
-        '<button class="btn danger f" data-act="watcherdel" data-arg="' + id + '" data-key="wdel-' + id + '">Togli</button></div>') + '</div>';
+// Il PIN di un profilo: campo (tastiera del telefono o del PC) e tastierino per il telecomando
+function pinPage(p, err) {
+  var pad = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'del', '0', 'ok'].map(function (k) {
+    if (k === 'ok') return '<button class="f pinok" data-act="pinok" data-key="pin-ok">OK</button>';
+    if (k === 'del') return '<button class="f" data-act="pinkey" data-arg="del" data-key="pin-del" aria-label="Cancella">⌫</button>';
+    return '<button class="f"' + (TVLOOK && k === '1' ? ' data-autofocus' : '') + ' data-act="pinkey" data-arg="' + k + '" data-key="pin-' + k + '">' + k + '</button>';
   }).join('');
+  return { html: authShell('<div class="pinhead"><i class="pfwrap">' + pface(p, 'big') + '<i class="plock">' + LOCK_ICON + '</i></i></div>' +
+    '<h1>' + esc(p.name) + '</h1>' +
+    '<p class="authsub">' + (err ? '<span class="nodot">' + esc(err) + '</span>' : 'Scrivi il PIN del profilo') + '</p>' +
+    '<input class="field f num pinfield" id="pin" data-key="pin"' + (TVLOOK ? '' : ' data-autofocus') +
+      ' type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" data-enter="pinok" aria-label="PIN di 4 cifre">' +
+    '<div class="pinpad">' + pad + '</div>' +
+    '<button class="authlink f" data-act="pincancel" data-key="pin-cancel">Annulla</button>'),
+    mount: function () {
+      var input = document.getElementById('pin');
+      if (!input) return;
+      input.value = '';
+      // Alla quarta cifra si prova da solo
+      input.addEventListener('input', function () {
+        var v = input.value.replace(/\D/g, '').slice(0, 4);
+        if (v !== input.value) input.value = v;
+        if (v.length === 4) actions.pinok();
+      });
+    } };
+}
+
+// Sceglie il profilo (con il PIN, se ne ha uno). Errori: 412 serve il PIN, 401 sbagliato,
+// 429 troppi tentativi (5 minuti)
+function whoChoose(id, pin) {
+  var p = profById(id);
+  if (!p) return;
+  if (p.pin && !pin) { cache.pinAsk = { id: p.id, err: '' }; render(); return; }
+  if (whoChoose.busy) return;
+  whoChoose.busy = true;
+  var cloudSide = CENTRAL && C.profiles;
+  var go = cloudSide ? cWhoOpen(p.id, pin)
+    : post('/profiles/select', pin ? { id: p.id, pin: pin } : { id: p.id }).then(watcherChanged);
+  go.then(function () {
+    whoChoose.busy = false;
+    cache.pinAsk = null;
+    try { sessionStorage.setItem(whoKey(), '1'); } catch (e) { /* niente */ }
+    toast('Ciao ' + p.name);
+    if (location.hash === '#/home') render(); else location.replace('#/home');
+  }, function (e) {
+    whoChoose.busy = false;
+    if (e.status === 412 || e.status === 401 || e.status === 429) {
+      var err = e.status === 412 ? '' : e.status === 429 ? 'Troppi PIN sbagliati: riprova tra qualche minuto' : (e.message || 'PIN sbagliato');
+      cache.pinAsk = { id: p.id, err: err };
+      if (err) toast(err);
+      render().then(function () {
+        var i = document.getElementById('pin');
+        if (i) { i.value = ''; if (!TVLOOK) i.focus(); }
+      });
+      return;
+    }
+    toast(e.message);
+    if (!cloudSide) loadAuth().then(render);
+  });
+}
+
+// «Gestisci profili»: i volti con la matita; uno si apre per cambiarlo
+function profilesManagePage() {
+  if (cache.pEdit) return profileEditPage(cache.pEdit);
+  var list = profList();
+  var cards = list.map(function (p, n) {
+    return '<button class="profile f"' + (n === 0 ? ' data-autofocus' : '') + ' data-act="pedit" data-arg="' + p.id + '" data-key="pman-' + p.id + '"' +
+      ' aria-label="Modifica ' + esc(p.name) + '">' +
+      '<i class="pfwrap">' + pface(p, 'big') + '<i class="ppen">' + PEN_ICON + '</i>' + (p.pin ? '<i class="plock">' + LOCK_ICON + '</i>' : '') + '</i>' +
+      '<span>' + esc(p.name) + '</span>' + (p.kids ? '<em class="pkids">Bambini</em>' : p.main ? '<em class="pmain">Principale</em>' : '') + '</button>';
+  }).join('');
+  if (list.length < MAX_PROFILES) {
+    cards += '<button class="profile addp f" data-act="pnew" data-key="pman-new"><i class="pfwrap"><i class="uface big">' + PLUS_ICON + '</i></i>' +
+      '<span>Aggiungi profilo</span></button>';
+  }
+  var linked = (CENTRAL && C.profiles) || (auth && auth.user && auth.user.linked);
+  return authShell('<h1>Gestisci profili</h1><p class="authsub">' +
+      (linked ? 'I profili sono del tuo account: valgono su ogni server, TV e telefono.' : 'Senza account i profili restano su questo PC.') +
+      ' Al massimo ' + MAX_PROFILES + '.</p>' +
+    '<div class="profiles whopick">' + cards + '</div>' +
+    '<div class="authrow"><a class="authlink f" href="' + (hasWatchers() ? '#/chi' : '#/home') + '" data-key="pman-done">Fatto</a></div>', 'grid');
+}
+
+// Un profilo da creare (id null) o da cambiare: nome, avatar, colore, bambini, PIN
+function profileEditPage(ed) {
+  // Il PIN si controlla nel servizio account: senza account non c'e'
+  var linked = (CENTRAL && C.profiles) || (auth && auth.user && auth.user.linked);
+  var avatars = [''].concat(Object.keys(PROFILE_AVATARS)).map(function (k) {
+    return '<button class="pav f' + (ed.avatar === k ? ' on' : '') + '" data-act="pavatar" data-arg="' + k + '" data-key="pav-' + (k || 'none') + '"' +
+      ' aria-pressed="' + (ed.avatar === k) + '" aria-label="' + (k ? 'Avatar ' + k : 'Iniziale del nome') + '">' +
+      (k ? PROFILE_AVATARS[k] : '<b>' + esc(personInitial(ed.name || '?')) + '</b>') + '</button>';
+  }).join('');
+  var colors = [''].concat(PROFILE_COLORS).map(function (c) {
+    return '<button class="pcol f' + (ed.color === c ? ' on' : '') + '" style="--pc:' + (c || 'hsl(' + hue(ed.name || '?') + ' 26% 30%)') + '"' +
+      ' data-act="pcolor" data-arg="' + c + '" data-key="pcol-' + (c ? c.slice(1) : 'auto') + '"' +
+      ' aria-pressed="' + (ed.color === c) + '" aria-label="' + (c ? 'Colore ' + c : 'Tinta dal nome') + '"></button>';
+  }).join('');
+  var pin = '';
+  if (linked) {
+    pin = '<p class="flabel">PIN</p><p class="pnote">' +
+        (ed.pinOp === 'del' ? 'Il PIN si toglie quando salvi.' : ed.pin ? 'Per aprire questo profilo serve un PIN di 4 cifre.'
+          : 'Nessun PIN: chi usa l\'account apre il profilo con un tocco.') + '</p>' +
+      (ed.pinOp === 'set' ? '<div class="pinnew">' +
+        '<input class="field f num" id="pfpin" data-key="pfpin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" placeholder="PIN nuovo (4 cifre)" value="' + esc(ed.pin1 || '') + '">' +
+        '<input class="field f num" id="pfpin2" data-key="pfpin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="new-password" data-enter="psave" placeholder="Ripeti il PIN" value="' + esc(ed.pin2 || '') + '"></div>' : '') +
+      '<div class="actions">' +
+        '<button class="btn f" data-act="ppin" data-arg="set" data-key="ppin-set">' + (ed.pinOp === 'set' ? 'Non cambiare il PIN' : ed.pin ? 'Cambia PIN' : 'Metti un PIN') + '</button>' +
+        (ed.pin ? '<button class="btn f" data-act="ppin" data-arg="del" data-key="ppin-del">' + (ed.pinOp === 'del' ? 'Tieni il PIN' : 'Togli il PIN') + '</button>' : '') +
+      '</div>';
+  }
+  return authShell('<h1>' + (ed.id === null ? 'Nuovo profilo' : 'Modifica profilo') + '</h1>' +
+    '<div class="pedit"><div class="pedhead">' + pface({ name: ed.name || '?', avatar: ed.avatar, color: ed.color }, 'big') + '</div>' +
+    '<label class="flabel" for="pfname">Nome</label>' +
+    '<input class="field f" id="pfname" data-key="pfname"' + (ed.id === null ? ' data-autofocus' : '') + ' maxlength="24" autocomplete="off" data-enter="psave" value="' + esc(ed.name) + '">' +
+    '<p class="flabel">Avatar</p><div class="pavatars">' + avatars + '</div>' +
+    '<p class="flabel">Colore</p><div class="pcolors">' + colors + '</div>' +
+    (ed.main ? '<p class="pnote">Profilo principale: è l\'account, non si toglie e non può essere per bambini.</p>'
+      : swRow('Profilo per bambini', ed.kids, 'data-act="pkids" data-key="pkids"', ed.kids ? 'Solo le raccolte per bambini, niente impostazioni' : 'Vede tutte le raccolte')) +
+    pin +
+    '<div class="actions pactions"><button class="btn primary f" data-act="psave" data-key="psave">Salva</button>' +
+      '<button class="btn f" data-act="pcancel" data-key="pcancel">Annulla</button>' +
+      (ed.id !== null && !ed.main ? '<button class="btn danger f" data-act="pdel" data-key="pdel">Togli il profilo</button>' : '') + '</div></div>', true);
+}
+
+// Quello che si sta scrivendo resta quando la pagina si ridisegna (avatar, colore…)
+function pEditKeep() {
+  var ed = cache.pEdit;
+  if (!ed) return;
+  var n = document.getElementById('pfname'), a = document.getElementById('pfpin'), b = document.getElementById('pfpin2');
+  if (n) ed.name = n.value;
+  if (a) ed.pin1 = a.value;
+  if (b) ed.pin2 = b.value;
+}
+
+async function profileSave() {
+  pEditKeep();
+  var ed = cache.pEdit;
+  if (!ed) return;
+  var name = String(ed.name || '').trim();
+  if (!name) { toast('Scrivi il nome del profilo'); return; }
+  var body = { name: name, avatar: ed.avatar || '', color: ed.color || '' };
+  if (!ed.main) body.kids = !!ed.kids;
+  if (ed.pinOp === 'set') {
+    if (!/^\d{4}$/.test(ed.pin1 || '')) { toast('Il PIN è di 4 cifre'); return; }
+    if (ed.pin1 !== ed.pin2) { toast('I due PIN non sono uguali'); return; }
+    body.pin = ed.pin1;
+  } else if (ed.pinOp === 'del') {
+    body.pin = '';
+  }
+  try {
+    if (CENTRAL && C.profiles) {
+      // Direttamente nel servizio; poi il tuo server aperto li rilegge
+      var r = ed.id === null ? await cloud('POST', '/profiles', body) : await cloud('PUT', '/profiles/' + ed.id, body);
+      C.profiles = r.profiles || C.profiles;
+      await cServerProfiles();
+    } else {
+      if (ed.id === null) await post('/profiles', body); else await send('PUT', '/profiles/' + ed.id, body);
+      await watcherChanged();
+    }
+    cache.pEdit = null;
+    toast(ed.id === null ? 'Profilo «' + name + '» aggiunto' : 'Profilo salvato');
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+async function profileDelete(id) {
+  try {
+    if (CENTRAL && C.profiles) {
+      var r = await cloud('DELETE', '/profiles/' + id);
+      C.profiles = r.profiles || C.profiles;
+      cTicketSet(id, '');
+      if (C.pid === id) { C.pid = null; cSave(); }
+      await cServerProfiles();
+    } else {
+      await send('DELETE', '/profiles/' + id);
+      await watcherChanged();
+    }
+    cache.pEdit = null;
+    toast('Profilo tolto');
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+// Dopo una modifica fatta nel servizio: il tuo server aperto la rilegge subito
+async function cServerProfiles() {
+  if (!C.base || C.role !== 'owner' || !auth || !auth.user) return;
+  await post('/profiles/refresh').catch(function () {});
+  await watcherChanged();
+}
+
+// Impostazioni → Account: i profili dell'account e i pulsanti per gestirli
+function watchersPanel(u) {
+  if (!canManageProfiles()) return '';
+  var cur = profCur();
+  var faces = profList().map(function (p) {
+    return '<span class="pmini">' + pface(p, 'mid') + '<b>' + esc(p.name) + '</b>' +
+      (p.pin ? '<i class="plock sm" title="Con il PIN">' + LOCK_ICON + '</i>' : '') +
+      (p.kids ? '<em class="pkids">Bambini</em>' : '') +
+      (cur !== null && cur !== undefined && String(p.id) === String(cur) ? '<small>in uso qui</small>' : '') + '</span>';
+  }).join('');
+  var linked = (CENTRAL && C.profiles) || u.linked;
   return '<div class="panel"><h2>Profili</h2>' +
-    '<p>Chi usa il tuo account può avere il suo profilo, con visti, ripresa e La mia lista suoi. Raccolte, chiavi e impostazioni restano dell\'account. ' +
-    'Si sceglie dopo il login, in «Chi guarda?»: la password dell\'account serve sempre.</p>' +
-    '<div class="lib">' + list + '</div>' +
-    ((u.watchers || []).length < 6 ? '<div class="actions"><input class="field f" id="wname" data-key="wname" maxlength="24" data-enter="watcheradd" placeholder="Nome del nuovo profilo">' +
-      '<button class="btn f" data-act="watcheradd" data-key="watcheradd">Aggiungi profilo</button></div>' : '') +
-    (hasWatchers() ? '<div class="actions"><a class="btn primary f" href="#/chi" data-key="watchswitch">Cambia profilo</a></div>' : '') + '</div>';
+    '<p>Chi usa il tuo account può avere il suo profilo, con visti, ripresa e La mia lista suoi, un PIN e, per i più piccoli, solo le raccolte per bambini. ' +
+    (linked ? 'I profili sono dell\'account: valgono su ogni server, TV e telefono.' : 'Senza account restano su questo PC.') + '</p>' +
+    '<div class="pminis">' + faces + '</div>' +
+    '<div class="actions"><a class="btn primary f" href="#/profili" data-key="pmanage">Gestisci profili</a>' +
+      (hasWatchers() ? '<a class="btn f" href="#/chi" data-key="watchswitch">Cambia profilo</a>' : '') + '</div></div>';
 }
 
 function watcherChanged(r) {
   dropCached();
   libsLoadedAt = 0;
   return loadAuth().then(function () { markMe(); return r; });
+}
+
+// ---------------------------------------------------------------- Collegamento all'account
+// Un server nuovo entra nell'account solo quando il proprietario lo conferma (come
+// plex.tv/claim). Chi e' entrato qui con l'account lo collega con un tocco
+// (GET/POST /api/server/claim); altrimenti il server mostra un codice da scrivere in
+// BunkerPlex sul telefono (Server → Aggiungi un server) e aspetta da solo la conferma.
+function claimOpen() {
+  var c = auth && auth.claim;
+  return !!(c && !c.claimed);
+}
+
+function claimCanLink() {
+  var u = auth && auth.user;
+  return !!(u && u.linked && !u.guest && !kidsNow());
+}
+
+// Il riquadro: nella pagina di accesso e (panel) in Impostazioni → Account
+function claimBox(panel) {
+  if (!claimOpen() || kidsNow()) return '';
+  var c = auth.claim, body;
+  if (claimCanLink()) {
+    var st = cache.claimPrev;
+    if (!st) {
+      body = '<p>Collegalo al tuo account: lo ritrovi tra i tuoi server su ogni dispositivo, anche fuori casa.</p>' +
+        '<div class="actions"><button class="btn primary f" data-act="claimprep" data-key="claimprep">Collega al mio account</button></div>';
+    } else if (st.taken) {
+      body = '<p>Questo server risulta già collegato a un altro account.</p>' +
+        '<div class="actions"><button class="btn f" data-act="claimcancel" data-key="claimcancel">Chiudi</button></div>';
+    } else {
+      body = '<label class="flabel" for="claimname">Nome del server</label>' +
+        '<input class="field f" id="claimname" data-key="claimname" maxlength="40" autocomplete="off" data-enter="claimgo" value="' + esc(st.name) + '">' +
+        sameMachineHtml(st.same_machine || [], st.replace, 'claimpick') +
+        '<div class="actions"><button class="btn primary f" data-act="claimgo" data-key="claimgo">' + (st.replace ? 'Sostituisci e collega' : 'Collega') + '</button>' +
+        '<button class="btn f" data-act="claimcancel" data-key="claimcancel">Annulla</button></div>';
+    }
+  } else if (c.code && c.exp * 1000 > Date.now()) {
+    claimPoll();
+    body = '<p>Apri BunkerPlex sul telefono → <b>Server</b> → <b>Aggiungi un server</b> e scrivi questo codice:</p>' +
+      '<div class="tvcode small num claimcode">' + esc(c.code) + '</div>' +
+      '<p class="kvnote">Vale 15 minuti. Quando lo confermi, questo server entra nel tuo account da solo.</p>';
+  } else {
+    // Il servizio ha detto che serve il collegamento: il codice compare da solo
+    if (c.need && !cache.claimAsked) { cache.claimAsked = true; setTimeout(claimShowCode, 0); }
+    body = '<p>Per vederlo dal telefono e da fuori casa collegalo al tuo account con un codice.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="claimcode" data-key="claimcode">Mostra il codice</button></div>';
+  }
+  return '<div class="' + (panel ? 'panel ' : '') + 'claimbox"><h2>Questo server non è collegato a un account</h2>' + body + '</div>';
+}
+
+function claimPanel() { return claimBox(true); }
+
+// I tuoi server sulla stessa macchina: quelli spenti si possono sostituire, quelli accesi restano a parte
+function sameMachineHtml(same, sel, act) {
+  var off = same.filter(function (s) { return !s.online; });
+  var on = same.filter(function (s) { return s.online; });
+  var html = '';
+  if (off.length) {
+    html += '<p class="flabel">Sulla stessa macchina</p><div class="cpicks">' + off.map(function (s) {
+      return '<button class="cpick f' + (sel === s.sid ? ' on' : '') + '" data-act="' + act + '" data-arg="' + esc(s.sid) + '" data-key="cl-' + esc(s.sid) + '" aria-pressed="' + (sel === s.sid) + '">' +
+        'Sostituisce «' + esc(s.name) + '» (stessa macchina, spento)<small>Prende il suo posto: nome, aspetto e amici' +
+        (s.seen ? ' · visto ' + esc(ago(s.seen)) : '') + (s.version ? ' · ' + esc(srvVersion(s.version)) : '') + '</small></button>';
+    }).join('') +
+      '<button class="cpick f' + (!sel ? ' on' : '') + '" data-act="' + act + '" data-arg="" data-key="cl-new" aria-pressed="' + !sel + '">Tienilo come nuovo server' +
+      '<small>' + (off.length === 1 ? '«' + esc(off[0].name) + '» resta nell\'elenco, spento' : 'Quelli di prima restano nell\'elenco, spenti') + '</small></button></div>';
+  }
+  return html + on.map(function (s) {
+    return '<p class="claimwarn">Sulla stessa macchina c\'è già «' + esc(s.name) + '» acceso: saranno due server separati.</p>';
+  }).join('');
+}
+
+// Il nome proposto segue la scelta (quello del server sostituito o quello nuovo), se non l'hai cambiato tu
+function claimPickName(same, oldSel, newSel, typed, fresh) {
+  function def(sid) {
+    var s = same.filter(function (x) { return x.sid === sid; })[0];
+    return s ? s.name : (fresh || '');
+  }
+  return typed && typed !== def(oldSel) ? typed : def(newSel);
+}
+
+function claimShowCode() {
+  post('/auth/claim').then(function (c) {
+    if (auth) auth.claim = c;
+    if (c.claimed) { auth = null; }
+    render();
+  }, function (e) { toast(e.message); });
+}
+
+// Finche' il codice e' a schermo si chiede ogni 5 secondi se e' stato confermato
+function claimPoll() {
+  if (cache.claimTimer) return;
+  cache.claimTimer = setTimeout(function () {
+    cache.claimTimer = 0;
+    if (!claimOpen() || !view.querySelector('.claimbox')) return;
+    api('/auth/claim').then(function (c) {
+      if (!auth) return;
+      var was = auth.claim || {};
+      auth.claim = c;
+      if (c.claimed) {
+        toast('Server collegato all\'account' + (c.owner ? ' di ' + c.owner : ''));
+        auth = null;
+        render();
+        return;
+      }
+      if (c.code !== was.code) { render(); return; }    // scaduto: si ridisegna
+      claimPoll();
+    }, function () { claimPoll(); });
+  }, 5000);
+}
+
+function claimPrepare() {
+  api('/server/claim').then(function (r) {
+    if (r.claimed) { auth = null; render(); return; }
+    // Proposta: sostituire il primo tuo server spento sulla stessa macchina (prende il suo nome)
+    var old = (r.same_machine || []).filter(function (x) { return !x.online; })[0];
+    cache.claimPrev = { same_machine: r.same_machine || [], taken: !!r.taken, replace: old ? old.sid : '', name: old ? old.name : (r.name || '') };
+    render();
+  }, function (e) { toast(e.message); });
+}
+
+function claimConfirm() {
+  var st = cache.claimPrev;
+  if (!st) return;
+  var name = fieldValue('claimname').trim();
+  if (!name) { toast('Dai un nome al server'); return; }
+  toast('Collego il server…');
+  post('/server/claim', st.replace ? { name: name, replace: st.replace } : { name: name }).then(function (c) {
+    cache.claimPrev = null;
+    toast(c.claimed ? 'Fatto: «' + (c.name || name) + '» è nel tuo account' : 'Collegamento in corso…');
+    auth = null;
+    render();
+  }, function (e) { toast(e.message); });
 }
 
 // Sullo schermo stretto le aree delle impostazioni sono una fila di schede che

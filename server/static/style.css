@@ -1538,6 +1538,96 @@ body.guest #rail .add { display: none; }
 .whopick .profile:focus { background: var(--ink); color: var(--bg); transform: scale(1.06); }
 .authrow { display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem 1.2rem; }
 .authrow .authlink { margin-top: 1.4rem; }
+
+/* ---------- Profili dell'account: «Chi guarda?» e «Gestisci profili» (come Netflix) ---------- */
+/* Il colore scelto per il profilo vale ovunque, anche quando il volto ha il fuoco */
+.uface.pc, .profile:focus .uface.pc, .railitem:focus .uface.pc, .snav:focus .uface.pc,
+body:not(.kb) .profile:focus .uface.pc, body:not(.kb) .srow:focus .uface.pc, body:not(.kb) .snav:focus .uface.pc { background: var(--pc); color: #fff; }
+.uface.emo { font-size: 1.2rem; line-height: 1; }
+.uface.mid.emo { font-size: 1.55rem; }
+.uface.big.emo { font-size: 2.6rem; }
+.pfwrap { position: relative; display: inline-flex; font-style: normal; margin-bottom: .6rem; }
+.profile .pfwrap .uface { margin-bottom: 0; }
+.whopick .profile { width: 10rem; padding: .9rem .5rem; }
+.whopick .uface.big { width: 7rem; height: 7rem; border-radius: 1.1rem; font-size: 3rem; transition: transform .15s ease-out; }
+.whopick .uface.big.emo { font-size: 3.8rem; }
+.whopick .profile:focus .uface { transform: scale(1.04); }
+.plock { position: absolute; right: -.45rem; bottom: -.45rem; width: 2rem; height: 2rem; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--surface2); box-shadow: 0 0 0 3px var(--bg); font-style: normal; }
+.plock svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.plock.sm { position: static; width: 1.4rem; height: 1.4rem; box-shadow: none; }
+.plock.sm svg { width: .8rem; height: .8rem; }
+.ppen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 1.1rem; background: #0000006b; font-style: normal; }
+.ppen svg { width: 2rem; height: 2rem; fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pkids, .pmain { margin-top: .35rem; padding: .1rem .6rem; border-radius: 1rem; font-style: normal; font-size: .75rem; font-weight: 700; }
+.pkids { background: #f5a62333; color: #f7c66f; }
+.pmain { background: var(--surface2); color: var(--ink2); }
+.profile:focus .pkids, .profile:focus .pmain { background: var(--bg); color: var(--ink); }
+.profile.addp .uface { background: transparent; border: 2px dashed var(--ink3); color: var(--ink2); }
+.profile.addp .uface svg { width: 2.6rem; height: 2.6rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+/* PIN: il campo e il tastierino per il telecomando */
+.pinhead { display: flex; justify-content: center; margin-bottom: .4rem; }
+.pinhead .uface { width: 5.5rem; height: 5.5rem; border-radius: 1rem; }
+.authcard .pinfield { max-width: 13rem; margin: 0 auto 1.1rem; text-align: center; font-size: 1.9rem; letter-spacing: .7em; padding-left: 1.6rem; }
+.pinpad { display: grid; grid-template-columns: repeat(3, 4.4rem); gap: .7rem; justify-content: center; }
+.pinpad button { height: 4.4rem; border-radius: 50%; background: var(--surface2); color: var(--ink); font-size: 1.5rem; font-weight: 700; }
+.pinpad button.pinok { font-size: 1rem; background: var(--accent); color: #fff; }
+.pinpad button:focus { background: var(--ink); color: var(--bg); }
+/* Modifica di un profilo */
+.pedit { display: flex; flex-direction: column; }
+.pedhead { display: flex; justify-content: center; margin-bottom: 1.2rem; }
+.pedhead .uface { width: 6rem; height: 6rem; border-radius: 1rem; }
+.pedit .flabel { margin-top: .5rem; }
+.pavatars, .pcolors { display: grid; grid-template-columns: repeat(auto-fill, minmax(3.1rem, 1fr)); gap: .55rem; margin: 0 0 1rem; }
+.pav { aspect-ratio: 1; display: flex; align-items: center; justify-content: center; border-radius: .8rem; background: var(--surface2); border: 2px solid transparent; font-size: 1.6rem; }
+.pav b { font-size: 1.3rem; font-weight: 800; }
+.pav.on { border-color: var(--accent); }
+.pav:focus { background: var(--ink); color: var(--bg); }
+.pcol { aspect-ratio: 1; border-radius: 50%; background: var(--pc); border: 0; }
+.pcol.on { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--ink); }
+.pcol:focus { box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px var(--accent); transform: scale(1.08); }
+.pnote { color: var(--ink2); font-size: .92rem; line-height: 1.45; margin: 0 0 .6rem; }
+.pinnew { display: flex; gap: .6rem; }
+.pinnew .field { margin-bottom: .4rem; }
+.pedit .swrow { margin-top: .4rem; }
+.pactions { margin-top: 1.4rem; }
+/* Impostazioni → Account: i profili in fila */
+.pminis { display: flex; flex-wrap: wrap; gap: .8rem 1.4rem; margin: .6rem 0 .4rem; }
+.pmini { display: inline-flex; align-items: center; gap: .5rem; }
+.pmini .pkids { margin-top: 0; }
+.pmini small { color: var(--ink3); font-size: .85rem; }
+/* Profilo bambini: niente impostazioni ne' raccolte nuove dal menu */
+body.kids #rail a[data-key="nav-settings"], body.kids #rail .add { display: none; }
+/* Raccolta per bambini (Impostazioni → Raccolte) */
+.libkids { margin: .2rem 0 .6rem; }
+
+/* ---------- Collegamento all'account (codice, come plex.tv/claim) ---------- */
+.claimbox { margin-top: 1.6rem; padding: 1.1rem 1.2rem; border-radius: .8rem; background: var(--surface); border-left: 4px solid #d9a441; text-align: left; }
+.panel.claimbox { margin-top: 0; }
+.claimbox h2 { font-size: 1.1rem; margin: 0 0 .5rem; }
+.claimbox p { color: var(--ink2); line-height: 1.5; margin: 0 0 .7rem; }
+.claimbox p b { color: var(--ink); }
+.claimbox .tvcode { justify-content: center; margin: .4rem 0 .8rem; }
+.claimcode { letter-spacing: .14em; text-transform: uppercase; }
+.cpicks { display: flex; flex-direction: column; gap: .5rem; margin: 0 0 .8rem; }
+.cpick { display: block; width: 100%; text-align: left; padding: .75rem 1rem; border-radius: var(--r); background: var(--surface2); border: 2px solid transparent; font-weight: 600; }
+.cpick small { display: block; margin-top: .2rem; color: var(--ink2); font-weight: 500; font-size: .88rem; }
+.cpick.on { border-color: var(--accent); }
+.cpick:focus { background: var(--ink); color: var(--bg); }
+.cpick:focus small { color: var(--bg); }
+.claimwarn { padding: .6rem .9rem; border-radius: .6rem; background: #d9a4411f; color: #f3d48a !important; font-size: .92rem; }
+.sheet.claimsheet { padding: 0 1.7rem 1.4rem; overflow-y: auto; }
+.claimsheet h3 { padding-left: 0; padding-right: 0; }
+.claimsheet .secretnote { padding: 0 0 .9rem; }
+.claimsheet .field { margin-bottom: .8rem; }
+@media (max-width: 560px) {
+  .whopick .profile { width: 8rem; }
+  .whopick .uface.big { width: 5.6rem; height: 5.6rem; font-size: 2.4rem; }
+  .whopick .uface.big.emo { font-size: 3rem; }
+}
+html.tv .whopick .profile { width: 12rem; }
+html.tv .whopick .uface.big { width: 9rem; height: 9rem; font-size: 3.8rem; }
+html.tv .whopick .uface.big.emo { font-size: 4.8rem; }
 .gqr { display: flex; flex-direction: column; align-items: center; text-align: center; color: var(--ink2); }
 .gqr p { margin: 1rem 0 .8rem; line-height: 1.5; }
 .gqr p b { color: var(--ink); }
