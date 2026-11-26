@@ -281,6 +281,10 @@ class IndirizzoPubblico(unittest.TestCase):
     def test_apk_senza_accesso(self):
         self.assertEqual(self.passa("/BunkerPlex.apk"), (True, 200))
         self.assertEqual(self.passa("/"), (True, 200))
+        # La TV Android col suo browser scarica l'app per la TV
+        self.assertEqual(self.passa("/BunkerPlexTV.apk"), (True, 200))
+        # La pagina dell'app per Android guarda se il server ha gia' la copia degli APK
+        self.assertEqual(self.passa("/api/info"), (True, 200))
 
     def test_api_chiedono_l_accesso(self):
         self.assertEqual(self.passa("/api/home"), (False, 401))

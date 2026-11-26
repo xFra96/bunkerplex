@@ -1721,6 +1721,10 @@ body.kb .snav.on:focus { background: var(--ink); }
 .getapp .btn.block { margin: 0; }
 .ganote { margin: .7rem 0 0; color: var(--accent-text); font-size: .9rem; line-height: 1.4; text-align: center; }
 .ganote b { color: inherit; }
+.ganote.warn { color: var(--warn); }
+.getapp.only { margin: 0; }
+.gaafter { margin: .3rem 0 .2rem; color: var(--ink3); font-size: .88rem; line-height: 1.45; text-align: center; }
+.gaafter b { color: var(--ink2); overflow-wrap: anywhere; }
 .gasteps { margin: 1rem 0 .2rem; padding: 0; list-style: none; counter-reset: ga; }
 .gasteps li { position: relative; margin: 0 0 .75rem; padding-left: 2.2rem; color: var(--ink2); font-size: .95rem; line-height: 1.45; counter-increment: ga; }
 .gasteps li::before { content: counter(ga); position: absolute; left: 0; top: 0; width: 1.5rem; height: 1.5rem; border-radius: 50%; background: var(--surface2); color: var(--ink); font-size: .8rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
