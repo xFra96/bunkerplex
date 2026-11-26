@@ -1,108 +1,88 @@
-# Notifiche istantanee: configurare Firebase
+# Notifiche istantanee: Firebase
 
 Le notifiche di BunkerPlex arrivano dentro BunkerPlex, senza installare altro:
 
 | Dove | Come arrivano | Da configurare |
 |---|---|---|
-| App Android (telefono e tablet) | Firebase Cloud Messaging (FCM) | **questa guida, una volta sola** |
+| App Android (telefono e tablet) | Firebase Cloud Messaging (FCM) | progetto Firebase (**fatto**, vedi sotto) |
 | iPhone e iPad (BunkerPlex sulla schermata Home, iOS 16.4+) | Web Push del browser | niente |
 | PC (browser o BunkerPlex installato come app) | Web Push del browser | niente |
 | TV | nessuna notifica | — |
 
-Finché Firebase non è configurato l'app Android funziona lo stesso: controlla gli avvisi da sola ogni
-15 minuti circa (Android a volte li fa arrivare più tardi). Con Firebase arrivano subito.
+Senza Firebase l'app Android funziona lo stesso: controlla gli avvisi da sola ogni 15 minuti circa
+(Android a volte li fa arrivare più tardi). Con Firebase arrivano subito.
 
-Servono due file del progetto Firebase:
+## Stato: configurato
 
-- **`google-services.json`**: dice all'app a quale progetto Firebase appartiene. Va nel segreto GitHub
-  `GOOGLE_SERVICES_JSON` (la compilazione dell'APK lo mette nell'app).
-- **la chiave dell'account di servizio** (un altro file `.json`): permette al servizio account (il Worker
-  su Cloudflare) di spedire le notifiche. Va nel segreto del Worker `FCM_SERVICE_ACCOUNT`.
-  **È una chiave privata**: non va mai nel codice, in chat o per email.
+| Cosa | Valore |
+|---|---|
+| Progetto Firebase | `bunkerplex-d4e2a` (Gemini e Google Analytics spenti) |
+| App Android nel progetto | pacchetto `it.bunkerplex.tv` (l'`applicationId` di `android/app/build.gradle.kts`) |
+| Segreto GitHub `GOOGLE_SERVICES_JSON` | il file `google-services.json` dell'app: lo usa `.github/workflows/app-android.yml` per compilare l'APK con Firebase |
+| Segreto del Worker `FCM_SERVICE_ACCOUNT` | la chiave JSON dell'account di servizio `firebase-adminsdk`: la usa `cloud/worker.js` per spedire le notifiche |
+| Segreto GitHub `FCM_SERVICE_ACCOUNT` | copia della stessa chiave; oggi nessun workflow la usa (il Worker ha la sua, salvata con `wrangler secret put`) |
 
-Firebase e FCM sono gratuiti (piano Spark): non serve una carta di credito.
+I file scaricati sono stati cancellati dal PC: **`google-services.json` e la chiave non vanno mai nel codice**
+(`android/app/google-services.json` è in `.gitignore`; la compilazione lo scrive dal segreto e lo cancella).
 
-## 1. Account Google con l'indirizzo Outlook (senza Gmail)
+Cosa serve perché arrivino sul telefono:
 
-1. Apri <https://accounts.google.com/signup> e scegli **Crea account → Per uso personale**.
-2. Scrivi nome e data di nascita.
-3. Nella pagina «Scegli il tuo indirizzo Gmail» tocca **Usa il tuo indirizzo email esistente** e scrivi
-   `bunkerplex@outlook.it`.
-4. Google manda un codice a quella casella Outlook: copialo nella pagina.
-5. Scegli la password (la tieni tu: non serve a BunkerPlex) e finisci.
+1. Unire la PR: si pubblicano il Worker nuovo (che usa `FCM_SERVICE_ACCOUNT`) e l'APK nuovo (compilato con
+   `GOOGLE_SERVICES_JSON`). Nel registro di «Pubblica l'app Android» non deve comparire l'avviso giallo
+   «Manca il segreto GOOGLE_SERVICES_JSON».
+2. Sul telefono: aggiornare l'app (Impostazioni dell'app → Aggiorna l'app).
+3. **Impostazioni dell'app → Notifiche → Attiva le notifiche** → Android chiede il permesso → **Consenti**.
+4. Dopo qualche secondo la pagina dice «gli avvisi arrivano subito, anche con l'app chiusa».
+   **Manda una prova**: arriva la notifica.
 
-Se `bunkerplex@outlook.it` ha già un account Google, basta entrare con quello.
+Se resta «per ora l'app controlla gli avvisi ogni 15 minuti circa»: il segreto del Worker manca o è sbagliato,
+oppure il telefono non ha Google Play. Appena il segreto è giusto l'app passa da sola alle notifiche istantanee
+(al primo controllo o alla prossima apertura).
 
-## 2. Progetto Firebase
+## Privacy: nessun indirizzo personale
 
-1. Apri <https://console.firebase.google.com> con l'account del punto 1.
-2. **Crea un progetto** (o «Inizia con un progetto Firebase»), nome per esempio `BunkerPlex`.
-3. Google Analytics: **non serve**, puoi spegnerlo. Poi **Crea progetto**.
+Il progetto è stato creato con un account Google personale, ma quell'indirizzo non compare da nessuna parte:
 
-## 3. App Android nel progetto → `google-services.json`
+- nell'APK c'è solo `google-services.json`: id del progetto (`bunkerplex-d4e2a`), numero del progetto, id
+  dell'app e chiave API pubblica di Firebase. Nessuna email;
+- il Worker si presenta a Google con l'account di servizio (`firebase-adminsdk-…@bunkerplex-d4e2a.iam.gserviceaccount.com`),
+  solo nella richiesta del gettone d'accesso. Non finisce in nessuna risposta, notifica o pagina;
+- le notifiche contengono solo titolo e testo dell'avviso; quelle del browser (PWA) usano come contatto VAPID
+  `bunkerplex@outlook.it` (`MAIL_FROM`).
 
-1. Nella pagina del progetto tocca l'icona **Android** («Aggiungi app»).
-2. **Nome del pacchetto Android: `it.bunkerplex.tv`** (esattamente questo: è l'`applicationId` dell'app in
-   `android/app/build.gradle.kts`; con un altro nome la compilazione si ferma).
-3. Nickname a piacere (es. `BunkerPlex Android`). Il certificato SHA-1 non serve. **Registra app**.
-4. **Scarica `google-services.json`**. I passi successivi della procedura guidata («Aggiungi l'SDK
-   Firebase»…) saltali: nel codice c'è già tutto.
+## Facoltativo: un altro proprietario del progetto
 
-## 4. Chiave dell'account di servizio (per il Worker)
+Se un giorno ci sarà un account Google dedicato a BunkerPlex, il progetto può passare a lui senza rifare
+niente (stessi file, stessi segreti):
 
-1. In Firebase: ingranaggio ⚙ → **Impostazioni progetto** → scheda **Cloud Messaging**: controlla che
-   **API Firebase Cloud Messaging (V1)** sia «Attivata» (nei progetti nuovi lo è già).
-2. Scheda **Account di servizio** → **Firebase Admin SDK** → **Genera nuova chiave privata** → **Genera
-   chiave**. Si scarica un file `.json` (contiene `"type": "service_account"` e `"private_key"`).
+1. Firebase → ingranaggio ⚙ → **Utenti e autorizzazioni** → **Aggiungi membro** → email del nuovo account →
+   ruolo **Proprietario** (oppure Google Cloud → IAM e amministrazione → IAM → Concedi l'accesso → ruolo
+   Proprietario).
+2. Il nuovo account accetta l'invito dall'email.
+3. Se vuoi, poi togli l'account personale dallo stesso elenco.
 
-## 5. Dove mettere i due file
+## Cambiare la chiave dell'account di servizio
 
-### `google-services.json` → segreto GitHub `GOOGLE_SERVICES_JSON`
+Da fare se la chiave finisce in mani sbagliate (con la chiave si possono mandare notifiche ai telefoni):
 
-Sul repository GitHub: **Settings → Secrets and variables → Actions → New repository secret**
+1. Firebase → Impostazioni progetto → **Account di servizio** → **Genera nuova chiave privata**.
+2. Dalla cartella `cloud` (con `npx wrangler login` fatto una volta con l'account Cloudflare di
+   bunkerplex@outlook.it), cambiando il nome del file:
 
-- Name: `GOOGLE_SERVICES_JSON`
-- Secret: tutto il contenuto del file `google-services.json` (aprilo con il Blocco note, copia e incolla)
+   ```powershell
+   Get-Content -Raw "$HOME\Downloads\bunkerplex-d4e2a-firebase-adminsdk.json" | npx wrangler secret put FCM_SERVICE_ACCOUNT
+   ```
 
-Oppure dal PC, con GitHub CLI, nella cartella dove hai scaricato il file:
+   Vale subito, senza ripubblicare il Worker. Aggiorna anche il segreto GitHub `FCM_SERVICE_ACCOUNT`.
+3. Elimina la chiave vecchia: «Gestisci le autorizzazioni dell'account di servizio» (porta a Google Cloud) →
+   account `firebase-adminsdk` → **Chiavi** → elimina quella vecchia. Poi cancella il file dalla cartella Download.
+
+`google-services.json` invece non è segreto (sta dentro ogni APK): cambia solo se si rifà l'app nel progetto.
+In quel caso si aggiorna il segreto GitHub `GOOGLE_SERVICES_JSON`:
 
 ```powershell
 Get-Content -Raw google-services.json | gh secret set GOOGLE_SERVICES_JSON --repo xFra96/bunkerplex
 ```
-
-### Chiave dell'account di servizio → segreto del Worker `FCM_SERVICE_ACCOUNT`
-
-Dalla cartella `cloud` del repository (serve aver fatto una volta `npx wrangler login` con l'account
-Cloudflare di bunkerplex@outlook.it), cambiando il nome del file con quello scaricato:
-
-```powershell
-Get-Content -Raw "$HOME\Downloads\bunkerplex-firebase-adminsdk.json" | npx wrangler secret put FCM_SERVICE_ACCOUNT
-```
-
-In alternativa dal pannello di Cloudflare: **Workers e Pages → bunkerplex-account → Impostazioni →
-Variabili e segreti → Aggiungi → Segreto**, nome `FCM_SERVICE_ACCOUNT`, valore: tutto il contenuto del file.
-
-Il segreto vale subito, senza ripubblicare il Worker, e le pubblicazioni successive non lo cancellano.
-
-Poi **cancella la chiave dalla cartella Download** (o tienila in un posto sicuro): se qualcuno la prende può
-mandare notifiche ai tuoi telefoni. Se pensi che sia finita in mani sbagliate: Firebase → Impostazioni
-progetto → Account di servizio → «Gestisci le autorizzazioni dell'account di servizio» → chiavi → elimina,
-poi generane una nuova e rifai questo passo.
-
-## 6. APK nuovo e prova
-
-1. L'APK con Firebase si compila alla prossima pubblicazione dell'app Android (push su `main` che tocca
-   `android/`), oppure a mano: GitHub → **Actions → «Pubblica l'app Android» → Run workflow**.
-   Se il segreto `GOOGLE_SERVICES_JSON` manca, la compilazione lo segnala con un avviso giallo e l'APK
-   resta senza notifiche istantanee.
-2. Sul telefono: aggiorna l'app (Impostazioni dell'app → Aggiorna l'app).
-3. **Impostazioni dell'app → Notifiche → Attiva le notifiche** → Android chiede il permesso → **Consenti**.
-4. Dopo qualche secondo la pagina dice «gli avvisi arrivano subito, anche con l'app chiusa». Tocca
-   **Manda una prova**: arriva la notifica.
-
-Se resta «per ora l'app controlla gli avvisi ogni 15 minuti circa»: il segreto `FCM_SERVICE_ACCOUNT` manca
-o è sbagliato, oppure il telefono non ha Google Play. Appena il segreto c'è, l'app passa da sola alle
-notifiche istantanee (al primo controllo o alla prossima apertura).
 
 ## Come funziona (per chi tocca il codice)
 
