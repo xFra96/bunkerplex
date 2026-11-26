@@ -17,6 +17,8 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.webkit.JavascriptInterface
+import android.webkit.ValueCallback
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -24,6 +26,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -57,6 +60,14 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var web: WebView
     private val prefs by lazy { getSharedPreferences("bunkerplex", MODE_PRIVATE) }
+
+    /** La scelta di un file chiesta dalla pagina (<input type=file>, es. l'immagine di un
+     *  server): senza WebChromeClient.onShowFileChooser il WebView non apre niente. */
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private val fileChooser = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(r.resultCode, r.data))
+        fileCallback = null
+    }
     private var clearHistoryOnLoad = false
     private var cameFromPlayer = false
     private var onSetup = false
@@ -156,6 +167,22 @@ class MainActivity : AppCompatActivity() {
             // Il servizio account risponde ma con un errore suo (es. 502): come se non rispondesse
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
                 if (onAppSettings && request.isForMainFrame && response.statusCode >= 500) appSettingsOffline()
+            }
+        }
+
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
+                                           params: FileChooserParams): Boolean {
+                fileCallback?.onReceiveValue(emptyArray())   // una scelta rimasta a meta'
+                fileCallback = callback
+                return try {
+                    fileChooser.launch(params.createIntent())
+                    true
+                } catch (_: ActivityNotFoundException) {
+                    fileCallback = null
+                    Toast.makeText(this@MainActivity, "Nessuna app per scegliere un file", Toast.LENGTH_SHORT).show()
+                    false
+                }
             }
         }
 

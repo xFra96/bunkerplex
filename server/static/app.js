@@ -1665,6 +1665,10 @@ function cActions() {
     },
     cedit: function () { cache.cEdit = !cache.cEdit; lastHtml = ''; render(); },
     clook: function (sid) { cLookSheet(sid); },
+    // Dalle impostazioni del server in cui sei: l'elenco serve per il suo aspetto attuale
+    cmylook: async function () {
+      try { await cServers(); cLookSheet(C.sid); } catch (e) { toast(e.message); }
+    },
     clookset: async function (arg) {
       var p = String(arg).split(':');
       var patch = { icon: p[1] || '' };
@@ -4899,6 +4903,10 @@ async function adminArea() {
         '<label class="flabel" for="pcname" style="margin-top:1rem">Nome del server</label>' +
         '<div class="joined"><input class="field f" id="pcname" data-key="pcname" maxlength="30" value="' + esc(srv.name) + '">' +
           '<button class="btn f" data-act="admpcname" data-key="admpcname">Salva</button></div>' +
+        // Icona o immagine con cui lo vedete tu e i tuoi amici nella scelta del server
+        (CENTRAL && C.sid && C.role === 'owner' && !kidsNow()
+          ? '<p class="flabel" style="margin-top:1rem">Aspetto nella scelta del server</p>' +
+            '<div class="actions"><button class="btn f" data-act="cmylook" data-key="adm-look">Icona o immagine</button></div>' : '') +
         '<div class="actions"><a class="btn f" href="#/settings/updates" data-key="adm-upd2">Aggiornamenti</a>' +
           '<a class="btn f" href="#/settings/libraries" data-key="adm-libs">Raccolte</a>' +
           '<a class="btn f" href="#/settings/catalog" data-key="adm-cat">Schede</a>' +
