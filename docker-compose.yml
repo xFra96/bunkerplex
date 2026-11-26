@@ -28,6 +28,9 @@ services:
       # Impronta dei file con cui e' acceso il server: la passa "Installa BunkerPlex"
       # e serve a capire se Docker va ricostruito (vedi strumenti/Impronta.ps1)
       BUNKERPLEX_BUILD: ${BUNKERPLEX_BUILD:-}
+      # Impronta della macchina (non dell'installazione): la passa "Installa BunkerPlex".
+      # Reinstallando sullo stesso PC il servizio account propone di sostituire il server di prima
+      BUNKERPLEX_MACHINE: ${BUNKERPLEX_MACHINE:-}
     volumes:
       # Il catalogo: la cartella "data" qui accanto.
       - type: bind

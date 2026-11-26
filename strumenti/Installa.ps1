@@ -315,6 +315,10 @@ try {
     $env:BUNKERPLEX_LAN_IP = (Get-NetIPConfiguration -ErrorAction Stop | Where-Object { $_.IPv4DefaultGateway } |
         Select-Object -First 1).IPv4Address.IPAddress | Select-Object -First 1
 } catch { }
+# Impronta della macchina: dentro Docker il server non la vede (riconosce una reinstallazione sullo stesso PC)
+try {
+    $env:BUNKERPLEX_MACHINE = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid
+} catch { }
 # Indirizzo Tailscale (100.64.0.0/10), se c'e': gli amici entrano da li' e sul router non si apre nulla
 try {
     $env:BUNKERPLEX_TAILSCALE_IP = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
