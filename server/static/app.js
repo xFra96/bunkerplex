@@ -3815,12 +3815,12 @@ document.addEventListener('click', function (e) {
 
 // ---- Notifiche su telefoni e tablet
 // Gli avvisi dell'account (nuovi titoli, amici, aggiornamenti) li manda il servizio
-// account e arrivano come notifiche push alla pagina «BunkerPlex Avvisi» del
-// servizio: su iPhone e iPad aggiunta alla schermata Home, sui telefoni Android
-// aperta in Chrome (l'app la apre da sola). Il vecchio controllo dell'app Android
-// ogni 15 minuti circa arrivava in ritardo (Android lo rimanda per la batteria):
-// resta solo per chi lo aveva gia' acceso, con l'invito a passare a Chrome.
-var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+// account, e arrivano dentro BunkerPlex: basta permettere le notifiche.
+//  - App Android: Firebase Cloud Messaging (l'app chiede il permesso e manda il suo
+//    gettone al servizio). APK senza Firebase: l'app controlla ogni 15 minuti circa.
+//  - PWA (iPhone e iPad dalla schermata Home, browser dei PC): notifiche push del
+//    browser, ricevute dal service worker di BunkerPlex (sw.js).
+// La vecchia pagina «BP Avvisi» continua a funzionare per chi l'aveva, ma non si propone piu'.
 var NOTICE_KINDS = [['titles', 'Nuovi film ed episodi sui tuoi PC'], ['friends_titles', 'Novità sui PC dei tuoi amici'],
   ['friends', 'Richieste di amicizia'], ['update', 'Aggiornamenti del server']];
 
@@ -3828,55 +3828,198 @@ function noticeWhen(t) {
   return new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+var NOTICE_INTRO = '<p>Ricevi un avviso appena arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti. ' +
+  'Funziona anche fuori casa.</p>';
+
 function noticeHereHtml() {
-  if (PHONE_APP && typeof tvApp.noticesState === 'function') {
-    var st = tvCall('noticesState');
-    var chrome = typeof tvApp.openUrl === 'function';
-    var chromeBtn = function (label, primary) {
-      return '<button class="btn' + (primary ? ' primary' : '') + ' f" data-act="noticeon" data-arg="chrome" data-key="noticechrome">' + label + '</button>';
-    };
-    if (st === 'on') {
-      return '<p>' + dot(true) + ' Attive su questo dispositivo: l\'app controlla gli avvisi ogni 15 minuti circa, ' +
-        'ma Android per risparmiare batteria spesso li fa arrivare molto più tardi.</p>' +
-        (chrome ? '<p>Con Chrome arrivano subito, appena c\'è un film o un episodio nuovo.</p>' : '') +
-        '<div class="actions">' + (chrome ? chromeBtn('Passa alle notifiche istantanee', true) : '') +
-        '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button></div>';
-    }
-    if (chrome && st === 'off') {
-      var on = false;
-      try { on = localStorage.getItem('bpChromePush') === '1'; } catch (e) { /* niente */ }
-      if (on) {
-        return '<p>' + dot(true) + ' Le notifiche arrivano subito da Chrome (pagina <b>BunkerPlex Avvisi</b>), anche con l\'app chiusa.</p>' +
-          '<p><small>Se non arrivano, riapri la pagina e tocca «Attiva le notifiche», e controlla che Chrome possa mostrare notifiche.</small></p>' +
-          '<div class="actions">' + chromeBtn('Riapri la pagina degli avvisi') + '</div>';
-      }
-      return '<p>Ricevi un avviso appena arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti. Funziona anche fuori casa.</p>' +
-        '<ol class="steps"><li>Tocca «Attiva le notifiche»: si apre la pagina degli avvisi in Chrome</li>' +
-        '<li>Lì tocca di nuovo <b>Attiva le notifiche</b> e permetti a Chrome di mostrarle</li></ol>' +
-        '<div class="actions">' + chromeBtn('Attiva le notifiche', true) + '</div>';
-    }
-    if (st === 'denied') {
-      return '<p>' + dot(false) + ' Android non permette all\'app di mostrare notifiche.</p>' +
-        '<div class="actions"><button class="btn primary f" data-act="noticeperm" data-key="noticeperm">Apri le impostazioni di Android</button>' +
-        '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni</button></div>';
-    }
-    return '<p>Ricevi un avviso quando arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti. Funziona anche fuori casa.</p>' +
-      '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="android" data-key="noticeon">Attiva le notifiche</button></div>';
-  }
-  if (APP) {
-    return '<p>Questa versione dell\'app non mostra ancora le notifiche: aggiornala da Impostazioni → Aggiornamenti.</p>';
-  }
-  if (IOS) {
-    return '<p>Su iPhone e iPad le notifiche arrivano dalla piccola app <b>BP Avvisi</b> (serve iOS 16.4 o più recente):</p>' +
-      '<ol class="steps"><li>Tocca «Attiva su questo iPhone»: si apre la pagina degli avvisi in Safari</li>' +
-      '<li>Lì tocca <b>Condividi</b> → <b>Aggiungi alla schermata Home</b></li>' +
-      '<li>Apri <b>BP Avvisi</b> dalla schermata Home e tocca «Attiva le notifiche»</li></ol>' +
-      '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="ios" data-key="noticeon">Attiva su questo ' + (/iPad/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 && !/iPhone/.test(navigator.userAgent) ? 'iPad' : 'iPhone') + '</button></div>';
-  }
-  return '<p>Sul telefono Android le attivi dall\'app BunkerPlex (Impostazioni → Notifiche); su iPhone e iPad da Safari, in questa stessa pagina. ' +
-    'In questo browser puoi ricevere gli avvisi dalla pagina «BunkerPlex Avvisi».</p>' +
-    '<div class="actions"><button class="btn f" data-act="noticeon" data-arg="web" data-key="noticeon">Attiva in questo browser</button></div>';
+  if (PHONE_APP && typeof tvApp.noticesState === 'function') return noticeAppHtml();
+  if (APP) return '<p>Questa versione dell\'app non mostra ancora le notifiche: aggiornala da Impostazioni → Aggiornamenti.</p>';
+  return noticePwaHtml();
 }
+
+// App Android
+function noticeAppHtml() {
+  var st = tvCall('noticesState');
+  var fresh = typeof tvApp.noticesPush === 'function';   // APK con le notifiche dentro l'app (Firebase)
+  var fcm = fresh && tvCall('noticesPush');
+  var test = fresh ? '<button class="btn f" data-act="noticetest" data-key="noticetest">Manda una prova</button>' : '';
+  var off = '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button>';
+  if (st === 'push') {
+    return '<p>' + dot(true) + ' Attive su questo dispositivo: gli avvisi arrivano subito, anche con l\'app chiusa.</p>' +
+      '<div class="actions">' + test + off + '</div>';
+  }
+  if (st === 'denied') {
+    return '<p>' + dot(false) + ' Android non permette all\'app di mostrare notifiche.</p>' +
+      '<div class="actions"><button class="btn primary f" data-act="noticeperm" data-key="noticeperm">Apri le impostazioni di Android</button>' +
+      '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni</button></div>';
+  }
+  if (st === 'on') {
+    return '<p>' + dot(true) + ' Attive su questo dispositivo: per ora l\'app controlla gli avvisi ogni 15 minuti circa, ' +
+      'e Android per risparmiare batteria a volte li fa arrivare più tardi.</p>' +
+      (fcm ? '<p><small>Diventano istantanee da sole appena il servizio account è pronto.</small></p>'
+        : '<p><small>' + (fresh ? 'Questa versione dell\'app è senza notifiche istantanee.' : 'Aggiorna l\'app per riceverli subito.') + '</small></p>') +
+      '<div class="actions">' + test + off + '</div>';
+  }
+  return NOTICE_INTRO +
+    '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="android" data-key="noticeon">Attiva le notifiche</button></div>';
+}
+
+// PWA: il browser riceve le notifiche push nel service worker di BunkerPlex.
+// Il suo indirizzo degli avvisi (…/avvisi/<gettone>) e la chiave VAPID restano qui
+// (off: spente con «Spegni», si riaccendono con lo stesso dispositivo dell'account).
+function pushSaved() {
+  try {
+    var d = JSON.parse(localStorage.getItem('bpPush'));
+    return d && d.url && d.key ? d : null;
+  } catch (e) { return null; }
+}
+function pushSave(d) {
+  try { if (d) localStorage.setItem('bpPush', JSON.stringify(d)); else localStorage.removeItem('bpPush'); } catch (e) { /* niente */ }
+}
+function pushSupported() {
+  return !APP && window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+function pushWhat() {
+  if (!IOS) return 'dispositivo';
+  return /iPad/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && !/iPhone/.test(navigator.userAgent)) ? 'iPad' : 'iPhone';
+}
+
+function noticePwaHtml() {
+  if (!pushSupported()) {
+    if (IOS && !STANDALONE) {
+      return '<p>Su ' + pushWhat() + ' le notifiche arrivano a BunkerPlex aggiunto alla schermata Home (serve iOS 16.4 o più recente):</p>' +
+        '<ol class="steps"><li>In Safari tocca <b>Condividi</b> → <b>Aggiungi alla schermata Home</b></li>' +
+        '<li>Apri <b>BunkerPlex</b> dalla schermata Home</li>' +
+        '<li>Torna qui e tocca «Attiva le notifiche»</li></ol>';
+    }
+    return '<p>' + dot(false) + ' Questo browser non riceve notifiche' + (window.isSecureContext ? '' : ' da questo indirizzo (serve https)') + '.</p>' +
+      '<p><small>Sul telefono Android le attivi dall\'app BunkerPlex; su iPhone e iPad da BunkerPlex sulla schermata Home.</small></p>';
+  }
+  var perm = Notification.permission;
+  if (perm === 'denied') {
+    return '<p>' + dot(false) + ' Il browser blocca le notifiche di BunkerPlex.</p><p><small>' +
+      (IOS ? 'Riattivale da Impostazioni → Notifiche → BunkerPlex.' : 'Riattivale dalle impostazioni del sito (il lucchetto accanto all\'indirizzo), poi torna qui.') +
+      '</small></p>';
+  }
+  var dev = pushSaved();
+  if (perm === 'granted' && dev && !dev.off) {
+    return '<p>' + dot(true) + ' Attive su questo ' + pushWhat() + ': gli avvisi arrivano subito, anche con BunkerPlex chiuso.</p>' +
+      '<div class="actions"><button class="btn f" data-act="noticetest" data-key="noticetest">Manda una prova</button>' +
+      '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button></div>';
+  }
+  return NOTICE_INTRO +
+    '<div class="actions"><button class="btn primary f" data-act="noticeon" data-arg="push" data-key="noticeon">Attiva le notifiche</button></div>';
+}
+
+// Le chiamate del dispositivo al servizio account (vale il gettone nell'indirizzo)
+function pushCall(dev, path, method, body) {
+  return fetch(dev.url + path, { method: method, headers: body ? { 'Content-Type': 'application/json' } : {},
+    body: body ? JSON.stringify(body) : undefined }).catch(function () {
+    throw new Error('Il servizio account non risponde: controlla la connessione');
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) {
+      if (!r.ok) {
+        var err = new Error(j.detail || ('Errore ' + r.status));
+        err.status = r.status;
+        throw err;
+      }
+      return j;
+    });
+  });
+}
+
+// Il permesso (nelle versioni vecchie di Safari si chiede con una funzione di ritorno)
+function pushAsk() {
+  return new Promise(function (done) {
+    var p = Notification.requestPermission(done);
+    if (p && p.then) p.then(done, function () { done('denied'); });
+  });
+}
+
+function pushKeyBytes(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(s + '==='.slice((s.length + 3) % 4)), function (c) { return c.charCodeAt(0); });
+}
+
+// L'iscrizione del browser con la chiave del servizio (una vecchia con un'altra chiave si rifà)
+async function pushSubscribe(reg, key) {
+  var bytes = pushKeyBytes(key);
+  var sub = await reg.pushManager.getSubscription();
+  var had = sub && sub.options && sub.options.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+  if (sub && had && (had.length !== bytes.length || had.some(function (b, i) { return b !== bytes[i]; }))) {
+    await sub.unsubscribe();
+    sub = null;
+  }
+  return sub || reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes });
+}
+
+async function pushNewDevice() {
+  var kind = IOS ? 'ios' : 'web';
+  var r = await noticeApi('POST', '/notices/devices', { kind: kind, label: noticeLabel(kind), open: location.origin + '/' });
+  if (!r.key) throw new Error('Il servizio account va aggiornato per le notifiche dentro BunkerPlex');
+  return { url: r.url, key: r.key };
+}
+
+async function pushOn() {
+  // Il permesso subito, dentro il tocco (Safari lo chiede)
+  var perm = await pushAsk();
+  if (perm !== 'granted') { render(); return; }
+  toast('Attivo le notifiche…');
+  await navigator.serviceWorker.register('sw.js');
+  var reg = await navigator.serviceWorker.ready;
+  var dev = pushSaved();
+  dev = dev ? { url: dev.url, key: dev.key } : await pushNewDevice();
+  var sub = await pushSubscribe(reg, dev.key);
+  try {
+    await pushCall(dev, '/push', 'POST', sub.toJSON());
+  } catch (e) {
+    if (e.status !== 401) throw e;
+    dev = await pushNewDevice();             // dispositivo tolto dall'account: uno nuovo
+    await pushCall(dev, '/push', 'POST', sub.toJSON());
+  }
+  pushSave(dev);
+  toast('Notifiche attive su questo dispositivo');
+  render();
+}
+
+async function pushOff() {
+  var dev = pushSaved();
+  if (dev) pushSave({ url: dev.url, key: dev.key, off: true });
+  try {
+    var reg = await navigator.serviceWorker.getRegistration();
+    var sub = reg && await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch (e) { /* niente */ }
+  if (dev) await pushCall(dev, '/push', 'DELETE').catch(function () {});
+}
+
+// All'apertura: l'iscrizione del browser e' ancora quella che conosce il servizio
+// (il browser puo' cambiarla, il servizio la toglie se scade)
+function pushSync() {
+  var dev = pushSaved();
+  if (!dev || dev.off || !pushSupported() || Notification.permission !== 'granted') return;
+  navigator.serviceWorker.ready.then(function (reg) { return pushSubscribe(reg, dev.key); })
+    .then(function (sub) { return pushCall(dev, '/push', 'POST', sub.toJSON()); })
+    .catch(function (e) { if (e && e.status === 401) { pushSave(null); render(); } });
+}
+if (pushSupported()) setTimeout(pushSync, 5000);
+
+// Prima le notifiche dell'app Android arrivavano dalla pagina «BP Avvisi» aperta in Chrome
+// (dispositivo «… · Chrome»): ora arrivano all'app, e quel dispositivo di questo telefono si
+// toglie, se no ogni avviso arriverebbe due volte. Solo se ce n'e' uno: non si indovina.
+function noticeDropChrome() {
+  var had = false;
+  try { had = localStorage.getItem('bpChromePush') === '1'; localStorage.removeItem('bpChromePush'); } catch (e) { /* niente */ }
+  if (!had) return;
+  noticesData().then(function (d) {
+    var old = (d.devices || []).filter(function (v) { return v.kind === 'web' && / · Chrome$/.test(v.label || ''); });
+    if (old.length === 1) return noticeApi('DELETE', '/notices/devices/' + old[0].id);
+  }).catch(function () { /* resta nell'elenco: si toglie a mano */ });
+}
+
+// L'app Android avvisa quando cambia lo stato (permesso dato, Firebase pronto) o com'e' andata la prova
+window.fpNoticePerm = function () { if (/^#\/(app|settings\/notices)/.test(location.hash)) render(); };
+window.fpNoticeTest = function (err) { toast(err || 'Prova partita: tra poco arriva la notifica'); };
 
 // Gli avvisi stanno nel servizio account. Nella PWA centrale (e nell'app, che la usa)
 // si chiedono a lui direttamente con il gettone dell'account: funziona anche prima di
@@ -3923,8 +4066,8 @@ function noticesPanels(d, full) {
   }).join('');
   var devs = (d.devices || []).map(function (v) {
     var what = v.kind === 'android' ? 'App Android' : v.kind === 'ios' ? 'iPhone / iPad' : 'Browser';
-    var st = v.kind === 'android' ? (v.last_seen ? 'ultimo controllo ' + noticeWhen(v.last_seen) : 'in attesa del primo controllo')
-      : v.push ? 'notifiche attive' : 'da completare: apri BP Avvisi e tocca «Attiva»';
+    var st = v.kind === 'android' ? (v.fcm ? 'notifiche istantanee' : v.last_seen ? 'controllo ogni 15 minuti circa, ultimo ' + noticeWhen(v.last_seen)
+      : 'in attesa del primo controllo') : v.push ? 'notifiche attive' : 'spente';
     return '<div class="lib"><div class="head">' + avatar(v.label || what) + '<div class="name"><b>' + esc(v.label || what) + '</b><small>' +
       esc(what + ' · ' + st) + '</small></div><button class="btn danger f" data-act="noticedel" data-arg="' + v.id + '" data-key="ndel-' + v.id + '">Togli</button></div></div>';
   }).join('');
@@ -3932,13 +4075,16 @@ function noticesPanels(d, full) {
   var list = noticeRows(news, 'pgn-');
   return '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
     '<div class="panel"><h2>Cosa ti avvisa</h2>' + kinds + '</div>' +
-    '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
+    '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') +
+      ((d.devices || []).length > 1 ? '<p><small>Se un avviso arriva due volte, togli il dispositivo che non usi più ' +
+        '(per esempio la vecchia pagina «BP Avvisi» o Chrome sul telefono).</small></p>' : '') + '</div>' +
     (full ? '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
       (unreadNotices(news) ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgnall">Segna tutte come lette</button></div>' : '') +
       (list ? '<div class="nlist">' + list + '</div>' : '<p>Ancora nessun avviso.</p>') + '</div>' : '');
 }
 
-function deviceLabel(kind) {
+// Il nome del dispositivo nell'elenco delle notifiche (deviceLabel e' quello di Amministrazione)
+function noticeLabel(kind) {
   var ua = navigator.userAgent;
   var m = /Android [\d.]+; ([^;)]+?)(?: Build|\))/.exec(ua);
   if (kind === 'android') return m && m[1] !== 'K' ? m[1].trim() : 'Telefono Android';
@@ -6188,30 +6334,27 @@ var actions = {
     post('/account-friends/self', { on: arg === '1' }).then(function () { libsLoadedAt = 0; render(); }, function (e) { toast(e.message); });
   },
   noticeon: function (arg) {
-    var kind = arg || 'web';
-    if (kind === 'chrome') {
-      // App Android: le push del browser (istantanee) nella pagina degli avvisi aperta in Chrome;
-      // il vecchio controllo ogni 15 minuti si spegne, se no gli avvisi arriverebbero due volte
-      noticeApi('POST', '/notices/devices', { kind: 'web', label: deviceLabel('android') + ' · Chrome', open: location.origin + '/' }).then(function (r) {
-        if (tvCall('noticesState') !== 'off') tvApp.noticesSet('');
-        try { localStorage.setItem('bpChromePush', '1'); } catch (e) { /* niente */ }
-        tvApp.openUrl(r.url);
-        render();
-      }, function (e) { toast(e.message); });
+    if (arg === 'push') {                    // PWA: notifiche push del browser
+      pushOn().catch(function (e) { toast(e.message); render(); });
       return;
     }
-    // La pagina degli avvisi si apre subito (Safari blocca le finestre aperte dopo un'attesa)
-    var win = kind === 'android' ? null : window.open('about:blank', '_blank');
-    noticeApi('POST', '/notices/devices', { kind: kind, label: deviceLabel(kind), open: location.origin + '/' }).then(function (r) {
-      if (kind === 'android') {
-        tvApp.noticesSet(r.url);
-        toast('Notifiche attive su questo dispositivo');
-        setTimeout(render, 1500);
-        return;
-      }
-      if (win) win.location.href = r.url; else location.href = r.url;
-      render();
-    }, function (e) { if (win) win.close(); toast(e.message); });
+    // App Android: il dispositivo nell'account, poi l'app chiede il permesso e collega Firebase
+    noticeApi('POST', '/notices/devices', { kind: 'android', label: noticeLabel('android'), open: location.origin + '/' }).then(function (r) {
+      tvApp.noticesSet(r.url);
+      toast('Notifiche attive su questo dispositivo');
+      if (typeof tvApp.noticesPush === 'function' && tvCall('noticesPush')) noticeDropChrome();
+      setTimeout(render, 1500);
+    }, function (e) { toast(e.message); });
+  },
+  noticetest: function () {
+    if (PHONE_APP) {
+      if (typeof tvApp.noticesTest === 'function') { toast('Mando una prova…'); tvApp.noticesTest(); }
+      return;
+    }
+    var dev = pushSaved();
+    if (!dev || dev.off) return;
+    toast('Mando una prova…');
+    pushCall(dev, '/test', 'POST').then(function () { window.fpNoticeTest(''); }, function (e) { toast(e.message); });
   },
   noticeread: function (arg) {
     var id = +arg, list = (act.info && act.info.notices) || [];
@@ -6256,9 +6399,13 @@ var actions = {
     if (n) actions.actgo(n.href);
   },
   noticeoff: function () {
-    if (typeof tvApp.noticesSet === 'function') tvApp.noticesSet('');
-    toast('Notifiche spente su questo dispositivo');
-    render();
+    var done = function () { toast('Notifiche spente su questo dispositivo'); render(); };
+    if (APP) {
+      if (typeof tvApp.noticesSet === 'function') tvApp.noticesSet('');
+      done();
+      return;
+    }
+    pushOff().then(done, done);
   },
   noticeperm: function () { if (typeof tvApp.noticesSettings === 'function') tvApp.noticesSettings(); },
   noticepref: function (arg) {

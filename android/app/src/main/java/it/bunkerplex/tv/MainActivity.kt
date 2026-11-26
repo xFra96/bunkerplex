@@ -51,6 +51,8 @@ class MainActivity : AppCompatActivity() {
         private const val RELEASES = "app-v"
         /** Le impostazioni dell'app quando il servizio account non risponde */
         private const val APP_SETTINGS = "file:///android_asset/appsettings.html"
+        /** Richiesta del permesso delle notifiche (Android 13+) */
+        private const val NOTICE_PERMISSION = 42
     }
 
     private lateinit var web: WebView
@@ -174,6 +176,8 @@ class MainActivity : AppCompatActivity() {
         // Il server scritto a mano (app di prima) resta come primo da provare senza Internet
         if (!isTelevision && lastServer == null) server?.let { lastServer = it }
         showHome()
+        // Gettone FCM arrivato al servizio account: la pagina mostra subito «istantanee»
+        Notices.changed = { js("window.fpNoticePerm&&fpNoticePerm()") }
         Notices.ensure(this)
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
@@ -426,6 +430,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Permesso delle notifiche dato o negato: la pagina si ridisegna con lo stato nuovo. */
+    @Deprecated("Basta per un solo permesso, senza le API dei risultati")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTICE_PERMISSION) js("window.fpNoticePerm&&fpNoticePerm()")
+    }
+
     override fun onPause() {
         web.onPause()
         super.onPause()
@@ -433,6 +444,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         try { unregisterReceiver(installResult) } catch (_: Exception) {}
+        Notices.changed = null
         Remote.stopNet()     // il telefono esce dalla rete di BunkerPlex (e, temporaneo, sparisce)
         web.destroy()
         super.onDestroy()
@@ -550,13 +562,28 @@ class MainActivity : AppCompatActivity() {
             if (url.startsWith("http://") || url.startsWith("https://")) lastServer = url
         }
 
-        /** Notifiche su questo telefono/tablet: "on", "denied" (accese ma senza permesso) o "off". */
+        /** Notifiche su questo telefono/tablet: "push" (istantanee, Firebase), "on" (controllo
+         *  ogni 15 minuti circa), "denied" (accese ma senza permesso), "off" o "tv". */
         @JavascriptInterface
         fun noticesState(): String = when {
             isTelevision -> "tv"
             Notices.url(this@MainActivity) == null -> "off"
             !Notices.allowed(this@MainActivity) -> "denied"
+            Notices.push(this@MainActivity) -> "push"
             else -> "on"
+        }
+
+        /** true se questo APK ha Firebase (notifiche istantanee): senza, solo il controllo periodico. */
+        @JavascriptInterface
+        fun noticesPush(): Boolean = !isTelevision && Notices.firebase(this@MainActivity)
+
+        /** Manda una notifica di prova; la pagina riceve l'esito in fpNoticeTest("" = partita, o l'errore). */
+        @JavascriptInterface
+        fun noticesTest() {
+            thread {
+                val err = try { Notices.test(this@MainActivity) } catch (e: Exception) { "Il servizio account non risponde" }
+                js("window.fpNoticeTest&&fpNoticeTest(${JSONObject.quote(err)})")
+            }
         }
 
         /** Accende le notifiche con l'indirizzo degli avvisi di questo dispositivo ("" = spegne). */
@@ -569,7 +596,7 @@ class MainActivity : AppCompatActivity() {
             if (!url.startsWith("https://") || isTelevision) return
             Notices.enable(this@MainActivity, url)
             if (!Notices.allowed(this@MainActivity) && Build.VERSION.SDK_INT >= 33) {
-                runOnUiThread { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 42) }
+                runOnUiThread { requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), NOTICE_PERMISSION) }
             }
         }
 

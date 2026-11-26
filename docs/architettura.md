@@ -141,7 +141,7 @@ Cambia:
 - Login: direttamente sul cloud (la password non passa più da un server).
 - **Selezione server: l'interfaccia attuale resta così com'è** (`serversPage`, pulsante in alto, richiesta all'apertura). Cambia solo la fonte della lista (cloud invece di `/api/account-friends`) e cosa succede alla scelta (cambia server di destinazione invece di filtrare sull'hub). In più mostra acceso/spento dalla presenza.
 - Visti e punti di ripresa: inviati al server che riproduce (come oggi) e, per i titoli con TMDB, anche al cloud (`POST /state`), così valgono su tutti i server, compresi quelli degli amici.
-- Notifiche: le web push del Worker (`/avvisi`) diventano quelle della PWA.
+- Notifiche: le web push del Worker (`/avvisi`) diventano quelle della PWA: il service worker di BunkerPlex (`sw.js`) si iscrive con la chiave VAPID del servizio e manda l'iscrizione a `/avvisi/<gettone>/push`. L'app Android le riceve con Firebase Cloud Messaging (`/avvisi/<gettone>/fcm`, segreto `FCM_SERVICE_ACCOUNT`): vedi [notifiche-firebase.md](notifiche-firebase.md).
 
 ### 2.4 App TV (`android/tv`)
 

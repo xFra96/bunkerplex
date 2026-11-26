@@ -8,6 +8,9 @@
 # Il numero lo calcola .github/versione.py dai tag app-v precedenti.
 # Firmata con la chiave di sempre (segreto ANDROID_KEYSTORE_B64), se no la TV e il
 # telefono rifiutano l'aggiornamento: senza segreto il giro si ferma.
+# Notifiche istantanee (Firebase Cloud Messaging): il segreto GOOGLE_SERVICES_JSON e'
+# il file google-services.json del progetto Firebase (vedi docs/notifiche-firebase.md).
+# Senza segreto l'APK si fa lo stesso: le notifiche arrivano col controllo ogni 15 minuti.
 
 name: Pubblica l'app Android
 
@@ -81,6 +84,17 @@ jobs:
         working-directory: android
         run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh tsnet/build.sh
 
+      - name: Configurazione Firebase (notifiche)
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICES_JSON" ]; then
+            echo "::warning::Manca il segreto GOOGLE_SERVICES_JSON: APK senza notifiche istantanee (Firebase)."
+            exit 0
+          fi
+          # Il plugin google-services ferma la compilazione se il file non e' per it.bunkerplex.tv
+          printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json
+
       - name: Compila l'APK
         working-directory: android
         env:
@@ -90,7 +104,7 @@ jobs:
           gradle --no-daemon :app:assembleRelease
           mkdir -p ../out
           cp app/build/outputs/apk/release/app-release.apk ../out/BunkerPlex.apk
-          rm -f keystore/bunkerplex.jks
+          rm -f keystore/bunkerplex.jks app/google-services.json
           ls -l ../out/BunkerPlex.apk
 
       # Release a parte, mai «latest»: quella resta del server (app-tv)

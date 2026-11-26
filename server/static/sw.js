@@ -36,3 +36,23 @@ self.addEventListener('fetch', function (e) {
     });
   }));
 });
+
+// Notifiche di BunkerPlex (Web Push dal servizio account, vedi «Attiva le notifiche»
+// in app.js): arrivano anche con BunkerPlex chiuso. Toccandola si apre BunkerPlex.
+self.addEventListener('push', function (e) {
+  var d = {};
+  try { d = e.data.json(); } catch (x) { d = { title: 'BunkerPlex', body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'BunkerPlex', {
+    body: d.body || '', tag: d.tag || undefined, icon: 'icons/icon-192.png', data: { id: d.id || 0 }
+  }));
+});
+
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].url.indexOf(self.registration.scope) === 0 && 'focus' in list[i]) return list[i].focus();
+    }
+    return self.clients.openWindow(self.registration.scope);
+  }));
+});

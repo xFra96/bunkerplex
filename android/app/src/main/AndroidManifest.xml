@@ -5,7 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Per aggiornarsi da sola con l'APK che sta sul server di casa -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Notifiche sul telefono e sul tablet (nuovi titoli, amici, aggiornamenti), vedi Notices -->
+    <!-- Notifiche sul telefono e sul tablet (nuovi titoli, amici, aggiornamenti), vedi Notices.
+         Firebase Cloud Messaging aggiunge da solo i suoi permessi (INTERNET, WAKE_LOCK, c2dm RECEIVE) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
@@ -40,7 +41,26 @@
             android:exported="false"
             android:theme="@style/PlayerTheme" />
 
-        <!-- Controllo periodico degli avvisi dell'account -->
+        <!-- Avvisi istantanei da Firebase Cloud Messaging (se l'APK ha la configurazione Firebase) -->
+        <service
+            android:name=".NoticePush"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <!-- Firebase si accende solo con «Attiva le notifiche» (mai sulle TV) -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_bp" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="avvisi" />
+
+        <!-- Controllo periodico degli avvisi dell'account, quando FCM non c'e' -->
         <service
             android:name=".NoticeJob"
             android:exported="false"

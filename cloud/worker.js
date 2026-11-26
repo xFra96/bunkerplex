@@ -18,8 +18,10 @@
 // BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
 // con un codice via email (vedi /reset/start). Trigger cron settimanale (es.
 // «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
-// Notifiche su telefoni e tablet: tutto da solo, tabelle e chiavi VAPID nel database
-// (vedi «BunkerPlex Avvisi», /notices e /avvisi).
+// Notifiche su telefoni e tablet: tabelle e chiavi VAPID (PWA) nel database, da sole.
+// FCM_SERVICE_ACCOUNT (facoltativo): chiave JSON dell'account di servizio Firebase,
+// per le notifiche istantanee dell'app Android (vedi docs/notifiche-firebase.md e
+// «Notifiche sui telefoni e tablet», /notices e /avvisi).
 // Server come risorsa (credenziale propria, presenza, GET /servers, gettoni d'accesso
 // firmati, chiave in kv): vedi «Server come risorsa» e docs/architettura.md.
 // Nomi e certificati dei server (SERVER_DOMAIN, CF_ZONE_ID, CF_API_TOKEN, ACME_AGREE,
@@ -1444,19 +1446,25 @@ async function googleRoutes(request, env, url, path, method) {
   return null;
 }
 
-// ---- Notifiche sui telefoni e tablet («BunkerPlex Avvisi»)
+// ---- Notifiche sui telefoni e tablet
 //
 // Gli avvisi di un account (nuovi film ed episodi, aggiornamenti, amicizie) stanno
 // qui, perche' questo servizio si raggiunge da ovunque, anche fuori casa.
 // I server di casa li mandano con POST /notices; le richieste di amicizia nascono
 // gia' qui. Ogni telefono o tablet ha un suo gettone (notice_devices), creato dal
-// server di casa con POST /notices/devices quando si tocca «Attiva le notifiche»:
-//   - iPhone e iPad: una piccola web app su questo indirizzo (/avvisi/<gettone>),
-//     da aggiungere alla schermata Home; riceve le notifiche push del browser
-//     (Web Push con chiavi VAPID, create qui la prima volta e salvate nel database);
-//   - app Android: ogni 15 minuti circa chiede /avvisi/<gettone>/list e mostra
-//     le notifiche nuove (niente Firebase).
-// Le chiavi e i gettoni restano nel database D1: non serve configurare nulla.
+// server di casa (o dalla PWA) con POST /notices/devices quando si tocca «Attiva le notifiche»:
+//   - la PWA di BunkerPlex (iPhone e iPad dalla schermata Home, browser dei PC):
+//     il suo service worker (server/static/sw.js) si iscrive alle notifiche push del
+//     browser (Web Push con chiavi VAPID, create qui la prima volta e salvate nel
+//     database) e manda l'iscrizione a /avvisi/<gettone>/push;
+//   - app Android: Firebase Cloud Messaging. L'app manda il suo gettone FCM a
+//     /avvisi/<gettone>/fcm e qui si spedisce con l'API HTTP v1 di FCM (segreto
+//     FCM_SERVICE_ACCOUNT, la chiave JSON di un account di servizio Firebase).
+//     Senza segreto (o con un APK compilato senza Firebase) l'app chiede
+//     /avvisi/<gettone>/list ogni 15 minuti circa, come prima;
+//   - la vecchia pagina «BP Avvisi» (/avvisi/<gettone>) resta per chi l'aveva gia'.
+// Le chiavi VAPID e i gettoni restano nel database D1: per il Web Push non serve
+// configurare nulla.
 
 const NOTICE_KEEP = 100;        // avvisi tenuti per account
 const NOTICE_DAYS = 30;         // e per quanti giorni al massimo
@@ -1481,6 +1489,9 @@ async function ensureNotices(env) {
   // read: 1 = letto (dalla campanella, da Impostazioni → Notifiche o da BP Avvisi)
   const cols = (await env.DB.prepare('PRAGMA table_info(notices)').all()).results.map((c) => c.name);
   if (!cols.includes('read')) await env.DB.prepare('ALTER TABLE notices ADD COLUMN read INTEGER NOT NULL DEFAULT 0').run();
+  // fcm: il gettone di Firebase Cloud Messaging dell'app Android
+  const dcols = (await env.DB.prepare('PRAGMA table_info(notice_devices)').all()).results.map((c) => c.name);
+  if (!dcols.includes('fcm')) await env.DB.prepare('ALTER TABLE notice_devices ADD COLUMN fcm TEXT').run();
   noticeTables = true;
 }
 
@@ -1573,6 +1584,96 @@ async function sendPush(env, dev, payload) {
   return res.status;
 }
 
+// ---- Firebase Cloud Messaging (app Android)
+//
+// Segreto FCM_SERVICE_ACCOUNT: il file JSON della chiave di un account di servizio
+// del progetto Firebase (Impostazioni progetto → Account di servizio → Genera nuova
+// chiave privata). Da li' si firma un JWT (RS256) e Google da' un gettone d'accesso
+// valido un'ora, tenuto in memoria finche' non sta per scadere.
+
+let fcmAuth = null;   // { key: segreto da cui viene, token, exp }
+
+function fcmAccount(env) {
+  const raw = env.FCM_SERVICE_ACCOUNT;
+  if (!raw) return null;
+  try {
+    const sa = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return sa && sa.project_id && sa.client_email && sa.private_key ? sa : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function pemDer(pem) {
+  return unb64u(String(pem).replace(/-----[^-]+-----/g, '').replace(/\s+/g, '').replace(/\+/g, '-').replace(/\//g, '_'));
+}
+
+async function fcmAccessToken(env, sa) {
+  if (fcmAuth && fcmAuth.key === sa.private_key && fcmAuth.exp > now() + 120) return fcmAuth.token;
+  const iat = Math.floor(now());
+  const head = b64u(te.encode(JSON.stringify({ alg: 'RS256', typ: 'JWT' })));
+  const claims = b64u(te.encode(JSON.stringify({
+    iss: sa.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: sa.token_uri || 'https://oauth2.googleapis.com/token', iat, exp: iat + 3600
+  })));
+  const key = await crypto.subtle.importKey('pkcs8', pemDer(sa.private_key), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false, ['sign']);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, te.encode(head + '.' + claims));
+  const res = await fetch(sa.token_uri || 'https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=' + encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer') +
+      '&assertion=' + head + '.' + claims + '.' + b64u(sig)
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || !j.access_token) throw new Error('Google non da\' il gettone per FCM (' + res.status + ')');
+  fcmAuth = { key: sa.private_key, token: j.access_token, exp: iat + Math.min(Number(j.expires_in) || 3600, 3600) };
+  return fcmAuth.token;
+}
+
+// Un messaggio "data" ad alta priorita': Android sveglia l'app anche in risparmio
+// energetico e la notifica la costruisce l'app (canale «avvisi», icona di BunkerPlex).
+// Restituisce lo stato HTTP di FCM (0 = FCM non configurato qui).
+async function sendFcm(env, dev, payload) {
+  const sa = fcmAccount(env);
+  if (!sa || !dev.fcm) return 0;
+  const data = {};
+  for (const [k, v] of Object.entries(payload)) if (v != null) data[k] = String(v);
+  const send = async () => fetch('https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(sa.project_id) + '/messages:send', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + await fcmAccessToken(env, sa), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: { token: dev.fcm, data, android: { priority: 'high', ttl: '86400s' } } })
+  });
+  let res = await send();
+  if (res.status === 401) {          // gettone d'accesso revocato o scaduto prima del tempo: uno nuovo
+    fcmAuth = null;
+    res = await send();
+  }
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    const codes = ((j.error && j.error.details) || []).map((d) => d && d.errorCode);
+    // App disinstallata, gettone scaduto o di un altro progetto Firebase: non si riprova piu'
+    if (res.status === 404 || codes.includes('UNREGISTERED') || codes.includes('SENDER_ID_MISMATCH')) {
+      await env.DB.prepare('UPDATE notice_devices SET fcm = NULL WHERE token_hash = ? AND fcm = ?')
+        .bind(dev.token_hash, dev.fcm).run();
+    }
+  }
+  return res.status;
+}
+
+// Manda un avviso a un dispositivo per tutte le strade che ha (Web Push e/o FCM).
+// Restituisce il miglior stato HTTP ottenuto (0 = nessuna strada).
+async function pushDevice(env, dev, payload) {
+  let best = 0;
+  if (dev.fcm) {
+    try { const c = await sendFcm(env, dev, payload); if (c && (!best || c < best)) best = c; } catch (e) { best = best || 502; }
+  }
+  if (dev.endpoint) {
+    try { const c = await sendPush(env, dev, payload); if (!best || c < best) best = c; } catch (e) { best = best || 502; }
+  }
+  return best;
+}
+
 async function noticePrefs(env, uid) {
   const v = await env.DB.prepare('SELECT v FROM notice_prefs WHERE user_id = ?').bind(uid).first('v');
   let p = {};
@@ -1584,7 +1685,8 @@ async function noticePrefs(env, uid) {
 
 const cleanText = (raw, max) => String(raw || '').replace(/[\u0000-\u001f]+/g, ' ').trim().slice(0, max);
 
-// Un avviso a un account: si salva e parte subito verso i suoi iPhone/iPad iscritti
+// Un avviso a un account: si salva e parte subito verso i suoi dispositivi iscritti
+// (Web Push per la PWA e BP Avvisi, FCM per l'app Android)
 async function notify(env, uid, kind, title, text, from) {
   await ensureNotices(env);
   if (!(await noticePrefs(env, uid))[kind]) return 0;
@@ -1593,13 +1695,13 @@ async function notify(env, uid, kind, title, text, from) {
     .bind(uid, kind, title, text, t, from || null).run()).meta.last_row_id;
   await env.DB.prepare('DELETE FROM notices WHERE user_id = ? AND (t < ? OR id <= (SELECT id FROM notices WHERE user_id = ? ' +
     'ORDER BY id DESC LIMIT 1 OFFSET ?))').bind(uid, t - NOTICE_DAYS * 86400, uid, NOTICE_KEEP).run();
-  const devs = (await env.DB.prepare('SELECT token_hash, endpoint, p256dh, auth FROM notice_devices ' +
-    'WHERE user_id = ? AND endpoint IS NOT NULL').bind(uid).all()).results;
-  for (const d of devs) {
-    try {
-      await sendPush(env, d, { id, title, body: text, kind, tag: 'bp-' + kind + '-' + id });
-    } catch (e) { /* il telefono la vedra' comunque nella lista degli avvisi */ }
-  }
+  const fcm = !!fcmAccount(env);
+  const devs = (await env.DB.prepare('SELECT token_hash, endpoint, p256dh, auth, fcm FROM notice_devices ' +
+    'WHERE user_id = ? AND (endpoint IS NOT NULL OR fcm IS NOT NULL)').bind(uid).all()).results;
+  const payload = { id, title, body: text, kind, tag: 'bp-' + kind + '-' + id, t };
+  // In parallelo: un telefono lento non fa aspettare gli altri. Gli errori non contano:
+  // il telefono vedra' comunque l'avviso nella lista (campanella, controllo dell'app).
+  await Promise.all(devs.filter((d) => d.endpoint || fcm).map((d) => pushDevice(env, d, payload).catch(() => 0)));
   return id;
 }
 
@@ -1697,8 +1799,28 @@ async function noticeRoutes(request, env, url, path, method) {
     return new Response(unb64u(ICON_PNG.replace(/\+/g, '-').replace(/\//g, '_')), {
       headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=604800' } });
   }
-  const m = /^\/avvisi\/([0-9a-f]{64})(\/manifest\.json|\/list|\/push|\/test|\/read)?$/.exec(path);
+  const m = /^\/avvisi\/([0-9a-f]{64})(\/manifest\.json|\/list|\/push|\/fcm|\/test|\/read)?$/.exec(path);
   if (!m) return null;
+  // Le chiamate (non la pagina): le usano anche la PWA dei server di casa (altro indirizzo)
+  // e l'app Android. Vale solo il gettone nell'indirizzo, niente cookie: CORS aperto.
+  if (m[2] && m[2] !== '/manifest.json') {
+    const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, DELETE',
+      'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400' };
+    if (method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    let res;
+    try {
+      res = await noticeDeviceCall(request, env, url, m, method);
+    } catch (e) {
+      if (!(e instanceof Reply)) throw e;
+      res = e.response;
+    }
+    for (const [k, v] of Object.entries(cors)) res.headers.set(k, v);
+    return res;
+  }
+  return noticeDeviceCall(request, env, url, m, method);
+}
+
+async function noticeDeviceCall(request, env, url, m, method) {
   const dev = await noticeDevice(env, m[1]);
   if (!dev) {
     if (!m[2]) return page('Avvisi', '<h1>Collegamento non più valido</h1><p>Apri BunkerPlex e tocca di nuovo «Attiva le notifiche».</p>', 404);
@@ -1720,7 +1842,7 @@ async function noticeRoutes(request, env, url, path, method) {
     const since = Math.max(0, Number(url.searchParams.get('since') || 0) || 0);
     const rows = (await env.DB.prepare('SELECT id, kind, title, body, t, read FROM notices WHERE user_id = ? AND id > ? AND t >= ? ' +
       'ORDER BY id DESC LIMIT 30').bind(dev.user_id, since, dev.created - 60).all()).results;
-    return json({ notices: rows.map(noticeJson), push: !!dev.endpoint });
+    return json({ notices: rows.map(noticeJson), push: !!dev.endpoint, fcm: !!(dev.fcm && fcmAccount(env)) });
   }
   if (m[2] === '/push' && method === 'POST') {
     const b = await body(request);
@@ -1728,6 +1850,9 @@ async function noticeRoutes(request, env, url, path, method) {
     const keys = b.keys && typeof b.keys === 'object' ? b.keys : {};
     if (!/^https:\/\/[^\s]{8,800}$/.test(ep) || !/^[A-Za-z0-9_-]{80,100}$/.test(String(keys.p256dh || '')) ||
         !/^[A-Za-z0-9_-]{16,30}$/.test(String(keys.auth || ''))) fail(400, 'Iscrizione non valida');
+    // Lo stesso browser iscritto di nuovo (es. «Attiva» toccato due volte): l'avviso arriva una volta sola
+    await env.DB.prepare('UPDATE notice_devices SET endpoint = NULL, p256dh = NULL, auth = NULL WHERE endpoint = ? AND token_hash != ?')
+      .bind(ep, dev.token_hash).run();
     await env.DB.prepare('UPDATE notice_devices SET endpoint = ?, p256dh = ?, auth = ? WHERE token_hash = ?')
       .bind(ep, keys.p256dh, keys.auth, dev.token_hash).run();
     return json({ ok: true });
@@ -1737,13 +1862,28 @@ async function noticeRoutes(request, env, url, path, method) {
       .bind(dev.token_hash).run();
     return json({ ok: true });
   }
+  // L'app Android manda il suo gettone FCM (anche quando Firebase lo cambia).
+  // fcm: false = qui FCM non e' configurato, l'app continua a controllare da sola.
+  if (m[2] === '/fcm' && method === 'POST') {
+    const b = await body(request);
+    const tok = String(b.token || '');
+    if (!/^[A-Za-z0-9_:.-]{20,1024}$/.test(tok)) fail(400, 'Gettone FCM non valido');
+    // Lo stesso telefono iscritto due volte (es. account cambiato): resta solo l'ultimo
+    await env.DB.prepare('UPDATE notice_devices SET fcm = NULL WHERE fcm = ? AND token_hash != ?').bind(tok, dev.token_hash).run();
+    await env.DB.prepare('UPDATE notice_devices SET fcm = ? WHERE token_hash = ?').bind(tok, dev.token_hash).run();
+    return json({ ok: true, fcm: !!fcmAccount(env) });
+  }
+  if (m[2] === '/fcm' && method === 'DELETE') {
+    await env.DB.prepare('UPDATE notice_devices SET fcm = NULL WHERE token_hash = ?').bind(dev.token_hash).run();
+    return json({ ok: true });
+  }
   if (m[2] === '/read' && method === 'POST') {
     return json({ unread: await markRead(env, dev.user_id, await body(request)) });
   }
   if (m[2] === '/test' && method === 'POST') {
-    if (!dev.endpoint) fail(409, 'Prima attiva le notifiche');
-    const code = await sendPush(env, dev, { title: 'BunkerPlex', body: 'Le notifiche funzionano su questo dispositivo.', tag: 'bp-test' });
-    if (code >= 300) fail(502, 'Il servizio di notifiche del telefono ha risposto ' + code);
+    if (!dev.endpoint && !(dev.fcm && fcmAccount(env))) fail(409, 'Prima attiva le notifiche');
+    const code = await pushDevice(env, dev, { title: 'BunkerPlex', body: 'Le notifiche funzionano su questo dispositivo.', tag: 'bp-test' });
+    if (!code || code >= 300) fail(502, 'Il servizio di notifiche del telefono ha risposto ' + code);
     return json({ ok: true });
   }
   fail(405, 'Richiesta non valida');
@@ -1789,9 +1929,11 @@ async function noticeAccountRoutes(request, env, url, path, method, user) {
   }
   // I telefoni e tablet dell'account
   if (path === '/notices/devices' && method === 'GET') {
-    const rows = (await env.DB.prepare('SELECT rowid AS id, label, kind, created, last_seen, endpoint IS NOT NULL AS push ' +
-      'FROM notice_devices WHERE user_id = ? ORDER BY created DESC').bind(user.id).all()).results;
-    return json({ devices: rows.map((r) => ({ ...r, push: !!r.push })) });
+    // push: arrivano subito (Web Push, o FCM se qui e' configurato); fcm: con Firebase
+    const fcm = !!fcmAccount(env);
+    const rows = (await env.DB.prepare('SELECT rowid AS id, label, kind, created, last_seen, endpoint IS NOT NULL AS web, ' +
+      'fcm IS NOT NULL AS fcm FROM notice_devices WHERE user_id = ? ORDER BY created DESC').bind(user.id).all()).results;
+    return json({ devices: rows.map(({ web, fcm: f, ...r }) => ({ ...r, push: !!web || (fcm && !!f), fcm: fcm && !!f })) });
   }
   if (path === '/notices/devices' && method === 'POST') {
     const b = await body(request);
@@ -1805,7 +1947,8 @@ async function noticeAccountRoutes(request, env, url, path, method, user) {
     const token = randomHex(32);
     await env.DB.prepare('INSERT INTO notice_devices(token_hash, user_id, label, kind, open_url, created) VALUES(?,?,?,?,?,?)')
       .bind(await sha256(token), user.id, cleanText(b.label, 60) || 'Dispositivo', kind, open, now()).run();
-    return json({ token, url: url.origin + '/avvisi/' + token });
+    // key: la chiave VAPID pubblica, per l'iscrizione Web Push della PWA (service worker suo)
+    return json({ token, url: url.origin + '/avvisi/' + token, key: (await vapidKeys(env)).pub });
   }
   const dm = /^\/notices\/devices\/(\d+)$/.exec(path);
   if (dm && method === 'DELETE') {

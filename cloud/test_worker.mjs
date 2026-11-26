@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Il Worker e' un modulo ES in un file .js: se ne fa una copia .mjs da importare
@@ -27,7 +27,10 @@ function fakeD1() {
       return col ? r[col] : { ...r };
     },
     all: async () => ({ results: db.prepare(sql).all(...args).map((r) => ({ ...r })) }),
-    run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } })
+    run: async () => {
+      const r = db.prepare(sql).run(...args);
+      return { meta: { changes: Number(r.changes), last_row_id: Number(r.lastInsertRowid) } };
+    }
   });
   return {
     raw: db,
@@ -421,4 +424,144 @@ test("aspetto del server: icona e immagine dal proprietario, l'amico le vede, gl
   const off = await t.call('PUT', `/servers/${SID}/look`, { image: '' }, anna);
   assert.equal(off.body.look.image, '');
   assert.equal(off.body.look.icon, 'film');
+});
+
+// ---- Notifiche: app Android con Firebase Cloud Messaging (Google finto)
+
+function fakeFcm() {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const sa = { type: 'service_account', project_id: 'bp-test', client_email: 'fcm@bp-test.iam.gserviceaccount.com',
+    private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }), token_uri: 'https://oauth2.googleapis.com/token' };
+  const st = { oauth: 0, sent: [], reply: () => new Response(JSON.stringify({ name: 'projects/bp-test/messages/1' })) };
+  const fetch = async (input, init = {}) => {
+    const url = String(input.url || input);
+    if (url === 'https://oauth2.googleapis.com/token') {
+      st.oauth++;
+      const form = new URLSearchParams(init.body);
+      assert.equal(form.get('grant_type'), 'urn:ietf:params:oauth:grant-type:jwt-bearer');
+      const [h, c, sig] = form.get('assertion').split('.');
+      assert.ok(verify('sha256', Buffer.from(h + '.' + c), publicKey, Buffer.from(sig, 'base64url')), 'firma JWT');
+      const claims = JSON.parse(Buffer.from(c, 'base64url').toString());
+      assert.equal(claims.iss, sa.client_email);
+      assert.equal(claims.scope, 'https://www.googleapis.com/auth/firebase.messaging');
+      return new Response(JSON.stringify({ access_token: 'ya29.finto', expires_in: 3599 }));
+    }
+    if (url === 'https://fcm.googleapis.com/v1/projects/bp-test/messages:send') {
+      assert.equal(init.headers.Authorization, 'Bearer ya29.finto');
+      const msg = JSON.parse(init.body).message;
+      st.sent.push(msg);
+      return st.reply(msg);
+    }
+    return new Response('{}', { status: 404 });
+  };
+  return { sa, st, fetch };
+}
+
+const FCM_TOK = 'fA1b2C3d4E5:APA91b' + 'x'.repeat(140);
+
+async function noticeDev(t, name, kind = 'android') {
+  const tok = await t.login(name, 'app');
+  const r = await t.call('POST', '/notices/devices', { kind, label: 'Pixel' }, tok);
+  assert.equal(r.status, 200);
+  return { acc: tok, dev: r.body.token, key: r.body.key };
+}
+
+test("notifiche: l'app Android con FCM riceve subito, ad alta priorita'", async () => {
+  const t = await twoFriends();
+  const net = fakeFcm();
+  t.env.FCM_SERVICE_ACCOUNT = JSON.stringify(net.sa);
+  const anna = await noticeDev(t, 'anna');
+  assert.match(anna.key, /^[A-Za-z0-9_-]{80,90}$/);      // chiave VAPID per la PWA
+  assert.equal((await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: 'corto' })).status, 400);
+  const reg = await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK });
+  assert.deepEqual(reg.body, { ok: true, fcm: true });
+
+  await withNet(net, async () => {
+    const r = await t.call('POST', '/notices', { title: 'Nuovo film', body: 'Dune' }, await t.login('anna', 'server'));
+    assert.equal(r.body.sent, 1);
+    const r2 = await t.call('POST', '/notices', { kind: 'update', title: 'Aggiornamento', body: 'v2' }, await t.login('anna', 'server'));
+    assert.equal(r2.body.sent, 1);
+  });
+  assert.equal(net.st.oauth, 1, 'il gettone di Google si riusa');
+  assert.equal(net.st.sent.length, 2);
+  const m = net.st.sent[0];
+  assert.equal(m.token, FCM_TOK);
+  assert.equal(m.android.priority, 'high');
+  assert.equal(m.notification, undefined, "messaggio data: la notifica la fa l'app");
+  assert.equal(m.data.title, 'Nuovo film');
+  assert.equal(m.data.body, 'Dune');
+  assert.equal(m.data.kind, 'titles');
+  assert.match(m.data.id, /^\d+$/);
+  assert.ok(Object.values(m.data).every((v) => typeof v === 'string'));
+
+  const devs = await t.call('GET', '/notices/devices', undefined, anna.acc);
+  assert.deepEqual([devs.body.devices[0].push, devs.body.devices[0].fcm], [true, true]);
+  const list = await t.call('GET', `/avvisi/${anna.dev}/list`);
+  assert.equal(list.body.fcm, true);
+  assert.equal(list.body.notices.length, 2);
+
+  // Prova dalla pagina: passa da FCM
+  await withNet(net, async () => assert.equal((await t.call('POST', `/avvisi/${anna.dev}/test`)).status, 200));
+  assert.equal(net.st.sent.length, 3);
+});
+
+test('notifiche: il gettone FCM che Google rifiuta (app tolta) si dimentica', async () => {
+  const t = await twoFriends();
+  const net = fakeFcm();
+  t.env.FCM_SERVICE_ACCOUNT = JSON.stringify(net.sa);
+  const anna = await noticeDev(t, 'anna');
+  await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK });
+  net.st.reply = () => new Response(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND',
+    details: [{ '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode: 'UNREGISTERED' }] } }), { status: 404 });
+  await withNet(net, () => t.call('POST', '/notices', { title: 'Nuovo film' }, anna.acc));
+  assert.equal(t.env.DB.raw.prepare('SELECT fcm FROM notice_devices').get().fcm, null);
+  // Un errore qualsiasi (es. 500 di Google) invece non lo toglie
+  await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK });
+  net.st.reply = () => new Response('{"error":{"code":500}}', { status: 500 });
+  await withNet(net, () => t.call('POST', '/notices', { title: 'Altro film' }, anna.acc));
+  assert.equal(t.env.DB.raw.prepare('SELECT fcm FROM notice_devices').get().fcm, FCM_TOK);
+  // Lo stesso telefono iscritto di nuovo (nuovo gettone del dispositivo): l'avviso arriva una volta
+  const again = await noticeDev(t, 'anna');
+  await t.call('POST', `/avvisi/${again.dev}/fcm`, { token: FCM_TOK });
+  assert.equal(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM notice_devices WHERE fcm IS NOT NULL').get().n, 1);
+});
+
+test("notifiche: senza FCM_SERVICE_ACCOUNT non si rompe niente (l'app controlla da sola)", async () => {
+  const t = await twoFriends();
+  const anna = await noticeDev(t, 'anna');
+  const reg = await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK });
+  assert.deepEqual(reg.body, { ok: true, fcm: false });
+  let calls = 0;
+  await withNet({ fetch: async () => { calls++; return new Response('{}'); } }, async () => {
+    assert.equal((await t.call('POST', '/notices', { title: 'Nuovo film' }, anna.acc)).body.sent, 1);
+  });
+  assert.equal(calls, 0);
+  const devs = await t.call('GET', '/notices/devices', undefined, anna.acc);
+  assert.deepEqual([devs.body.devices[0].push, devs.body.devices[0].fcm], [false, false]);
+  assert.equal((await t.call('GET', `/avvisi/${anna.dev}/list`)).body.notices.length, 1);
+  assert.equal((await t.call('POST', `/avvisi/${anna.dev}/test`)).status, 409);
+  // Segreto rovinato: come se mancasse
+  t.env.FCM_SERVICE_ACCOUNT = '{non json';
+  assert.equal((await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK })).body.fcm, false);
+});
+
+test('notifiche: le chiamate del dispositivo rispondono anche alla PWA di un server di casa (CORS)', async () => {
+  const t = await twoFriends();
+  const anna = await noticeDev(t, 'anna', 'web');
+  const pre = await worker.fetch(new Request(`https://acc.test/avvisi/${anna.dev}/push`, { method: 'OPTIONS',
+    headers: { Origin: 'https://192.168.1.5:32501', 'Access-Control-Request-Method': 'POST' } }), t.env);
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('Access-Control-Allow-Origin'), '*');
+  const sub = { endpoint: 'https://push.example/abc', keys: { p256dh: 'B'.repeat(87), auth: 'a'.repeat(22) } };
+  const ok = await worker.fetch(new Request(`https://acc.test/avvisi/${anna.dev}/push`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sub) }), t.env);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('Access-Control-Allow-Origin'), '*');
+  const bad = await worker.fetch(new Request(`https://acc.test/avvisi/${'0'.repeat(64)}/list`), t.env);
+  assert.equal(bad.status, 401);
+  assert.equal(bad.headers.get('Access-Control-Allow-Origin'), '*');
+  // Stesso browser iscritto con un altro gettone: resta solo l'ultimo
+  const again = await noticeDev(t, 'anna', 'web');
+  assert.equal((await t.call('POST', `/avvisi/${again.dev}/push`, sub)).status, 200);
+  assert.equal(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM notice_devices WHERE endpoint IS NOT NULL').get().n, 1);
 });

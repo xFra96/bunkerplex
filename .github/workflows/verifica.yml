@@ -40,6 +40,27 @@ jobs:
         working-directory: android
         run: gradle --no-daemon assembleDebug
 
+      # App del telefono con Firebase (notifiche istantanee), con una configurazione finta:
+      # la vera arriva solo nella release dal segreto GOOGLE_SERVICES_JSON
+      - name: Compila l'app del telefono con Firebase
+        working-directory: android
+        run: |
+          cat > app/google-services.json <<'EOF'
+          {
+            "project_info": { "project_number": "123456789012", "project_id": "bunkerplex-prova", "storage_bucket": "bunkerplex-prova.appspot.com" },
+            "client": [{
+              "client_info": { "mobilesdk_app_id": "1:123456789012:android:0123456789abcdef", "android_client_info": { "package_name": "it.bunkerplex.tv" } },
+              "oauth_client": [],
+              "api_key": [{ "current_key": "AIzaSyA-prova-prova-prova-prova-prova0" }],
+              "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+            }],
+            "configuration_version": "1"
+          }
+          EOF
+          gradle --no-daemon :app:assembleDebug
+          grep -rq google_app_id app/build/generated/res/
+          rm app/google-services.json
+
       # App TV nativa: anche la versione ottimizzata (R8), con una chiave usa e getta
       - name: Compila l'app TV nativa ottimizzata
         working-directory: android
