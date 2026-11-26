@@ -2965,11 +2965,12 @@ function settingsShell(area, title, sub, body) {
     return '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
       (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : stile(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
-  // Telefono e TV: niente menu laterale, si entra in un'area e si torna con «‹ Impostazioni»
-  // (o il tasto Indietro), come nelle impostazioni dei telefoni e di Android TV.
-  // PC: menu a sinistra e contenuto a destra. La Panoramica non e' una voce del menu.
-  return '<div class="page settings"><div class="sgrid' + (TVLOOK ? ' nonav' : '') + '">' +
-    (TVLOOK ? '' : '<nav class="scol" aria-label="Aree delle impostazioni">' + nav + '</nav>') +
+  // TV e PC: due colonne, a sinistra l'elenco delle aree e a destra l'area aperta (il
+  // fuoco sta sempre nell'una o nell'altra, vedi settingsMove). Telefono: solo l'area,
+  // con «‹ Impostazioni» in alto per tornare all'elenco.
+  if (area !== 'people') cache.settingsArea = area;
+  return '<div class="page settings"><div class="sgrid">' +
+    '<nav class="scol" aria-label="Aree delle impostazioni">' + nav + '</nav>' +
     // Persone si apre da Account: si torna li'
     '<div class="smain"><a class="sup f" href="' + (area === 'people' ? '#/settings/account' : '#/settings') + '" data-key="sup">' + IC.back +
       '<span>' + (area === 'people' ? 'Account' : 'Impostazioni') + '</span></a>' +
@@ -3312,7 +3313,20 @@ function srowHtml(r, first) {
     inner + CHEVRON + '</a>';
 }
 
+// Telefono: le due colonne non ci stanno, l'elenco e' una pagina a se'
+function settingsPhone() {
+  return !TVLOOK && !!(window.matchMedia && matchMedia('(max-width: 720px)').matches);
+}
+
 async function settings() {
+  // TV e PC: niente pagina iniziale, subito le due colonne sull'ultima area aperta
+  if (!settingsPhone()) {
+    var areas = settingsAreas();
+    var last = cache.settingsArea;
+    if (!areas.some(function (a) { return a[0] === last; })) last = areas.length ? areas[0][0] : 'device';
+    location.replace('#/settings/' + last);
+    return '';
+  }
   var res = await settingsData();
   var rows = settingsRows(res[0], res[2], res[3]);
   var byArea = {};
@@ -3737,7 +3751,7 @@ function googlePanel(u) {
 // ---------------------------------------------------------------- Amministrazione
 // Due ruoli per tutta BunkerPlex: base (guarda e gestisce le sue cose) e
 // amministratore (gestisce tutto). Amministrazione ha cinque schede.
-var ADMIN_TABS = [['home', 'Panoramica'], ['users', 'Utenti'], ['access', 'Accessi'], ['net', 'Server e rete'], ['server', 'Questo server']];
+var ADMIN_TABS = [['home', 'Riepilogo'], ['users', 'Utenti'], ['access', 'Accessi'], ['net', 'Server e rete'], ['server', 'Questo server']];
 
 function when(sec) {
   return sec ? new Date(sec * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
@@ -6630,6 +6644,9 @@ function byKey(key) {
 }
 
 function focusView() {
+  // Nelle Impostazioni dalla barra dell'app si arriva sulla voce aperta dell'elenco
+  var sc = settingsCols();
+  if (sc) { var it = settingsCurrent(sc.col); if (it) { it.focus(); return; } }
   var el = byKey(focusMemory[currentHash]);
   if (!el || !view.contains(el)) el = view.querySelector('[data-autofocus]') || view.querySelector('.f');
   if (el) el.focus();
@@ -6640,8 +6657,89 @@ function focusRail() {
   if (el) el.focus();
 }
 
+// ---- Impostazioni a due colonne (TV e PC): il fuoco sta nell'elenco delle aree o
+// nell'area aperta. Dall'elenco OK o destra entra nell'area; dall'area sinistra (al
+// bordo) o Indietro torna alla voce aperta; dall'elenco sinistra o Indietro va alla
+// barra dell'app. Su e giu' restano nella colonna.
+var settingsEnter = false;
+
+function settingsCols() {
+  var col = view.querySelector('.settings .scol'), main = view.querySelector('.settings .smain');
+  return col && main && isVisible(col) ? { col: col, main: main } : null;
+}
+
+function settingsFirst(main) {
+  var list = main.querySelectorAll('.f:not(.sup)');
+  for (var i = 0; i < list.length; i++) if (isVisible(list[i]) && !list[i].disabled) return list[i];
+  return null;
+}
+
+function settingsCurrent(col) {
+  return col.querySelector('.snav.on') || col.querySelector('.snav');
+}
+
+// Entra nell'area di una voce dell'elenco: se e' gia' aperta ci va il fuoco, se no si apre
+function settingsOpen(item) {
+  var c = settingsCols();
+  if (!c) return;
+  if (item.classList.contains('on')) {
+    var f = settingsFirst(c.main);
+    if (f) { f.focus(); scrollToEl(f); }
+    return;
+  }
+  settingsEnter = true;
+  location.hash = item.getAttribute('href');
+}
+
+// La piu' vicina nella direzione, tra quelle di una colonna
+function nearestIn(scope, cur, dir) {
+  var a = cur.getBoundingClientRect(), best = null, bestD = Infinity;
+  Array.prototype.forEach.call(scope.querySelectorAll('.f'), function (el) {
+    if (el === cur || !isVisible(el) || el.disabled || el.classList.contains('sup')) return;
+    var b = el.getBoundingClientRect();
+    var ok = dir === 'up' ? b.bottom <= a.top + 2 : dir === 'down' ? b.top >= a.bottom - 2
+      : dir === 'left' ? b.right <= a.left + 2 && b.bottom > a.top && b.top < a.bottom
+      : b.left >= a.right - 2 && b.bottom > a.top && b.top < a.bottom;
+    if (!ok) return;
+    var dx = (b.left + b.width / 2) - (a.left + a.width / 2), dy = (b.top + b.height / 2) - (a.top + a.height / 2);
+    var d = (dir === 'up' || dir === 'down') ? Math.abs(dy) * 1000 + Math.abs(dx) : Math.abs(dx) * 1000 + Math.abs(dy);
+    if (d < bestD) { bestD = d; best = el; }
+  });
+  return best;
+}
+
+function settingsMove(cur, dir) {
+  var c = settingsCols();
+  if (!c || !modal.hidden) return false;
+  var inCol = c.col.contains(cur), inMain = c.main.contains(cur);
+  if (!inCol && !inMain) return false;
+  if (inCol) {
+    if (dir === 'right') { settingsOpen(cur); return true; }
+    if (dir === 'left') { focusRail(); return true; }
+  } else if (dir === 'left') {
+    var l = nearestIn(c.main, cur, 'left');
+    var back = l || settingsCurrent(c.col);
+    if (back) back.focus();
+    return true;
+  }
+  var next = nearestIn(inCol ? c.col : c.main, cur, dir);
+  if (next) { next.focus(); scrollToEl(next); }
+  return true;
+}
+
+// Indietro nelle Impostazioni: dall'area all'elenco, dall'elenco alla barra dell'app
+function settingsBack() {
+  var c = settingsCols();
+  var cur = document.activeElement;
+  if (!c || !cur || !modal.hidden) return false;
+  if (c.main.contains(cur)) { var it = settingsCurrent(c.col); if (it) { it.focus(); return true; } }
+  if (c.col.contains(cur)) { focusRail(); return true; }
+  return false;
+}
+
 function move(dir) {
   var cur = document.activeElement;
+  if (cur && settingsMove(cur, dir)) return;
   var inModal = !modal.hidden;
   if (!cur || !cur.classList || !cur.classList.contains('f') || (inModal && !modal.contains(cur))) {
     if (inModal) { var first = modal.querySelector('.f'); if (first) first.focus(); }
@@ -6861,6 +6959,12 @@ document.addEventListener('keydown', function (e) {
       return;
     }
     var a = document.activeElement;
+    // OK su una voce dell'elenco delle Impostazioni: si entra nell'area (fuoco a destra)
+    if (a && a.classList && a.classList.contains('snav') && modal.hidden && settingsCols()) {
+      e.preventDefault();
+      if (!e.repeat) settingsOpen(a);
+      return;
+    }
     if (a && a.classList && a.classList.contains('f')) {
       e.preventDefault();
       if (modal.hidden && a.classList.contains('card') && cardData[a.getAttribute('data-key')]) {
@@ -6884,6 +6988,7 @@ document.addEventListener('keydown', function (e) {
   if (key === 'Escape' || (key === 'Backspace' && !typing)) {
     e.preventDefault();
     if (closeModal()) return;
+    if (settingsBack()) return;
     if (rail.contains(document.activeElement) || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#activity'))) { focusView(); return; }
     if (currentHash !== '#/home') history.back();
   }
@@ -7216,6 +7321,11 @@ async function render() {
   if (el && !view.contains(el)) el = null;
   // Nelle Impostazioni il primo fuoco va al contenuto, non al menu laterale ne' a «‹ Impostazioni»
   if (!el && !player) el = view.querySelector('[data-autofocus]') || view.querySelector('.f:not(.sup):not(.snav)') || view.querySelector('.f') || rail.querySelector('.railitem.on');
+  // Impostazioni a due colonne: aperta un'area il fuoco resta sull'elenco (sulla sua voce),
+  // o va nel contenuto se ci si e' entrati con OK o freccia destra
+  var sc = !samePage && !player ? settingsCols() : null;
+  if (sc) el = (settingsEnter && settingsFirst(sc.main)) || settingsCurrent(sc.col);
+  if (!samePage) settingsEnter = false;
   if (samePage && hadFocusInRail) el = null;   // un aggiornamento in sottofondo non sposta chi sta usando il menu
   if (kb) {
     if (!key && !samePage) window.scrollTo(0, 0);
@@ -7237,6 +7347,7 @@ setTimeout(castPoll, 1500);
 window.fpBack = function () {
   if (closeModal()) return true;
   if (player && player.leaveRow && player.leaveRow()) return true;   // Indietro esce dai comandi del video
+  if (!player && settingsBack()) return true;                         // Impostazioni: area → elenco → barra
   // Dalla Home Indietro chiude l'app: prima si chiede conferma (serve un'app che
   // sappia chiudersi su richiesta; con una versione vecchia si esce come prima)
   if (!player && currentHash === '#/home' && APP && typeof tvApp.exit === 'function') {
