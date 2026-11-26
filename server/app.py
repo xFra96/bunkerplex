@@ -3661,8 +3661,8 @@ def auth_state():
                         # «Chi guarda?» dopo il login: i profili dell'account e quello scelto qui
                         watchers=profiles_of(con, me), watcher=u.get("profile"), kids=bool(u.get("kids")),
                         profiles_cloud=linked)
-        if user["kids"]:
-            user["manager"] = False
+            if user["kids"]:
+                user["manager"] = False
     finally:
         con.close()
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,

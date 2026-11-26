@@ -158,6 +158,13 @@ class Profili(unittest.TestCase):
         app.sync_profiles(self.uid, "t" * 64)
         self.assertIsNone(app.session_user(session)["profile"])
 
+    def test_stato_senza_nessuno_entrato(self):
+        tok = app.CURRENT.set(None)
+        try:
+            self.assertIsNone(app.auth_state()["user"])
+        finally:
+            app.CURRENT.reset(tok)
+
     def test_gettone_con_il_profilo_scelto(self):
         self.cloud.profiles.append({"id": 301, "name": "Leo", "main": False, "avatar": "", "color": "",
                                     "kids": False, "pin": True})
