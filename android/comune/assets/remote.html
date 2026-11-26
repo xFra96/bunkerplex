@@ -958,6 +958,8 @@ function render() {
   touched = false;
   var r = route();
   var page = r[0] || 'ask';
+  // Sulla TV non si scrive la password: si entra dal telefono (il QR dell'app TV)
+  if (page === 'login' && TV && app && app.phoneLogin) { app.phoneLogin(); return; }
   if (page === 'login') { show(loginPage()); var u = document.getElementById('u'); if (u) u.focus(); return; }
   if (!account()) { if (page === 'ask') show(askPage()); else go('login'); return; }
   if (page === 'ask' || page === 'friends') { picker(); return; }

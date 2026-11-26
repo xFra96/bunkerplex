@@ -324,8 +324,22 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
 
 **App TV** (`android/tv`, `Access.kt` sezione «Con l'account»):
 - All'apertura: con l'account → elenco dei server del servizio (e si torna da soli sul server di prima);
-  senza → «Entra con il tuo account» (nome o email e password, oppure Google con indirizzo e codice da
-  aprire sul telefono) o «Collega un server senza account» (la ricerca di prima). Chi aveva già un server
+  senza → «Entra dal telefono»: QR e codice. **Sulla TV non si scrive mai la password.** La TV chiede
+  `POST /tv/start` (codice di 8 caratteri + segreto `poll`, 10 minuti), mostra il QR di
+  `<servizio>/#/tv/<codice>` (disegnato nell'app con zxing) e l'indirizzo corto `<servizio>/tv` col codice
+  da scrivere a mano. Sul telefono la PWA fa entrare come sempre (password, Google, link via email,
+  password provvisoria), poi «Collega come …» (`POST /tv/<codice>` con l'account). La TV chiede
+  `POST /tv/poll` ogni 2,5 s e riceve il gettone (sessione `tv`, una volta sola). Anche remote.html e
+  l'interfaccia web in modalità TV mandano al QR invece di chiedere la password. Con un server di casa
+  senza servizio, l'abbinamento resta quello del server (`/api/auth/pair`, QR verso la rete di casa),
+  che senza Internet accetta l'ultima password usata su quel PC.
+- **Senza Internet, da casa, senza login** (`POST /api/auth/home`): se il PC non raggiunge né il servizio
+  account né Internet (1.1.1.1, 8.8.8.8, 9.9.9.9: senza Internet nessuno da fuori arriva al server), chi
+  chiede ha un indirizzo della rete di casa (mai Tailscale, mai la porta pubblica/Funnel) e il proprietario
+  non l'ha spento (Impostazioni → Account → «Senza Internet», `config.home_offline`, acceso di serie), si
+  entra come il proprietario senza password. La sessione è segnata (`user_sessions.home`): non cambia le
+  impostazioni (`manager_only`) e finisce appena il servizio torna a rispondere (`session_user`). TV
+  nativa (`WhoScreen`) e interfaccia web (`gate`) lo provano da sole quando `/api/auth/state` dice `home`. Chi aveva già un server
   scelto a mano continua come prima. (Il pulsante «Collega un server senza account» non c'è più: vedi
   «Senza Internet».)
 - Collegamento: nome https di casa, `http://<IP di casa>:32500` (dall'indirizzo che il server dà al
@@ -334,8 +348,9 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
   resto non cambiano. I server degli amici si aprono dal tuo server (src `f<n>`).
 - «Esci dall'account», «Aggiorna», «Amici e tuoi PC fuori casa» (Tailscale dentro l'app, come prima).
 - **Senza Internet** (servizio account che non risponde): niente pulsante da scegliere, la TV va da sola
-  sull'ultimo server usato con la sessione che ha già; se non basta, cerca il server sulla rete di casa;
-  solo se non lo trova chiede l'indirizzo, già scritto con l'ultimo IP conosciuto. Lo stesso nell'app
+  sull'ultimo server usato con la sessione che ha già; se non basta, cerca il server sulla rete di casa
+  (chiede l'indirizzo, già scritto con l'ultimo IP conosciuto, solo se non lo trova) e ci entra senza login
+  con l'ingresso di casa (`/api/auth/home`, sopra). Lo stesso nell'app
   Android (ricerca di `setup.html`).
 
 **App Android** (`android/app`): senza un server scelto a mano apre la PWA del servizio account

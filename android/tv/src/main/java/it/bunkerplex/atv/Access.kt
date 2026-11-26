@@ -158,9 +158,8 @@ fun LinkScreen(act: MainActivity, google: Boolean) {
             }
         }
         Row(Modifier.padding(top = 30.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Btn("Usa il telecomando", Modifier.focusRequester(first)) { act.go(Screen.Login(null, google)) }
-            if (google) Btn("Entra con Google") { act.go(Screen.Google(false)) }
-            Btn("Cambia server") { act.reset(Screen.Connect) }
+            if (google) Btn("Entra con Google", Modifier.focusRequester(first)) { act.go(Screen.Google(false)) }
+            Btn("Cambia server", if (google) Modifier else Modifier.focusRequester(first)) { act.reset(Screen.Connect) }
         }
     }
     AutoFocus(first)
@@ -403,15 +402,6 @@ object CloudTv {
     fun acceptFriend(ctx: Context, id: Int) { Remote.call(ctx, "POST", "/friends/$id/accept", "{}") }
     fun declineFriend(ctx: Context, id: Int) { Remote.call(ctx, "DELETE", "/friends/$id", null) }
 
-    /** Nome utente o email (con l'email si chiede prima il nome, come fanno i server). */
-    fun login(ctx: Context, name: String, password: String) {
-        var user = name.trim()
-        if ("@" in user) {
-            user = JSONObject(Remote.call(ctx, "POST", "/resolve", JSONObject().put("email", user).toString())).getString("username")
-        }
-        Remote.login(ctx, user, password, "TV " + (Build.MODEL ?: "Android"), "tv")
-    }
-
     fun logout(ctx: Context) {
         try { Remote.call(ctx, "POST", "/logout", "{}") } catch (_: Exception) {}
         Remote.logout(ctx)
@@ -506,90 +496,84 @@ object CloudTv {
     }
 }
 
-/** Entrare con l'account: nome (o email) e password, oppure Google dal telefono. */
+/**
+ * Entrare con l'account: sempre dal telefono. A sinistra il QR (apre la PWA del
+ * servizio sul codice della TV), a destra l'indirizzo corto e il codice da scrivere
+ * a mano. Sul telefono si entra come si vuole (password, Google, link via email) e
+ * si conferma; la TV intanto chiede al servizio e riceve il gettone dell'account.
+ * Sulla TV non si scrive mai una password. Senza Internet si va al server di casa.
+ */
 @Composable
 fun CloudLoginScreen(act: MainActivity) {
-    var name by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    val fr = remember { FocusRequester() }
-    val passFr = remember { FocusRequester() }
-    // Niente servizio account (niente Internet): si va dritti al server sulla rete di casa
-    LaunchedEffect(Unit) {
-        if (!withContext(Dispatchers.IO) { CloudTv.reachable(act) }) act.reset(Screen.Connect)
-    }
-    fun send() {
-        if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente (o email) e password"; return }
-        if (busy) return
-        busy = true
-        msg = "Entro…"
-        Thread {
-            try {
-                CloudTv.login(act, name, pass)
-                act.runOnUiThread { Access.reset(); act.reset(Screen.Servers) }
-            } catch (e: Remote.CloudError) {
-                act.runOnUiThread { if (e.status == 0) act.reset(Screen.Connect) else { msg = e.message; busy = false } }
-            } catch (e: Exception) {
-                act.runOnUiThread { msg = e.message; busy = false }
-            }
-        }.start()
-    }
-    AuthPage {
-        Title("Entra con il tuo account", size = 32.sp, lines = 1)
-        Txt("Poi scegli il server: il tuo, o quelli dei tuoi amici.", Modifier.padding(top = 8.dp, bottom = 24.dp), size = 18.sp, color = C.ink2)
-        Field(name, { name = it }, "Nome utente o email", Modifier.focusRequester(fr)) { runCatching { passFr.requestFocus() } }
-        Box(Modifier.padding(top = 12.dp))
-        Field(pass, { pass = it }, "Password", Modifier.focusRequester(passFr), secret = true) { send() }
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Btn("Entra", primary = true) { send() }
-            Btn("Entra con Google") { act.go(Screen.CloudGoogle) }
-        }
-    }
-    AutoFocus(fr)
-}
-
-/** «Entra con Google» dalla TV: indirizzo e codice da aprire sul telefono. */
-@Composable
-fun CloudGoogleScreen(act: MainActivity) {
     var start by remember { mutableStateOf<JSONObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
+    var round by remember { mutableIntStateOf(0) }
+    LaunchedEffect(round) {
         try {
-            val s = JSONObject(withContext(Dispatchers.IO) { Remote.googleStart(act, true) })
+            val s = withContext(Dispatchers.IO) { Remote.tvStart(act) }
             start = s
+            msg = null
             val poll = s.optString("poll")
-            val until = System.currentTimeMillis() + s.optLong("ttl", 600) * 1000
+            val until = System.currentTimeMillis() + (s.optLong("ttl", 600) - 30) * 1000
             while (System.currentTimeMillis() < until) {
                 delay(2500)
-                val r = JSONObject(withContext(Dispatchers.IO) { Remote.googlePoll(act, poll) })
-                if (r.optString("token").isNotEmpty()) {
+                if (withContext(Dispatchers.IO) { Remote.tvPoll(act, poll) }) {
                     Access.reset()
                     act.reset(Screen.Servers)
                     return@LaunchedEffect
                 }
             }
-            msg = "Tempo scaduto: torna indietro e riprova"
+            round++                           // scaduto: codice nuovo
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e                           // «Codice nuovo» o si e' cambiata pagina: niente errore
+        } catch (e: Remote.CloudError) {
+            when (e.status) {
+                0 -> act.reset(Screen.Connect)  // niente Internet: il server di casa, senza account
+                404 -> round++
+                else -> msg = e.message
+            }
         } catch (e: Exception) {
             msg = e.message
         }
     }
-    val back = remember { FocusRequester() }
+    val first = remember { FocusRequester() }
+    val s = start
+    val code = s?.optString("code") ?: ""
+    val qr = remember(s) { s?.optString("url")?.takeIf { it.isNotEmpty() }?.let { qrRows(it) } ?: emptyList() }
     AuthPage {
-        Title("Entra con Google", size = 32.sp, lines = 1)
-        val s = start
-        if (s == null) Txt("…", Modifier.padding(top = 20.dp), color = C.ink3)
-        else {
-            Txt("Sul telefono o sul PC apri", Modifier.padding(top = 16.dp), size = 20.sp, color = C.ink2)
-            Txt(s.optString("short").substringAfter("://"), Modifier.padding(top = 8.dp), size = 26.sp, weight = FontWeight.Bold, lines = 2)
-            Txt("e scrivi il codice", Modifier.padding(top = 18.dp), size = 20.sp, color = C.ink2)
-            Txt(s.optString("code"), Modifier.padding(top = 8.dp), size = 44.sp, weight = FontWeight.ExtraBold, lines = 1)
+        Title("Entra dal telefono", size = 34.sp, lines = 1)
+        Txt("Accedi una volta dal telefono: la TV entra da sola.", Modifier.padding(top = 8.dp), size = 18.sp, color = C.ink2)
+        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
+        Row(Modifier.padding(top = 30.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
+            Panel {
+                if (qr.isNotEmpty()) Qr(qr, 210.dp) else Txt("…", color = C.ink3)
+                Txt("Inquadra il QR", Modifier.padding(top = 18.dp), size = 21.sp, weight = FontWeight.Bold)
+                Txt("con la fotocamera del telefono ed entra con il tuo account", Modifier.padding(top = 6.dp), size = 15.sp, color = C.ink2, lines = 2)
+            }
+            Column(Modifier.width(110.dp).fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Box(Modifier.width(1.dp).weight(1f).background(C.surface2))
+                Txt("OPPURE", Modifier.padding(vertical = 10.dp), size = 13.sp, color = C.ink3, weight = FontWeight.SemiBold)
+                Box(Modifier.width(1.dp).weight(1f).background(C.surface2))
+            }
+            Panel {
+                Txt("Sul telefono o sul PC apri", size = 16.sp, color = C.ink2)
+                Txt(s?.optString("short")?.substringAfter("://") ?: "…", Modifier.padding(top = 6.dp), size = 18.sp,
+                    weight = FontWeight.Bold, lines = 2)
+                Txt("e scrivi", Modifier.padding(top = 10.dp), size = 16.sp, color = C.ink2)
+                Box(
+                    Modifier.padding(top = 14.dp).clip(RoundedCornerShape(14.dp)).background(C.bg)
+                        .border(2.dp, C.surface2, RoundedCornerShape(14.dp)).padding(horizontal = 22.dp, vertical = 14.dp)
+                ) {
+                    Txt(if (code.length == 8) code.take(4) + "-" + code.drop(4) else "…", size = 40.sp, weight = FontWeight.ExtraBold, lines = 1)
+                }
+                Txt("Il codice cambia ogni 10 minuti", Modifier.padding(top = 12.dp), size = 14.sp, color = C.ink3)
+            }
         }
-        msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 28.dp)) { Btn("Indietro", Modifier.focusRequester(back)) { act.reset(Screen.CloudLogin) } }
+        Row(Modifier.padding(top = 30.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Btn("Codice nuovo", Modifier.focusRequester(first), Ic.restart) { start = null; round++ }
+        }
     }
-    AutoFocus(back)
+    AutoFocus(first)
 }
 
 /** «Cosa guardi oggi?» con l'elenco del servizio account; collegamento diretto al server scelto. */
