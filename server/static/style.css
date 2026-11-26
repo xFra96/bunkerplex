@@ -997,6 +997,8 @@ body:not(.kb) .snav.on:focus::before { background: var(--accent); }
   html:not(.tv) body:not(.kb) .snav.on:focus .sic { color: var(--accent-ink); }
   html:not(.tv) .sic { width: 1.15rem; height: 1.15rem; }
   html:not(.tv) .snav .uface { width: 1.4rem; height: 1.4rem; font-size: .7rem; }
+  /* Nella fila i titoli dei gruppi fanno da separatori tra le schede */
+  html:not(.tv) .snavh { flex: none; flex-wrap: nowrap; margin: 0 .1rem 0 .7rem; }
 }
 @media (max-width: 720px) {
   .srow { gap: .8rem; padding: .7rem .6rem; }
@@ -1057,6 +1059,33 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .srvname { max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .srvbtn .ic { color: var(--accent-text); }
 .srvbtn:focus .ic { color: inherit; }
+.srvbtn .reach { margin-left: -.1rem; }
+
+/* Locale / online: come arriva questo dispositivo a un server. Stesse parole e colori
+   ovunque (scelta del server, impostazioni, PC e dispositivi): verde = locale (stessa
+   rete o questo PC, senza Internet), blu = online (via Internet) */
+.reach { display: inline-flex; align-items: center; gap: .3rem; padding: .05rem .5rem; border-radius: 999px; font-size: .74rem; font-weight: 700;
+  line-height: 1.5; letter-spacing: .02em; text-transform: none; vertical-align: .08em; white-space: nowrap; }
+.reach::before { content: ""; width: .42rem; height: .42rem; flex: none; border-radius: 50%; background: currentColor; }
+.reach.local { background: #1a7f4538; color: var(--ok); }
+.reach.net { background: #1d3550; color: #9fcbff; }
+.srvtag.local { background: #1a7f45e0; }
+.srvtag.net { background: #1d4f8ae0; }
+.srvlegend { display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem 1.2rem; margin: -.3rem 0 1.5rem; color: var(--ink3); font-size: .85rem; }
+.srvlegend span { display: inline-flex; align-items: center; gap: .45rem; }
+
+/* Impostazioni: di chi sono. Sopra le voci e sopra il titolo dell'area: «Server · nome»
+   (con locale / online) oppure «Questo dispositivo» */
+.snavh { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .45rem; margin: 1.2rem 0 .4rem .8rem; color: var(--ink3); font-size: .74rem; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; }
+.sghname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sghname b { color: var(--ink2); font-weight: 700; }
+.seyebrow { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .5rem; margin: 0 0 .4rem; color: var(--ink3); font-size: .8rem; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; }
+.shead.sgh { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem .5rem; }
+.shead.sgh small { flex-basis: 100%; color: var(--ink3); font-size: .82rem; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.snote { margin: 0 0 1.2rem; color: var(--ink2); line-height: 1.5; }
+.panel h2 small { color: var(--ink3); font-size: .95rem; font-weight: 500; }
 .frwho { display: flex; align-items: center; gap: .55rem; margin: .5rem 1.7rem .2rem; font-weight: 600; }
 .frwho small { margin-left: auto; color: var(--ink2); font-weight: 400; font-size: .85rem; }
 .odot { width: .55rem; height: .55rem; flex: none; border-radius: 50%; background: var(--accent-text); }
@@ -1090,6 +1119,9 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 @media (max-width: 720px) {
   #activity { top: .55rem; right: .8rem; }
   .acttext, .srvname { display: none; }
+  /* Sul telefono il pulsante del server e' solo icona: di locale / online resta il pallino */
+  .srvbtn .reach { position: absolute; top: .1rem; right: .1rem; padding: 0; font-size: 0; background: none; }
+  .srvbtn .reach::before { width: .6rem; height: .6rem; box-shadow: 0 0 0 .15rem var(--surface2); }
   .actbtn.busy { padding: 0 .75rem; }
   #modal.corner { padding: 3.4rem .6rem 0; }
   .actsheet { width: 100%; }
@@ -1694,7 +1726,9 @@ body:not(.kb) .sgroup .srow:focus .stext small, body:not(.kb) .sgroup .srow:focu
    grande. La voce a fuoco dell'elenco: testo scuro ben leggibile sul bianco. */
 html.tv .sgrid { grid-template-columns: 17rem minmax(0, 1fr); gap: 2.2rem; }
 html.tv .scol { position: sticky; top: 2rem; }
-html.tv .snav { min-height: 3.2rem; font-size: 1.05rem; }
+html.tv .snav { min-height: 2.75rem; font-size: 1.05rem; }
+/* Con i titoli dei gruppi (Server / Questa TV) l'elenco deve stare tutto in 720 righe */
+html.tv .snavh { margin: .7rem 0 .2rem .8rem; }
 body.kb .snav:focus, body.kb .snav:focus span { color: var(--bg); transition: none; }
 body.kb .snav.on:focus { background: var(--ink); }
 @media (min-width: 721px) {

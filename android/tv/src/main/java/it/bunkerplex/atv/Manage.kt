@@ -574,7 +574,10 @@ fun FriendsScreen(act: MainActivity, refresh: Int) {
                     val online = if (m.isNull("online")) null else m.optBoolean("online")
                     Entry(m.optString("name").ifEmpty { "Il tuo altro PC" }, when (online) {
                         false -> m.optString("error").ifEmpty { "spento o non raggiungibile" }
-                        true -> "collegato" + when (m.optString("route")) { "lan" -> " dalla rete di casa"; "tailscale" -> " da Tailscale"; else -> "" }
+                        // Come nell'interfaccia del server: locale = stessa rete, online = via Internet
+                        true -> "collegato" + when (m.optString("route")) {
+                            "lan" -> " nella stessa rete · Locale"; "tailscale" -> " via Internet (Tailscale) · Online"; "" -> ""; else -> " via Internet · Online"
+                        }
                         null -> "collegamento in corso…"
                     }, online)
                 }
@@ -586,7 +589,7 @@ fun FriendsScreen(act: MainActivity, refresh: Int) {
                     }
                 }
             }
-            Note("In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato.", C.ink3)
+            Note("Locale: nella stessa rete, più veloce e anche senza Internet. Online: via Internet con Tailscale, cifrato.", C.ink3)
         }
         // ---- Dispositivi
         d.devices?.takeIf { it.has("devices") }?.let { dv ->

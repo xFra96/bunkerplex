@@ -431,8 +431,62 @@ function srvHue(text) {
   return h;
 }
 
-// c: {act, arg, key, name, sub, icon, off, on, first, local, look: {icon, image}, edit}
+// ---- Locale o online: come arriva QUESTO dispositivo a un server. Ogni dispositivo
+// entra nella rete dove si trova e mostra cio' che raggiunge da li': online va bene,
+// locale e' meglio (piu' veloce, e va anche senza Internet).
+//   'pc'  = localhost: il server e' su questo stesso PC
+//   'lan' = stessa rete (IP privato, nome di casa con certificato): niente Internet
+//   'net' = via Internet: Tailscale (ts.net, 100.x) o indirizzo pubblico
+var REACH = {
+  pc: { tag: 'Locale', cls: 'local', how: 'su questo PC',
+    note: 'Il server è su questo stesso PC: niente rete e niente Internet.' },
+  lan: { tag: 'Locale', cls: 'local', how: 'nella stessa rete',
+    note: 'Stessa rete del server, senza passare da Internet: più veloce, e funziona anche quando Internet non va.' },
+  net: { tag: 'Online', cls: 'net', how: 'via Internet',
+    note: 'Arrivi al server via Internet (Tailscale): funziona da ovunque. Nella stessa rete del server sarebbe locale, e più veloce.' }
+};
+var PRIVATE_IP = /^(10|127|192\.168|172\.(1[6-9]|2\d|3[01])|169\.254)\.\d+\.\d+/;
+
+function reachOf(url) {
+  var host = '';
+  if (!url) return '';            // PWA centrale prima di aprire un server
+  try { host = new URL(url, location.href).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch (e) { return ''; }
+  if (!host) return '';
+  if (host === 'localhost' || /\.localhost$/.test(host) || /^127\./.test(host) || host === '::1') return 'pc';
+  if (/\.ts\.net$/.test(host) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return 'net';
+  // Il nome di casa con certificato e' <ip-con-trattini>.<pc>.<dominio>
+  if (PRIVATE_IP.test(host) || PRIVATE_IP.test(host.split('.')[0].replace(/-/g, '.'))) return 'lan';
+  if (host.indexOf('.') < 0 || /\.(local|lan|home\.arpa)$/.test(host) || /^f[cde][0-9a-f]{2}:/.test(host)) return 'lan';
+  return 'net';
+}
+
+// Il server aperto adesso: nella PWA centrale l'indirizzo scelto, se no la pagina stessa
+function hereReach() {
+  return reachOf(CENTRAL ? C.base : location.href);
+}
+
+function reachTag(kind) {
+  var r = REACH[kind];
+  return r ? '<span class="reach ' + r.cls + '">' + r.tag + '</span>' : '';
+}
+
+// Il nome del server aperto (per le impostazioni: sono le sue)
+function srvLabel() {
+  return (auth && auth.pc) || (CENTRAL && C.name) || 'Questo server';
+}
+
+// Sotto il titolo della scelta del server: cosa vogliono dire le due etichette
+function reachLegend(kinds) {
+  var local = kinds.indexOf('lan') >= 0 || kinds.indexOf('pc') >= 0, net = kinds.indexOf('net') >= 0;
+  if (!local && !net) return '';
+  return '<p class="srvlegend">' +
+    (local ? '<span>' + reachTag('lan') + ' stessa rete o questo PC, senza Internet</span>' : '') +
+    (net ? '<span>' + reachTag('net') + ' via Internet</span>' : '') + '</p>';
+}
+
+// c: {act, arg, key, name, sub, icon, off, on, first, reach ('pc'|'lan'|'net'), look: {icon, image}, edit}
 function srvCard(c) {
+  var tag = REACH[c.reach];
   var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
   var look = c.look || {};
   var img = /^https?:\/\//.test(look.image || '') ? look.image : '';
@@ -445,7 +499,7 @@ function srvCard(c) {
       (c.edit ? '<span class="srvpen">Modifica</span>' : '') +
       '<span class="srvbadge">' + c.icon + '</span>' +
       '<i class="srvdot' + (c.off ? '' : ' live') + '" title="' + (c.off ? 'Non raggiungibile' : 'Acceso') + '"></i>' +
-      (c.local ? '<span class="srvtag">In casa</span>' : '') + '</span>' +
+      (tag ? '<span class="srvtag ' + tag.cls + '">' + tag.tag + '</span>' : '') + '</span>' +
     '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small></span></button>';
 }
 
@@ -577,16 +631,26 @@ async function serversPage() {
     cache.srvData = data;
   }
   var cur = currentServer();
-  function card(arg, ico, name, sub, on, first, find, look) {
+  var kinds = [];
+  function card(arg, ico, name, sub, on, first, find, look, reach) {
     var off = on === false;
+    if (!off && reach) kinds.push(reach);
     return srvCard({ act: off ? 'srvoff' : 'srvpick', arg: arg, key: 'srv-' + arg, name: name, sub: sub, icon: ico,
-      off: off, on: cur === arg, first: first, find: find, look: look });
+      off: off, on: cur === arg, first: first, find: find, look: look, reach: off ? '' : reach });
   }
+  // Questo server: come ci arriva il dispositivo. Gli altri si raggiungono passando da lui
+  // (la sua strada: rete di casa o Tailscale); gli amici sempre via Internet.
+  // Nella sezione dei tuoi server basta da dove si raggiunge
+  function how(r, other) { return REACH[r] ? REACH[r].how.charAt(0).toUpperCase() + REACH[r].how.slice(1) : other; }
+  var here = hereReach();
   var mine = [card('here', SRV_ICON, auth.pc || 'Questo server',
-    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : 'Questo PC', true, true, '', data.hereLook)];
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : how(here, 'Questo PC'), true, true, '', data.hereLook, here)];
   data.mine.forEach(function (m) {
     if (!m.n) return;
-    mine.push(card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Spento o non raggiungibile' : 'Il tuo PC', m.online === false ? false : true, false, '', m.look));
+    // Ci si arriva passando da questo server: e' locale solo se lo sono tutti e due i tratti
+    var r = !m.route ? '' : m.route === 'lan' && REACH[here] && here !== 'net' ? 'lan' : 'net';
+    mine.push(card('f' + m.n, SRV_ICON, m.name || 'Il tuo altro PC', m.online === false ? 'Spento o non raggiungibile' : how(r, 'Il tuo PC'),
+      m.online === false ? false : true, false, '', m.look, r));
   });
   var friends = [];
   var waiting = [];
@@ -600,8 +664,8 @@ async function serversPage() {
     }
     servers.forEach(function (s) {
       friends.push(card('f' + s.n, FRIEND_ICON, servers.length > 1 && s.name ? s.name : f.username,
-        (servers.length > 1 ? 'di ' + esc(f.username) : (s.name ? esc(s.name) : 'Amico')) + (s.online === false ? ' · non raggiungibile' : ''),
-        s.online === false ? false : true, false, f.username + ' ' + (s.name || ''), s.look));
+        (servers.length > 1 ? 'di ' + esc(f.username) : (s.name ? esc(s.name) : 'Amico')) + (s.online === false ? ' · non raggiungibile' : s.online ? ' · via Internet' : ''),
+        s.online === false ? false : true, false, f.username + ' ' + (s.name || ''), s.look, s.online ? 'net' : ''));
     });
   });
   var add = '';
@@ -616,7 +680,7 @@ async function serversPage() {
       '<button class="btn primary f" data-act="srvaccept" data-arg="' + f.id + '" data-key="srvacc-' + f.id + '">Accetta</button></div>';
   }).join('');
   return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server' + (u.guest ? '' : ': il tuo e quelli dei tuoi amici') + '</p>' +
-    req + srvGrid([{ title: u.guest ? 'Server' : 'I tuoi server', cards: mine },
+    reachLegend(kinds) + req + srvGrid([{ title: u.guest ? 'Server' : 'I tuoi server', cards: mine },
       { title: 'Amici', cards: friends, extra: add }], mine.length + friends.length) +
     (data.error ? '<p class="authnote">Amici non raggiungibili ora: riprova tra poco.</p>' : '') +
     '<button class="authlink f" data-act="logout" data-key="srvlogout">Esci da ' + esc(u.name) + '</button>', 'grid'), mount: srvMount };
@@ -969,8 +1033,16 @@ function cLocalProbe(list) {
     if (!c.length) return null;
     return Promise.race([anyOf(c.map(function (b) { return cProbe(b, s.sid); })),
       new Promise(function (ok, ko) { setTimeout(ko, 1500); })])
-      .then(function () { s.local = true; }, function () { /* non in casa */ });
+      .then(function (base) { s.local = true; s.reach = reachOf(base); }, function () { /* non in casa */ });
   }));
+}
+
+// Come si arriva da qui a un server dell'elenco: locale (stessa rete o questo PC),
+// online (indirizzo pubblico, «Da ovunque») o '' (spento, o acceso ma solo dalla sua rete)
+function cReach(s) {
+  if (s.online === false) return '';
+  if (s.local) return s.reach === 'pc' ? 'pc' : 'lan';
+  return s.addresses && s.addresses.public ? 'net' : '';
 }
 
 // Il server scelto l'ultima volta (se c'e' ancora), altrimenti l'elenco
@@ -1138,16 +1210,22 @@ async function cServersPage() {
       '<button class="btn primary f" data-act="crefresh" data-key="crefresh">Riprova</button>' +
       '<button class="authlink f" data-act="logout" data-key="clogout">Esci</button>', true);
   }
-  var mine = [], theirs = [];
+  var mine = [], theirs = [], kinds = [];
   list.forEach(function (s, i) {
     var off = s.online === false;
     var friend = s.role === 'friend';
-    var sub = friend ? 'di ' + esc(s.owner.username) : 'Il tuo server';
-    sub += off ? ' · non raggiungibile' : (!s.local && s.online ? ' · acceso' : '');
+    var reach = cReach(s);
+    if (reach) kinds.push(reach);
+    // Nella sezione «I tuoi server» basta da dove si raggiunge; per gli amici anche di chi e'
+    var where = off ? 'non raggiungibile' : REACH[reach] ? REACH[reach].how
+      // Acceso ma senza indirizzo pubblico («Da ovunque» spento): si apre solo dalla sua rete
+      : s.online ? 'acceso, solo dalla sua rete' : '';
+    var sub = friend ? 'di ' + esc(s.owner.username) + (where ? ' · ' + where : '')
+      : where ? where.charAt(0).toUpperCase() + where.slice(1) : 'Il tuo server';
     var edit = !friend && cache.cEdit;
     (friend ? theirs : mine).push(srvCard({ act: edit ? 'clook' : 'cpick', arg: edit ? s.sid : i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
       name: s.name || 'PC', sub: sub, icon: friend ? FRIEND_ICON : SRV_ICON, off: off && !edit, on: C.sid === s.sid,
-      first: i === 0, local: !!s.local, find: friend ? s.owner.username : '', look: s.look, edit: edit }));
+      first: i === 0, reach: reach, find: friend ? s.owner.username : '', look: s.look, edit: edit }));
   });
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
   var friends = C.friends || [];
@@ -1166,7 +1244,7 @@ async function cServersPage() {
       '<button class="btn primary f" data-act="caccept" data-arg="' + f.id + '" data-key="cacc-' + f.id + '">Accetta</button></div>';
   }).join('');
   var sent = friends.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
-  return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
+  return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' + reachLegend(kinds) +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
     (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
     srvGrid([{ title: 'I tuoi server', cards: mine,
@@ -1185,15 +1263,8 @@ function cAppLink() {
 }
 
 async function cAppPage() {
-  var latest = selfUpdating() ? appLatest({}) : {};
-  var mine = +tvCall('getVersion') || 0;
-  var old = (latest.code || 0) > mine;
-  var app = '<div class="panel"><h2>App BunkerPlex</h2>' +
-    '<p>' + dot(!old) + ' Versione ' + esc(appVer()) +
-      (old ? ' · è uscita la ' + esc(latest.name || String(latest.code)) : (latest.code ? ' · aggiornata' : '')) + '</p>' +
-    '<div class="actions">' + (old && typeof tvApp.update === 'function'
-      ? '<button class="btn primary f" data-act="cappupdate" data-key="cappupdate">Aggiorna l\'app</button>' : '') +
-      '<button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button></div></div>';
+  // Solo l'app Android (APK) ha una versione da aggiornare: le pagine arrivano sempre nuove
+  var app = appUpdatePanel({});
   var notes = '';
   if (PHONE_APP) {
     if (!C.token) {
@@ -1204,8 +1275,8 @@ async function cAppPage() {
     }
   }
   return authShell('<a class="authlink f" href="#/home" data-act="cappback" data-key="cappback" data-autofocus>‹ Indietro</a>' +
-    '<h1>Impostazioni dell\'app</h1><p class="authsub">Valgono su questo ' + (TV ? 'televisore' : 'dispositivo') +
-    ', anche senza entrare in un server</p>' + app + notes, true);
+    '<h1>Impostazioni dell\'app</h1><p class="authsub">Valgono solo su ' + (TV ? 'questa TV' : 'questo dispositivo') +
+    ', anche senza entrare in un server. Quelle di un server (raccolte, amici, aggiornamenti del server) stanno nelle sue Impostazioni.</p>' + app + notes, true);
 }
 
 // Nell'app Android senza servizio account (niente Internet): la ricerca del server
@@ -2930,25 +3001,66 @@ function showSecret(title, name, pass, label) {
 // Ogni area ha la sua vista (#/settings/<area>) con il suo nome come titolo.
 // La panoramica (#/settings) dice com'e' messa ogni area e cosa va guardato.
 
-// Le aree nel menu delle impostazioni. Poche voci, per il telecomando:
+// Le aree nel menu delle impostazioni, in due gruppi che non si mescolano:
+// - «Server · <nome>»: valgono per il server aperto, per chiunque lo usi da qualsiasi
+//   dispositivo (raccolte, schede, amici, PC, aggiornamenti del server);
+// - «Questo dispositivo» / «Questa TV»: valgono solo qui (collegamento, visione,
+//   notifiche e, nell'app Android, l'app con la sua versione).
+// L'account sta sopra, da solo. Poche voci, per il telecomando:
 // - Persone (solo amministratore) si apre da Account;
-// - Aggiornamenti (server e app di questo dispositivo) in fondo, con le versioni;
-// - Sottotitoli stanno in «Schede e sottotitoli»; sulla TV il QR per il telefono in «Questa TV».
+// - Sottotitoli stanno in «Schede e sottotitoli»; sulla TV il QR per il telefono in «Collegamento e visione».
 // Le vecchie pagine (#/settings/subtitles, #/settings/apps sulla TV) rimandano a quelle nuove.
+// Ogni voce: [area, nome, gruppo]
 function settingsAreas() {
   var out = [];
-  if (auth && auth.user) out.push(['account', 'Account']);
-  if (noticesLinked() && !TV) out.push(['notices', 'Notifiche']);
-  if (adminHere()) out.push(['admin', 'Amministrazione']);
-  out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
-    ['friends', 'Amici'], ['device', TV ? 'Questa TV' : 'Questo dispositivo'], ['pcs', 'PC e dispositivi']);
-  if (!APP) out.push(['apps', 'App per TV e telefono']);
-  out.push(['updates', 'Aggiornamenti']);
+  if (auth && auth.user) out.push(['account', 'Account', '']);
+  if (adminHere()) out.push(['admin', 'Amministrazione', 'server']);
+  out.push(['libraries', 'Raccolte', 'server'], ['catalog', 'Schede e sottotitoli', 'server'],
+    ['friends', 'Amici', 'server'], ['pcs', 'PC e dispositivi', 'server']);
+  if (!APP) out.push(['apps', 'App per TV e telefono', 'server']);
+  out.push(['updates', 'Aggiornamenti', 'server'], ['device', 'Collegamento e visione', 'device']);
+  if (APP) out.push(['app', appLabel(), 'device']);
+  if (noticesLinked() && !TV) out.push(['notices', 'Notifiche', 'device']);
   return out;
 }
 
 // Aree che si aprono ma non stanno nel menu
 var SETTINGS_HIDDEN = ['people'];
+
+// Il gruppo di un'area, e come si chiama
+function settingsGroup(area) {
+  if (area === 'people' || area === 'news') return 'server';
+  var a = settingsAreas().filter(function (x) { return x[0] === area; })[0];
+  return a ? a[2] : '';
+}
+
+function deviceTitle() {
+  return TV ? 'Questa TV' : 'Questo dispositivo';
+}
+
+// L'app Android installata qui (APK): la sola cosa di questo dispositivo che si aggiorna.
+// La PWA (browser o app sulla schermata Home) no: arriva sempre nuova dal server o dal servizio.
+// inText: dentro una frase («l'app Android»), se no come nome della voce («App Android»)
+function appLabel(inText) {
+  var s = TV ? 'App TV' : 'App Android';
+  return inText ? 'a' + s.slice(1) : s;
+}
+
+// Il titolo di un gruppo: per il server anche come ci arrivi (locale / online).
+// mini: per l'elenco a sinistra (stretto)
+function groupHead(group, mini) {
+  if (group === 'server') {
+    var k = hereReach();
+    return '<span class="sghname">Server · <b>' + esc(srvLabel()) + '</b></span>' + reachTag(k) +
+      (mini ? '' : '<small>' + (REACH[k] ? esc(REACH[k].how.charAt(0).toUpperCase() + REACH[k].how.slice(1)) + ' · ' : '') +
+        'Valgono per tutti quelli che lo usano, da qualsiasi dispositivo</small>');
+  }
+  if (group === 'device') {
+    return '<span class="sghname">' + deviceTitle() + '</span>' +
+      (mini ? '' : '<small>Valgono solo qui: non cambiano il server</small>');
+  }
+  return '';
+}
 
 // Amministrazione: per ogni amministratore, ovunque (browser, telefono, TV)
 function adminHere() {
@@ -2975,7 +3087,8 @@ var SICON = {
   news: '<path d="M12 3.5l2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.4 7.1 18.1l1.1-5.3-4-3.7 5.4-.6z"/>',
   active: '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
   logout: '<path d="M14 4.5h4.5v15H14M10 8l-4 4 4 4M6 12h10"/>',
-  apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>'
+  apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>',
+  app: '<rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path d="M12 7v7M9 11l3 3 3-3M10.5 18h3"/>'
 };
 function sicon(area) {
   return SICON[area] ? '<svg class="sic" viewBox="0 0 24 24" aria-hidden="true">' + SICON[area] + '</svg>' : '';
@@ -2984,7 +3097,7 @@ function sicon(area) {
 // Il colore della piastrella di ogni area (tonalita'): come nelle impostazioni dei
 // telefoni, l'area si riconosce dal colore prima ancora di leggerla
 var STINT = { home: 150, account: 150, admin: 4, people: 200, libraries: 210, catalog: 32, subtitles: 32, friends: 280,
-  notices: 350, updates: 150, device: 190, apps: 255, pcs: 170, news: 45, logout: 0, active: 150 };
+  notices: 350, updates: 150, device: 190, apps: 255, app: 120, pcs: 170, news: 45, logout: 0, active: 150 };
 // Una riga con interruttore (acceso/spento): il nome a sinistra, l'interruttore a destra
 // note: una riga piccola sotto il nome (com'e' adesso)
 function swRow(label, on, attrs, note) {
@@ -2998,11 +3111,18 @@ function stile(area) {
 }
 
 function settingsShell(area, title, sub, body) {
+  var lastGroup = '';
   var nav = settingsAreas().map(function (a) {
     var on = a[0] === area;
-    return '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
+    // Il titolo del gruppo (Server · nome / Questo dispositivo) sopra la sua prima voce
+    var head = a[2] && a[2] !== lastGroup ? '<p class="snavh">' + groupHead(a[2], true) + '</p>' : '';
+    lastGroup = a[2];
+    return head + '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
       (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : stile(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
+  // Sopra il titolo dell'area: di chi sono queste impostazioni (del server o di questo dispositivo)
+  var group = settingsGroup(area);
+  var eyebrow = group ? '<p class="seyebrow ' + group + '">' + groupHead(group, true) + '</p>' : '';
   // TV e PC: due colonne, a sinistra l'elenco delle aree e a destra l'area aperta (il
   // fuoco sta sempre nell'una o nell'altra, vedi settingsMove). Telefono: solo l'area,
   // con «‹ Impostazioni» in alto per tornare all'elenco.
@@ -3012,7 +3132,7 @@ function settingsShell(area, title, sub, body) {
     // Persone si apre da Account: si torna li'
     '<div class="smain"><a class="sup f" href="' + (area === 'people' ? '#/settings/account' : '#/settings') + '" data-key="sup">' + IC.back +
       '<span>' + (area === 'people' ? 'Account' : 'Impostazioni') + '</span></a>' +
-    '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
+    eyebrow + '<h1 class="stitle">' + esc(title) + '</h1>' + (sub ? '<p class="ssub">' + sub + '</p>' : '') + body + '</div></div></div>';
 }
 
 function settingsData() {
@@ -3020,9 +3140,10 @@ function settingsData() {
     api('/sharing').catch(function () { return null; })]);
 }
 
-// Versioni ben visibili: quella del server (il numero della release su GitHub,
-// es. 1.2) e quella dell'app su questa TV o telefono. Dal browser la
-// pagina arriva dal server: la versione e' la sua.
+// Versioni: solo di cio' che si aggiorna davvero. Quella del server (il numero della
+// release su GitHub, es. 1.2) e, nell'app Android, quella dell'app (APK) su questa TV o
+// telefono. La PWA no: dal browser la pagina arriva dal server (o dal servizio account)
+// ed e' sempre quella giusta, non c'e' niente da aggiornare.
 function serverVer(i) {
   return i.release || (i.commit ? 'commit ' + i.commit : i.version);
 }
@@ -3106,22 +3227,27 @@ function settingsRows(i, u, sh) {
   if (adminHere()) {
     rows.push({ area: 'admin', label: 'Amministrazione', desc: 'Utenti, accessi, server e rete', value: '', state: '' });
   }
-  // Aggiornamenti: in fondo, con la versione (server e, nelle app, l'app)
-  var tvOld = appOld(i);
+  // Aggiornamenti del server, con la sua versione (l'app Android ha la sua riga, sotto)
   var srvWarn = !!(u && u.enabled && (u.error || u.access === false || u.available || u.phase));
   rows.push({ area: 'updates', label: 'Aggiornamenti',
-    desc: 'Server ' + serverVer(i) + (APP ? ' · app ' + appVer() : ''),
-    value: tvOld ? 'App da aggiornare'
-      : !(u && u.enabled) ? serverVer(i)
+    desc: 'Il server BunkerPlex sul PC · versione ' + serverVer(i),
+    value: !(u && u.enabled) ? serverVer(i)
       : u.error || u.access === false ? 'Da controllare' : (u.phase ? 'In corso' : (u.available ? 'Disponibile' : 'Aggiornato')),
-    state: tvOld || srvWarn ? 'warn' : (u && u.enabled ? 'ok' : '') });
-  rows.push({ area: 'device', label: TV ? 'Questa TV' : 'Questo dispositivo',
-    desc: TV ? 'Visione, collegamento, app sul telefono'
-      : 'Visione e collegamento' + (phoneTvOk() ? ', installa sulla TV' : ''),
-    value: '', state: '' });
+    state: srvWarn ? 'warn' : (u && u.enabled ? 'ok' : '') });
+  // Questo dispositivo: come arriva al server (locale / online), la visione e l'app
+  var k = hereReach();
+  rows.push({ area: 'device', label: 'Collegamento e visione',
+    desc: (REACH[k] ? 'Server ' + REACH[k].how + ' · ' : '') + 'animazioni e locandine' +
+      (TV ? ' · app sul telefono' : phoneTvOk() ? ' · installa sulla TV' : ''),
+    value: '', tag: reachTag(k), state: '' });
+  if (APP) {
+    var tvOld = appOld(i);
+    rows.push({ area: 'app', label: appLabel(), desc: 'L\'app installata qui · versione ' + appVer(),
+      value: tvOld ? 'Da aggiornare' : (appLatest(i).code ? 'Aggiornata' : ''), state: tvOld ? 'warn' : '' });
+  }
   if (!APP) {
     rows.push({ area: 'apps', label: 'App per TV e telefono',
-      desc: 'Installa sulla TV, app sul telefono', value: '', state: '' });
+      desc: 'Da questo server: installa sulla TV, app sul telefono', value: '', state: '' });
   }
   return rows;
 }
@@ -3314,14 +3440,14 @@ async function tvPanel() {
 function lanPanel(n) {
   if (!n) return '';
   return '<div class="panel"><h2>Indirizzo di questo PC</h2><dl class="kv">' +
-    '<dt>IP privato<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
+    '<dt>IP privato ' + reachTag('lan') + '<small>nella rete di casa: lo usano TV e telefoni</small></dt><dd class="num">' +
       (n.private ? esc(n.private) + '<small>porta ' + n.port + '</small>' : '<span class="nodot">non lo conosco ancora</span><small>rilancia «Installa BunkerPlex»</small>') + '</dd>' +
     '</dl></div>';
 }
 
 function networkPanel(n) {
   if (!n) return '';
-  return '<div class="panel" id="addresses"><h2>Indirizzi per fuori casa</h2><dl class="kv">' +
+  return '<div class="panel" id="addresses"><h2>Indirizzi per fuori casa ' + reachTag('net') + '</h2><dl class="kv">' +
     '<dt>Per gli amici<small>da fuori casa, solo la porta ' + n.friends_port + '</small></dt><dd class="num">' +
       (n.tailnet ? esc(n.tailnet) + '<small>Tailscale integrato</small>'
         : n.friends_open ? esc(n.public) + '<small>porta aperta sul router</small>'
@@ -3334,15 +3460,17 @@ function networkPanel(n) {
 }
 
 // I gruppi della Panoramica, come nelle impostazioni dei telefoni: poche righe per
-// gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato
-// Amministrazione (solo amministratori) subito sotto l'account, in vista
-var SGROUPS = [['', ['admin']], ['Contenuti', ['libraries', 'catalog']], ['Persone', ['friends', 'notices']],
-  ['Dispositivi', ['device', 'pcs', 'apps']], ['Info', ['updates', 'news']], ['', ['logout']]];
+// gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato.
+// Due gruppi che non si mescolano: il server aperto (con locale / online) e questo
+// dispositivo. Amministrazione (solo amministratori) in cima al gruppo del server.
+var SGROUPS = [['server', ['admin', 'libraries', 'catalog', 'friends', 'pcs', 'apps', 'updates', 'news']],
+  ['device', ['device', 'app', 'notices']], ['', ['logout']]];
 
 function srowHtml(r, first) {
   var inner = (r.face ? face(r.face, 'mid') : stile(r.area)) +
     '<span class="stext"><b>' + esc(r.label) + '</b>' + (r.desc ? '<small>' + esc(r.desc) + '</small>' : '') + '</span>' +
-    (r.value ? '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' : '');
+    (r.tag ? '<span class="sval">' + r.tag + '</span>'
+      : r.value ? '<span class="sval' + (r.state ? ' ' + r.state : '') + '">' + esc(r.value) + '</span>' : '');
   // Una riga che fa qualcosa (Esci) e' un pulsante, senza freccia
   if (r.act) {
     return '<button class="srow f act-' + r.area + '"' + (first ? ' data-autofocus' : '') + ' data-act="' + r.act + '" data-key="srow-' + r.area + '">' + inner + '</button>';
@@ -3377,7 +3505,7 @@ async function settings() {
   SGROUPS.forEach(function (g) {
     var list = g[1].map(function (a) { return byArea[a]; }).filter(Boolean);
     if (!list.length) return;
-    html += '<section class="sblock">' + (g[0] ? '<h2 class="shead">' + esc(g[0]) + '</h2>' : '') + '<div class="sgroup">' +
+    html += '<section class="sblock">' + (g[0] ? '<h2 class="shead sgh ' + g[0] + '">' + groupHead(g[0]) + '</h2>' : '') + '<div class="sgroup">' +
       list.map(function (r) { var h = srowHtml(r, first); first = false; return h; }).join('') + '</div></section>';
   });
   return '<div class="page settings"><div class="soverview">' +
@@ -3520,20 +3648,24 @@ async function settingsArea(area) {
       myPcsPanel(three[0]) + devicesPanel(three[1]) + awayPanel() + networkPanel(three[2]));
   }
 
+  // Aggiornamenti del server aperto (BunkerPlex sul PC). L'app Android di questo
+  // dispositivo ha la sua area («App Android» / «App TV»); la PWA non si aggiorna.
   if (area === 'updates') {
     var u = res[2];
-    return settingsShell('updates', 'Aggiornamenti', 'Versione del server su questo PC: <b class="num">' + esc(serverVer(i)) + '</b>.' +
+    return settingsShell('updates', 'Aggiornamenti del server', 'Qui si aggiorna BunkerPlex sul PC <b>' + esc(srvLabel()) + '</b>: ' +
+        'versione <b class="num">' + esc(serverVer(i)) + '</b>.' +
         (i.updated ? ' <a class="link f" href="#/news" data-key="upd-news">Novità dell\'ultimo aggiornamento</a>' : ''),
-      // Nell'app: anche l'app di questo dispositivo si aggiorna da qui (un posto solo per gli aggiornamenti)
-      (APP ? '<div class="panel"><h2>' + (TV ? 'App su questa TV' : 'App su questo dispositivo') + '</h2>' +
-        '<dl class="kv"><dt>Versione</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
-          (appOld(i) ? ' · <span class="nodot">' + esc(appWhere().toLowerCase() + (appLatest(i).name || 'più nuova')) + '</span>' : (appLatest(i).code ? ' · aggiornata' : '')) + '</dd></dl>' +
-        (selfUpdating() ? '<p class="hint">L\'app si aggiorna da sola dalle sue versioni pubblicate, anche senza aggiornare il server.</p>' : '') +
-        (serverTooOld(i) ? '<p class="nodot">Questa app è più nuova del server: aggiorna il server qui sotto per usare tutte le funzioni.</p>' : '') +
-        '<div class="actions"><button class="btn' + (appOld(i) ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">' +
-          (appOld(i) ? 'Aggiorna l\'app' : 'Controlla aggiornamenti') + '</button></div></div>' : '') +
-      (u && u.enabled ? updatePanel(u).replace('<h2>Aggiornamenti</h2>', '<h2>Server</h2>') : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>') +
+      (APP ? '<p class="snote">L\'' + appLabel(true) + ' di ' + (TV ? 'questa TV' : 'questo dispositivo') + ' si aggiorna a parte: ' +
+        '<a class="link f" href="#/settings/app" data-key="upd-app">' + deviceTitle() + ' → ' + appLabel() + '</a>' +
+        (appOld(i) ? ' <span class="nodot">(c\'è una versione nuova)</span>' : '') + '.</p>' : '') +
+      (u && u.enabled ? updatePanel(u, 'Server · ' + srvLabel()) : '<div class="panel"><p>Gli aggiornamenti automatici del server non sono configurati su questo PC.</p></div>') +
       changelogPanel(u));
+  }
+
+  // L'app Android installata qui (APK): versione e aggiornamento
+  if (area === 'app') {
+    return settingsShell('app', appLabel(), 'L\'app BunkerPlex installata su ' + (TV ? 'questa TV' : 'questo dispositivo') + '.',
+      appUpdatePanel(i));
   }
 
   if (area === 'apps') {
@@ -3542,16 +3674,43 @@ async function settingsArea(area) {
       await publicPanel() + installPanel() + await tvPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
   }
 
-  // Questo dispositivo: preferenze di visione e collegamento al server
-  // (versioni e aggiornamento dell'app stanno in Aggiornamenti; sulla TV anche il QR per il telefono)
-  return settingsShell('device', TV ? 'Questa TV' : 'Questo dispositivo', '',
-    devicePanel() +
-    '<div class="panel"><h2>Collegamento</h2>' +
-    '<dl class="kv"><dt>Server</dt><dd>http://' + esc(location.host) + '<small>' + esc(i.name) + '</small></dd></dl>' +
-    (APP ? '<div class="actions"><button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' +
-      '<a class="btn f" href="#/settings/updates" data-key="dev-upd">Versioni e aggiornamenti</a></div>' : '') +
-    '</div>' +
+  // Questo dispositivo: come arriva al server (locale / online) e preferenze di visione
+  // (l'app Android ha la sua area; sulla TV anche il QR per il telefono)
+  return settingsShell('device', 'Collegamento e visione', '',
+    connectionPanel(i) + devicePanel() +
     (TV ? await apkPanel('App sul telefono') : '') + phoneTvPanel());
+}
+
+// Il collegamento di questo dispositivo al server aperto: quale, a che indirizzo,
+// e se e' locale (stessa rete o questo PC, senza Internet) o online (via Internet)
+function connectionPanel(i) {
+  var k = hereReach();
+  var base = CENTRAL ? C.base : location.origin;
+  var change = APP && !CENTRAL ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>'
+    : CENTRAL || (auth && auth.cloud) ? '<a class="btn f" href="#/server" data-key="dev-server">Cambia server</a>' : '';
+  return '<div class="panel"><h2>Collegamento</h2>' +
+    '<dl class="kv"><dt>Server</dt><dd><b>' + esc(srvLabel()) + '</b><small class="num">' + esc(String(base).replace(/^https?:\/\//, '')) + '</small></dd>' +
+    (REACH[k] ? '<dt>Come ci arrivi</dt><dd>' + reachTag(k) + ' ' + esc(REACH[k].how) + '</dd>' : '') + '</dl>' +
+    (REACH[k] ? '<p class="kvnote">' + esc(REACH[k].note) + '</p>' : '') +
+    (change ? '<div class="actions">' + change + '</div>' : '') + '</div>';
+}
+
+// L'app Android installata qui (APK): la sua versione e il suo aggiornamento. Si usa
+// nelle impostazioni del server (area «App Android» / «App TV») e in quelle dell'app
+// della PWA centrale (#/app, anche senza un server: i = {}).
+function appUpdatePanel(i) {
+  var latest = appLatest(i), old = appOld(i);
+  var where = TV ? 'questa TV' : 'questo dispositivo';
+  var can = old && !OLD_TV_APP && typeof tvApp.update === 'function';
+  return '<div class="panel"><h2>' + appLabel() + '<small> · ' + where + '</small></h2>' +
+    '<dl class="kv"><dt>Versione installata</dt><dd><b class="num">' + esc(appVer()) + '</b>' +
+      (old ? ' · <span class="nodot">' + esc(appWhere().toLowerCase() + (latest.name || 'più nuova')) + '</span>' : (latest.code ? ' · aggiornata' : '')) + '</dd></dl>' +
+    '<p class="kvnote">Qui si aggiorna solo l\'app installata su ' + where + ', non il server. ' +
+      (selfUpdating() ? 'Le versioni nuove arrivano da sole, anche senza aggiornare il server. ' : 'La versione nuova arriva dal server sul PC. ') +
+      'Le pagine di BunkerPlex invece non vanno aggiornate: arrivano sempre nuove.</p>' +
+    (i.api && serverTooOld(i) ? '<p class="nodot">Questa app è più nuova del server: aggiorna il server (Server → Aggiornamenti) per usare tutte le funzioni.</p>' : '') +
+    '<div class="actions">' + (can ? '<button class="btn primary f" data-act="cappupdate" data-key="cappupdate">Aggiorna l\'app</button>' : '') +
+      '<button class="btn' + (old && !can ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button></div></div>';
 }
 
 // Dall'app Android sul telefono: installa l'app TV sulle TV di casa con adb,
@@ -4419,7 +4578,8 @@ function myPcsPanel(af) {
   if (!af || !af.linked || af.supported === false || !af.mine) return '';
   var rows = af.mine.map(function (m) {
     var st = m.online === false ? dot(false) + ' ' + esc(m.error || 'spento o non raggiungibile')
-      : m.online ? dot(true) + ' collegato' + (m.route === 'lan' ? ' dalla rete di casa' : m.route === 'tailscale' ? ' da Tailscale' : '')
+      : m.online ? dot(true) + ' collegato' + (m.route === 'lan' ? ' nella stessa rete ' + reachTag('lan')
+        : m.route === 'tailscale' ? ' via Internet (Tailscale) ' + reachTag('net') : m.route ? ' via Internet ' + reachTag('net') : '')
         : 'collegamento in corso…';
     myPcNames[m.n] = m.name || 'il tuo altro PC';
     var upd = m.online && m.n != null
@@ -4432,7 +4592,8 @@ function myPcsPanel(af) {
   return '<div class="panel"><h2>I tuoi PC</h2>' +
     (af.self_reach ? (rows ? '<div class="lib">' + rows + '</div>' : '<p>Nessun altro PC acceso con il tuo account, per ora.</p>') : '') +
     swRow('Raggiungi le tue raccolte dagli altri tuoi PC', !!af.self_reach, 'data-act="afself" data-arg="' + (af.self_reach ? 0 : 1) + '" data-key="afself"', state) +
-    '<p class="kvnote">In casa si passa dalla rete di casa (più veloce, anche senza Internet); fuori casa da Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
+    '<p class="kvnote">' + reachTag('lan') + ' nella stessa rete: più veloce, anche senza Internet. ' + reachTag('net') +
+      ' via Internet con Tailscale, cifrato. Solo i PC dove sei entrato con il tuo account.</p></div>';
 }
 
 // I dispositivi dell'account nella rete di BunkerPlex: PC e app fuori casa, al massimo 4.
@@ -5852,7 +6013,7 @@ function tvCall(name) {
 }
 
 function startUpdate() {
-  openPicker('Scarico l\'aggiornamento… 0%', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
+  openPicker('Scarico l\'aggiornamento dell\'' + appLabel(true) + '… 0%', [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
   modalState.update = true;
   tvApp.update();
 }
@@ -5880,7 +6041,7 @@ function offerUpdate(i, manual) {
     }
     var mine = +tvCall('getVersion') || 0;
     var canUpdate = !OLD_TV_APP && typeof tvApp.update === 'function';
-    if (canUpdate && latest.code <= mine) { if (manual) toast('L\'app è già aggiornata'); return; }
+    if (canUpdate && latest.code <= mine) { if (manual) toast('L\'' + appLabel(true) + ' è già aggiornata'); return; }
     if (!manual) {
       if (updateLater === latest.code) return;
       // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
@@ -5903,10 +6064,10 @@ function offerUpdate(i, manual) {
     }
     // Senza un server aperto (impostazioni dell'app dall'accesso) non si sa quale API abbia
     var needs = i.api && (latest.min_api || 1) > i.api ? ' Richiede anche di aggiornare il server.' : '';
-    openPicker('È disponibile un aggiornamento dell\'app BunkerPlex' + name + '.' + needs + ' Vuoi installarlo adesso?',
+    openPicker('È disponibile un aggiornamento dell\'' + appLabel(true) + ' BunkerPlex' + name + ', l\'app installata su ' + (TV ? 'questa TV' : 'questo dispositivo') + '.' + needs + ' Vuoi installarlo adesso?',
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startUpdate();
-        else { updateLater = latest.code; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
+        else { updateLater = latest.code; toast('Puoi aggiornare l\'' + appLabel(true) + ' quando vuoi da Impostazioni → ' + appLabel()); }
       });
 }
 
@@ -5914,7 +6075,7 @@ function offerUpdate(i, manual) {
 window.fpUpdate = function (state, value) {
   var mine = modalState && modalState.update;
   if (state === 'progress') {
-    if (mine) modal.querySelector('h3').textContent = 'Scarico l\'aggiornamento… ' + value + '%';
+    if (mine) modal.querySelector('h3').textContent = 'Scarico l\'aggiornamento dell\'' + appLabel(true) + '… ' + value + '%';
     return;
   }
   if (mine) closeModal(true);
@@ -5989,25 +6150,25 @@ function changelogPanel(u) {
   return '<div class="panel"><h2>Novità delle ultime versioni</h2><div class="lib">' + rows + '</div></div>';
 }
 
-function updatePanel(u) {
+function updatePanel(u, title) {
   if (!u || !u.enabled) return '';
   var state;
   if (u.access === false) state = dot(false) + ' Questo PC non ha ancora l\'accesso al repository privato degli aggiornamenti (<b>' + esc(u.repo) + '</b>).';
   else if (u.error) state = dot(false) + ' ' + esc(u.error);
   else if (u.phase === 'pc') state = dot(false) + ' Aggiornamento in corso sul PC: scarico le novità e riallineo Docker…';
   else if (u.phase === 'host') state = dot(false) + ' Aggiornamento scaricato: per completarlo rilancia <b>Installa BunkerPlex</b> sul computer.';
-  else if (u.available) state = dot(false) + ' È disponibile un aggiornamento' + updateWhat(u) + '.';
-  else if (u.checked_at) state = dot(true) + ' BunkerPlex è aggiornato.';
+  else if (u.available) state = dot(false) + ' È disponibile un aggiornamento del server' + updateWhat(u) + '.';
+  else if (u.checked_at) state = dot(true) + ' Il server è aggiornato.';
   else state = 'Il primo controllo parte un paio di minuti dopo l\'avvio.';
   var when = updateTime(u.checked_at);
   var hours = u.check_hours === 24 ? 'una volta al giorno' : 'ogni ' + u.check_hours + ' ore';
-  return '<div class="panel"><h2>Aggiornamenti</h2>' +
+  return '<div class="panel"><h2>' + esc(title || 'Aggiornamenti del server') + '</h2>' +
     '<p>' + state + (when ? ' Ultimo controllo: ' + esc(when) + '.' : '') + '</p>' +
     '<p>Il server controlla da solo ' + hours + (u.auto
       ? ' e installa le novità quando nessuno sta guardando un video.'
       : ': ti avvisa, e decidi tu quando installare.') +
       (u.agent
-        ? ' Sul PC è acceso l\'aiutante degli aggiornamenti: da qui, dalla TV o dal telefono si aggiorna tutto, Docker e pacchetti compresi' +
+        ? ' Sul PC è acceso l\'aiutante degli aggiornamenti: da qui, dalla TV o dal telefono si aggiorna tutto il server, Docker e pacchetti compresi' +
           (u.dev_copy ? ' (questa è la copia di sviluppo: il programma lo aggiorna git).' : '.')
         : (u.dev_copy ? ' Questa è la copia di sviluppo e l\'aiutante sul PC è spento: da qui arriva solo l\'app per la TV. Rilancia «Installa BunkerPlex» sul computer per riaccenderlo.'
                       : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Installa BunkerPlex».')) + '</p>' +
@@ -6029,7 +6190,7 @@ function updatePanel(u) {
 function watchServerUpdate() {
   serverUpdating = true;
   var down = false, tries = 0;
-  openPicker('Aggiorno BunkerPlex… di solito basta un minuto, se c\'è da ricostruire Docker qualcuno in più. Il server si riaccende da solo.',
+  openPicker('Aggiorno il server BunkerPlex sul PC… di solito basta un minuto, se c\'è da ricostruire Docker qualcuno in più. Il server si riaccende da solo.',
     [{ value: 'bg', label: 'Continua in sottofondo' }], '-', function () {});
   modalState.serverUpdate = true;
   var timer = setInterval(function () {
@@ -6050,7 +6211,7 @@ function watchServerUpdate() {
       } else if (u.error) {
         openPicker('Aggiornamento non riuscito: ' + u.error, [{ value: 'ok', label: 'Chiudi' }], 'ok', function () {});
       } else {
-        toast('BunkerPlex è aggiornato');
+        toast('Il server BunkerPlex è aggiornato');
         if (/^#\/settings/.test(location.hash)) render();
         if (APP && !selfUpdating()) setTimeout(checkUpdate, 1500);     // e' arrivata una nuova app per la TV?
       }
@@ -6077,11 +6238,11 @@ function checkServerUpdate() {
     if (serverUpdateLater === sig) return;
     // Non si sovrappone a un film o a un'altra finestra: riprova tra poco
     if (player || !modal.hidden || /^#\/play/.test(location.hash)) { setTimeout(checkServerUpdate, 60000); return; }
-    openPicker('È disponibile un aggiornamento di BunkerPlex' + updateWhat(u) + '. Vuoi installarlo adesso?' +
+    openPicker('È disponibile un aggiornamento del server BunkerPlex' + (auth && auth.pc ? ' «' + auth.pc + '»' : '') + updateWhat(u) + '. Vuoi installarlo adesso?' +
       (TV ? ' Si aggiorna il server sul PC; se c\'è una nuova app, subito dopo la TV propone di installarla.' : ''),
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startServerUpdate();
-        else { serverUpdateLater = sig; toast('Puoi aggiornare quando vuoi da Impostazioni'); }
+        else { serverUpdateLater = sig; toast('Puoi aggiornare il server quando vuoi da Impostazioni → Aggiornamenti'); }
       });
   }).catch(function () {});
 }
@@ -7891,17 +8052,18 @@ function activityState() {
   if (i.scanning) {
     ops.push({ key: 'scan', title: 'Lettura dei titoli', text: scanLabel(i.message), pct: scanProgress(i.message), href: '#/settings/catalog' });
   }
+  var srv = auth && auth.pc ? ' · ' + auth.pc : '';
   if (u && u.phase === 'pc') {
-    ops.push({ key: 'upd', title: 'Aggiornamento di BunkerPlex', text: 'Scarico le novità e riallineo Docker…', pct: null, href: '#/settings/updates' });
+    ops.push({ key: 'upd', title: 'Aggiornamento del server' + srv, text: 'Scarico le novità e riallineo Docker…', pct: null, href: '#/settings/updates' });
   }
   if (u && u.phase === 'host') {
-    notes.push({ key: 'updhost', title: 'Aggiornamento da completare', text: 'Rilancia «Installa BunkerPlex» sul computer', href: '#/settings/updates' });
+    notes.push({ key: 'updhost', title: 'Aggiornamento del server da completare', text: 'Rilancia «Installa BunkerPlex» sul computer', href: '#/settings/updates' });
   } else if (i.update && !(u && u.phase)) {
-    notes.push({ key: 'upd', title: 'Aggiornamento disponibile', text: 'Installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+    notes.push({ key: 'upd', title: 'Aggiornamento del server disponibile', text: 'Server' + srv + ': installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
   if (i.updated) {
     var ch = i.updated.changes || [];
-    notes.push({ key: 'updated:' + i.updated.to, title: 'BunkerPlex è stato aggiornato', href: '#/news',
+    notes.push({ key: 'updated:' + i.updated.to, title: 'Il server' + srv + ' è stato aggiornato', href: '#/news',
       text: ch.length ? ch[0] + (ch.length > 1 ? ' e altre ' + (ch.length - 1) + ' novità' : '') : 'Guarda cosa c\'è di nuovo' });
   }
   if (i.duplicates) {
@@ -7936,7 +8098,7 @@ function activityState() {
   var s = syncState();
   if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
   if (appOld(i)) {
-    notes.push({ key: 'tvapp:' + appLatest(i).code, title: 'Nuova versione dell\'app BunkerPlex', text: 'Aggiornala da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+    notes.push({ key: 'tvapp:' + appLatest(i).code, title: 'Nuova versione dell\'' + appLabel(true), text: 'Aggiornala da Impostazioni → ' + appLabel(), href: '#/settings/app' });
   }
   return { ops: ops, notes: notes, news: i.notices || [] };
 }
@@ -8097,12 +8259,15 @@ function renderServerButton(btn) {
   btn.hidden = !show;
   if (!show) return;
   var name = serverName();
-  var html = ICON_SERVER + '<span class="srvname">' + esc(name) + '</span>';
+  // Locale / online: come arriva questo dispositivo al server aperto (non a quello di un
+  // amico sfogliato da qui, che passa comunque da questo server)
+  var k = /^f\d+$/.test(serverSrc()) ? '' : hereReach();
+  var html = ICON_SERVER + '<span class="srvname">' + esc(name) + '</span>' + reachTag(k);
   if (btn.getAttribute('data-sig') !== html) {
     btn.innerHTML = html;
     btn.setAttribute('data-sig', html);
   }
-  btn.setAttribute('aria-label', 'Server: ' + name + '. Cambia server');
+  btn.setAttribute('aria-label', 'Server: ' + name + (REACH[k] ? ', ' + REACH[k].tag.toLowerCase() + ' (' + REACH[k].how + ')' : '') + '. Cambia server');
   btn.title = 'Cambia server';
 }
 
@@ -8141,7 +8306,7 @@ function announceUpdate(u) {
   try { seen = localStorage.getItem('fpNews') || ''; } catch (e) { /* niente */ }
   if (seen === u.to) return;
   try { localStorage.setItem('fpNews', u.to); } catch (e) { /* niente */ }
-  toast('BunkerPlex è stato aggiornato: le novità sono nella campanella in alto');
+  toast('Il server BunkerPlex è stato aggiornato: le novità sono nella campanella in alto');
 }
 
 // La pagina delle novita' dell'ultimo aggiornamento
@@ -8150,13 +8315,13 @@ async function newsPage() {
   var u = i.updated;
   if (!u) {
     return '<div class="page"><div class="panel"><h1>Novità</h1><p>Nessun aggiornamento negli ultimi giorni. ' +
-      'La versione installata e gli aggiornamenti sono in Impostazioni → Aggiornamenti.</p>' +
+      'La versione del server e i suoi aggiornamenti sono in Impostazioni → Aggiornamenti.</p>' +
       '<div class="actions"><a class="btn f" href="#/settings/updates" data-key="news-upd">Impostazioni → Aggiornamenti</a></div></div></div>';
   }
   var when = new Date(u.at * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
   var list = (u.changes || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');
-  return '<div class="page"><div class="panel"><h1>BunkerPlex è stato aggiornato</h1>' +
-    '<p>Il ' + esc(when) + ' (versione ' + esc(u.to) + ').</p>' +
+  return '<div class="page"><div class="panel"><h1>Il server è stato aggiornato</h1>' +
+    '<p>BunkerPlex sul PC ' + esc(srvLabel()) + ', il ' + esc(when) + ' (versione ' + esc(u.to) + ').</p>' +
     (list ? '<h2>Novità</h2><ul class="news">' + list + '</ul>' : '<p>L\'elenco delle novità non è ancora arrivato da GitHub: riprova tra qualche minuto.</p>') +
     '<div class="actions"><a class="btn primary f" data-autofocus href="#/home" data-key="news-home">Torna alla Home</a></div></div></div>';
 }
