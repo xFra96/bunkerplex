@@ -324,8 +324,15 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
 
 **App TV** (`android/tv`, `Access.kt` sezione «Con l'account»):
 - All'apertura: con l'account → elenco dei server del servizio (e si torna da soli sul server di prima);
-  senza → «Entra con il tuo account» (nome o email e password, oppure Google con indirizzo e codice da
-  aprire sul telefono) o «Collega un server senza account» (la ricerca di prima). Chi aveva già un server
+  senza → «Entra dal telefono»: QR e codice. **Sulla TV non si scrive mai la password.** La TV chiede
+  `POST /tv/start` (codice di 8 caratteri + segreto `poll`, 10 minuti), mostra il QR di
+  `<servizio>/#/tv/<codice>` (disegnato nell'app con zxing) e l'indirizzo corto `<servizio>/tv` col codice
+  da scrivere a mano. Sul telefono la PWA fa entrare come sempre (password, Google, link via email,
+  password provvisoria), poi «Collega come …» (`POST /tv/<codice>` con l'account). La TV chiede
+  `POST /tv/poll` ogni 2,5 s e riceve il gettone (sessione `tv`, una volta sola). Anche remote.html e
+  l'interfaccia web in modalità TV mandano al QR invece di chiedere la password. Con un server di casa
+  senza servizio, l'abbinamento resta quello del server (`/api/auth/pair`, QR verso la rete di casa),
+  che senza Internet accetta l'ultima password usata su quel PC. Chi aveva già un server
   scelto a mano continua come prima. (Il pulsante «Collega un server senza account» non c'è più: vedi
   «Senza Internet».)
 - Collegamento: nome https di casa, `http://<IP di casa>:32500` (dall'indirizzo che il server dà al

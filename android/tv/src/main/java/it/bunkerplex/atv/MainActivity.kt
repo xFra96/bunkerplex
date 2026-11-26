@@ -66,7 +66,6 @@ import org.json.JSONObject
 sealed class Screen {
     data object Connect : Screen()
     data object Who : Screen()
-    data class Password(val id: Int, val name: String) : Screen()
     data object Home : Screen()
     data class Detail(val kind: String, val id: Int) : Screen()
     data class Library(val id: Int, val name: String) : Screen()
@@ -76,14 +75,11 @@ sealed class Screen {
     data object Settings : Screen()
     data object NewVersion : Screen()
     data object Account : Screen()
-    data class Login(val name: String?, val google: Boolean) : Screen()
     data object Phone : Screen()
     data class Link(val google: Boolean) : Screen()
     data object Servers : Screen()
     data object CloudLogin : Screen()
-    data object CloudGoogle : Screen()
     data object Watchers : Screen()
-    data class Reset(val email: String) : Screen()
     data class Google(val link: Boolean) : Screen()
     data object NewPassword : Screen()
     data class Conflicts(val json: String) : Screen()
@@ -136,7 +132,6 @@ class MainActivity : ComponentActivity() {
                 when (top) {
                     Screen.Connect -> ConnectScreen()
                     Screen.Who -> key(refresh) { WhoScreen() }
-                    is Screen.Password -> PasswordScreen(top)
                     Screen.Home -> HomeScreen(this@MainActivity, refresh)
                     is Screen.Detail -> DetailScreen(this@MainActivity, top, refresh)
                     is Screen.Library -> LibraryScreen(this@MainActivity, top, refresh)
@@ -146,16 +141,13 @@ class MainActivity : ComponentActivity() {
                     Screen.Settings -> SettingsScreen(this@MainActivity, refresh)
                     Screen.NewVersion -> NewVersionScreen(this@MainActivity)
                     Screen.Account -> AccountScreen(this@MainActivity, refresh)
-                    is Screen.Login -> LoginScreen(this@MainActivity, top)
                     is Screen.Link -> LinkScreen(this@MainActivity, top.google)
                     Screen.Servers -> key(refresh) {
                         if (CloudTv.on(this@MainActivity)) CloudServersScreen(this@MainActivity, refresh)
                         else ServersScreen(this@MainActivity, refresh)
                     }
                     Screen.CloudLogin -> CloudLoginScreen(this@MainActivity)
-                    Screen.CloudGoogle -> CloudGoogleScreen(this@MainActivity)
                     Screen.Watchers -> WatchersScreen(this@MainActivity)
-                    is Screen.Reset -> ResetScreen(this@MainActivity, top)
                     Screen.Phone -> LinkScreen(this@MainActivity, false)
                     is Screen.Google -> GoogleScreen(this@MainActivity, top)
                     Screen.NewPassword -> NewPasswordScreen(this@MainActivity)
@@ -342,6 +334,7 @@ class MainActivity : ComponentActivity() {
         when (intent.getStringExtra("go")) {
             "home" -> reset(if (CloudTv.on(this)) Screen.Servers else if (Api.home.isEmpty()) Screen.Connect else Screen.Who)
             "setup" -> reset(Screen.Connect)
+            "login" -> reset(Screen.CloudLogin)
         }
     }
 
@@ -476,7 +469,7 @@ class MainActivity : ComponentActivity() {
                     }
                     msg?.let { Txt(it, Modifier.padding(top = 16.dp), color = C.warn, lines = 2) }
                     Row(Modifier.padding(top = 34.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        if (s.optBoolean("cloud")) Btn("Entra con un account") { go(Screen.Login(null, s.optBoolean("google"))) }
+                        if (s.optBoolean("cloud")) Btn("Entra dal telefono") { go(Screen.Phone) }
                         Btn("Cambia server") { reset(Screen.Connect) }
                     }
                     LaunchedEffect(profiles.size) { if (profiles.isNotEmpty()) fr.requestFocus() }
@@ -492,7 +485,7 @@ class MainActivity : ComponentActivity() {
         val quick = p.optBoolean("quick")
         FocusBox(modifier, onClick = {
             val id = p.optInt("id")
-            if (!quick) go(Screen.Password(id, name))
+            if (!quick) go(Screen.Phone)                  // con l'account si entra dal telefono
             else Thread {
                 try {
                     val (body, token) = Api.post("/api/auth/profile", JSONObject().put("id", id).put("device", "tv"))
@@ -517,35 +510,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    @Composable
-    private fun PasswordScreen(p: Screen.Password) {
-        var password by remember { mutableStateOf("") }
-        var msg by remember { mutableStateOf<String?>(null) }
-        val fr = remember { FocusRequester() }
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(Modifier.width(520.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Face(p.name, 96.dp)
-                Title(p.name, Modifier.padding(top = 18.dp), size = 30.sp, lines = 1)
-                Txt("Scrivi la password", Modifier.padding(top = 6.dp), color = C.ink2)
-                Box(Modifier.padding(top = 26.dp)) {
-                    Field(password, { password = it }, "Password", Modifier.focusRequester(fr), secret = true) {
-                        Thread {
-                            try {
-                                val (body, token) = Api.post("/api/auth/login",
-                                    JSONObject().put("username", p.name).put("password", password).put("device", "tv"))
-                                runOnUiThread { entered(body, token) }
-                            } catch (e: Exception) {
-                                runOnUiThread { msg = e.message }
-                            }
-                        }.start()
-                    }
-                }
-                msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-            }
-        }
-        LaunchedEffect(Unit) { fr.requestFocus() }
     }
 }
 

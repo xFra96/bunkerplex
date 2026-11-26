@@ -292,3 +292,38 @@ class IndirizzoPubblico(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AbbinamentoSenzaInternet(unittest.TestCase):
+    """La TV entra dal telefono anche quando il PC non raggiunge il servizio account:
+    vale l'ultima password usata su questo PC (come /api/auth/login)."""
+
+    def setUp(self):
+        prepara()
+        ver = app.accounts.verifier("anna", "segreta1")
+        con = app.db(raw=True)
+        con.execute("UPDATE users SET vsalt='ab', vcheck=? WHERE name='anna'",
+                    (app.hashlib.sha256(("ab" + ver).encode()).hexdigest(),))
+        con.commit()
+        con.close()
+        self.code = "ABC234"
+        with app.pairs_lock:
+            app.pairs[self.code] = {"at": time.time(), "token": None}
+
+    def conferma(self, password):
+        async def body(_):
+            return {"username": "anna", "password": password}
+        with mock.patch.object(app, "read_json", side_effect=body), \
+                mock.patch.object(app.accounts, "call", side_effect=app.accounts.CloudOffline()), \
+                mock.patch.object(app, "auth_on", return_value=True):
+            return asyncio.run(app.auth_pair_finish(self.code, None))
+
+    def test_password_giusta_entra(self):
+        self.assertEqual(self.conferma("segreta1")["name"], "anna")
+        r = app.auth_pair_poll(self.code)
+        self.assertTrue(json.loads(r.body)["done"])
+
+    def test_password_sbagliata_no(self):
+        with self.assertRaises(app.HTTPException) as e:
+            self.conferma("sbagliata")
+        self.assertEqual(e.exception.status_code, 503)

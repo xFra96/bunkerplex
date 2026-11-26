@@ -113,6 +113,23 @@ object Remote {
         return text
     }
 
+    /** La TV entra dal telefono: un codice (e l'indirizzo per il QR) da confermare nella PWA. */
+    fun tvStart(ctx: Context): JSONObject {
+        prefs(ctx).edit().remove("cloud_token").apply()
+        return JSONObject(call(ctx, "POST", "/tv/start",
+            JSONObject().put("device", "TV " + (Build.MODEL ?: "Android")).toString()))
+    }
+
+    /** Confermato dal telefono? Allora il gettone dell'account resta alla TV (true). */
+    fun tvPoll(ctx: Context, poll: String): Boolean {
+        val res = JSONObject(call(ctx, "POST", "/tv/poll", JSONObject().put("poll", poll).toString()))
+        val token = res.optString("token")
+        if (token.isEmpty()) return false
+        prefs(ctx).edit().putString("cloud_token", token)
+            .putString("cloud_user", res.optJSONObject("user")?.optString("username") ?: "").apply()
+        return true
+    }
+
     fun logout(ctx: Context) {
         prefs(ctx).edit().remove("cloud_token").apply()
         stopNet()

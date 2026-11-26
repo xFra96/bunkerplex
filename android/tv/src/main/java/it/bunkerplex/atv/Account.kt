@@ -44,9 +44,9 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Account, nativo: entrare con nome e password, dal telefono (QR) o con Google,
- * la pagina dell'account, la password nuova al primo accesso e la scelta fra
- * impostazioni diverse. Le stesse API e gli stessi testi del web.
+ * Account, nativo: entrare dal telefono (QR) o con Google (sempre dal telefono:
+ * sulla TV non si scrive mai la password dell'account), la pagina dell'account,
+ * la password nuova al primo accesso e la scelta fra impostazioni diverse.
  */
 
 fun MainActivity.toast(text: String) = runOnUiThread { Toast.makeText(this, text, Toast.LENGTH_LONG).show() }
@@ -67,126 +67,6 @@ private fun Center(width: Dp = 640.dp, content: @Composable () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------- Nome e password
-
-@Composable
-fun LoginScreen(act: MainActivity, s: Screen.Login) {
-    var name by remember { mutableStateOf(s.name ?: "") }
-    var pass by remember { mutableStateOf("") }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    val fr = remember { FocusRequester() }
-    val passFr = remember { FocusRequester() }
-    fun send() {
-        if (name.isBlank() || pass.isEmpty()) { msg = "Scrivi nome utente (o email) e password"; return }
-        if (busy) return
-        busy = true
-        msg = "Entro…"
-        Thread {
-            try {
-                val (body, token) = Api.post("/api/auth/login",
-                    JSONObject().put("username", name.trim()).put("password", pass).put("device", "tv"))
-                act.runOnUiThread { act.entered(body, token) }
-            } catch (e: Exception) {
-                act.runOnUiThread { msg = e.message; busy = false }
-            }
-        }.start()
-    }
-    Center {
-        Title(if (s.name != null) "Password di ${s.name}" else "Entra con un account", size = 32.sp, lines = 1)
-        Txt(
-            if (s.name != null) "Scrivi la password del tuo account per riprendere la sincronizzazione."
-            else "Visti, lista, raccolte e impostazioni sono del tuo account e ti seguono su ogni PC e TV.",
-            Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 3,
-        )
-        if (s.name == null) {
-            Field(name, { name = it }, "Nome utente o email", Modifier.focusRequester(fr)) { runCatching { passFr.requestFocus() } }
-            Box(Modifier.padding(top = 12.dp))
-        }
-        Field(pass, { pass = it }, "Password", Modifier.focusRequester(passFr), secret = true) { send() }
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Btn("Entra", primary = true) { send() }
-            if (s.name == null) Btn("Entra dal telefono") { act.go(Screen.Phone) }
-            if (s.google && s.name == null) Btn("Entra con Google") { act.go(Screen.Google(false)) }
-        }
-        Row(Modifier.padding(top = 14.dp)) {
-            Btn("Password dimenticata?") { act.go(Screen.Reset(if ("@" in name) name.trim() else "")) }
-        }
-    }
-    AutoFocus(if (s.name == null) fr else passFr)
-}
-
-// ---------------------------------------------------------------- Password dimenticata
-
-/** Un codice all'email dell'account, poi la password nuova: si entra subito. */
-@Composable
-fun ResetScreen(act: MainActivity, s: Screen.Reset) {
-    var email by remember { mutableStateOf(s.email) }
-    var sent by remember { mutableStateOf(false) }
-    var code by remember { mutableStateOf("") }
-    var pass by remember { mutableStateOf("") }
-    var pass2 by remember { mutableStateOf("") }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    val fr = remember { FocusRequester() }
-    val passFr = remember { FocusRequester() }
-    val pass2Fr = remember { FocusRequester() }
-    fun work(text: String, job: () -> Unit) {
-        if (busy) return
-        busy = true
-        msg = text
-        Thread {
-            try { job() } catch (e: Exception) { act.runOnUiThread { msg = e.message; busy = false } }
-        }.start()
-    }
-    fun sendCode() {
-        if (!email.contains("@")) { msg = "Scrivi l'email del tuo account"; return }
-        work("Mando il codice…") {
-            Api.post("/api/auth/reset/start", JSONObject().put("email", email.trim()))
-            act.runOnUiThread { sent = true; busy = false; msg = null; code = "" }
-        }
-    }
-    fun finish() {
-        val digits = code.filter { it.isDigit() }
-        if (digits.length != 6) { msg = "Il codice ha 6 cifre: lo trovi nell'email"; return }
-        if (pass.length < 8) { msg = "La password nuova deve avere almeno 8 caratteri"; return }
-        if (pass != pass2) { msg = "Le due password nuove non sono uguali"; return }
-        work("Salvo…") {
-            val (body, token) = Api.post("/api/auth/reset/finish", JSONObject().put("email", email.trim())
-                .put("code", digits).put("password", pass).put("device", "tv"))
-            act.runOnUiThread { act.entered(body, token) }
-        }
-    }
-    Center {
-        Title("Password dimenticata", size = 32.sp, lines = 1)
-        if (!sent) {
-            Txt("Scrivi l'email del tuo account: ti mando un codice per scegliere una password nuova.",
-                Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 3)
-            Field(email, { email = it }, "Email", Modifier.focusRequester(fr), keyboard = KeyboardType.Email) { sendCode() }
-        } else {
-            Txt("Se $email è l'email di un account, ti è arrivato un codice di 6 cifre (guarda anche nella posta indesiderata). Vale 15 minuti.",
-                Modifier.padding(top = 8.dp, bottom = 24.dp), color = C.ink2, lines = 4)
-            Field(code, { code = it }, "Codice", Modifier.focusRequester(fr), keyboard = KeyboardType.Number) { runCatching { passFr.requestFocus() } }
-            Box(Modifier.padding(top = 12.dp))
-            Field(pass, { pass = it }, "Password nuova (almeno 8 caratteri)", Modifier.focusRequester(passFr), secret = true) { runCatching { pass2Fr.requestFocus() } }
-            Box(Modifier.padding(top = 12.dp))
-            Field(pass2, { pass2 = it }, "Ripeti la password nuova", Modifier.focusRequester(pass2Fr), secret = true) { finish() }
-        }
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 22.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (!sent) Btn("Mandami il codice", primary = true) { sendCode() }
-            else {
-                Btn("Salva ed entra", primary = true) { finish() }
-                Btn("Mandalo di nuovo") { sent = false }
-            }
-        }
-    }
-    LaunchedEffect(sent) {
-        repeat(5) { if (runCatching { fr.requestFocus() }.isSuccess) return@LaunchedEffect; withFrameNanos { } }
-    }
-}
-
 // ---------------------------------------------------------------- QR
 
 /** Un QR disegnato dalle righe di 0 e 1 che manda il server (campo "qr"). */
@@ -202,6 +82,16 @@ fun Qr(rows: List<String>, size: Dp) {
             }
         }
     }
+}
+
+/** Le righe di 0 e 1 del QR di un indirizzo, calcolate qui (zxing), senza bordo. */
+fun qrRows(text: String): List<String> = try {
+    val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, 0, 0,
+        mapOf(com.google.zxing.EncodeHintType.MARGIN to 0,
+            com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M))
+    (0 until m.height).map { y -> buildString { for (x in 0 until m.width) append(if (m[x, y]) '1' else '0') } }
+} catch (_: Exception) {
+    emptyList()
 }
 
 private fun JSONArray?.rows(): List<String> = strings()
@@ -515,15 +405,14 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
                 } else Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Btn("Entra dal telefono", at("pair"), primary = true) { act.go(Screen.Phone) }
                     if (s.optBoolean("google")) Btn("Entra con Google") { act.go(Screen.Google(false)) }
-                    Btn("Scrivi nome e password") { act.go(Screen.Login(null, s.optBoolean("google"))) }
                 }
             }
 
-            if (linked && !online) Section("Ridai la password") {
-                Txt("L'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). Qui funziona tutto lo stesso; per riprendere la sincronizzazione scrivi la password.",
+            if (linked && !online) Section("Rientra dal telefono") {
+                Txt("L'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). Qui funziona tutto lo stesso; per riprendere la sincronizzazione rientra dal telefono.",
                     color = C.ink2, lines = 4, lineHeight = 24.sp)
                 Row(Modifier.padding(top = 16.dp)) {
-                    Btn("Scrivi la password", at("relogin"), primary = true) { act.go(Screen.Login(name, false)) }
+                    Btn("Entra dal telefono", at("relogin"), primary = true) { act.go(Screen.Phone) }
                 }
             }
 

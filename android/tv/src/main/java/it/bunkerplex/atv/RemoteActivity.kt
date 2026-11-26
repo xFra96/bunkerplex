@@ -93,6 +93,10 @@ class RemoteActivity : AppCompatActivity() {
         @JavascriptInterface
         fun openSetup() = back("setup")
 
+        /** Entrare con l'account: sulla TV sempre dal telefono (QR dell'app nativa). */
+        @JavascriptInterface
+        fun phoneLogin() = back("login")
+
         @JavascriptInterface
         fun openRemote() = runOnUiThread { web.loadUrl("file:///android_asset/remote.html#friends") }
 

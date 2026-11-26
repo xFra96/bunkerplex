@@ -4213,8 +4213,26 @@ async def auth_pair_finish(code: str, request: Request):
     except accounts.CloudError as ex:
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
+        # Senza Internet: come /api/auth/login, vale l'ultima password usata su questo PC
+        # (la TV non scrive mai la password: senza questo, offline non entrerebbe)
         mark_cloud(False)
-        raise HTTPException(503, "Il PC non raggiunge il servizio account: serve Internet per entrare con un account")
+        con = db(raw=True)
+        try:
+            u = con.execute("SELECT * FROM users WHERE name=? AND cloud_id IS NOT NULL AND vcheck IS NOT NULL",
+                            (name,)).fetchone()
+            ok = u and hmac.compare_digest(hashlib.sha256((u["vsalt"] + ver).encode()).hexdigest(), u["vcheck"])
+            if not ok:
+                raise HTTPException(503, "Il PC non raggiunge il servizio account e su questo PC non risulta "
+                                         "questo accesso: serve Internet")
+            if u["disabled"]:
+                raise HTTPException(403, "Questo account è disattivato: chiedi all'amministratore")
+            token = open_session(con, u["id"], "tv")
+            con.commit()
+        finally:
+            con.close()
+        with pairs_lock:
+            p.update(token=token, user=user_json(u), conflicts=[], name=u["name"])
+        return {"ok": True, "name": u["name"]}
     u, token, conflicts = await complete_login(res, ver, "tv")
     with pairs_lock:
         p.update(token=token, user=user_json(u), conflicts=conflicts, name=u["name"])

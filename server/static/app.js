@@ -272,9 +272,9 @@ function profilesPage() {
     if (p) body = '<h2>Password di ' + esc(p.name) + '</h2><p>Questo account si apre con la sua password.</p>' + accountForm(p.name, true);
   }
   var more = '<div class="actions" style="margin-top:1.4rem">' +
-    (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>' : '') +
-      '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">' + (TV ? 'Scrivi nome e password' : 'Entra con un account') + '</button>' +
-      (mode === 'login' ? '' : googleButton()) : '') +
+    (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>'
+      : '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">Entra con un account</button>' +
+      (mode === 'login' ? '' : googleButton())) : '') +
     (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
   return '<div class="page"><div class="panel login wide"><h1>Chi guarda?</h1>' +
     '<div class="profiles">' + list + '</div>' + (body ? '<div style="margin-top:1.4rem">' + body + '</div>' : '') + more + '</div></div>';
@@ -314,8 +314,8 @@ async function tvLoginPage() {
         '<div class="tvcode num">' + esc(p.code.slice(0, 3)) + '<i></i>' + esc(p.code.slice(3)) + '</div>' +
         '<small>Il codice cambia ogni 10 minuti</small></div>' +
     '</div>' +
-    '<div class="tvmore"><a class="btn f" data-autofocus href="#/login" data-key="tvpw">Usa il telecomando</a>' +
-      (auth.google ? '<a class="btn f" href="#/google" data-key="tvgoogle">' + GOOGLE_G + ' Google</a>' : '') +
+    '<div class="tvmore">' +
+      (auth.google ? '<a class="btn f" data-autofocus href="#/google" data-key="tvgoogle">' + GOOGLE_G + ' Google</a>' : '') +
       (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>' +
     '</div></div>';
 }
@@ -1078,7 +1078,7 @@ function cLoginPage() {
   var L = cache.cLogin;
   var note = C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '';
   if (!L) {
-    return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
+    return authShell('<h1>Accedi</h1><p class="authsub">' + (cTvPending() !== null ? 'con il tuo account BunkerPlex, poi colleghi la TV' : 'con il tuo account BunkerPlex') + '</p>' +
       '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
       '<button class="btn primary block f" data-act="cnext" data-key="cnext">Continua</button>' +
       '<div class="author"><span>oppure</span></div>' +
@@ -1286,11 +1286,62 @@ function cOffline() {
   if (APP && tvApp.resetServer && !cOffline.done) { cOffline.done = true; tvApp.resetServer(); }
 }
 
+// ---- La TV entra dal telefono
+// La TV mostra un QR (#/tv/<codice>) e il codice da scrivere a mano (#/tv). Il codice
+// resta da parte mentre qui si entra con l'account (password, Google, link...), poi
+// si conferma: la TV riceve il gettone dal servizio (vedi /tv/start nel Worker).
+function cTvPending() {
+  try { return sessionStorage.getItem('bpTvCode'); } catch (e) { return cache.cTvCode === undefined ? null : cache.cTvCode; }
+}
+
+function cTvSet(code) {
+  cache.cTvCode = code;
+  try {
+    if (code === null) sessionStorage.removeItem('bpTvCode'); else sessionStorage.setItem('bpTvCode', code);
+  } catch (e) { /* resta in cache */ }
+}
+
+function cTvClean(raw) {
+  return String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+}
+
+async function cTvPage(code) {
+  var who = C.user ? C.user.username : '';
+  var cancel = '<button class="authlink f" data-act="ctvclose" data-key="ctvclose">Annulla</button>';
+  if (cache.cTvDone) {
+    return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Fatto</h1>' +
+      '<p class="authsub"><b>' + esc(cache.cTvDone) + '</b> sta entrando come <b>' + esc(who) + '</b>. Lì scegli il server e chi guarda.</p>' +
+      '<button class="btn primary block f" data-autofocus data-act="ctvclose" data-key="ctvclose">Apri BunkerPlex qui</button>');
+  }
+  var err = '';
+  if (code) {
+    try {
+      var r = await cloud('GET', '/tv/' + code);
+      if (r.done) { cache.cTvDone = r.device; return cTvPage(code); }
+      return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Collega la TV</h1>' +
+        '<p class="authsub">Codice <b class="num">' + esc(code.slice(0, 4) + '-' + code.slice(4)) + '</b> · ' + esc(r.device) + '</p>' +
+        '<p class="authsub">La TV entra con il tuo account, <b>' + esc(who) + '</b>. Se il codice non è quello che vedi sulla TV, annulla.</p>' +
+        '<button class="btn primary block f" data-autofocus data-act="ctvok" data-arg="' + esc(code) + '" data-key="ctvok">Collega come ' + esc(who) + '</button>' +
+        '<button class="authlink f" data-act="ctvother" data-key="ctvother">Usa un altro account</button>' + cancel);
+    } catch (e) { err = e.message; }
+  }
+  return authShell('<h1>Collega una TV</h1><p class="authsub">Scrivi il codice che vedi sulla TV</p>' +
+    '<input class="field f num" id="ctvcode" data-key="ctvcode" data-autofocus maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="ctvgo" placeholder="XXXX-XXXX">' +
+    '<button class="btn primary block f" data-act="ctvgo" data-key="ctvgo">Continua</button>' +
+    (err ? '<p class="authnote">' + esc(err) + '</p>' : '') + cancel);
+}
+
 // Prima di ogni pagina, nella PWA centrale: account, poi server, poi come sempre
 async function cGate() {
   if (APP && !cGate.probed) {
     cGate.probed = true;
     fetch('/', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(cOffline);
+  }
+  var tvm = /^#\/tv(?:\/([A-Za-z0-9-]{1,12}))?$/.exec(location.hash);
+  if (tvm) {
+    cTvSet(cTvClean(tvm[1]));
+    cache.cTvDone = null;
+    location.replace('#/home');
   }
   await cMailLink();
   if (APP && location.hash === '#/app') { lockScreen(true); return cAppPage(); }
@@ -1299,6 +1350,8 @@ async function cGate() {
     return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
+  var tv = cTvPending();
+  if (tv !== null) { lockScreen(true); return cTvPage(tv); }
   if (location.hash === '#/server') {
     cDrop();
     C.sid = '';
@@ -1369,6 +1422,29 @@ function cPickImage() {
 
 function cActions() {
   return {
+    ctvgo: function () {
+      var code = cTvClean(fieldValue('ctvcode'));
+      if (code.length !== 8) { toast('Il codice della TV ha 8 caratteri'); return; }
+      cTvSet(code);
+      render();
+    },
+    ctvok: async function (code) {
+      try {
+        var r = await cloud('POST', '/tv/' + code, {});
+        cache.cTvDone = r.device;
+        lastHtml = '';
+        render();
+      } catch (e) { toast(e.message); }
+    },
+    // Un altro account: si esce da questo (qui) e il codice resta per dopo l'accesso
+    ctvother: function () { cLogout(); },
+    ctvclose: function () {
+      cTvSet(null);
+      cache.cTvDone = null;
+      lastHtml = '';
+      location.replace('#/home');
+      render();
+    },
     cedit: function () { cache.cEdit = !cache.cEdit; lastHtml = ''; render(); },
     clook: function (sid) { cLookSheet(sid); },
     clookset: async function (arg) {
@@ -6467,7 +6543,8 @@ var actions = {
   },
   profile: function (id) {
     post('/auth/profile', { id: +id, device: devName() }).then(enterApp, function (e) {
-      if (/password/.test(e.message)) { cache.whoMode = 'pw:' + id; render(); return; }
+      // Sulla TV la password non si scrive: si entra dal telefono
+      if (/password/.test(e.message)) { if (TV) location.hash = '#/tvlogin'; else { cache.whoMode = 'pw:' + id; render(); } return; }
       toast(e.message);
       loadAuth().then(render);
     });
@@ -7772,6 +7849,8 @@ var routes = [
   // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
   [/^#\/(attiva|reset|entra)\?/, function () { location.replace('#/home'); return ''; }],
   [/^#\/tv$/, tvCodePage],
+  // Il QR della TV (nella PWA centrale lo legge gate(); qui il codice e' di un altro tipo)
+  [/^#\/tv\/[A-Za-z0-9-]+$/, function () { location.replace('#/tv'); return ''; }],
   [/^#\/password$/, function () {
     return settingsShell('account', 'Cambia password', 'Gli altri PC dove sei entrato ti chiederanno la password nuova.',
       '<div class="panel">' +
@@ -7818,8 +7897,8 @@ async function gate() {
       if (location.hash === '#/google' && auth.google) return googlePage(false);
       if (location.hash === '#/reset' && auth.reset) return resetPage();
       if (!auth.cloud || auth.setup) return profilesPage();
-      // La TV parte dal QR e dal codice; nome e password col telecomando solo se li chiedi
-      if (TV && location.hash !== '#/login') return tvLoginPage();
+      // La TV entra sempre dal telefono (QR e codice): mai la password col telecomando
+      if (TV) return tvLoginPage();
       return location.hash === '#/tvlogin' ? tvLoginPage() : loginPage();
     }
   }
