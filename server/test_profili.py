@@ -182,6 +182,7 @@ class Collegamento(unittest.TestCase):
         self.addCleanup(p.stop)
         app.set_server_cred(None)
         app.claim_state.update(code="", poll="", exp=0.0, need=False)
+        app.cloud_v2.update(on=None, error="")
         con = app.db(raw=True)
         con.execute("DELETE FROM users")
         con.commit()
