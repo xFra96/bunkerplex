@@ -64,7 +64,7 @@ Niente più «server principale». Il **servizio centrale** (Cloudflare Worker +
 
 1. **Dominio** su Cloudflare per l'HTTPS di casa (`SERVER_DOMAIN`, `CF_ZONE_ID`, `CF_API_TOKEN`, `ACME_AGREE=yes` nel Worker; provare prima con lo staging di Let's Encrypt in `ACME_DIRECTORY`).
 2. Accesso **da fuori casa**: porta sul router + nome DNS, oppure Tailscale Funnel (oggi resta Tailscale dentro l'app).
-3. Profili «Chi guarda?» nel servizio o per server.
+3. ~~Profili «Chi guarda?» nel servizio o per server.~~ Deciso: nel servizio (vedi `architettura.md` §11).
 4. Visti dei contenuti degli amici (proposta: nel servizio per titolo TMDB).
 5. Tenere o no la modalità senza account.
 
@@ -77,6 +77,6 @@ Niente più «server principale». Il **servizio centrale** (Cloudflare Worker +
 
 ## Note tecniche per chi continua
 
-- Fine riga: `server/app.py` e `server/static/app.js` sono CRLF, `cloud/worker.js` LF; `.gitattributes` non converte niente. Modificandoli con script, conservare i fine riga.
+- Fine riga: quasi tutto LF (`git ls-files --eol`); gli script `.ps1` sono CRLF. `.gitattributes` non converte niente: modificandoli con script, conservare i fine riga.
 - `node --check` su un `.js` con `export` non segnala gli errori: copiare in `.mjs` per controllarlo.
 - Prova completa in locale: `cloud/.dev.vars` con `SETUP_KEY`, `npx wrangler@4 d1 execute bunkerplex --local --file schema.sql`, `npx wrangler@4 dev --local --port 8787`; server con `DATA_CHECK=0 SHARE_PORT=0 SECURE_PORT=0 BUNKERPLEX_CLOUD=http://127.0.0.1:8787 uvicorn app:app --port 32500`; `/setup` per l'amministratore, poi accesso dal server e dalla PWA su `http://127.0.0.1:8787`.

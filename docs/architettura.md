@@ -205,7 +205,7 @@ Ogni fase lascia tutto funzionante; le app esistenti continuano a lavorare fino 
 
 1. **Dominio** per PWA e nomi dei server (necessario per la fase 2).
 2. **Accesso da fuori casa** predefinito: porta aperta sul router + nome DNS, oppure Tailscale Funnel (ha limiti di banda), oppure entrambi.
-3. **Profili "Chi guarda?"**: oggi solo locali al PC; portarli nel cloud (uguali ovunque) o lasciarli per server.
+3. ~~**Profili "Chi guarda?"**~~: deciso, nel servizio account (vedi §11).
 4. **Visti dei contenuti degli amici**: solo nel cloud per titolo TMDB (proposta) o anche sul server dell'amico.
 5. **Modalità senza account** (utente "Casa" senza cloud): mantenerla o richiedere sempre l'account.
 
@@ -345,3 +345,54 @@ nativo riceve il server scelto (`server_base`). Dalla ricerca del server: «Entr
 **Da verificare**: compilazione (qui manca l'SDK Android: la fa `verifica.yml` su una pull request) e prova
 su TV e telefono veri. Perché funzioni in produzione servono il server aggiornato (rami fino a `fase-3`
 su `main`) e il Worker ripubblicato (porta l'`app.js` nuovo).
+
+---
+
+## 11. Account, profili e server (modello Netflix + Plex)
+
+Decisione presa (n. 3 di §6): **i profili stanno nel servizio account**.
+
+```
+Account (servizio, si entra una volta per dispositivo)
+ ├─ Profili: principale (id 0) + fino a 5; nome, avatar, colore, PIN, «bambini»
+ │           visti / ripresa / La mia lista per profilo, uguali su ogni server
+ └─ Server: propri (collegati con il codice) + quelli condivisi dagli amici
+      └─ installazione di BunkerPlex su una macchina (sid) — machine = impronta della macchina
+```
+
+Flusso sui dispositivi: accesso → «Chi guarda?» (dal servizio) → ultimo server o scelta → Home.
+
+**Profili** (`cloud/worker.js` «Profili dell'account», tabelle `profiles`, `pstate`)
+- `GET/POST /profiles`, `PUT/DELETE /profiles/:id`, `POST /profiles/:id/open {pin}` → biglietto firmato
+  ES256 (30 giorni, `typ: profile`) che il server verifica da solo (o con `/server/verify`).
+- PIN di 4 cifre, 5 errori → 5 minuti di blocco. Il principale non si toglie e non è «bambini».
+- `GET/POST /state?profile=<id>`: visti del profilo (il principale resta in `state`).
+- Server (`server/app.py` «Profili dell'account»): copia locale in `profiles` (`cloud_pid`), visti in
+  `user_items` con `user_id = -id locale`, sincronizzati a ogni giro (`sync_profiles`). I profili nati
+  sul server prima (versione di prima) salgono nell'account con i loro visti (si uniscono per nome).
+- Profilo bambini: vede solo le raccolte con «Per bambini» (`PATCH /api/libraries/:id {kids}`), niente
+  gestione né impostazioni.
+- `POST /api/auth/access {token, profile, profile_ticket}`: la sessione nasce già sul profilo scelto
+  sulla PWA o sulla TV.
+
+**Server: collegamento con il codice** (come plex.tv/claim)
+- Un server nuovo non diventa più del primo account che ci entra: chiede un codice (`POST /claim/start`,
+  8 caratteri, 15 minuti), lo mostra (solo nella rete di casa) e il proprietario lo conferma da un suo
+  dispositivo (`POST /claim/:code {name, replace?}`). Il server riceve la credenziale (`POST /claim/poll`).
+  Chi è già entrato sul server con l'account lo collega da lì (`POST /api/server/claim`).
+- `POST /servers/:sid/claim` (automatico, di prima) resta solo per i server che l'account ha già: un sid
+  nuovo riceve 428 e il server mostra «collega con il codice».
+- Il proprietario del server è quello della credenziale (`owner_sql`), non più «il primo entrato».
+- Con la credenziale il server legge/scrive per il proprietario solo `/me`, `/settings`, `/state`,
+  `GET /profiles`, `/profiles/:id/open`: funziona anche se il proprietario è entrato solo dalla PWA o
+  dalla TV (nessuna password data al server).
+
+**Più installazioni** (`machine`)
+- Impronta della macchina: `BUNKERPLEX_MACHINE` passata dagli installer (Windows `MachineGuid`, Mac
+  `IOPlatformUUID`), fuori da Docker `/etc/machine-id` o il registro; salvata nel server, mandata con la
+  presenza (`server_creds.machine`), in `GET /servers` per i propri server.
+- Reinstallazione sullo stesso PC con il server di prima **spento**: al collegamento si propone di
+  sostituirlo; il server nuovo ne prende il sid (nome, aspetto, amici, nome DNS restano). Con il server di
+  prima **acceso**: due server separati, nome diverso obbligatorio, raggruppati per macchina nelle app.
+
+Prove: `node --test cloud/test_worker.mjs`, `python -m unittest test_profili` (in `server/`).
