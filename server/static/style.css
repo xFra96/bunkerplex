@@ -1616,13 +1616,23 @@ body:not(.kb) .atodorow:focus .chev { stroke: #f3dca0; }
 @media (max-width: 900px) { .akpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 html.tv .akpi b { font-size: 2.4rem; }
 
+/* «‹ Impostazioni» in cima a ogni area, ovunque: la Panoramica non e' una voce del menu */
+.settings .sup { display: inline-flex; align-items: center; gap: .35rem; margin: .2rem 0 .6rem -.3rem; padding: .35rem .5rem; border-radius: var(--r);
+  color: var(--accent-text); font-weight: 600; font-size: 1rem; }
+.settings .sup .ic { width: 1.25rem; height: 1.25rem; }
+.settings .sup:focus { background: var(--ink); color: var(--bg); }
+body:not(.kb) .settings .sup:focus { background: transparent; color: var(--accent-text); }
+
+/* La riga a fuoco (frecce, telecomando): testo scuro e ben leggibile sul bianco */
+.sgroup .srow:focus, .sgroup .srow:focus .stext b { color: var(--bg); }
+.sgroup .srow:focus .stext small, .sgroup .srow:focus .sval { color: #33413a; }
+body:not(.kb) .sgroup .srow:focus, body:not(.kb) .sgroup .srow:focus .stext b { color: var(--ink); }
+body:not(.kb) .sgroup .srow:focus .stext small, body:not(.kb) .sgroup .srow:focus .sval { color: var(--ink2); }
+
 /* Telefono (e finestre strette, non la TV): niente menu laterale, «‹ Impostazioni» in alto */
 @media (max-width: 720px) {
   html .sgrid { grid-template-columns: minmax(0, 1fr); gap: 0; }
   html .scol { display: none; }
-  html .sup { display: inline-flex; align-items: center; gap: .35rem; margin: .2rem 0 .6rem -.3rem; padding: .35rem .5rem; border-radius: var(--r);
-    color: var(--accent-text); font-weight: 600; font-size: 1rem; }
-  html .sup .ic { width: 1.25rem; height: 1.25rem; }
   .settings .stitle { font-size: 1.85rem; }
   .soverview, html .sgrid { padding: 0 1rem; }
   .smain .panel { padding: 1.1rem 1.1rem; }
@@ -1637,12 +1647,11 @@ html.tv .akpi b { font-size: 2.4rem; }
   .sgroup .srow.lead .stext small { display: block; white-space: normal; }
 }
 
-/* TV: tutto piu' grande, i gruppi su due colonne, il fuoco ben visibile */
+/* TV: una colonna sola al centro (come le impostazioni di Android TV), niente menu
+   laterale nelle aree, tutto piu' grande; si scorre col telecomando senza buchi */
+html.tv .sgrid.nonav { display: block; max-width: 62rem; }
 @media (min-width: 721px) {
-  html.tv .sgrid { grid-template-columns: 17rem minmax(0, 1fr); }
-  html.tv .snav { min-height: 3.1rem; font-size: 1.02rem; }
-  html.tv .soverview { max-width: none; display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.4rem; align-content: start; }
-  html.tv .soverview > .stitle, html.tv .soverview > .sgroup { grid-column: 1 / -1; }
+  html.tv .soverview { max-width: 62rem; display: block; }
   html.tv .sgroup { display: block; }
   html.tv .sgroup .srow { display: flex; min-height: 4.4rem; padding: .8rem 1.1rem; }
   html.tv .sgroup .stext b { font-size: 1.15rem; }
