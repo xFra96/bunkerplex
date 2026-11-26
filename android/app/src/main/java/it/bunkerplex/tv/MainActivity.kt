@@ -36,8 +36,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Mostra l'interfaccia di BunkerPlex (servita dal PC) e passa i video al
- * player nativo. Al primo avvio cerca da solo il server sulla rete di casa.
+ * Mostra l'interfaccia di BunkerPlex e passa i video al player nativo.
+ * Sul telefono e sul tablet e' sempre BunkerPlex con l'account (la PWA centrale del
+ * servizio account): accesso, server, amici, impostazioni dell'app, a casa e fuori.
+ * Il collegamento diretto al server serve solo senza Internet (ricerca sulla rete di
+ * casa, setup.html). Sulle TV con questa app resta il server scelto a mano e, fuori
+ * casa, remote.html (amici e tuoi PC con Tailscale).
  */
 class MainActivity : AppCompatActivity() {
 
@@ -45,6 +49,8 @@ class MainActivity : AppCompatActivity() {
         private const val ACTION_INSTALL_RESULT = "it.bunkerplex.tv.INSTALL_RESULT"
         /** Linea delle release di questa app su GitHub (app-v1.0, app-v1.1...) */
         private const val RELEASES = "app-v"
+        /** Le impostazioni dell'app quando il servizio account non risponde */
+        private const val APP_SETTINGS = "file:///android_asset/appsettings.html"
     }
 
     private lateinit var web: WebView
@@ -53,6 +59,11 @@ class MainActivity : AppCompatActivity() {
     private var cameFromPlayer = false
     private var onSetup = false
     private var onTvInstall = false
+
+    /** Sulle impostazioni dell'app aperte da setup.html (senza Internet): Indietro torna li' (settingsReturn). */
+    @Volatile
+    private var onAppSettings = false
+    private var settingsReturn = ""
 
     private var server: String?
         get() = prefs.getString("server", null)
@@ -119,6 +130,10 @@ class MainActivity : AppCompatActivity() {
                     onSetup = false
                     TvInstaller.listener = null
                 }
+                // Uscito dalle impostazioni dell'app (per esempio verso la ricerca del server)
+                if (onAppSettings && !url.startsWith(Remote.cloud(this@MainActivity)) && !url.startsWith(APP_SETTINGS)) {
+                    onAppSettings = false
+                }
                 if (clearHistoryOnLoad) {
                     clearHistoryOnLoad = false
                     view.clearHistory()
@@ -127,12 +142,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame && !onSetup) lost()
+                if (!request.isForMainFrame) return
+                if (onAppSettings) appSettingsOffline() else if (!onSetup) lost()
             }
 
             @Deprecated("Usato solo dalle versioni vecchie di Android")
             override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
-                if (!onSetup) lost()
+                if (onAppSettings) appSettingsOffline() else if (!onSetup) lost()
+            }
+
+            // Il servizio account risponde ma con un errore suo (es. 502): come se non rispondesse
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (onAppSettings && request.isForMainFrame && response.statusCode >= 500) appSettingsOffline()
             }
         }
 
@@ -141,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                 // Prima chiede alla pagina (es. per chiudere una finestra di scelta)
                 web.evaluateJavascript("(window.fpBack&&window.fpBack())?1:0") { handled ->
                     if (handled != "1") {
-                        if (web.canGoBack()) web.goBack() else finish()
+                        if (onAppSettings) leaveAppSettings() else if (web.canGoBack()) web.goBack() else finish()
                     }
                 }
             }
@@ -150,8 +171,9 @@ class MainActivity : AppCompatActivity() {
         updateFile.delete()   // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
-        // Senza un server scelto a mano: BunkerPlex con l'account (elenco dei server dal servizio)
-        if (server == null) showCentral() else openServer()
+        // Il server scritto a mano (app di prima) resta come primo da provare senza Internet
+        if (!isTelevision && lastServer == null) server?.let { lastServer = it }
+        showHome()
         Notices.ensure(this)
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
@@ -160,6 +182,12 @@ class MainActivity : AppCompatActivity() {
     private val isTelevision by lazy {
         (getSystemService(UI_MODE_SERVICE) as? UiModeManager)?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+    }
+
+    /** La pagina di partenza: sul telefono sempre BunkerPlex con l'account; sulla TV il
+     *  server scelto a mano, se c'e'. */
+    private fun showHome() {
+        if (isTelevision && server != null) openServer() else showCentral()
     }
 
     /** Apre BunkerPlex dal primo indirizzo che risponde: prima quello di casa, poi
@@ -179,8 +207,13 @@ class MainActivity : AppCompatActivity() {
                 true
             }
             runOnUiThread {
-                if (found == null) {
+                if (found == null && isTelevision) {
                     showRemote("ask")       // niente server in casa: si propongono amici e tuoi PC
+                } else if (found == null) {
+                    // Telefono senza Internet (solo da setup.html): l'indirizzo da scrivere
+                    onSetup = true
+                    web.loadUrl("file:///android_asset/setup.html#manual")
+                    Toast.makeText(this, "Il server non risponde: controlla che il PC sia acceso", Toast.LENGTH_LONG).show()
                 } else {
                     active = found
                     lastServer = found
@@ -196,9 +229,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** La pagina non si carica (es. si e' usciti di casa con l'app aperta): si riprova
-     *  con tutti gli indirizzi, ma una volta sola, poi la schermata di configurazione. */
+    /** La pagina non si carica. Sul telefono: dal server diretto (es. si e' usciti di casa
+     *  con l'app aperta) si torna a BunkerPlex con l'account; se non si carica neanche
+     *  quello (niente Internet) si cerca il server sulla rete di casa. Sulla TV si riprova
+     *  con tutti gli indirizzi, ma una volta sola, poi amici e tuoi PC. */
     private fun lost() {
+        if (!isTelevision) {
+            if (active != null) showCentral() else showSetup(false)
+            return
+        }
         if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showRemote("ask")
     }
 
@@ -218,6 +257,29 @@ class MainActivity : AppCompatActivity() {
         clearHistoryOnLoad = true
         lastOpen = System.currentTimeMillis()
         web.loadUrl(Remote.cloud(this) + "/")
+    }
+
+    /** Le impostazioni dell'app (versione, aggiornamento, notifiche) da setup.html:
+     *  non dipendono da nessun server. Arrivano dal servizio account (#/app
+     *  della PWA centrale, come dall'accesso); se neanche lui risponde resta la pagina
+     *  dentro l'app con versione e aggiornamento. Indietro torna dove si era. */
+    private fun showAppSettings() {
+        if (!onAppSettings) settingsReturn = web.url ?: ""
+        onAppSettings = true
+        onSetup = true
+        web.loadUrl(Remote.cloud(this) + "/#/app")
+    }
+
+    /** Il servizio account non si carica: la pagina dentro l'app (versione e aggiornamento).
+     *  E' un file dell'app, non puo' fallire a sua volta. */
+    private fun appSettingsOffline() = web.loadUrl(APP_SETTINGS)
+
+    private fun leaveAppSettings() {
+        onAppSettings = false
+        val back = settingsReturn.takeIf { it.startsWith("file:///android_asset/") } ?: return showHome()
+        onSetup = true
+        clearHistoryOnLoad = true
+        web.loadUrl(back)
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -536,7 +598,7 @@ class MainActivity : AppCompatActivity() {
         fun tvCancel() = TvInstaller.cancel(this@MainActivity)
 
         @JavascriptInterface
-        fun tvClose() = runOnUiThread { if (web.canGoBack()) web.goBack() else if (server == null) showCentral() else openServer() }
+        fun tvClose() = runOnUiThread { if (web.canGoBack()) web.goBack() else showHome() }
 
         @JavascriptInterface
         fun resetServer() = runOnUiThread { showSetup(false) }
@@ -572,6 +634,23 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun openRemote() = runOnUiThread { showRemote("friends") }
 
+        /** Amici e tuoi PC con Tailscale (remote.html): solo sulle TV, sul telefono c'e' la PWA. */
+        @JavascriptInterface
+        fun remoteAllowed(): Boolean = isTelevision
+
+        /** Da setup.html: le impostazioni dell'app, con qualunque server (o nessuno). */
+        @JavascriptInterface
+        fun openAppSettings() = runOnUiThread { showAppSettings() }
+
+        /** «Indietro» delle impostazioni dell'app: true se erano state aperte da
+         *  setup.html (e allora si torna li'), false se no (la pagina va avanti da sola). */
+        @JavascriptInterface
+        fun closeAppSettings(): Boolean {
+            if (!onAppSettings) return false
+            runOnUiThread { leaveAppSettings() }
+            return true
+        }
+
         @JavascriptInterface
         fun discover() {
             thread {
@@ -583,7 +662,7 @@ class MainActivity : AppCompatActivity() {
                     others = emptyList()
                     js("setupFound(${JSONObject.quote(url)})")
                     Thread.sleep(900)
-                    runOnUiThread { if (onSetup) openServer() }
+                    runOnUiThread { if (onSetup && !onAppSettings) openServer() }
                 } else {
                     js("setupNotFound()")
                 }
