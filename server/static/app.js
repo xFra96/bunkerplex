@@ -3800,24 +3800,32 @@ function installPanel() {
 }
 
 // ---- Dall'indirizzo pubblico (*.ts.net): l'app giusta per il dispositivo
-// Chi apre il server dal suo indirizzo pubblico (Tailscale Funnel) in un browser
-// riceve l'invito a installare BunkerPlex: sul telefono Android l'APK (la copia che
-// tiene il server, /BunkerPlex.apk, scaricabile anche prima dell'accesso), su iPhone
-// e iPad la web app sulla schermata Home, sul computer la web app installata dal
-// browser. Mai dentro le app (telefono, TV), mai nella web app gia' installata e mai
-// nella PWA centrale (che non e' su ts.net). Sulla pagina d'accesso e' una scheda
-// sopra il modulo, dopo l'accesso una barra in basso. «Continua nel browser» la mette
-// da parte per questa visita (sull'accesso resta una riga), «Ce l'ho gia'» per un
-// mese. Su Android torna anche dopo aver installato la web app: li' l'app e' l'APK.
+// Chi apre il server dal suo indirizzo pubblico (Tailscale Funnel) in un browser:
+// - Android (telefono e tablet): solo l'app. Al posto di BunkerPlex c'e' la pagina per
+//   scaricare l'APK (la copia che tiene il server, /BunkerPlex.apk, anche prima
+//   dell'accesso), sempre, anche nella web app installata da Chrome;
+// - TV Android (Google TV, Fire TV, Bravia...) col suo browser: lo stesso, con l'app
+//   per la TV (/BunkerPlexTV.apk), che e' un'altra app, fatta per il telecomando;
+// - iPhone, iPad e computer: il browser va bene, con l'invito a installare la web app
+//   (sulla pagina d'accesso una scheda sopra il modulo, dopo l'accesso una barra in
+//   basso). «Continua nel browser» la mette da parte per la visita, «Ce l'ho gia'» per
+//   un mese. Le altre TV (Samsung, LG...) restano col browser.
+// Mai dentro le app (telefono, TV) e mai nella PWA centrale (che non e' su ts.net). La
+// pagina che apre il QR di una TV (#/pair) resta raggiungibile anche da Android.
 var PUBLIC_HOST = /\.ts\.net$/i.test(location.hostname);
+var TV_ANDROID_UA = /Android ?TV|Google ?TV|BRAVIA|\bAFT[A-Z]|\bMiTV|MIBOX|SHIELD Android TV|Chromecast|\bTV Build\b|SmartTV|SMART-TV/i;
+var TV_OTHER_UA = /Tizen|Web0S|webOS|NetCast|HbbTV|VIDAA|Roku|PlayStation|Xbox|CrKey|SmartTV|SMART-TV/i;
 var GETAPP_DAYS = 30;
-var getApp = { steps: false, started: false };
+var getApp = { started: false, info: null };
 var GA_TEXT = {
   android: {
     ico: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="2.2"/><path d="M10.5 18.5h3"/></svg>',
-    title: 'Scarica l\'app per Android', sub: 'Video col player del telefono, a tutto schermo. Poi si aggiorna da sola.',
-    bar: 'App per Android', barsub: 'Col player del telefono', btn: 'Scarica',
-    mini: 'Scarica l\'app per Android', done: 'Ho già l\'app' },
+    title: 'Installa l\'app BunkerPlex', sub: 'Su Android BunkerPlex si usa con la sua app: video col player del telefono, e si aggiorna da sola.',
+    file: 'BunkerPlex.apk', btn: 'Scarica l\'app' },
+  tv: {
+    ico: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="13" rx="2"/><path d="M8 2.5l4 3.5 4-3.5"/></svg>',
+    title: 'Installa BunkerPlex sulla TV', sub: 'Sulla TV BunkerPlex si usa con la sua app, fatta per il telecomando.',
+    file: 'BunkerPlexTV.apk', btn: 'Scarica l\'app per la TV' },
   ios: {
     ico: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M8 7.5l4-4 4 4"/><path d="M8.5 10.5h-2v10h11v-10h-2"/></svg>',
     title: 'Metti BunkerPlex sulla schermata Home', sub: 'Si apre a tutto schermo, come un\'app. Niente da scaricare.',
@@ -3833,11 +3841,18 @@ var GA_DOWN = '<svg class="ic line" viewBox="0 0 24 24" aria-hidden="true"><path
 var GA_X = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
 
 function getAppKind() {
-  if (APP || STANDALONE || TVLOOK || !PUBLIC_HOST) return '';
+  if (APP || !PUBLIC_HOST) return '';
   var ua = navigator.userAgent;
-  if (/Android/i.test(ua)) return 'android';
+  if (/Android/i.test(ua)) return TV_ANDROID_UA.test(ua) ? 'tv' : 'android';
+  if (STANDALONE || TVLOOK || TV_OTHER_UA.test(ua)) return '';
   if (IOS) return 'ios';
   return /Mobi/i.test(ua) ? '' : 'pc';
+}
+
+// Android e TV Android: dal browser niente BunkerPlex, solo l'app
+function getAppOnly() {
+  var kind = getAppKind();
+  return kind === 'android' || kind === 'tv';
 }
 
 function getAppStore(add) {
@@ -3852,10 +3867,10 @@ function getAppStore(add) {
 // Aperta come web app installata: il browser se lo ricorda (sul computer e' lo stesso)
 if (!APP && STANDALONE) getAppStore({ installed: Date.now() });
 
-// '' = da mostrare, 'later' = messo da parte per questa visita, 'done' = c'e' gia'
-function getAppState(kind) {
+// iPhone e computer: '' = da mostrare, 'later' = messo da parte per la visita, 'done' = c'e' gia'
+function getAppState() {
   var s = getAppStore();
-  if ((s.installed && kind !== 'android') || (s.done && Date.now() - s.done < GETAPP_DAYS * 864e5)) return 'done';
+  if (s.installed || (s.done && Date.now() - s.done < GETAPP_DAYS * 864e5)) return 'done';
   try { if (sessionStorage.getItem('fpGetApp') === 'later') return 'later'; } catch (e) { /* niente */ }
   return '';
 }
@@ -3867,6 +3882,12 @@ function getAppSteps(kind) {
       'Apri <b>BunkerPlex.apk</b> dalla notifica o da <b>Download</b>. Se Android lo blocca, tocca <b>Impostazioni</b>, ' +
         'accendi <b>Consenti da questa origine</b> e torna indietro: <b>Installa</b>.',
       'Apri <b>BunkerPlex</b>, entra con il tuo account e scegli questo server.'];
+  }
+  if (kind === 'tv') {
+    return ['Premi <b>Scarica l\'app per la TV</b>.',
+      'Apri <b>BunkerPlexTV.apk</b> dai download e scegli <b>Installa</b>. Se la TV lo blocca, nelle sue impostazioni ' +
+        'consenti a questo browser di installare le <b>app sconosciute</b> e riprova.',
+      'Apri <b>BunkerPlex</b> sulla TV e collegala dal telefono: la TV entra da sola.'];
   }
   if (kind === 'ios') {
     var share = '<b>Condividi</b> ' + GA_TEXT.ios.ico;
@@ -3883,39 +3904,67 @@ function getAppSteps(kind) {
   return [first, 'Apri <b>BunkerPlex</b> come un programma ed entra con il tuo account.'];
 }
 
-// La scheda: sulla pagina d'accesso (sheet false) e nella finestra aperta dalla barra
+function getAppHead(t) {
+  return '<div class="gahead"><span class="gaico">' + t.ico + '</span><div><b>' + t.title + '</b><small>' + t.sub + '</small></div></div>';
+}
+
+function getAppList(kind) {
+  return '<ol class="gasteps">' + getAppSteps(kind).map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ol>';
+}
+
+// Android e TV Android: la pagina che prende il posto di BunkerPlex
+function getAppOnlyCard(kind) {
+  var t = GA_TEXT[kind];
+  var info = getApp.info || {};
+  var missing = kind === 'tv' ? info.tv_apk_version === 0 : info.apk === false;
+  var note = getApp.started
+    ? '<p class="ganote">Download avviato: ' + (kind === 'tv' ? 'aprilo dai download del browser.' : 'lo trovi nelle notifiche o in <b>Download</b>.') + '</p>'
+    : missing ? '<p class="ganote warn">Il server sta ancora prendendo l\'app: se il download non parte, riprova tra qualche minuto.</p>' : '';
+  return '<div class="getapp only">' + getAppHead(t) +
+    '<a class="btn primary block f" data-autofocus href="/' + t.file + '" download="' + t.file + '" data-apk data-key="gaapk">' + GA_DOWN + t.btn + '</a>' +
+    note + getAppList(kind) +
+    '<p class="gaafter">' + (kind === 'tv'
+      ? 'Se il browser non scarica, usa l\'app <b>Downloader</b> con l\'indirizzo <b class="num">' + esc(location.origin + '/' + t.file) + '</b>'
+      : 'Hai già l\'app? Aprila dalle app del telefono: su Android BunkerPlex non si usa dal browser.') + '</p></div>';
+}
+
+// iPhone e computer: la scheda (sheet false sulla pagina d'accesso, true nella finestra aperta dalla barra)
 function getAppCard(kind, sheet) {
   var t = GA_TEXT[kind];
-  var steps = kind !== 'android' || getApp.steps || sheet;
+  var steps = true;
   var main = '';
-  if (kind === 'android') {
-    main = '<a class="btn primary block f" href="/BunkerPlex.apk" download="BunkerPlex.apk" data-apk data-key="gaapk">' + GA_DOWN + 'Scarica l\'app</a>' +
-      (getApp.started ? '<p class="ganote">Download avviato: lo trovi nelle notifiche o in <b>Download</b>.</p>' : '');
-  } else if (kind === 'pc' && installEvt) {
+  if (kind === 'pc' && installEvt) {
     main = '<button class="btn primary block f" data-act="gainstall" data-key="gainstall">Installa l\'app</button>';
     steps = false;
   }
-  return '<div class="getapp' + (sheet ? ' insheet' : '') + '">' +
-    '<div class="gahead"><span class="gaico">' + t.ico + '</span><div><b>' + t.title + '</b><small>' + t.sub + '</small></div></div>' + main +
-    (steps ? '<ol class="gasteps">' + getAppSteps(kind).map(function (s) { return '<li>' + s + '</li>'; }).join('') + '</ol>' : '') +
-    '<div class="garow">' + (steps || kind !== 'android' ? '' : '<button class="galink f" data-act="gasteps" data-key="gasteps">Come si installa</button>') +
-    '<button class="galink f" data-act="gadone" data-key="gadone">' + t.done + '</button>' +
+  return '<div class="getapp' + (sheet ? ' insheet' : '') + '">' + getAppHead(t) + main + (steps ? getAppList(kind) : '') +
+    '<div class="garow"><button class="galink f" data-act="gadone" data-key="gadone">' + t.done + '</button>' +
     '<button class="galink f" data-act="galater" data-key="galater">Continua nel browser</button></div></div>';
 }
 
-// Il posto sulla pagina d'accesso: la scheda, o una riga se messa da parte
+// Il posto sulla pagina d'accesso (e sulla pagina dell'app per Android): la scheda, o una riga se messa da parte
 function getAppSlot() {
   var kind = getAppKind();
-  var st = kind ? getAppState(kind) : 'done';
-  var inner = st === 'done' ? '' : st === 'later'
-    ? '<button class="gamini f" data-act="gashow" data-key="gashow">' + GA_TEXT[kind].ico + '<span>' + GA_TEXT[kind].mini + '</span></button>'
-    : getAppCard(kind, false);
+  var inner = '';
+  if (getAppOnly()) inner = getAppOnlyCard(kind);
+  else if (kind) {
+    var st = getAppState();
+    inner = st === 'done' ? '' : st === 'later'
+      ? '<button class="gamini f" data-act="gashow" data-key="gashow">' + GA_TEXT[kind].ico + '<span>' + GA_TEXT[kind].mini + '</span></button>'
+      : getAppCard(kind, false);
+  }
   return '<div id="gaslot">' + inner + '</div>';
+}
+
+// Al posto di ogni pagina, su Android (la chiama gate)
+async function getAppPage() {
+  if (!getApp.info) getApp.info = await api('/info').catch(function () { return {}; });
+  return authShell(getAppSlot());
 }
 
 function getAppSheet() {
   var kind = getAppKind();
-  if (!kind) return;
+  if (!kind || getAppOnly()) return;
   modal.classList.remove('corner', 'friendsnow');
   modalState = { getapp: true, returnFocus: document.activeElement };
   modal.innerHTML = '<div class="sheet gasheet">' + getAppCard(kind, true) + '</div>';
@@ -3924,11 +3973,11 @@ function getAppSheet() {
   if (first) first.focus();
 }
 
-// Dopo l'accesso: la barra in basso (nascosta sulle pagine d'accesso e durante i video)
+// iPhone e computer dopo l'accesso: la barra in basso (nascosta sulle pagine d'accesso e durante i video)
 function markGetApp() {
   if (!currentHash) return;          // prima pagina non ancora disegnata
   var kind = getAppKind();
-  var on = !!kind && !getAppState(kind);
+  var on = !!kind && !getAppOnly() && !getAppState();
   var bar = document.getElementById('getapp');
   document.body.classList.toggle('gaon', on);
   if (!on) { if (bar) bar.hidden = true; return; }
@@ -3951,25 +4000,16 @@ function getAppRefresh() {
   if (slot) slot.outerHTML = getAppSlot();
   if (modalState && modalState.getapp) {
     var kind = getAppKind();
-    if (!kind || getAppState(kind)) closeModal();
+    if (!kind || getAppState()) closeModal();
     else modal.firstChild.innerHTML = getAppCard(kind, true);
   }
   markGetApp();
 }
 
-function apkDownload() {
-  var a = document.createElement('a');
-  a.href = '/BunkerPlex.apk';
-  a.download = 'BunkerPlex.apk';
-  document.body.appendChild(a);
-  a.click();
-  a.parentNode.removeChild(a);
-}
-
-// Il pulsante dell'APK scarica da se' (link vero): poi si mostrano i passi
+// Il pulsante dell'APK scarica da se' (link vero): poi si dice dove trovarlo
 document.addEventListener('click', function (e) {
   if (!(e.target.closest && e.target.closest('[data-apk]'))) return;
-  setTimeout(function () { getApp.steps = true; getApp.started = true; getAppRefresh(); }, 150);
+  setTimeout(function () { getApp.started = true; getAppRefresh(); }, 150);
 });
 
 // ---- Notifiche su telefoni e tablet
@@ -7025,9 +7065,7 @@ var actions = {
   cappupdate: function () { startUpdate(); },
   // Invito a installare dall'indirizzo pubblico (vedi getAppKind)
   gaopen: function () {
-    var kind = getAppKind();
-    if (kind === 'pc' && installEvt) { actions.gainstall(); return; }
-    if (kind === 'android') { getApp.steps = true; getApp.started = true; apkDownload(); }
+    if (getAppKind() === 'pc' && installEvt) { actions.gainstall(); return; }
     getAppSheet();
   },
   gainstall: function () {
@@ -7037,7 +7075,6 @@ var actions = {
     e.prompt();
     (e.userChoice || Promise.resolve()).then(getAppRefresh, getAppRefresh);
   },
-  gasteps: function () { getApp.steps = true; getAppRefresh(); },
   gashow: function () {
     try { sessionStorage.removeItem('fpGetApp'); } catch (e) { /* niente */ }
     getAppRefresh();
@@ -7721,6 +7758,8 @@ var routes = [
 // Prima di ogni pagina: chi guarda? (scelta dell'account, password provvisoria da cambiare,
 // impostazioni diverse da confrontare). Mai una pagina che chieda Internet per andare avanti.
 async function gate() {
+  // Android dall'indirizzo pubblico, nel browser: al posto di BunkerPlex l'app da installare
+  if (getAppOnly()) { lockScreen(true); return getAppPage(); }
   if (CENTRAL) {
     var cg = await cGate();
     if (cg) return cg;
