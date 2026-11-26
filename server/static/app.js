@@ -442,7 +442,7 @@ var REACH = {
     note: 'Il server è su questo stesso PC: niente rete e niente Internet.' },
   lan: { tag: 'Locale', cls: 'local', how: 'nella stessa rete', card: 'Server sulla rete locale',
     note: 'Stessa rete del server, senza passare da Internet: più veloce, e funziona anche quando Internet non va.' },
-  net: { tag: 'Online', cls: 'net', how: 'via Internet', card: 'Connessione remota disponibile',
+  net: { tag: 'Online', cls: 'net', how: 'via Internet', card: 'Accesso remoto disponibile',
     note: 'Arrivi al server via Internet (Tailscale): funziona da ovunque. Nella stessa rete del server sarebbe locale, e più veloce.' }
 };
 var PRIVATE_IP = /^(10|127|192\.168|172\.(1[6-9]|2\d|3[01])|169\.254)\.\d+\.\d+/;
