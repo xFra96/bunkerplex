@@ -1506,7 +1506,7 @@ async function cLookSave(sid, patch) {
   cLookSheet(sid);
 }
 
-// L'immagine scelta, ridotta a 480x270 (ritagliata al centro) e in JPEG: pochi KB
+// L'immagine scelta: si sceglie la parte da vedere (cCropImage), poi 480x270 in JPEG: pochi KB
 function cPickImage() {
   return new Promise(function (ok, ko) {
     var input = document.createElement('input');
@@ -1518,17 +1518,161 @@ function cPickImage() {
       var url = URL.createObjectURL(file);
       var img = new Image();
       img.onload = function () {
-        var W = 480, H = 270, c = document.createElement('canvas');
-        c.width = W; c.height = H;
-        var k = Math.max(W / img.width, H / img.height), w = img.width * k, h = img.height * k;
-        c.getContext('2d').drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
-        URL.revokeObjectURL(url);
-        ok(c.toDataURL('image/jpeg', 0.82));
+        cCropImage(img).then(function (data) { URL.revokeObjectURL(url); ok(data); },
+          function (e) { URL.revokeObjectURL(url); ko(e); });
       };
       img.onerror = function () { URL.revokeObjectURL(url); ko(new Error('Questo file non è un\'immagine')); };
       img.src = url;
     };
     input.click();
+  });
+}
+
+// Ritaglio: la cornice e' 16:9 come le schede dei server. L'immagine si sposta col dito
+// o col mouse e si ingrandisce col pizzico, la rotella o il cursore (da tastiera: frecce,
+// + e -). Lo stato e' il punto dell'immagine al centro della cornice (cx, cy, da 0 a 1)
+// e l'ingrandimento z: 1 = l'immagine copre appena la cornice.
+function cCropImage(img) {
+  return new Promise(function (ok, ko) {
+    var OUT_W = 480, OUT_H = 270, ZMAX = 4;
+    var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    var cx = 0.5, cy = 0.5, z = 1, done = false, dragAt = 0;
+    var back = modalState && modalState.returnFocus;
+    modalState = { options: [], onPick: function () {}, returnFocus: back || document.activeElement };
+    modal.innerHTML = '<div class="sheet cropsheet"><h3>Scegli la parte da vedere</h3>' +
+      '<p class="secretnote">Trascina per spostare l\'immagine; per ingrandire pizzica, usa la rotella o il cursore.</p>' +
+      '<div class="cropbox f" tabindex="0" data-key="crop-box" aria-label="Immagine: frecce per spostare, + e - per ingrandire"></div>' +
+      '<input class="cropzoom f" type="range" min="1" max="' + ZMAX + '" step="0.05" value="1" data-key="crop-zoom" aria-label="Ingrandimento">' +
+      '<div class="actions"><button class="btn primary f" data-key="crop-ok">Usa questa parte</button>' +
+      '<button class="btn f" data-key="crop-no">Annulla</button></div></div>';
+    modal.hidden = false;
+    var box = modal.querySelector('.cropbox');
+    var range = modal.querySelector('.cropzoom');
+    var pic = document.createElement('img');
+    pic.src = img.src;
+    pic.alt = '';
+    pic.draggable = false;
+    box.appendChild(pic);
+
+    // Misure attuali: cornice (W, H) e immagine a schermo (dw, dh, left, top)
+    function frame() {
+      var W = box.clientWidth, H = box.clientHeight;
+      var s = Math.max(W / iw, H / ih) * z, dw = iw * s, dh = ih * s;
+      // Mai un bordo vuoto: il centro resta dove l'immagine copre tutta la cornice
+      var hx = W / 2 / dw, hy = H / 2 / dh;
+      cx = Math.min(Math.max(cx, hx), 1 - hx);
+      cy = Math.min(Math.max(cy, hy), 1 - hy);
+      return { W: W, H: H, dw: dw, dh: dh, left: W / 2 - cx * dw, top: H / 2 - cy * dh };
+    }
+    function draw() {
+      if (done) return;
+      var f = frame();
+      pic.style.width = f.dw + 'px';
+      pic.style.height = f.dh + 'px';
+      pic.style.transform = 'translate(' + f.left + 'px,' + f.top + 'px)';
+      range.value = z;
+    }
+    function pan(dx, dy) {
+      var f = frame();
+      cx -= dx / f.dw;
+      cy -= dy / f.dh;
+      draw();
+    }
+    // Ingrandisce tenendo fermo il punto (px, py) della cornice (di base il centro)
+    function zoomAt(nz, px, py) {
+      var f = frame();
+      if (px === undefined) { px = f.W / 2; py = f.H / 2; }
+      var u = cx + (px - f.W / 2) / f.dw, v = cy + (py - f.H / 2) / f.dh;
+      z = Math.min(Math.max(nz, 1), ZMAX);
+      var g = frame();
+      cx = u - (px - g.W / 2) / g.dw;
+      cy = v - (py - g.H / 2) / g.dh;
+      draw();
+    }
+
+    // Dito o mouse: uno sposta, due ingrandiscono (e spostano col punto di mezzo)
+    var pts = {};
+    function at(e) { var r = box.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    function pair() {
+      var k = Object.keys(pts);
+      if (k.length < 2) return null;
+      var a = pts[k[0]], b = pts[k[1]];
+      return { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
+    box.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      box.focus();
+      try { box.setPointerCapture(e.pointerId); } catch (x) { /* niente */ }
+      pts[e.pointerId] = at(e);
+    });
+    box.addEventListener('pointermove', function (e) {
+      var old = pts[e.pointerId];
+      if (!old) return;
+      var before = pair();
+      pts[e.pointerId] = at(e);
+      var now = pair();
+      dragAt = Date.now();
+      if (before && now) {
+        if (before.d > 0) zoomAt(z * now.d / before.d, now.x, now.y);
+        pan(now.x - before.x, now.y - before.y);
+      } else if (!before) {
+        pan(pts[e.pointerId].x - old.x, pts[e.pointerId].y - old.y);
+      }
+    });
+    function lift(e) { delete pts[e.pointerId]; }
+    box.addEventListener('pointerup', lift);
+    box.addEventListener('pointercancel', lift);
+    box.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var p = at(e);
+      zoomAt(z * Math.exp(-e.deltaY * 0.0015), p.x, p.y);
+    }, { passive: false });
+    range.addEventListener('input', function () { zoomAt(parseFloat(range.value)); });
+    // Le frecce sul cursore lo muovono (non spostano il fuoco)
+    range.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') e.stopPropagation();
+    });
+    box.addEventListener('keydown', function (e) {
+      var step = box.clientWidth * 0.05;
+      var k = e.key;
+      if (k === 'ArrowLeft') pan(step, 0);
+      else if (k === 'ArrowRight') pan(-step, 0);
+      else if (k === 'ArrowUp') pan(0, step);
+      else if (k === 'ArrowDown') pan(0, -step);
+      else if (k === '+' || k === '=') zoomAt(z * 1.15);
+      else if (k === '-' || k === '_') zoomAt(z / 1.15);
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    // Un trascinamento finito fuori dalla finestra non la chiude
+    function guard(e) { if (e.target === modal && Date.now() - dragAt < 400) e.stopPropagation(); }
+    modal.addEventListener('click', guard, true);
+    window.addEventListener('resize', draw);
+
+    function finish() {
+      done = true;
+      window.removeEventListener('resize', draw);
+      modal.removeEventListener('click', guard, true);
+    }
+    modal.querySelector('[data-key="crop-ok"]').addEventListener('click', function () {
+      var f = frame(), k = OUT_W / f.W;
+      var c = document.createElement('canvas');
+      c.width = OUT_W; c.height = OUT_H;
+      var ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, f.left * k, f.top * k, f.dw * k, f.dh * k);
+      finish();
+      closeModal(true);
+      ok(c.toDataURL('image/jpeg', 0.82));
+    });
+    modal.querySelector('[data-key="crop-no"]').addEventListener('click', function () {
+      finish();
+      closeModal(true);
+      ko(new Error('Nessuna immagine'));
+    });
+    draw();
+    box.focus();
   });
 }
 
@@ -1682,7 +1826,10 @@ function cActions() {
         toast('Salvo l\'immagine…');
         await cLookSave(sid, { image: data });
         toast('Immagine salvata');
-      } catch (e) { if (e.message !== 'Nessuna immagine') toast(e.message); }
+      } catch (e) {
+        if (e.message !== 'Nessuna immagine') toast(e.message);
+        else if (modal.hidden) cLookSheet(sid);   // ritaglio annullato: si torna all'aspetto
+      }
     },
     // Primo passo: l'email. Un nome utente (senza @) va dritto alla password.
     cnext: async function () {
