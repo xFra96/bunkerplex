@@ -438,11 +438,11 @@ function srvHue(text) {
 //   'lan' = stessa rete (IP privato, nome di casa con certificato): niente Internet
 //   'net' = via Internet: Tailscale (ts.net, 100.x) o indirizzo pubblico
 var REACH = {
-  pc: { tag: 'Locale', cls: 'local', how: 'su questo PC',
+  pc: { tag: 'Locale', cls: 'local', how: 'su questo PC', card: 'Server su questo PC',
     note: 'Il server è su questo stesso PC: niente rete e niente Internet.' },
-  lan: { tag: 'Locale', cls: 'local', how: 'nella stessa rete',
+  lan: { tag: 'Locale', cls: 'local', how: 'nella stessa rete', card: 'Server sulla rete locale',
     note: 'Stessa rete del server, senza passare da Internet: più veloce, e funziona anche quando Internet non va.' },
-  net: { tag: 'Online', cls: 'net', how: 'via Internet',
+  net: { tag: 'Online', cls: 'net', how: 'via Internet', card: 'Connessione remota disponibile',
     note: 'Arrivi al server via Internet (Tailscale): funziona da ovunque. Nella stessa rete del server sarebbe locale, e più veloce.' }
 };
 var PRIVATE_IP = /^(10|127|192\.168|172\.(1[6-9]|2\d|3[01])|169\.254)\.\d+\.\d+/;
@@ -641,10 +641,10 @@ async function serversPage() {
   // Questo server: come ci arriva il dispositivo. Gli altri si raggiungono passando da lui
   // (la sua strada: rete di casa o Tailscale); gli amici sempre via Internet.
   // Nella sezione dei tuoi server basta da dove si raggiunge
-  function how(r, other) { return REACH[r] ? REACH[r].how.charAt(0).toUpperCase() + REACH[r].how.slice(1) : other; }
+  function how(r, other) { return REACH[r] ? REACH[r].card : other; }
   var here = hereReach();
   var mine = [card('here', SRV_ICON, auth.pc || 'Questo server',
-    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : how(here, 'Questo PC'), true, true, '', data.hereLook, here)];
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : how(here, 'Il tuo server'), true, true, '', data.hereLook, here)];
   data.mine.forEach(function (m) {
     if (!m.n) return;
     // Ci si arriva passando da questo server: e' locale solo se lo sono tutti e due i tratti
@@ -1221,6 +1221,7 @@ async function cServersPage() {
       // Acceso ma senza indirizzo pubblico («Da ovunque» spento): si apre solo dalla sua rete
       : s.online ? 'acceso, solo dalla sua rete' : '';
     var sub = friend ? 'di ' + esc(s.owner.username) + (where ? ' · ' + where : '')
+      : !off && REACH[reach] ? REACH[reach].card
       : where ? where.charAt(0).toUpperCase() + where.slice(1) : 'Il tuo server';
     var edit = !friend && cache.cEdit;
     (friend ? theirs : mine).push(srvCard({ act: edit ? 'clook' : 'cpick', arg: edit ? s.sid : i, key: 'csrv-' + s.sid + '-' + (friend ? s.owner.id : 0),
