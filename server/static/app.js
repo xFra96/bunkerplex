@@ -1010,7 +1010,8 @@ function cLoginPage() {
       '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
       '<button class="btn primary block f" data-act="cnext" data-key="cnext">Continua</button>' +
       '<div class="author"><span>oppure</span></div>' +
-      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note);
+      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note +
+      cAppLink());
   }
   var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
   var back = '<button class="authlink f" data-act="cback" data-key="cback">Usa un\'altra email</button>';
@@ -1172,8 +1173,38 @@ async function cServersPage() {
       tool: mine.length ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' },
       { title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }], mine.length + theirs.length) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
-    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
+    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' + cAppLink() +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
+}
+
+// Le impostazioni dell'app (#/app), dall'accesso e dalla scelta del server: servono
+// anche senza un server raggiungibile (fuori casa, server spento o vecchio, solo
+// quello di un amico). La pagina arriva dal servizio account, come l'accesso.
+function cAppLink() {
+  return APP ? '<a class="authlink f" href="#/app" data-key="capp">Impostazioni dell\'app</a>' : '';
+}
+
+async function cAppPage() {
+  var latest = selfUpdating() ? appLatest({}) : {};
+  var mine = +tvCall('getVersion') || 0;
+  var old = (latest.code || 0) > mine;
+  var app = '<div class="panel"><h2>App BunkerPlex</h2>' +
+    '<p>' + dot(!old) + ' Versione ' + esc(appVer()) +
+      (old ? ' · è uscita la ' + esc(latest.name || String(latest.code)) : (latest.code ? ' · aggiornata' : '')) + '</p>' +
+    '<div class="actions">' + (old && typeof tvApp.update === 'function'
+      ? '<button class="btn primary f" data-act="cappupdate" data-key="cappupdate">Aggiorna l\'app</button>' : '') +
+      '<button class="btn f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button></div></div>';
+  var notes = '';
+  if (PHONE_APP) {
+    if (!C.token) {
+      notes = '<div class="panel"><h2>Notifiche</h2><p>Entra con il tuo account per attivare e gestire le notifiche.</p></div>';
+    } else {
+      try { notes = '<h2 class="capph">Notifiche</h2>' + noticesPanels(await noticesData(), false); } catch (e) { notes = noticesError(e); }
+    }
+  }
+  return authShell('<a class="authlink f" href="#/home" data-key="cappback" data-autofocus>‹ Indietro</a>' +
+    '<h1>Impostazioni dell\'app</h1><p class="authsub">Valgono su questo ' + (TV ? 'televisore' : 'dispositivo') +
+    ', anche senza entrare in un server</p>' + app + notes, true);
 }
 
 // Nell'app Android senza servizio account (niente Internet): la ricerca del server
@@ -1189,6 +1220,7 @@ async function cGate() {
     fetch('/', { headers: { Accept: 'application/json' }, cache: 'no-store' }).catch(cOffline);
   }
   await cMailLink();
+  if (APP && location.hash === '#/app') { lockScreen(true); return cAppPage(); }
   if (!C.token) {
     lockScreen(true);
     return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
@@ -2900,7 +2932,7 @@ function showSecret(title, name, pass, label) {
 function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account']);
-  if (auth && auth.user && auth.user.linked && !TV) out.push(['notices', 'Notifiche']);
+  if (noticesLinked() && !TV) out.push(['notices', 'Notifiche']);
   if (adminHere()) out.push(['admin', 'Amministrazione']);
   out.push(['libraries', 'Raccolte'], ['catalog', 'Schede e sottotitoli'],
     ['friends', 'Amici'], ['device', TV ? 'Questa TV' : 'Questo dispositivo'], ['pcs', 'PC e dispositivi']);
@@ -3062,7 +3094,7 @@ function settingsRows(i, u, sh) {
     value: i.devices_full ? 'Troppi dispositivi' : '', state: i.devices_full ? 'warn' : '' });
   if (i.updated) rows.push({ area: 'news', href: '#/news', label: 'Novità', desc: 'Cosa porta l\'ultimo aggiornamento', value: '', state: '' });
   if (auth && auth.cloud && auth.user) rows.push({ area: 'logout', act: 'logout', label: 'Esci', desc: '', value: '', state: '' });
-  if (auth && auth.user && auth.user.linked && !TV) {
+  if (noticesLinked() && !TV) {
     rows.push({ area: 'notices', label: 'Notifiche', desc: 'Avvisi su telefono e tablet', value: '', state: '' });
   }
   if (adminHere()) {
@@ -3664,13 +3696,43 @@ function noticeHereHtml() {
     '<div class="actions"><button class="btn f" data-act="noticeon" data-arg="web" data-key="noticeon">Attiva in questo browser</button></div>';
 }
 
+// Gli avvisi stanno nel servizio account. Nella PWA centrale (e nell'app, che la usa)
+// si chiedono a lui direttamente con il gettone dell'account: funziona anche prima di
+// scegliere un server, dentro il server di un amico e con un server di casa vecchio.
+// Dal server di casa (browser) passano dal server, come prima.
+function noticeApi(method, path, body) {
+  if (CENTRAL) return cloud(method, path, body);
+  return method === 'GET' ? api(path) : send(method, path, body);
+}
+
+function noticesLinked() {
+  return CENTRAL ? !!C.token : !!(auth && auth.user && auth.user.linked);
+}
+
+async function noticesData() {
+  if (!CENTRAL) return api('/notices');
+  if (!C.token) return { linked: false };
+  var r = await Promise.all([cloud('GET', '/notices/prefs'), cloud('GET', '/notices/devices'),
+    cloud('GET', '/notices').catch(function () { return {}; })]);
+  return { linked: true, prefs: r[0].prefs || {}, devices: r[1].devices || [], notices: r[2].notices || [] };
+}
+
+function noticesError(e) {
+  return '<div class="panel"><p>' + dot(false) + ' ' +
+    esc(e.status === 404 ? 'Il servizio account non conosce ancora le notifiche: va aggiornato.' : e.message) + '</p></div>';
+}
+
 async function noticesArea() {
   var d;
-  try { d = await api('/notices'); } catch (e) {
-    return settingsShell('notices', 'Notifiche', '', '<div class="panel"><p>' + dot(false) + ' ' +
-      esc(e.status === 404 ? 'Il servizio account non conosce ancora le notifiche: va aggiornato.' : e.message) + '</p></div>');
+  try { d = await noticesData(); } catch (e) {
+    return settingsShell('notices', 'Notifiche', '', noticesError(e));
   }
   if (!d.linked) { location.replace('#/settings/account'); return ''; }
+  return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.', noticesPanels(d, true));
+}
+
+// I pannelli delle notifiche (full: anche l'elenco degli avvisi)
+function noticesPanels(d, full) {
   var prefs = d.prefs || {};
   // Ogni tipo di avviso: una riga con l'interruttore a destra, come nelle app del telefono
   var kinds = NOTICE_KINDS.map(function (k) {
@@ -3686,13 +3748,12 @@ async function noticesArea() {
   }).join('');
   var news = d.notices || [];
   var list = noticeRows(news, 'pgn-');
-  return settingsShell('notices', 'Notifiche', 'Avvisi sul telefono e sul tablet, anche fuori casa.',
-    '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
+  return '<div class="panel"><h2>Su questo dispositivo</h2>' + noticeHereHtml() + '</div>' +
     '<div class="panel"><h2>Cosa ti avvisa</h2>' + kinds + '</div>' +
     '<div class="panel"><h2>Dispositivi con le notifiche</h2>' + (devs || '<p>Ancora nessuno.</p>') + '</div>' +
-    '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
+    (full ? '<div class="panel"><h2>Avvisi' + (unreadNotices(news) ? ' · ' + unreadNotices(news) + ' da leggere' : '') + '</h2>' +
       (unreadNotices(news) ? '<div class="actions"><button class="btn f" data-act="noticeall" data-key="pgnall">Segna tutte come lette</button></div>' : '') +
-      (list ? '<div class="nlist">' + list + '</div>' : '<p>Ancora nessun avviso.</p>') + '</div>');
+      (list ? '<div class="nlist">' + list + '</div>' : '<p>Ancora nessun avviso.</p>') + '</div>' : '');
 }
 
 function deviceLabel(kind) {
@@ -5512,7 +5573,8 @@ function offerUpdate(i, manual) {
         [{ value: 'ok', label: 'Ho capito' }], 'ok', function () {});
       return;
     }
-    var needs = (latest.min_api || 1) > (i.api || 1) ? ' Richiede anche di aggiornare il server.' : '';
+    // Senza un server aperto (impostazioni dell'app dall'accesso) non si sa quale API abbia
+    var needs = i.api && (latest.min_api || 1) > i.api ? ' Richiede anche di aggiornare il server.' : '';
     openPicker('È disponibile un aggiornamento dell\'app BunkerPlex' + name + '.' + needs + ' Vuoi installarlo adesso?',
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startUpdate();
@@ -5948,7 +6010,7 @@ var actions = {
     if (kind === 'chrome') {
       // App Android: le push del browser (istantanee) nella pagina degli avvisi aperta in Chrome;
       // il vecchio controllo ogni 15 minuti si spegne, se no gli avvisi arriverebbero due volte
-      post('/notices/devices', { kind: 'web', label: deviceLabel('android') + ' · Chrome', open: location.origin + '/' }).then(function (r) {
+      noticeApi('POST', '/notices/devices', { kind: 'web', label: deviceLabel('android') + ' · Chrome', open: location.origin + '/' }).then(function (r) {
         if (tvCall('noticesState') !== 'off') tvApp.noticesSet('');
         try { localStorage.setItem('bpChromePush', '1'); } catch (e) { /* niente */ }
         tvApp.openUrl(r.url);
@@ -5958,7 +6020,7 @@ var actions = {
     }
     // La pagina degli avvisi si apre subito (Safari blocca le finestre aperte dopo un'attesa)
     var win = kind === 'android' ? null : window.open('about:blank', '_blank');
-    post('/notices/devices', { kind: kind, label: deviceLabel(kind), open: location.origin + '/' }).then(function (r) {
+    noticeApi('POST', '/notices/devices', { kind: kind, label: deviceLabel(kind), open: location.origin + '/' }).then(function (r) {
       if (kind === 'android') {
         tvApp.noticesSet(r.url);
         toast('Notifiche attive su questo dispositivo');
@@ -6020,10 +6082,10 @@ var actions = {
   noticepref: function (arg) {
     var p = String(arg).split(':'), body = {};
     body[p[0]] = p[1] === '1';
-    api('/notices/prefs', { method: 'PUT', body: JSON.stringify(body) }).then(function () { render(); }, function (e) { toast(e.message); });
+    noticeApi('PUT', '/notices/prefs', body).then(function () { render(); }, function (e) { toast(e.message); });
   },
   noticedel: function (arg) {
-    api('/notices/devices/' + arg, { method: 'DELETE' }).then(function () { toast('Dispositivo tolto'); render(); }, function (e) { toast(e.message); });
+    noticeApi('DELETE', '/notices/devices/' + arg).then(function () { toast('Dispositivo tolto'); render(); }, function (e) { toast(e.message); });
   },
   afshare: function (arg) {
     toast(arg === '1' ? 'Apro la porta per gli amici…' : 'Spengo la condivisione…');
@@ -6470,6 +6532,7 @@ var actions = {
     });
   },
   checkupdate: function () { checkUpdate(true); },
+  cappupdate: function () { startUpdate(); },
   pwainstall: function () {
     if (!installEvt) return;
     var e = installEvt;
@@ -7118,6 +7181,8 @@ var routes = [
   [/^#\/chi$/, function () { location.replace('#/home'); return ''; }],
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
+  // Impostazioni dell'app: le mostra gate() nella PWA centrale dell'app; altrove alla Home
+  [/^#\/app$/, function () { location.replace('#/home'); return ''; }],
   // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
   [/^#\/(attiva|reset|entra)\?/, function () { location.replace('#/home'); return ''; }],
   [/^#\/tv$/, tvCodePage],
