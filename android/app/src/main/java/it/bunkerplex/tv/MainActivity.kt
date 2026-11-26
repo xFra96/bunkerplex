@@ -445,8 +445,8 @@ class MainActivity : AppCompatActivity() {
             cameFromPlayer = true
         }
 
-        /** Fuori casa (remote.html), un server che risponde sulla rete in cui si trova il
-         *  telefono: si apre come quello di casa, ma il server di casa scelto resta quello. */
+        /** Fuori casa (remote.html, sulla TV), un server che risponde sulla rete in cui si trova
+         *  il dispositivo: si apre come quello di casa, ma il server di casa scelto resta quello. */
         override fun openLocal(url: String) {
             active = url
             lastServer = url

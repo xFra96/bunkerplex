@@ -628,10 +628,6 @@ function srvMount() {
   run();
 }
 
-// Il posto per «Impostazioni dell'app» (come cAppLink() in app.js): accanto a
-// «Aggiorna l'elenco» nella scelta del server e in fondo alla prima pagina
-function appSettingsLink() { return ''; }
-
 function askPage() {
   return authShell('<div class="authico">' + SRV_ICON + '</div>' +
     '<h1>Il server di casa non risponde</h1>' +
@@ -639,7 +635,7 @@ function askPage() {
     '<p>Entra con il tuo account: vedrai i tuoi server e quelli dei tuoi amici, prima quelli che si raggiungono da qui.</p>' +
     '<button class="btn primary block f" data-act="friends" data-key="friends" data-autofocus>Entra con il tuo account</button>' +
     '<div class="srvfoot"><button class="authlink f" data-act="retry" data-key="retry">Cerca di nuovo in casa</button>' +
-    '<button class="authlink f" data-act="setup" data-key="setup">Scrivi l\'indirizzo del server</button>' + appSettingsLink() + '</div>');
+    '<button class="authlink f" data-act="setup" data-key="setup">Scrivi l\'indirizzo del server</button></div>');
 }
 
 function loginPage() {
@@ -761,7 +757,7 @@ function serversPage() {
     (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
     srvGrid([{ title: 'I tuoi server', cards: mine }, { title: 'Amici', cards: theirs, extra: add }], mine.length + theirs.length) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
-    '<div class="srvfoot"><button class="authlink f" data-act="refresh" data-key="refresh">Aggiorna l\'elenco</button>' + appSettingsLink() +
+    '<div class="srvfoot"><button class="authlink f" data-act="refresh" data-key="refresh">Aggiorna l\'elenco</button>' +
     '<button class="authlink f" data-act="devices" data-key="devices">Dispositivi' + dev + '</button>' +
     '<button class="authlink f" data-act="retry" data-key="retry">Cerca il server di casa</button>' +
     '<button class="authlink f" data-act="logout" data-key="logout">Esci da ' + esc(account()) + '</button></div>', 'grid', 'srvpicker');
@@ -770,7 +766,7 @@ function serversPage() {
 function listErrorPage(e) {
   return authShell('<h1>Cosa guardi oggi?</h1><p class="authnote">' + esc(e && e.message ? e.message : e) + '</p>' +
     '<button class="btn primary block f" data-act="refresh" data-key="refresh" data-autofocus>Riprova</button>' +
-    '<div class="srvfoot">' + appSettingsLink() + '<button class="authlink f" data-act="retry" data-key="retry">Cerca il server di casa</button>' +
+    '<div class="srvfoot"><button class="authlink f" data-act="retry" data-key="retry">Cerca il server di casa</button>' +
     '<button class="authlink f" data-act="logout" data-key="logout">Esci</button></div>', true);
 }
 
