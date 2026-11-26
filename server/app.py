@@ -64,6 +64,10 @@ API_LEVEL = 1
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 TMDB_LANG = os.environ.get("TMDB_LANG", "it-IT")
 SCAN_INTERVAL_MIN = int(os.environ.get("SCAN_INTERVAL_MIN", "30") or 30)
+# Ogni quanti secondi si guarda se nelle raccolte sono comparsi video nuovi (0 = mai:
+# solo il controllo completo ogni SCAN_INTERVAL_MIN). Vedi watch_loop.
+WATCH_INTERVAL_SEC = int(os.environ.get("WATCH_INTERVAL_SEC", "60") or 0)
+FRESH_FILE_SEC = 60              # un video modificato da meno di cosi' si sta ancora copiando
 SERVER_NAME = os.environ.get("SERVER_NAME", "BunkerPlex")
 
 IMG = DATA / "images"
@@ -1620,6 +1624,22 @@ def scan():
     state["scanning"] = True
     con = db()
     new_ids, lib_before, gone_names = [], {}, set()
+    announced = False
+
+    def announce():
+        # Gli avvisi dei titoli nuovi partono appena film e serie hanno la scheda,
+        # senza aspettare i lavori lunghi su tutto il catalogo (titoli degli
+        # episodi, cast, IMDb) che vengono dopo
+        nonlocal announced
+        if announced:
+            return
+        announced = True
+        try:
+            if new_ids:
+                announce_new(new_ids, lib_before, gone_names)
+        except Exception as ex:
+            print("Notifiche dei titoli nuovi non preparate:", repr(ex), flush=True)
+
     try:
         now = time.time()
         seen = set()
@@ -1652,6 +1672,8 @@ def scan():
                         known[sp] = lib_id
                     continue
                 st = p.stat()
+                if now - st.st_mtime < FRESH_FILE_SEC:
+                    continue          # si sta ancora copiando: lo prende il prossimo giro (vedi watch_loop)
                 added = min(st.st_mtime, now)
                 episode = classify(p, root, sibling_cache)
                 if episode is None:
@@ -1770,6 +1792,7 @@ def scan():
                     else:
                         not_found(con, "shows", r["id"])
                     con.commit()
+                announce()
                 todo = con.execute("SELECT * FROM shows WHERE tmdb_id IS NOT NULL").fetchall()
                 for n, r in enumerate(todo, 1):
                     state["message"] = f"Scarico i titoli degli episodi... serie {n} di {len(todo)}"
@@ -1817,11 +1840,7 @@ def scan():
         print("Scan error:", repr(ex), flush=True)
     finally:
         con.close()
-        try:
-            if new_ids:
-                announce_new(new_ids, lib_before, gone_names)
-        except Exception as ex:
-            print("Notifiche dei titoli nuovi non preparate:", repr(ex), flush=True)
+        announce()
         state["last_scan"] = time.time()
         again = state.pop("again", False)
         state["scanning"] = again
@@ -2030,6 +2049,59 @@ def drives_loop():
             seen = now
         except Exception as ex:
             print("Controllo dischi non riuscito:", repr(ex), flush=True)
+
+
+def new_videos():
+    """I video nelle cartelle delle raccolte che la libreria non ha ancora, con
+    dimensione e data di modifica (per capire se si stanno ancora copiando)."""
+    roots = [Path(p) for lib in get_libraries() for p in lib["folders"]]
+    every_root = {str(r) for r in roots}
+    con = db(raw=True)
+    try:
+        known = {r[0] for r in con.execute("SELECT path FROM items")}
+    finally:
+        con.close()
+    out = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for p in walk_videos(root, every_root - {str(root)}):
+            sp = str(p)
+            if sp not in known:
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                out[sp] = (st.st_size, st.st_mtime)
+    return out
+
+
+def watch_loop():
+    """Si accorge in fretta dei video nuovi (e quindi li avvisa presto sul telefono),
+    senza aspettare il controllo completo ogni SCAN_INTERVAL_MIN. Ogni minuto
+    rilegge solo l'elenco dei file; quando ne compare uno nuovo e ha smesso di
+    crescere (stessa dimensione e data del giro prima: copia o download finiti)
+    parte la lettura delle raccolte. Un file che la lettura non riesce a prendere
+    non la fa ripartire all'infinito: al massimo WATCH_TRIES volte."""
+    WATCH_TRIES = 3
+    prev, tries = {}, {}
+    time.sleep(90)                    # all'avvio la lettura completa la fa gia' scan_loop
+    while True:
+        time.sleep(WATCH_INTERVAL_SEC)
+        try:
+            now = new_videos()
+            ready = [p for p, sig in now.items()
+                     if prev.get(p) == sig and time.time() - sig[1] >= FRESH_FILE_SEC
+                     and tries.get(p, 0) < WATCH_TRIES]
+            prev = now
+            tries = {p: n for p, n in tries.items() if p in now}
+            if ready and not state["scanning"]:
+                for p in ready:
+                    tries[p] = tries.get(p, 0) + 1
+                print(f"Video nuovi nelle raccolte: {len(ready)}, li leggo", flush=True)
+                scan_async()
+        except Exception as ex:
+            print("Controllo dei video nuovi non riuscito:", repr(ex), flush=True)
 
 
 IMDB_RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
@@ -2621,6 +2693,8 @@ def startup():
     threading.Thread(target=note_update, daemon=True).start()
     threading.Thread(target=scan_loop, daemon=True).start()
     threading.Thread(target=drives_loop, daemon=True).start()
+    if WATCH_INTERVAL_SEC > 0:
+        threading.Thread(target=watch_loop, daemon=True).start()
     threading.Thread(target=sigle_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
     threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
