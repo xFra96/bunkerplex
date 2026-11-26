@@ -24,6 +24,9 @@
 // firmati, chiave in kv): vedi «Server come risorsa» e docs/architettura.md.
 // Nomi e certificati dei server (SERVER_DOMAIN, CF_ZONE_ID, CF_API_TOKEN, ACME_AGREE,
 // ACME_EMAIL, ACME_DIRECTORY): vedi «Nomi e certificati dei server».
+// GITHUB_TOKEN: token di sola lettura (Contents: Read-only) sul repository degli
+// aggiornamenti, che e' privato: i PC senza token propri si aggiornano da qui
+// (vedi /aggiornamenti/ e /scarica). GITHUB_REPO se diverso da xFra96/bunkerplex.
 
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
@@ -1853,6 +1856,13 @@ async function route(request, env) {
     return json({ ip: request.headers.get('CF-Connecting-IP') || '' });
   }
 
+  if (path.startsWith('/aggiornamenti/') && method === 'GET') {
+    return updates(request, env, url);
+  }
+  if (path === '/scarica' && method === 'GET') {
+    return download(env);
+  }
+
   // Primo amministratore: solo se non c'e' ancora nessun account e con la chiave segreta
   if (path === '/setup' && method === 'POST') {
     const b = await body(request);
@@ -2517,4 +2527,65 @@ async function route(request, env) {
   }
 
   fail(404, 'Non trovato');
+}
+
+// ------------------------------------------------------------ aggiornamenti
+//
+// Il repository e' privato: i server BunkerPlex che non hanno un token GitHub
+// chiedono qui le stesse cose che chiederebbero a api.github.com/repos/<repo>/.
+// Passano solo le letture che servono agli aggiornamenti. Pacchetti e allegati
+// non transitano dal Worker: si rimanda all'indirizzo firmato di GitHub.
+
+const GH_PATHS = [
+  /^commits\/[A-Za-z0-9._-]{1,100}$/,
+  /^compare\/[A-Za-z0-9._-]{1,100}\.\.\.[A-Za-z0-9._-]{1,100}$/,
+  /^tags$/,
+  /^releases\/tags\/[A-Za-z0-9._-]{1,100}$/,
+  /^releases\/assets\/\d{1,15}$/,
+  /^zipball\/[0-9a-f]{40}$/
+];
+const GH_ACCEPT = ['application/vnd.github+json', 'application/vnd.github.sha', 'application/octet-stream'];
+
+function ghRequest(env, path, accept) {
+  const repo = env.GITHUB_REPO || 'xFra96/bunkerplex';
+  const headers = { 'Accept': accept, 'User-Agent': 'bunkerplex-account', 'X-GitHub-Api-Version': '2022-11-28' };
+  if (env.GITHUB_TOKEN) headers['Authorization'] = 'Bearer ' + env.GITHUB_TOKEN;
+  return fetch(`https://api.github.com/repos/${repo}/${path}`, { headers, redirect: 'manual' });
+}
+
+async function ghPass(r) {
+  if ([301, 302, 303, 307, 308].includes(r.status)) {
+    const where = r.headers.get('Location') || '';
+    if (!/^https:\/\//.test(where)) return json({ detail: 'Risposta di GitHub non valida' }, 502);
+    return new Response(null, { status: 302, headers: { 'Location': where, 'Cache-Control': 'no-store' } });
+  }
+  const headers = { 'Content-Type': r.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' };
+  return new Response(r.body, { status: r.status, headers });
+}
+
+async function updates(request, env, url) {
+  const path = url.pathname.slice('/aggiornamenti/'.length);
+  if (!GH_PATHS.some((re) => re.test(path))) fail(404, 'Non trovato');
+  let query = '';
+  if (path === 'tags') {
+    const q = new URLSearchParams();
+    for (const k of ['per_page', 'page']) {
+      const v = url.searchParams.get(k);
+      if (v && /^\d{1,3}$/.test(v)) q.set(k, v);
+    }
+    query = q.toString() ? '?' + q : '';
+  }
+  const want = (request.headers.get('Accept') || '').split(',')[0].trim();
+  const accept = GH_ACCEPT.includes(want) ? want : GH_ACCEPT[0];
+  return ghPass(await ghRequest(env, path + query, accept));
+}
+
+// Link da dare a chi installa BunkerPlex la prima volta: l'ultimo BunkerPlex.zip.
+async function download(env) {
+  const r = await ghRequest(env, 'releases/latest', GH_ACCEPT[0]);
+  if (!r.ok) fail(502, 'Pacchetto non disponibile, riprova tra poco');
+  const rel = await r.json();
+  const asset = (rel.assets || []).find((a) => a.name === 'BunkerPlex.zip');
+  if (!asset) fail(404, 'Pacchetto non disponibile, riprova tra poco');
+  return ghPass(await ghRequest(env, `releases/assets/${asset.id}`, 'application/octet-stream'));
 }
