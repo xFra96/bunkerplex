@@ -327,3 +327,68 @@ class AbbinamentoSenzaInternet(unittest.TestCase):
         with self.assertRaises(app.HTTPException) as e:
             self.conferma("sbagliata")
         self.assertEqual(e.exception.status_code, 503)
+
+
+class IngressoDiCasaSenzaInternet(unittest.TestCase):
+    """Senza Internet un dispositivo della rete di casa entra senza password come il
+    proprietario; con Internet, da fuori o con l'interruttore spento no. L'ingresso
+    finisce quando il servizio torna e non cambia le impostazioni."""
+
+    def setUp(self):
+        prepara()
+        with app.config_lock:
+            app.config.pop("home_offline", None)
+        app.cloud_link.update(online=None, at=0.0)
+
+    def chiedi(self, ip="192.168.1.30", cloud=False, rete=False, port=32500):
+        req = mock.Mock()
+        req.client = mock.Mock(host=ip)
+        req.scope = {"server": ("192.168.1.2", port)}
+
+        async def body(_):
+            return {"device": "TV"}
+
+        def ping():
+            app.mark_cloud(cloud)
+            return cloud
+        with mock.patch.object(app, "read_json", side_effect=body), \
+                mock.patch.object(app, "auth_on", return_value=True), \
+                mock.patch.object(app, "cloud_ping", side_effect=ping), \
+                mock.patch.object(app, "internet_reachable", return_value=rete):
+            return asyncio.run(app.auth_home(req))
+
+    def rifiuta(self, codice, **kw):
+        with self.assertRaises(app.HTTPException) as e:
+            self.chiedi(**kw)
+        self.assertEqual(e.exception.status_code, codice)
+
+    def test_senza_internet_da_casa_entra(self):
+        r = self.chiedi()
+        data = json.loads(r.body)
+        self.assertTrue(data["home"])
+        self.assertEqual(data["user"]["name"], "anna")
+        token = r.headers["set-cookie"].split(app.SESSION_COOKIE + "=")[1].split(";")[0]
+        u = app.session_user(token)
+        self.assertTrue(u["home"])
+        # Non cambia le impostazioni del server
+        tok = app.CURRENT.set(u)
+        try:
+            with self.assertRaises(app.HTTPException) as e:
+                app.manager_only()
+            self.assertEqual(e.exception.status_code, 403)
+        finally:
+            app.CURRENT.reset(tok)
+        # Torna Internet: l'ingresso finisce
+        app.user_cache.clear()
+        app.mark_cloud(True)
+        self.assertIsNone(app.session_user(token))
+
+    def test_rifiutato(self):
+        self.rifiuta(409, cloud=True)                 # c'e' il servizio: dal telefono
+        self.rifiuta(503, rete=True)                  # Internet si', servizio no
+        self.rifiuta(403, ip="93.45.12.7")            # non dalla rete di casa
+        self.rifiuta(403, ip="100.101.102.103")       # Tailscale non e' casa
+        self.rifiuta(403, ip="127.0.0.1", port=app.PUBLIC_PORT or 32502)   # Funnel
+        with app.config_lock:
+            app.config["home_offline"] = False
+        self.rifiuta(403)

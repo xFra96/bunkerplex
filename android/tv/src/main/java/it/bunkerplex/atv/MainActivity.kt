@@ -421,6 +421,8 @@ class MainActivity : ComponentActivity() {
                 if (user != null) {
                     Api.user = user.optString("name").ifEmpty { null }
                     proceed()
+                } else if (s.optBoolean("home") && !homeTried && withContext(Dispatchers.IO) { homeEntry() }) {
+                    // Senza Internet, dalla rete di casa: dentro senza login (vedi homeEntry)
                 } else if (s.optBoolean("cloud") && !s.optBoolean("setup")) {
                     // Prima configurazione: QR e codice da confermare dal telefono o dal PC
                     reset(Screen.Link(s.optBoolean("google")))
@@ -475,6 +477,26 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(profiles.size) { if (profiles.isNotEmpty()) fr.requestFocus() }
                 }
             }
+        }
+    }
+
+    /** Una volta per apertura: l'ingresso di casa senza Internet e' gia' stato provato. */
+    private var homeTried = false
+
+    /**
+     * Senza Internet il server di casa fa entrare senza password chi e' nella sua rete
+     * (/api/auth/home: il PC non raggiunge Internet, la TV e' in casa, il proprietario
+     * non l'ha spento). Vale finche' manca la rete; poi si rientra dal telefono.
+     */
+    private fun homeEntry(): Boolean {
+        homeTried = true
+        return try {
+            val (body, token) = Api.post("/api/auth/home",
+                JSONObject().put("device", "TV " + (android.os.Build.MODEL ?: "Android")))
+            runOnUiThread { entered(body, token) }
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 

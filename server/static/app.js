@@ -4415,16 +4415,20 @@ function accountArea(i) {
       '<dt>Amici</dt><dd>La condivisione delle raccolte con gli amici</dd></dl>' +
       '<p class="kvnote">Quello che hai già qui non si perde: si unisce a quello dell\'account, e per ogni voce vince la modifica più recente.</p>' +
       (auth.offline ? '<p><span class="nodot">●</span> Ora il PC non raggiunge il servizio account: per entrare serve Internet.</p>' :
+        // Sulla TV la password non si scrive: si entra dal telefono
         (TV ? '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvlogin">Entra dal telefono</a></div>' +
-          (auth.google ? '<div class="actions"><a class="btn f" href="#/google" data-key="tvgoogle">Entra con Google</a></div>' : '') +
-          '<h2 style="margin-top:1.2rem">Oppure scrivi qui nome e password</h2>' : '') + accountForm('', false)) +
+          (auth.google ? '<div class="actions"><a class="btn f" href="#/google" data-key="tvgoogle">Entra con Google</a></div>' : '')
+          : accountForm('', false))) +
       '</div>';
     return settingsShell('account', 'Account', '', who + watchersPanel(u) + join);
   }
 
-  var relogin = u.online ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
+  // Entrati da casa senza Internet non c'e' niente da ridare: si aspetta la rete
+  var relogin = u.online || u.home ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
     '<p>L\'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). ' +
-    'Qui funziona tutto lo stesso; per riprendere la sincronizzazione scrivi la password.</p>' + accountForm(u.name, true) + '</div>';
+    'Qui funziona tutto lo stesso; per riprendere la sincronizzazione ' + (TV ? 'rientra dal telefono.</p>' +
+      '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvrelogin">Entra dal telefono</a></div>'
+      : 'scrivi la password.</p>' + accountForm(u.name, true)) + '</div>';
   var tvlink = TV || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account.</p>' +
     '<div class="actions"><a class="btn primary f" href="#/tv" data-key="totv">Collega una TV</a></div></div>';
   // Cosa segue l'account (chiavi, preferenze, visti, raccolte) lo dice la riga sotto il
@@ -4434,7 +4438,12 @@ function accountArea(i) {
       '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Chiavi, preferenze, visti, La mia lista e raccolte ti seguono su ogni PC.</p>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div>' + emailPanel(u) + googlePanel(u) + '</div>' + leave);
+      '</div>' + emailPanel(u) + googlePanel(u) +
+      (u.manager && !u.home ? '<h2 style="margin-top:1.2rem">Senza Internet</h2>' +
+        swRow('Chi è in casa entra senza password', auth.home_offline !== false,
+          'data-act="homeoff" data-arg="' + (auth.home_offline !== false ? 0 : 1) + '" data-key="homeoff"',
+          'Solo quando questo PC non raggiunge Internet, solo dalla rete di casa, e senza cambiare le impostazioni') : '') +
+      '</div>' + leave);
 }
 
 // Email dell'account: per entrare con email e password al posto del nome utente
@@ -6788,6 +6797,13 @@ var actions = {
     }, function (e) { toast(e.message); });
   },
   pairother: function (code) { cache.pairPw = code; render(); },
+  homeoff: function (arg) {
+    post('/auth/home-offline', { on: arg === '1' }).then(function () {
+      toast(arg === '1' ? 'Senza Internet, chi è in casa entra senza password' : 'Anche senza Internet serve il tuo account');
+      auth = null;
+      render();
+    }, function (e) { toast(e.message); });
+  },
   tvcodego: function () {
     var code = fieldValue('tvcode').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length !== 6) { toast('Il codice della TV ha 6 caratteri'); return; }
@@ -7883,7 +7899,16 @@ async function gate() {
     var noAuto = false;
     try { noAuto = sessionStorage.getItem('fpNoAuto') === '1'; } catch (e) { /* niente */ }
     var only = auth.profiles && auth.profiles.length === 1 ? auth.profiles[0] : null;
-    if (!noAuto && only && only.quick && !gate.tried) {
+    // Senza Internet, dalla rete di casa: si entra senza password (vedi /api/auth/home)
+    if (!noAuto && auth.home && !gate.homeTried) {
+      gate.homeTried = true;
+      try {
+        await post('/auth/home', { device: devName() });
+        await loadAuth();
+        if (auth.user) { toast('Senza Internet: entrato da casa come ' + auth.user.name); await afterLogin([]); }
+      } catch (e) { /* si entra come sempre */ }
+    }
+    if (!noAuto && !auth.user && only && only.quick && !gate.tried) {
       gate.tried = true;
       try {
         await post('/auth/profile', { id: only.id, device: devName() });

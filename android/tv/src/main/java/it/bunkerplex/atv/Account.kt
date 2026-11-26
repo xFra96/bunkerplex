@@ -378,8 +378,8 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
             // Dove arriva il fuoco: la cosa da fare, se c'e'
             val target = when {
                 !linked && cloud && !s.optBoolean("offline") -> "pair"
-                linked && !online -> "relogin"
-                linked -> "quick"
+                linked && !online && !u.optBoolean("home") -> "relogin"
+                linked && u.optBoolean("manager") && !u.optBoolean("home") -> "quick"
                 else -> "leave"
             }
             fun at(k: String) = if (k == target) Modifier.focusRequester(first) else Modifier
@@ -408,7 +408,7 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
                 }
             }
 
-            if (linked && !online) Section("Rientra dal telefono") {
+            if (linked && !online && !u.optBoolean("home")) Section("Rientra dal telefono") {
                 Txt("L'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). Qui funziona tutto lo stesso; per riprendere la sincronizzazione rientra dal telefono.",
                     color = C.ink2, lines = 4, lineHeight = 24.sp)
                 Row(Modifier.padding(top = 16.dp)) {
@@ -417,10 +417,14 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
             }
 
             if (linked) Section("Accesso") {
-                val quick = u.optBoolean("tv_quick")
-                Btn("In «Chi guarda?» si entra scegliendo il nome: " + if (quick) "sì, senza password" else "no, serve la password",
-                    at("quick")) {
-                    run({ Api.post("/api/auth/options", JSONObject().put("tv_quick", !quick)) })
+                // Senza Internet: chi e' in casa entra senza password (solo chi gestisce il server)
+                if (u.optBoolean("manager") && !u.optBoolean("home")) {
+                    val home = s.optBoolean("home_offline", true)
+                    Btn("Senza Internet, chi è in casa entra senza password: " + if (home) "sì" else "no", at("quick")) {
+                        run({ Api.post("/api/auth/home-offline", JSONObject().put("on", !home)) })
+                    }
+                    Txt("Solo quando il PC non raggiunge Internet, solo dalla rete di casa, e senza cambiare le impostazioni.",
+                        Modifier.padding(top = 8.dp), size = 15.sp, color = C.ink3, lines = 2)
                 }
                 val email = u.optString("email")
                 if (email.isNotEmpty()) Txt("Puoi entrare anche con $email e la tua password.", Modifier.padding(top = 18.dp), color = C.ink2)
