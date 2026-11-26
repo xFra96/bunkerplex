@@ -52,6 +52,7 @@
     </div>
     <div class="row"><button class="f" id="remote">Amici e tuoi PC fuori casa</button></div>
     <div class="row"><button class="f" id="central">Entra con l'account</button></div>
+    <div class="row"><button class="f" id="appset">Impostazioni dell'app</button></div>
   </div>
 </div>
 <script>
@@ -97,6 +98,8 @@ $('connect').addEventListener('click', connect);
 $('retry').addEventListener('click', search);
 $('remote').addEventListener('click', function () { if (app && app.openRemote) app.openRemote(); });
 $('central').addEventListener('click', function () { if (app && app.openCentral) app.openCentral(); });
+// Versione, aggiornamento e notifiche dell'app: con qualunque server, o nessuno
+$('appset').addEventListener('click', function () { if (app && app.openAppSettings) app.openAppSettings(); });
 $('addr').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.keyCode === 13) connect(); });
 
 // Frecce del telecomando tra campo e pulsanti

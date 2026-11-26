@@ -45,6 +45,8 @@ class MainActivity : AppCompatActivity() {
         private const val ACTION_INSTALL_RESULT = "it.bunkerplex.tv.INSTALL_RESULT"
         /** Linea delle release di questa app su GitHub (app-v1.0, app-v1.1...) */
         private const val RELEASES = "app-v"
+        /** Le impostazioni dell'app quando il servizio account non risponde */
+        private const val APP_SETTINGS = "file:///android_asset/appsettings.html"
     }
 
     private lateinit var web: WebView
@@ -53,6 +55,11 @@ class MainActivity : AppCompatActivity() {
     private var cameFromPlayer = false
     private var onSetup = false
     private var onTvInstall = false
+
+    /** Sulle impostazioni dell'app aperte da remote.html o setup.html: Indietro torna li' (settingsReturn). */
+    @Volatile
+    private var onAppSettings = false
+    private var settingsReturn = ""
 
     private var server: String?
         get() = prefs.getString("server", null)
@@ -119,6 +126,10 @@ class MainActivity : AppCompatActivity() {
                     onSetup = false
                     TvInstaller.listener = null
                 }
+                // Uscito dalle impostazioni dell'app (per esempio verso la ricerca del server)
+                if (onAppSettings && !url.startsWith(Remote.cloud(this@MainActivity)) && !url.startsWith(APP_SETTINGS)) {
+                    onAppSettings = false
+                }
                 if (clearHistoryOnLoad) {
                     clearHistoryOnLoad = false
                     view.clearHistory()
@@ -127,12 +138,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame && !onSetup) lost()
+                if (!request.isForMainFrame) return
+                if (onAppSettings) appSettingsOffline() else if (!onSetup) lost()
             }
 
             @Deprecated("Usato solo dalle versioni vecchie di Android")
             override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
-                if (!onSetup) lost()
+                if (onAppSettings) appSettingsOffline() else if (!onSetup) lost()
+            }
+
+            // Il servizio account risponde ma con un errore suo (es. 502): come se non rispondesse
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+                if (onAppSettings && request.isForMainFrame && response.statusCode >= 500) appSettingsOffline()
             }
         }
 
@@ -141,7 +158,7 @@ class MainActivity : AppCompatActivity() {
                 // Prima chiede alla pagina (es. per chiudere una finestra di scelta)
                 web.evaluateJavascript("(window.fpBack&&window.fpBack())?1:0") { handled ->
                     if (handled != "1") {
-                        if (web.canGoBack()) web.goBack() else finish()
+                        if (onAppSettings) leaveAppSettings() else if (web.canGoBack()) web.goBack() else finish()
                     }
                 }
             }
@@ -218,6 +235,35 @@ class MainActivity : AppCompatActivity() {
         clearHistoryOnLoad = true
         lastOpen = System.currentTimeMillis()
         web.loadUrl(Remote.cloud(this) + "/")
+    }
+
+    /** Le impostazioni dell'app (versione, aggiornamento, notifiche) da remote.html o
+     *  setup.html: non dipendono da nessun server. Arrivano dal servizio account (#/app
+     *  della PWA centrale, come dall'accesso); se neanche lui risponde resta la pagina
+     *  dentro l'app con versione e aggiornamento. Indietro torna dove si era. */
+    private fun showAppSettings() {
+        if (!onAppSettings) settingsReturn = web.url ?: ""
+        onAppSettings = true
+        onSetup = true
+        web.loadUrl(Remote.cloud(this) + "/#/app")
+    }
+
+    /** Il servizio account non si carica: la pagina dentro l'app (versione e aggiornamento).
+     *  E' un file dell'app, non puo' fallire a sua volta. */
+    private fun appSettingsOffline() = web.loadUrl(APP_SETTINGS)
+
+    private fun leaveAppSettings() {
+        onAppSettings = false
+        val back = settingsReturn.takeIf { it.startsWith("file:///android_asset/") }
+        when {
+            back != null -> {
+                onSetup = true
+                clearHistoryOnLoad = true
+                web.loadUrl(back)
+            }
+            server == null -> showCentral()
+            else -> openServer()
+        }
     }
 
     private fun showSetup(unreachable: Boolean) {
@@ -572,6 +618,19 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun openRemote() = runOnUiThread { showRemote("friends") }
 
+        /** Da remote.html e setup.html: le impostazioni dell'app, con qualunque server (o nessuno). */
+        @JavascriptInterface
+        fun openAppSettings() = runOnUiThread { showAppSettings() }
+
+        /** «Indietro» delle impostazioni dell'app: true se erano state aperte da remote.html o
+         *  setup.html (e allora si torna li'), false se no (la pagina va avanti da sola). */
+        @JavascriptInterface
+        fun closeAppSettings(): Boolean {
+            if (!onAppSettings) return false
+            runOnUiThread { leaveAppSettings() }
+            return true
+        }
+
         @JavascriptInterface
         fun discover() {
             thread {
@@ -583,7 +642,7 @@ class MainActivity : AppCompatActivity() {
                     others = emptyList()
                     js("setupFound(${JSONObject.quote(url)})")
                     Thread.sleep(900)
-                    runOnUiThread { if (onSetup) openServer() }
+                    runOnUiThread { if (onSetup && !onAppSettings) openServer() }
                 } else {
                     js("setupNotFound()")
                 }

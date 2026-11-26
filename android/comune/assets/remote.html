@@ -308,7 +308,13 @@ function askPage() {
     '<p>Entra con il tuo account: vedrai i tuoi PC accesi e i server dei tuoi amici. Puoi sempre aggiungere un amico.</p>' +
     '<button class="f primary block" data-act="friends" autofocus>Continua</button>' +
     '<button class="f link" data-act="retry">Cerca di nuovo in casa</button>' +
-    '<button class="f link" data-act="setup">Scrivi l\'indirizzo del server</button>');
+    '<button class="f link" data-act="setup">Scrivi l\'indirizzo del server</button>' + appSettingsLink());
+}
+
+// Le impostazioni dell'app (versione, aggiornamento, notifiche): non dipendono da
+// nessun server, si aprono anche da qui (solo le app che lo sanno fare)
+function appSettingsLink() {
+  return app && app.openAppSettings ? '<button class="f link" data-act="appset">Impostazioni dell\'app</button>' : '';
 }
 
 function loginPage() {
@@ -595,6 +601,7 @@ var acts = {
   ask: function () { go('ask'); },
   retry: function () { app && app.retryHome(); },
   setup: function () { app && app.openSetup(); },
+  appset: function () { if (app && app.openAppSettings) app.openAppSettings(); },
   back: function () { history.back(); },
   again: function () { netReady = false; render(); },
   refresh: function () { toast('Aggiorno…'); refreshAll().then(function () { show(friendsPage(), true); }); },

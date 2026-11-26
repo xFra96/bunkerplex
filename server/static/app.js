@@ -1197,12 +1197,13 @@ async function cAppPage() {
   var notes = '';
   if (PHONE_APP) {
     if (!C.token) {
-      notes = '<div class="panel"><h2>Notifiche</h2><p>Entra con il tuo account per attivare e gestire le notifiche.</p></div>';
+      notes = '<div class="panel"><h2>Notifiche</h2><p>Entra con il tuo account per attivare e gestire le notifiche.</p>' +
+        '<div class="actions"><a class="btn f" href="#/home" data-key="capplogin">Entra</a></div></div>';
     } else {
       try { notes = '<h2 class="capph">Notifiche</h2>' + noticesPanels(await noticesData(), false); } catch (e) { notes = noticesError(e); }
     }
   }
-  return authShell('<a class="authlink f" href="#/home" data-key="cappback" data-autofocus>‹ Indietro</a>' +
+  return authShell('<a class="authlink f" href="#/home" data-act="cappback" data-key="cappback" data-autofocus>‹ Indietro</a>' +
     '<h1>Impostazioni dell\'app</h1><p class="authsub">Valgono su questo ' + (TV ? 'televisore' : 'dispositivo') +
     ', anche senza entrare in un server</p>' + app + notes, true);
 }
@@ -1472,6 +1473,11 @@ function cActions() {
       }
     },
     crefresh: function () { C.list = null; C.error = ''; render(); },
+    // Aperte dall'app fuori casa (remote.html, setup.html): si torna li'; se no all'accesso
+    cappback: function () {
+      if (tvCall('closeAppSettings') === true) return;
+      location.hash = '#/home';
+    },
     cnoshare: function (name) { toast(name + ' non ha server accesi da condividere: deve accendere la condivisione con gli amici sul suo server'); },
     cadd: function () { cache.cAdd = true; render(); },
     caddsend: async function () {
