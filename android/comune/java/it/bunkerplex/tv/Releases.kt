@@ -89,10 +89,12 @@ object Releases {
     }
 
     /**
-     * Controlla su GitHub (al massimo ogni 6 ore, o subito con force) e ricorda
-     * il risultato. Fuori dal thread principale. Se GitHub non risponde resta
-     * quello di prima.
+     * Controlla su GitHub (al massimo ogni 6 ore, o subito con force: le app lo
+     * fanno a ogni apertura) e ricorda il risultato. Fuori dal thread principale.
+     * Se GitHub non risponde resta quello di prima. Una chiamata alla volta: chi
+     * arriva mentre un'altra chiede a GitHub ne aspetta la risposta.
      */
+    @Synchronized
     fun check(ctx: Context, prefix: String, apk: String, force: Boolean): Latest? {
         val prefs = ctx.getSharedPreferences("releases", Context.MODE_PRIVATE)
         val at = prefs.getLong("$prefix:at", 0)

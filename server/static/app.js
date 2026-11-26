@@ -6047,6 +6047,7 @@ function forceRefresh(body) {
 // quella del server e, se e' piu' vecchia, propone di aggiornarsi da sola.
 
 var updateLater = 0;                 // versione per cui si e' risposto "Più tardi" (fino al prossimo avvio)
+try { updateLater = +sessionStorage.getItem('fpUpdateLater') || 0; } catch (e) { /* niente */ }
 
 function tvCall(name) {
   try { return typeof tvApp[name] === 'function' ? tvApp[name]() : null; }
@@ -6108,7 +6109,11 @@ function offerUpdate(i, manual) {
     openPicker('È disponibile un aggiornamento dell\'' + appLabel(true) + ' BunkerPlex' + name + ', l\'app installata su ' + (TV ? 'questa TV' : 'questo dispositivo') + '.' + needs + ' Vuoi installarlo adesso?',
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startUpdate();
-        else { updateLater = latest.code; toast('Puoi aggiornare l\'' + appLabel(true) + ' quando vuoi da Impostazioni → ' + appLabel()); }
+        else {
+          updateLater = latest.code;
+          try { sessionStorage.setItem('fpUpdateLater', String(latest.code)); } catch (e) { /* niente */ }
+          toast('Puoi aggiornare l\'' + appLabel(true) + ' quando vuoi da Impostazioni → ' + appLabel());
+        }
       });
 }
 
@@ -8440,5 +8445,10 @@ if (CENTRAL) Object.assign(actions, cActions());
 loadAuth().then(function () {
   if (auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();
-}).then(function () { setTimeout(pollActivity, 600); });
+}).then(function () {
+  setTimeout(pollActivity, 600);
+  // Nell'app Android (telefono e TV dal browser dell'app): a ogni apertura si controlla
+  // se c'e' una versione nuova e la si propone (l'app chiede a GitHub, vedi Releases.check)
+  if (APP) setTimeout(checkUpdate, 2500);
+});
 })();

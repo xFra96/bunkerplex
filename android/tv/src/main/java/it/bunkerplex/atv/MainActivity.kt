@@ -118,6 +118,9 @@ class MainActivity : ComponentActivity() {
         Api.load(this)
         Access.reset()                   // a ogni apertura: server e «Chi guarda?» da scegliere
         setupImages()
+        // A ogni apertura si chiede a GitHub (Releases.check): se la risposta arriva
+        // quando si e' gia' sulla Home, la versione nuova si propone li'
+        update.onAvailable = { if (stack.lastOrNull() == Screen.Home) offerUpdate() }
         update.start()
         // Con l'account: l'elenco dei server del servizio (e il server di prima). Senza:
         // l'accesso, oppure il server scelto a mano come prima.
@@ -239,12 +242,13 @@ class MainActivity : ComponentActivity() {
         stack.clear()
         stack.add(s)
         // Entrando: se su GitHub c'e' una versione piu' nuova dell'app, la propone (una volta)
-        if (s == Screen.Home && !updateOffered) {
-            if (update.available) {
-                updateOffered = true
-                stack.add(Screen.NewVersion)
-            }
-        }
+        if (s == Screen.Home) offerUpdate()
+    }
+
+    private fun offerUpdate() {
+        if (updateOffered || !update.available) return
+        updateOffered = true
+        stack.add(Screen.NewVersion)
     }
 
     /** Le schermate rileggono i dati (per esempio dopo l'aggiornamento del server). */
