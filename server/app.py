@@ -7,6 +7,7 @@ i video in streaming.
 import asyncio
 import calendar
 import collections
+import concurrent.futures
 import difflib
 import gzip
 import hashlib
@@ -6764,9 +6765,68 @@ def save_progress(item_id, pos, dur, ended=False):
         else:
             set_state(con, [item_id], position=pos, last_played=time.time())
         con.commit()
+        show = get_show(con, r["show_id"]) if r["kind"] == "episode" and r["show_id"] else None
+        note_playing({"id": r["id"], "kind": r["kind"], "title": r["title"] or "", "year": r["year"],
+                      "show": show["title"] if show else "", "show_id": r["show_id"] if show else None,
+                      "season": r["season"], "episode": r["episode"], "lib": r["library_id"]},
+                     pos, dur, finished)
         return {"ok": True, "watched": finished}
     finally:
         con.close()
+
+
+# ---- Cosa si sta guardando adesso: gli amici lo vedono accanto al tuo nome ----
+# Il player manda il punto di ripresa ogni 10 secondi (anche in pausa): chi non si
+# fa sentire da 40 secondi ha smesso. Solo in memoria, mai sul disco.
+NOW_SECONDS = 40
+now_playing = {}                 # (account, profilo) -> {cosa, quando, posizione}
+now_lock = threading.Lock()
+
+
+def note_playing(what, pos, dur, ended):
+    u = CURRENT.get()
+    if u is not None and u.get("friend"):
+        return
+    key = (u["id"], u.get("sid") or u["id"]) if u else (None, None)
+    t = time.time()
+    with now_lock:
+        for k in [k for k, v in now_playing.items() if t - v["t"] > NOW_SECONDS]:
+            del now_playing[k]
+        if ended:
+            now_playing.pop(key, None)
+            return
+        old = now_playing.get(key)
+        same = old and old["what"].get("id") == what.get("id") and old["what"].get("friend") == what.get("friend")
+        # In pausa: il punto di ripresa non si muove tra un giro e l'altro
+        paused = bool(same and abs(pos - old["pos"]) < 1)
+        now_playing[key] = {"what": what, "t": t, "pos": pos, "dur": dur, "paused": paused,
+                            "since": old["since"] if same else t}
+
+
+def watching_now(uid, libs=None):
+    """Cosa guardano adesso i profili dell'account uid (None: PC senza account).
+    libs: le raccolte che chi chiede puo' aprire (solo per quelle l'id del titolo)."""
+    if uid is not None and user_setting(uid, "share_activity") is False:
+        return []
+    t = time.time()
+    out = []
+    with now_lock:
+        rows = [v for k, v in now_playing.items() if k[0] == uid and t - v["t"] <= NOW_SECONDS]
+    rows.sort(key=lambda v: v["since"])
+    for v in rows:
+        w = v["what"]
+        d = {"title": str(w.get("title") or "")[:120], "kind": w.get("kind") if w.get("kind") in ("movie", "episode") else "movie",
+             "show": str(w.get("show") or "")[:120], "paused": v["paused"],
+             "position": int(v["pos"]), "duration": int(v["dur"] or 0)}
+        for k in ("year", "season", "episode"):
+            if isinstance(w.get(k), int):
+                d[k] = w[k]
+        if not w.get("friend") and (libs is None or w.get("lib") in libs):
+            d["id"] = w["id"]
+            if w.get("show_id"):
+                d["show_id"] = w["show_id"]
+        out.append(d)
+    return out
 
 
 @app.post("/api/watched/{item_id}")
@@ -8689,6 +8749,14 @@ async def share_hls(item_id: int, tok: str, name: str, start: float = 0, vcopy: 
                            make_src=lambda: run_transcode(item_id, start, vcopy, audio, height, "aac"))
 
 
+@share.get("/now")
+def share_now():
+    """Cosa sta guardando adesso l'amico che ti ha tra i suoi amici (o tu, su un
+    altro tuo PC). Si spegne con «Mostra agli amici cosa stai guardando»."""
+    v = CURRENT.get()
+    return {"watching": watching_now(v["id"] if v else None, set(v.get("libs") or []) if v else None)}
+
+
 @share.post("/hello")
 async def share_hello(request: Request):
     """L'amico avvisa che il suo indirizzo e' cambiato (capita con le linee di
@@ -9929,6 +9997,10 @@ def friend_progress(vid, pos, dur, ended):
     dur = dur or _num((meta or {}).get("duration"))
     finished = ended or (dur > 0 and pos / dur > 0.93)
     friend_put_state(f["n"], rid, _show_of(meta), 0 if finished else pos, finished, time.time())
+    m = meta or {}
+    note_playing({"id": rid, "friend": f["n"], "kind": m.get("kind"), "title": m.get("title") or "",
+                  "year": m.get("year"), "show": m.get("show_title") if isinstance(m.get("show_title"), str) else "",
+                  "season": m.get("season"), "episode": m.get("episode")}, pos, dur, finished)
     return {"ok": True, "watched": finished}
 
 
@@ -10243,6 +10315,55 @@ def friends_list():
                                    "movies": l["movies"], "shows": l["shows"]} for l in libs or []
                                   if not (mine and l.get("sync") and l["sync"] in here)]})
     return {"friends": out, "quality": friend_quality()}
+
+
+friend_now_cache = {}            # posto dell'amico -> (quando, cosa guarda)
+
+
+def friend_now(f):
+    """Cosa guarda adesso l'amico (o il tuo altro PC). Domanda breve, senza segnarlo
+    spento se non risponde: per quello c'e' gia' l'aggiornamento in sottofondo."""
+    n = f["n"]
+    hit = friend_now_cache.get(n)
+    if hit and time.time() - hit[0] < 10:
+        return hit[1]
+    got = []
+    if f.get("token") and (friend_status.get(n) or {}).get("online") is not False:
+        try:
+            with friend_open(f, "/now", 3, {"Accept-Encoding": "identity"}) as r:
+                data = json.loads(r.read(64 << 10))
+            for w in (data.get("watching") if isinstance(data, dict) else None) or []:
+                if not isinstance(w, dict) or not isinstance(w.get("title"), str):
+                    continue
+                d = {"title": w["title"][:120], "kind": "episode" if w.get("kind") == "episode" else "movie",
+                     "show": str(w.get("show") or "")[:120], "paused": bool(w.get("paused")),
+                     "position": int(_num(w.get("position"))), "duration": int(_num(w.get("duration")))}
+                for k in ("year", "season", "episode"):
+                    if _is_id(w.get(k)):
+                        d[k] = w[k]
+                # Un titolo che si puo' aprire da qui: con l'id «dell'amico» di questo server
+                if _is_id(w.get("id")):
+                    d["id"] = fvid(n, w["id"])
+                    if _is_id(w.get("show_id")):
+                        d["show_id"] = fvid(n, w["show_id"])
+                got.append(d)
+                if len(got) >= 4:
+                    break
+        except Exception:
+            got = []                 # server di prima (senza /now) o non raggiungibile adesso
+    friend_now_cache[n] = (time.time(), got)
+    return got
+
+
+@app.get("/api/friends/now")
+def friends_now():
+    """Per il riquadro Amici: chi sta guardando cosa, sui server accesi."""
+    fs = [f for f in get_friends() if f.get("token")]
+    if not fs:
+        return {"now": {}}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(fs))) as ex:
+        res = list(ex.map(friend_now, fs))
+    return {"now": {str(f["n"]): w for f, w in zip(fs, res) if w}}
 
 
 @app.post("/api/friends")
@@ -11040,7 +11161,8 @@ async def account_friends():
         mine.append({"name": s["name"], "online": st.get("online"), "error": st.get("error") or "",
                      "route": st.get("route") or "", "n": lf["n"] if lf else None, "look": s.get("look") or look_of(None)})
     return {"linked": True, "supported": info.get("supported"), "loaded": bool(info), "friends": out,
-            "mine": mine, "self_reach": self_reach(u["id"]), "reachable": bool((config.get("presence") or {}).get(str(u["id"]))),
+            "mine": mine, "self_reach": self_reach(u["id"]),
+            "share_activity": user_setting(u["id"], "share_activity") is not False, "reachable": bool((config.get("presence") or {}).get(str(u["id"]))),
             "sharing": friends_shared(u["id"]), "address": presence_url(), "pc": pc_name(),
             "published": bool((config.get("presence") or {}).get(str(u["id"]))),
             "share_on": share_on(), "here_look": (info.get("looks") or {}).get(pc_id()) or look_of(None)}
@@ -11130,6 +11252,16 @@ async def account_friends_share(request: Request):
     except Exception as ex:
         print("Amici dell'account:", repr(ex), flush=True)
     return {"ok": True, "address": presence_url()}
+
+
+@app.post("/api/account-friends/activity")
+async def account_friends_activity(request: Request):
+    """Mostra agli amici (e agli altri tuoi PC) cosa stai guardando: vale per l'account."""
+    u = CURRENT.get()
+    if u is None or not u["linked"] or u.get("guest"):
+        raise HTTPException(400, "Per gli amici dell'account entra con un account")
+    put_user_setting(u["id"], "share_activity", bool((await read_json(request)).get("on")))
+    return {"ok": True}
 
 
 @app.post("/api/account-friends/self")
