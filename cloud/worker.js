@@ -2995,6 +2995,8 @@ async function route(request, env) {
         await ensureCreds(env);
         await ensureActivate(env);
         await ensureMagic(env);
+        await ensureProfiles(env);
+        await ensureClaims(env);
         for (const c of (await env.DB.prepare('SELECT sid FROM server_creds WHERE owner_id = ?').bind(id).all()).results) {
           await dropServerDns(env, c.sid);
         }
@@ -3007,6 +3009,9 @@ async function route(request, env) {
           env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM settings WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM state WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM pstate WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM profiles WHERE user_id = ?').bind(id),
+          env.DB.prepare('DELETE FROM claims WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM friends WHERE a = ? OR b = ?').bind(id, id),
           env.DB.prepare('DELETE FROM servers WHERE user_id = ?').bind(id),
           env.DB.prepare('DELETE FROM server_creds WHERE owner_id = ?').bind(id),
