@@ -5,90 +5,189 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BunkerPlex</title>
 <style>
+  /* Lo stesso aspetto dell'accesso e della scelta del server (server/static/style.css):
+     qui solo quello che serve, perche' questa pagina non carica app.js */
+  :root { --bg: #060a07; --surface: #0e1510; --surface2: #17211a; --ink: #f2f5f2; --ink2: #9fada3; --ink3: #77857b;
+          --accent: #1a7f45; --accent-text: #4cbf7f; --warn: #e0a030; --ok: #4cbf7f; --r: .4rem; }
   * { box-sizing: border-box; }
-  html { font-size: 15px; }
+  html { font-size: 15px; background: var(--bg); color: var(--ink);
+         font-family: "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-text-size-adjust: 100%; }
   html.tv { font-size: clamp(14px, 1.5vw, 40px); }
-  body { margin: 0; min-height: 100vh; background: #060a07; color: #f2f5f2; font-family: Roboto, "Segoe UI", sans-serif;
-         -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; min-height: 100vh; overflow-x: hidden; background: var(--bg); -webkit-tap-highlight-color: transparent; }
+  button, input { font: inherit; color: inherit; }
+  button { background: none; border: 0; cursor: pointer; padding: 0; }
+  h1, h2, h3, p { margin: 0; }
+  .f { outline: none; }
+  [hidden] { display: none !important; }
+
+  /* ---- Pulsanti e campi */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: .5rem; padding: .75rem 1.4rem; border-radius: var(--r);
+         background: #ffffff24; font-weight: 700; font-size: 1rem; white-space: nowrap; transition: transform .12s ease-out; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.small { padding: .45rem .9rem; font-size: .9rem; }
+  .btn.on { background: var(--accent); color: #fff; }
+  .btn:focus { background: var(--ink); color: var(--bg); }
+  .field { display: block; width: 100%; padding: .85rem 1.2rem; border-radius: var(--r); background: var(--surface); border: 2px solid var(--surface2);
+           font-size: 1.1rem; outline: none; }
+  .field::placeholder { color: var(--ink3); }
+  .field:focus { border-color: var(--ink); background: var(--surface2); }
+  .spin { width: 2.6rem; height: 2.6rem; margin: 1rem auto 1.5rem; border: .3rem solid var(--surface2); border-top-color: var(--accent-text);
+          border-radius: 50%; animation: authspin 1s linear infinite; }
+  #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+           padding: .7rem 1.2rem; border-radius: .4rem; font-weight: 600; max-width: 90vw; z-index: 9; }
+
+  /* ---- Accesso e scelta del server (come .auth/.srv in style.css) */
+  .auth { min-height: 100vh; min-height: 100dvh; display: flex; padding: 2rem 1rem;
+          background: radial-gradient(ellipse 80% 60% at 50% -10%, #1a7f4530, transparent 70%), var(--bg); }
+  .authcard { width: 100%; max-width: 26rem; margin: auto; display: flex; flex-direction: column; animation: authin .35s ease-out; }
+  .authcard.wide { max-width: 34rem; }
+  .authcard.grid { max-width: 64rem; }
+  html.tv .authcard.grid { max-width: 92rem; }
+  .still .authcard { animation: none; }
+  @keyframes authin { from { opacity: 0; transform: translateY(.6rem); } }
+  .authbrand { display: flex; align-items: center; justify-content: center; gap: .6rem; margin-bottom: 2.2rem; font-size: 1.6rem; letter-spacing: -.02em; }
+  .authbrand svg { width: 2.4rem; height: 2.4rem; }
+  .authbrand b { font-weight: 800; }
+  .authcard h1 { font-size: 1.9rem; font-weight: 700; letter-spacing: -.02em; text-align: center; margin: 0 0 .4rem; }
+  .authsub { text-align: center; color: var(--ink2); margin: 0 0 1.8rem; }
+  .authsub b { color: var(--ink); }
+  .authcard > p { color: var(--ink2); line-height: 1.55; text-align: center; margin: 0 0 1.4rem; }
+  .authcard > p b { color: var(--ink); }
+  .authcard .field { margin-bottom: .8rem; font-size: 1.08rem; padding: .95rem 1.1rem; border-radius: .6rem; }
+  .authcard > p.err { color: var(--warn); min-height: 1.4rem; margin: 0 0 .4rem; }
+  .btn.block { display: flex; width: 100%; margin: .4rem 0 0; padding: .95rem 1.5rem; border-radius: .6rem; font-size: 1.08rem; }
+  .btn.block:focus { box-shadow: 0 0 0 3px var(--ink); }
+  .authlink { display: block; align-self: center; margin-top: 1.1rem; padding: .3rem .6rem; border-radius: var(--r); color: var(--ink2);
+              font-weight: 600; font-size: .95rem; text-align: center; }
+  .authlink:hover { color: var(--ink); }
+  .authlink:focus { background: var(--ink); color: var(--bg); }
+  .authlink.back { align-self: flex-start; margin: -1rem 0 1rem; }
+  .author { display: flex; align-items: center; gap: .9rem; margin: 1.6rem 0 1.2rem; color: var(--ink3); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+  .author::before, .author::after { content: ""; flex: 1; height: 1px; background: var(--surface2); }
+  .gbtn { display: flex; align-items: center; justify-content: center; gap: .75rem; width: 100%; padding: .9rem 1.2rem; border-radius: .6rem;
+          background: #fff; color: #1f1f1f; font-weight: 600; font-size: 1.05rem; }
+  .gbtn svg { width: 1.3rem; height: 1.3rem; flex: none; }
+  .gbtn:focus { box-shadow: 0 0 0 3px var(--accent-text); }
+  .gcode { font-size: 2.4rem; font-weight: 800; letter-spacing: .15em; text-align: center; margin: .2rem 0 1rem; }
+  .authico { align-self: center; width: 4rem; height: 4rem; border-radius: 50%; background: var(--surface2); display: flex; align-items: center; justify-content: center; margin-bottom: 1.2rem; }
+  .authico svg { width: 2rem; height: 2rem; fill: none; stroke: var(--accent-text); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  @keyframes authspin { to { transform: rotate(360deg); } }
+  .authnote { color: var(--ink3); font-size: .9rem; text-align: center; margin-top: 1rem; }
+  .authcard h1.small { font-size: 1.4rem; font-weight: 600; }
+
+  .srvfind { margin: 0 0 1.4rem !important; }
+  .srvsec { margin-bottom: 1.6rem; }
+  .srvsec h2 { display: flex; align-items: center; gap: .5rem; margin: 0 0 .8rem; font-size: .8rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); }
+  .srvsec h2 span { padding: .1rem .5rem; border-radius: 1rem; background: var(--surface2); color: var(--ink2); letter-spacing: 0; }
+  .srvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr)); gap: .9rem; }
+  .srv { display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 0; border-radius: 1rem; overflow: hidden; background: var(--surface);
+         border: 2px solid transparent; text-align: left; transition: transform .14s ease-out, background .14s, box-shadow .14s; }
+  .srv:hover { background: var(--surface2); }
+  .srv:focus { background: var(--ink); color: var(--bg); transform: scale(1.04); box-shadow: 0 .8rem 2rem #000a; }
+  .srv.off { opacity: .55; }
+  .srvart { position: relative; display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 9;
+            background: radial-gradient(circle at 25% 20%, hsl(var(--h, 150) 70% 45% / .55), transparent 60%), linear-gradient(135deg, hsl(var(--h, 150) 45% 22%), hsl(calc(var(--h, 150) + 40) 40% 12%)); }
+  .srvini { font-size: 2.6rem; font-weight: 800; letter-spacing: -.03em; color: #fff; text-shadow: 0 .2rem 1rem #0006; }
+  .srvbadge { position: absolute; left: .6rem; bottom: .6rem; width: 2rem; height: 2rem; border-radius: .55rem; background: #0008; display: flex; align-items: center; justify-content: center; }
+  .srvbadge svg, .srvart > svg { fill: none; stroke: #fff; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .srvbadge svg { width: 1.15rem; height: 1.15rem; }
+  .srvart > svg { width: 2.4rem; height: 2.4rem; }
+  .srvtag { position: absolute; right: .6rem; bottom: .6rem; padding: .15rem .55rem; border-radius: 1rem; background: #0008; color: #fff; font-size: .75rem; font-weight: 700; }
+  .srvtxt { display: flex; flex-direction: column; min-width: 0; padding: .75rem .9rem .9rem; }
+  .srvtxt b { font-size: 1.05rem; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srvtxt small { color: var(--ink2); margin-top: .15rem; font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srv:focus .srvtxt small { color: var(--bg); opacity: .75; }
+  .srvdot { position: absolute; top: .65rem; right: .65rem; width: .7rem; height: .7rem; border-radius: 50%; background: var(--ink3); box-shadow: 0 0 0 .2rem #0006; }
+  .srvdot.live { background: var(--ok); box-shadow: 0 0 0 .25rem #4cbf7f40; }
+  .srvdot.wait { background: var(--ink2); animation: srvpulse 1.1s ease-in-out infinite; }
+  @keyframes srvpulse { 50% { opacity: .25; } }
+  .srv.add { background: transparent; border: 2px dashed var(--surface2); }
+  .srv.add .srvart { background: transparent; }
+  .srv.add .srvart > svg { stroke: var(--accent-text); }
+  .srv.add:focus { background: var(--ink); border-color: var(--ink); }
+  .srv.add:focus .srvart > svg { stroke: var(--bg); }
+  .srvadd { grid-column: 1 / -1; display: flex; gap: .6rem; align-items: center; }
+  .srvadd .field { margin: 0 !important; flex: 1; min-width: 0; }
+  .srvadd .btn { margin: 0; border-radius: .6rem; }
+  .srvart.img { background-size: cover; background-position: center; }
+  .srvart.img::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to top, #0007, transparent 45%); }
+  .srvart.img > * { z-index: 1; }
+  .srvini.ico { display: flex; }
+  .srvini.ico svg { width: 2.8rem; height: 2.8rem; fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 .2rem .6rem #0006); }
+  .srvfoot { display: flex; justify-content: center; flex-wrap: wrap; gap: .5rem 1.5rem; }
+  .srvfoot .authlink { margin-top: .4rem; }
+  .srvreq { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; margin-bottom: .9rem; border-radius: .8rem; background: #1a7f4522; color: var(--ink2); }
+  .srvreq span { flex: 1; min-width: 0; }
+  .srvreq b { color: var(--ink); }
+  .srvreq .btn { margin: 0; }
+  /* Fuori casa: si vede subito chi risponde da qui e chi si sta ancora cercando */
+  .srvstat { display: flex; align-items: center; justify-content: center; gap: .55rem; margin: -.6rem 0 1.6rem; color: var(--ink3); font-size: .88rem; text-align: center; }
+  .srvstat i { width: .6rem; height: .6rem; border-radius: 50%; background: var(--ink3); flex: none; }
+  .srvstat i.live { background: var(--ok); box-shadow: 0 0 0 .2rem #4cbf7f40; }
+  .srvstat i.wait { width: .95rem; height: .95rem; background: none; border: .15rem solid var(--surface2); border-top-color: var(--accent-text); animation: authspin 1s linear infinite; }
+  .srvwarn { display: flex; align-items: center; gap: .8rem; padding: .8rem 1rem; margin-bottom: 1.2rem; border-radius: .8rem; background: #e0a0301f; color: var(--ink2); line-height: 1.45; font-size: .92rem; }
+  .srvwarn span { flex: 1; min-width: 0; }
+  .srvwarn b { display: block; color: var(--warn); }
+  .srvwarn .btn { margin: 0; flex: none; }
+  .devrow { display: flex; align-items: center; gap: .8rem; width: 100%; padding: .8rem 1rem; margin-bottom: .6rem; border-radius: .8rem; background: var(--surface); text-align: left; }
+  .devrow span { flex: 1; min-width: 0; }
+  .devrow b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .devrow small { display: block; color: var(--ink2); font-size: .85rem; margin-top: .1rem; }
+  .devrow em { font-style: normal; font-weight: 700; color: var(--warn); font-size: .9rem; }
+  .devrow .btn { margin: 0; }
+  .devrow.pick:focus { background: var(--ink); color: var(--bg); }
+  .devrow.pick:focus small, .devrow.pick:focus em { color: var(--bg); }
+  @media (max-width: 560px) {
+    .srvgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+    .srvini { font-size: 2rem; }
+    .srvtxt { padding: .6rem .7rem .7rem; }
+    .srvtxt b { font-size: .95rem; }
+    .srvreq, .srvwarn { flex-wrap: wrap; }
+  }
+  html.tv .srvgrid { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 1.1rem; }
+
+  /* ---- Raccolta, film e serie di un server raggiunto da fuori */
   .wrap { max-width: 64rem; margin: 0 auto; padding: 1.2rem 1rem 3rem; }
-  .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; }
-  .box { width: 34rem; max-width: 92vw; }
-  .logo { font-size: 2.2rem; font-weight: 400; letter-spacing: -.02em; margin-bottom: .4rem; }
+  .wrap h1 { font-size: 1.4rem; font-weight: 600; margin: 1.2rem 0 .6rem; }
+  .wrap p { color: var(--ink2); line-height: 1.55; margin: 0 0 1rem; }
+  .logo { font-size: 1.5rem; font-weight: 400; letter-spacing: -.02em; }
   .logo b { font-weight: 800; }
   .top { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
-  .top .logo { font-size: 1.5rem; margin: 0; flex: 1; }
-  .who { color: #9fada3; font-size: .9rem; }
-  h1 { font-size: 1.4rem; font-weight: 600; margin: 1.2rem 0 .6rem; }
-  h2 { font-size: 1rem; font-weight: 600; color: #9fada3; margin: 1.6rem 0 .6rem; text-transform: none; }
-  p { color: #9fada3; line-height: 1.55; margin: 0 0 1rem; }
-  p b { color: #f2f5f2; }
-  .err { color: #e0a030; min-height: 1.4rem; }
-  input { width: 100%; padding: .8rem 1rem; font: inherit; font-size: 1.1rem; color: #f2f5f2; margin-bottom: .7rem;
-          background: #0e1510; border: 2px solid #17211a; border-radius: .4rem; outline: none; }
-  input:focus { border-color: #f2f5f2; background: #17211a; }
-  button, a.btn { font: inherit; font-weight: 700; font-size: 1rem; padding: .75rem 1.4rem; border: 0; cursor: pointer;
-           border-radius: .4rem; background: #ffffff1f; color: #f2f5f2; outline: none; text-decoration: none; display: inline-block; }
-  button.primary { background: #1a7f45; color: #fff; }
-  button.small { padding: .45rem .9rem; font-size: .9rem; }
-  button:focus, a.btn:focus, .card:focus, .lib:focus, .ep:focus { background: #f2f5f2 !important; color: #060a07 !important; }
+  .top .logo { margin: 0; flex: 1; }
+  .who { color: var(--ink2); font-size: .9rem; }
   .row { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: center; margin-top: 1rem; }
-  .left { justify-content: flex-start; }
-  .spin { width: 2.6rem; height: 2.6rem; margin: 1.5rem auto; border: .3rem solid #17211a; border-top-color: #4cbf7f;
-          border-radius: 50%; animation: s 1s linear infinite; }
-  @keyframes s { to { transform: rotate(360deg); } }
-  .pc { background: #0e1510; border-radius: .6rem; padding: .9rem 1rem; margin-bottom: .7rem; }
-  .pc.off { opacity: .6; }
-  .pchead { display: flex; align-items: center; gap: .6rem; font-weight: 600; }
-  .pchead small { margin-left: auto; color: #9fada3; font-weight: 400; font-size: .85rem; text-align: right; }
-  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #4cbf7f; flex: none; }
-  .off .dot { background: #6b776f; }
-  .libs { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .7rem; }
-  .lib { padding: .55rem 1rem; border-radius: 999px; background: #17211a; color: #f2f5f2; font-weight: 600; border: 0; font: inherit; }
-  .lib small { color: #9fada3; font-weight: 400; margin-left: .35rem; }
-  .lib:focus small { color: #060a07; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: .8rem; }
-  .card { background: #0e1510; border-radius: .5rem; overflow: hidden; border: 0; padding: 0; color: inherit; font: inherit; text-align: left; }
-  .card .ph { aspect-ratio: 2 / 3; background: #17211a center / cover no-repeat; display: flex; align-items: flex-end; }
-  .card .ph span { padding: .4rem; font-size: .8rem; color: #9fada3; }
+  .row.left { justify-content: flex-start; }
+  .wrap .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr)); gap: .8rem; }
+  .card { background: var(--surface); border-radius: .5rem; overflow: hidden; text-align: left; }
+  .card .ph { aspect-ratio: 2 / 3; background: var(--surface2) center / cover no-repeat; display: flex; align-items: flex-end; }
+  .card .ph span { padding: .4rem; font-size: .8rem; color: var(--ink2); }
   .card b { display: block; padding: .4rem .5rem 0; font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card small { display: block; padding: 0 .5rem .5rem; font-size: .75rem; color: #9fada3; }
-  .card:focus small { color: #060a07; }
-  .hero { position: relative; border-radius: .6rem; overflow: hidden; background: #0e1510 center / cover no-repeat; min-height: 12rem; margin-bottom: 1rem; }
+  .card small { display: block; padding: 0 .5rem .5rem; font-size: .75rem; color: var(--ink2); }
+  .card:focus, .ep:focus { background: var(--ink); color: var(--bg); }
+  .card:focus small, .ep:focus small { color: var(--bg); }
+  .hero { position: relative; border-radius: .6rem; overflow: hidden; background: var(--surface) center / cover no-repeat; min-height: 12rem; margin-bottom: 1rem; }
   .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(0deg, #060a07 5%, #060a0799 60%, #060a0733); }
   .hero div { position: relative; z-index: 1; padding: 6rem 1rem 1rem; }
-  .hero h1 { margin: 0 0 .3rem; font-size: 1.6rem; }
-  .meta { color: #9fada3; font-size: .9rem; }
+  .wrap .hero h1 { margin: 0 0 .3rem; font-size: 1.6rem; }
+  .meta { color: var(--ink2); font-size: .9rem; }
   .tabs { display: flex; gap: .4rem; flex-wrap: wrap; margin: .6rem 0 .8rem; }
-  .tabs button.on { background: #1a7f45; }
-  .ep { display: flex; gap: .8rem; width: 100%; text-align: left; background: #0e1510; color: inherit; border: 0; font: inherit;
-        border-radius: .5rem; padding: .6rem; margin-bottom: .5rem; align-items: center; }
-  .ep i { width: 7rem; flex: none; aspect-ratio: 16 / 9; border-radius: .3rem; background: #17211a center / cover no-repeat; }
+  .ep { display: flex; gap: .8rem; width: 100%; text-align: left; background: var(--surface); border-radius: .5rem; padding: .6rem; margin-bottom: .5rem; align-items: center; }
+  .ep i { width: 7rem; flex: none; aspect-ratio: 16 / 9; border-radius: .3rem; background: var(--surface2) center / cover no-repeat; }
   .ep span { min-width: 0; }
   .ep b { display: block; font-weight: 600; }
-  .ep small { display: block; color: #9fada3; font-size: .85rem; margin-top: .2rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .ep:focus small { color: #060a07; }
-  .req { display: flex; align-items: center; gap: .5rem; padding: .5rem 0; flex-wrap: wrap; }
-  .req span { flex: 1; min-width: 8rem; }
-  .add { display: flex; gap: .5rem; }
-  .add input { margin: 0; }
-  .note { font-size: .85rem; }
-  #toast { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); background: #f2f5f2; color: #060a07;
-           padding: .7rem 1.2rem; border-radius: .4rem; font-weight: 600; max-width: 90vw; z-index: 9; }
-  .brand { display: flex; align-items: center; justify-content: center; gap: .6rem; margin-bottom: 2rem; font-size: 1.6rem; letter-spacing: -.02em; }
-  .brand svg { width: 2.4rem; height: 2.4rem; }
-  .brand b { font-weight: 800; }
-  .center { background: radial-gradient(ellipse 80% 60% at 50% -10%, #1a7f4530, transparent 70%), #060a07; }
-  .center .box { width: 26rem; }
-  .center h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -.02em; margin: 0 0 .4rem; }
-  .center input { border-radius: .6rem; padding: .9rem 1rem; }
-  button.block { display: block; width: 100%; padding: .9rem; border-radius: .6rem; font-size: 1.05rem; margin-top: .3rem; }
-  button.link { display: block; margin: 1rem auto 0; background: none; color: #9fada3; font-weight: 600; font-size: .95rem; padding: .3rem .6rem; }
-  .or { display: flex; align-items: center; gap: .9rem; margin: 1.5rem 0 1.1rem; color: #77857b; font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
-  .or::before, .or::after { content: ""; flex: 1; height: 1px; background: #17211a; }
-  button.gbtn { display: flex; align-items: center; justify-content: center; gap: .7rem; width: 100%; padding: .85rem; border-radius: .6rem; background: #fff; color: #1f1f1f; font-weight: 600; }
-  button.gbtn svg { width: 1.25rem; height: 1.25rem; }
-  button.gbtn:focus { box-shadow: 0 0 0 3px #4cbf7f; background: #fff !important; color: #1f1f1f !important; }
-  [hidden] { display: none !important; }
+  .ep small { color: var(--ink2); font-size: .85rem; margin-top: .2rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+
+  /* Col dito il fuoco non si disegna: si vede solo con frecce e telecomando (come body.kb di app.js) */
+  body:not(.kb) .srv:focus { background: var(--surface); color: inherit; transform: none; box-shadow: none; }
+  body:not(.kb) .srv:focus .srvtxt small { color: var(--ink2); opacity: 1; }
+  body:not(.kb) .srv.add:focus { background: transparent; border-color: var(--surface2); }
+  body:not(.kb) .srv.add:focus .srvart > svg { stroke: var(--accent-text); }
+  body:not(.kb) .btn:focus { background: #ffffff24; color: inherit; box-shadow: none; }
+  body:not(.kb) .btn.primary:focus, body:not(.kb) .btn.on:focus { background: var(--accent); color: #fff; }
+  body:not(.kb) .authlink:focus { background: none; color: var(--ink2); }
+  body:not(.kb) .card:focus, body:not(.kb) .ep:focus, body:not(.kb) .devrow.pick:focus { background: var(--surface); color: inherit; }
+  body:not(.kb) .card:focus small, body:not(.kb) .ep:focus small, body:not(.kb) .devrow.pick:focus small { color: var(--ink2); }
+  body:not(.kb) .devrow.pick:focus em { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -115,6 +214,14 @@ function toast(msg) {
   clearTimeout(toast.timer);
   toast.timer = setTimeout(function () { t.hidden = true; }, 3500);
 }
+window.toastFromApp = toast;
+
+// Tasti o dito: con frecce e telecomando il fuoco si vede, col dito no (TV sempre tasti).
+// touched: chi guarda ha gia' fatto qualcosa, gli aggiornamenti in sottofondo non gli spostano il fuoco
+var touched = false;
+function setKb(on) { document.body.classList.toggle('kb', on); }
+setKb(TV);
+document.addEventListener('pointerdown', function () { touched = true; if (!TV) setKb(false); }, true);
 
 // ---- Ponte con l'app: le risposte lente tornano in remoteDone(n, ok, testo)
 var waiting = {}, seq = 0;
@@ -136,42 +243,44 @@ function cloud(method, path, body) {
     var e;
     try { e = JSON.parse(t); } catch (x) { e = { detail: t }; }
     if (e.status === 401) { go('login'); }
-    throw new Error(e.detail || 'Servizio account non raggiungibile');
+    var err = new Error(e.detail || 'Servizio account non raggiungibile');
+    err.status = e.status || 0;
+    throw err;
   });
 }
+function account() { return app && app.remoteAccount ? app.remoteAccount() : ''; }
 
-// ---- Rete di BunkerPlex e PC (tuoi e degli amici)
-var proxy = '';                          // http://127.0.0.1:PORTA/<segreto>
-var me = 0, friendsList = [], pcs = {}, pcOrder = [];
+// ---- Rete di BunkerPlex (Tailscale dentro l'app): serve per i server fuori da questa rete
+var proxy = '', netStart = null;         // proxy = http://127.0.0.1:PORTA/<segreto>
+var net = { state: '', error: '', limit: null };   // state: '' | 'starting' | 'ok' | 'limit' | 'error'
 
-// Al limite dei dispositivi dell'account il servizio non fa entrare: si chiede
-// all'utente quale togliere e si riprova con quello (replace)
+// Al limite dei dispositivi dell'account il servizio non fa entrare: err.limit ha
+// l'elenco, si chiede all'utente quale togliere e si riprova con quello (replace)
 function startNet(replace) {
   if (proxy) return Promise.resolve(proxy);
-  return bridge('remoteNet', [replace || '']).then(function (b) { proxy = b; return b; }, function (t) {
+  if (netStart && !replace) return netStart;
+  netStart = bridge('remoteNet', [replace || '']).then(function (b) { proxy = b; netStart = null; return b; }, function (t) {
+    netStart = null;
     var e;
     try { e = JSON.parse(t); } catch (x) { e = { detail: t }; }
-    if (e.limit && Array.isArray(e.limit.devices)) {
-      return pickDevice(e.limit).then(function (id) {
-        if (!id) throw new Error('Senza un posto libero l\'app non raggiunge amici e tuoi PC.');
-        return startNet(id);
-      });
-    }
-    throw new Error(e.detail || 'Tailscale non parte');
+    var err = new Error(e.detail || 'Tailscale non parte');
+    if (e.limit && Array.isArray(e.limit.devices)) err.limit = e.limit;
+    throw err;
   });
+  return netStart;
 }
 
 function pickDevice(lim) {
   return new Promise(function (resolve) {
     var rows = lim.devices.map(function (d) {
-      return '<button class="f ep" data-act="pickdev" data-arg="' + esc(d.id) + '"><span><b>' + esc(d.label) + '</b>' +
-        '<small>' + (d.kind === 'pc' ? 'PC' : 'App') + ' · ' + (d.online ? 'collegato adesso' : 'spento') + '</small></span></button>';
+      return '<button class="devrow pick f" data-act="pickdev" data-arg="' + esc(d.id) + '"><span><b>' + esc(d.label) + '</b>' +
+        '<small>' + (d.kind === 'pc' ? 'PC' : 'App') + ' · ' + (d.online ? 'collegato adesso' : 'spento') + '</small></span><em>Togli</em></button>';
     }).join('');
     pickDevice.done = resolve;
-    show(centerPage('<h1>Hai già ' + (lim.limit || 4) + ' dispositivi</h1>' +
-      '<p>Ogni account ha al massimo ' + (lim.limit || 4) + ' dispositivi nella rete di BunkerPlex. Quale togli per far entrare questo?</p>' +
-      '<div style="text-align:left">' + rows + '</div>' +
-      '<div class="row"><button class="f" data-act="pickdev" data-arg="">Non ora</button></div>'));
+    show(authShell('<h1>Hai già ' + (lim.limit || 4) + ' dispositivi</h1>' +
+      '<p class="authsub">nella rete di BunkerPlex</p>' +
+      '<p>Per raggiungere i server fuori dalla rete in cui sei serve un posto libero: quale togli per far entrare questo dispositivo?</p>' +
+      rows + '<button class="authlink f" data-act="pickdev" data-arg="" data-key="notnow">Non ora</button>', true));
   });
 }
 
@@ -221,7 +330,10 @@ function enter(pc) {
   });
 }
 
+// Il PC attraverso la rete di BunkerPlex: pc.net = 'ok' (con le sue raccolte) o 'no'
 function loadPc(pc) {
+  if (!proxy || !pc.host) { pc.net = 'no'; return Promise.resolve(); }
+  pc.base = proxy + '/' + pc.host + '/' + pc.pin;
   var saved = '';
   try { saved = localStorage.getItem(tokKey(pc)) || ''; } catch (e) { /* niente */ }
   if (saved) app.remoteToken(pc.host, saved);
@@ -230,45 +342,177 @@ function loadPc(pc) {
     if (e.offline) throw e;
     return enter(pc).then(function () { return share(pc, '/libraries'); });
   }).then(function (libs) {
-    pc.online = true;
+    pc.net = 'ok';
     pc.error = '';
     pc.libs = Array.isArray(libs) ? libs : [];
   }, function (e) {
-    pc.online = false;
+    pc.net = 'no';
     pc.error = e.offline ? '' : e.message;
-  }).then(function () { pc.checked = true; });
-}
-
-function readFriends() {
-  return cloud('GET', '/friends').then(function (r) {
-    me = r.me;
-    friendsList = r.friends || [];
-    var seen = {};
-    function add(owner, ownerName, self, s) {
-      var key = owner + '-' + s.sid;
-      seen[key] = 1;
-      var pc = pcs[key] || (pcs[key] = { key: key, libs: [], online: null });
-      pc.owner = owner; pc.ownerName = ownerName; pc.self = self; pc.sid = s.sid;
-      pc.name = s.name || 'PC'; pc.pin = s.pin; pc.host = hostOf(s.url);
-      pc.base = proxy ? proxy + '/' + pc.host + '/' + pc.pin : '';
-    }
-    (r.mine || []).forEach(function (s) { add(me, 'tu', true, s); });
-    friendsList.forEach(function (f) {
-      if (f.status === 'ok') (f.servers || []).forEach(function (s) { add(f.id, f.username, false, s); });
-    });
-    Object.keys(pcs).forEach(function (k) { if (!seen[k]) delete pcs[k]; });
   });
 }
 
-var devices = null;                      // {limit, devices}: i dispositivi dell'account nella rete
+// ---- I server dell'account (tuoi e degli amici) e dove si raggiungono da qui.
+// Ogni dispositivo fa da se': mostra quello che raggiunge dalla rete in cui si trova.
+// Per ogni server: lan = risponde su questa rete ('wait' | 'ok' | 'no'), net = risponde
+// attraverso la rete di BunkerPlex (idem). Prima quelli su questa rete, poi gli altri.
+var me = null, friendsList = [], pcs = {}, listedAt = 0, listNote = '';
+var adding = false, addName = '', findQ = '';
+var lastPick = '', lastLib = '';         // tornando indietro, il fuoco torna dove si era scelto
+
+function listKey() { return 'bp-servers:' + account(); }
+
+function readServers() {
+  return cloud('GET', '/servers').then(function (r) {
+    try { localStorage.setItem(listKey(), JSON.stringify(r)); } catch (e) { /* niente */ }
+    listNote = '';
+    useServers(r);
+  }, function (e) {
+    // Senza servizio account (niente Internet) si usa l'ultimo elenco: i server su
+    // questa rete si raggiungono lo stesso
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(listKey()) || 'null'); } catch (x) { /* niente */ }
+    if (!saved || e.status === 401) throw e;
+    listNote = 'Il servizio account non risponde: questo è l\'ultimo elenco salvato.';
+    useServers(saved);
+  });
+}
+
+function useServers(r) {
+  me = r.me || null;
+  friendsList = r.friends || [];
+  var seen = {};
+  var probing = canProbe(), home = homeUrl();
+  (r.servers || []).forEach(function (s, i) {
+    var owner = s.owner || {};
+    var key = (owner.id || 0) + '-' + s.sid;
+    seen[key] = 1;
+    var pc = pcs[key] || (pcs[key] = { key: key, libs: [], lan: '', net: '' });
+    var a = s.addresses || {};
+    pc.i = i;
+    pc.sid = s.sid;
+    pc.owner = owner.id;
+    pc.ownerName = owner.username || '';
+    pc.self = s.role !== 'friend';
+    pc.name = s.name || 'PC';
+    pc.pin = s.pin || '';
+    pc.host = hostOf(a.remote);
+    pc.look = s.look || {};
+    pc.cloudOn = s.online;               // true, false o null (server di prima: non si sa)
+    // Nella rete di casa: l'indirizzo http dell'app (come cLocalProbe in app.js) e il nome con certificato
+    var c = [], m = /^https:\/\/([\d.]+):\d+$/.exec(a.lan || '');
+    if (m) c.push('http://' + m[1] + ':32500');
+    if (a.secure_lan) c.push(a.secure_lan);
+    pc.lanCands = c;
+    if (!pc.lan) pc.lan = probing && (c.length || home) ? 'wait' : 'no';
+    if (!pc.net) pc.net = pc.host ? 'wait' : 'no';
+  });
+  Object.keys(pcs).forEach(function (k) { if (k !== 'home' && !seen[k]) delete pcs[k]; });
+  listedAt = Date.now();
+}
+
+function pcList() { return Object.keys(pcs).map(function (k) { return pcs[k]; }); }
+
+function reach(pc) {
+  if (pc.lan === 'ok' && pc.localUrl) return 'local';
+  if (pc.net === 'ok') return 'net';
+  if (pc.cloudOn !== false && (pc.lan === 'wait' || pc.net === 'wait')) return 'wait';
+  return 'off';
+}
+var RANK = { local: 0, net: 1, wait: 2, off: 3 };
+function sorted() {
+  return pcList().sort(function (a, b) {
+    return RANK[reach(a)] - RANK[reach(b)] || (b.cloudOn === true) - (a.cloudOn === true) || a.i - b.i;
+  });
+}
+
+// Prove sulla rete in cui si trova il dispositivo: l'app chiede /api/info a ogni
+// indirizzo (anche al server di casa scelto a mano) e il server dice chi e' (sid)
+var probes = {}, found = {};
+function canProbe() { return !!(app && app.remoteProbe); }
+function homeUrl() {
+  var u = '';
+  try { u = app && app.getServer ? String(app.getServer() || '') : ''; } catch (e) { /* niente */ }
+  return /^https?:\/\//.test(u) ? u.replace(/\/+$/, '') : '';
+}
+function probe(url) {
+  if (!probes[url]) {
+    probes[url] = bridge('remoteProbe', [url]).then(function (t) {
+      var info = JSON.parse(t);
+      if (info && info.sid && !found[info.sid]) found[info.sid] = url;
+      return info;
+    }).catch(function () { return null; });
+  }
+  return probes[url];
+}
+
+function probeLocal() {
+  probes = {};
+  found = {};
+  if (!canProbe()) return Promise.resolve();
+  var home = homeUrl();
+  var jobs = pcList().filter(function (pc) { return pc.key !== 'home'; }).map(function (pc) {
+    var list = pc.lanCands.concat(home ? [home] : []);
+    if (!list.length) { pc.lan = 'no'; pc.localUrl = ''; return null; }
+    return Promise.all(list.map(function (u) {
+      return probe(u).then(function () {
+        if (found[pc.sid] && pc.localUrl !== found[pc.sid]) { pc.lan = 'ok'; pc.localUrl = found[pc.sid]; redraw(); }
+      });
+    })).then(function () {
+      pc.lan = found[pc.sid] ? 'ok' : 'no';
+      pc.localUrl = found[pc.sid] || '';
+      redraw();
+    });
+  });
+  // Il server di casa scelto a mano, se risponde e non e' gia' uno dell'account
+  if (home) {
+    jobs.push(probe(home).then(function (info) {
+      var known = info && info.sid && pcList().some(function (p) { return p.key !== 'home' && p.sid === info.sid; });
+      if (!info || known) { delete pcs.home; }
+      else {
+        pcs.home = { key: 'home', i: -1, sid: info.sid || '', self: true, home: true, name: info.name || 'Server di casa',
+          look: {}, lanCands: [], lan: 'ok', localUrl: home, net: 'no', host: '', libs: [], cloudOn: true };
+      }
+      redraw();
+    }));
+  }
+  return Promise.all(jobs);
+}
+
+function probeNet(replace) {
+  var list = pcList().filter(function (pc) { return pc.host; });
+  if (!list.length) return Promise.resolve();
+  list.forEach(function (pc) { if (pc.net !== 'ok') pc.net = 'wait'; });
+  if (!proxy) net.state = 'starting';
+  redraw();
+  return startNet(replace).then(function () {
+    net.state = 'ok';
+    net.error = '';
+    net.limit = null;
+    return Promise.all(list.map(function (pc) { return loadPc(pc).then(redraw); }));
+  }, function (e) {
+    net.state = e.limit ? 'limit' : 'error';
+    net.error = e.message;
+    net.limit = e.limit || null;
+    list.forEach(function (pc) { if (pc.net !== 'ok') pc.net = 'no'; });
+    redraw();
+  });
+}
+
+var devices;                             // {limit, devices}: i dispositivi dell'account nella rete (null = errore)
 function loadDevices() {
   return cloud('GET', '/tailscale/devices').then(function (d) { devices = d; }, function () { devices = null; });
 }
 
+// L'elenco dal servizio account (veloce) e subito dopo, in sottofondo, le prove
 function refreshAll() {
-  loadDevices().then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
-  return readFriends().then(function () {
-    return Promise.all(Object.keys(pcs).map(function (k) { return pcs[k].base ? loadPc(pcs[k]) : null; }));
+  loadDevices().then(function () {
+    redraw();
+    if (route()[0] === 'devices') show(devicesPage(), true);
+  });
+  return readServers().then(function () {
+    redraw();
+    probeLocal();
+    probeNet();
   });
 }
 
@@ -279,47 +523,133 @@ function img(pc, path) {
 
 // ---- Pagine
 
-var route = [];
+function route() { return (location.hash || '#ask').slice(1).split('/'); }
 function go(hash) { if (location.hash === '#' + hash) render(); else location.hash = hash; }
 window.addEventListener('hashchange', render);
 
 // Indietro (tasto della TV o del telefono): l'app chiede prima alla pagina
 window.fpBack = function () {
-  var r = (location.hash || '#ask').slice(1).split('/');
-  if (r[0] === 'movie' || r[0] === 'show') { history.back(); return true; }
-  if (r[0] === 'lib') { go('friends'); return true; }
+  if (pickDevice.done) { acts.pickdev(''); return true; }
+  var p = route()[0];
+  if (p === 'movie' || p === 'show' || p === 'lib' || p === 'pc' || p === 'devices') { history.back(); return true; }
+  if (adding && root.querySelector('.srvpicker')) { adding = false; show(serversPage(), true); focusKey('add'); return true; }
   return false;
 };
 
 var LOGO = '<svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#1a7f45"/><path d="M25 18l22 14-22 14z" fill="#fff"/></svg>';
 var GOOGLE_G = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
-function centerPage(html) {
-  return '<div class="center"><div class="box"><div class="brand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + html + '</div></div>';
+var SRV_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+var FRIEND_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5"/><circle cx="17" cy="9" r="2.6"/><path d="M16.5 14.6c2.6.2 4.4 1.9 5 4.9"/></svg>';
+var PLUS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+
+// wide: piu' largo; 'grid': largo per la griglia dei server. cls: classe in piu' (per riconoscere la pagina)
+function authShell(inner, wide, cls) {
+  return '<div class="auth"><div class="authcard' + (wide ? ' wide' : '') + (wide === 'grid' ? ' grid' : '') + (cls ? ' ' + cls : '') + '">' +
+    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + inner + '</div></div>';
 }
 
-function top() {
-  var who = app && app.remoteAccount ? app.remoteAccount() : '';
-  return '<div class="top"><div class="logo"><b>Bunker</b>Plex</div>' +
-    (who ? '<span class="who">' + esc(who) + '</span>' : '') + '</div>';
+// ---- Le card dei server, come srvCard/srvGrid/srvMount in app.js
+var SRV_FIND_FROM = 7;          // da quante card compare «Cerca»
+
+// Le icone che il proprietario puo' dare al suo server (stessi nomi di LOOK_ICONS nel Worker)
+var SRV_LOOK_ICONS = {
+  tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>',
+  home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
+  star: '<path d="M12 3l2.8 5.8 6.2.9-4.5 4.4 1 6.2L12 17.4 6.5 20.3l1-6.2L3 9.7l6.2-.9z"/>',
+  heart: '<path d="M12 20s-7-4.4-9-9a4.8 4.8 0 0 1 9-3 4.8 4.8 0 0 1 9 3c-2 4.6-9 9-9 9z"/>',
+  music: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+  game: '<rect x="2" y="7" width="20" height="11" rx="5"/><path d="M7 11v3M5.5 12.5h3M15 12h.01M18 14h.01"/>',
+  cloud: '<path d="M7 18a4.5 4.5 0 0 1-.5-9 6 6 0 0 1 11.4 1.5A4 4 0 0 1 17.5 18z"/>'
+};
+function srvLookIcon(name) {
+  return SRV_LOOK_ICONS[name] ? '<svg viewBox="0 0 24 24" aria-hidden="true">' + SRV_LOOK_ICONS[name] + '</svg>' : '';
 }
+
+function srvHue(text) {
+  var h = 0;
+  String(text || '').split('').forEach(function (c) { h = (h * 31 + c.charCodeAt(0)) % 360; });
+  return h;
+}
+
+// c: {act, arg, key, name, sub, icon, off, wait, first, local, find, look: {icon, image}, nodot}
+function srvCard(c) {
+  var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
+  var look = c.look || {};
+  var pic = /^https?:\/\//.test(look.image || '') ? look.image : '';
+  var face = pic ? '' : (srvLookIcon(look.icon) ? '<span class="srvini ico">' + srvLookIcon(look.icon) + '</span>'
+    : '<span class="srvini">' + esc(initial) + '</span>');
+  var dot = c.nodot ? '' : '<i class="srvdot' + (c.off ? '' : c.wait ? ' wait' : ' live') + '" title="' +
+    (c.off ? 'Non raggiungibile' : c.wait ? 'Controllo' : 'Raggiungibile') + '"></i>';
+  return '<button class="srv f' + (c.off ? ' off' : '') + '"' + (c.first ? ' data-autofocus' : '') +
+    ' data-act="' + c.act + '" data-arg="' + esc(c.arg) + '" data-key="' + esc(c.key) + '"' +
+    ' data-find="' + esc((c.name + ' ' + (c.find || '')).toLowerCase()) + '">' +
+    '<span class="srvart' + (pic ? ' img' : '') + '" style="--h:' + srvHue(c.name) + (pic ? ';background-image:url(\'' + esc(pic) + '\')' : '') + '">' + face +
+      (c.icon ? '<span class="srvbadge">' + c.icon + '</span>' : '') + dot +
+      (c.local ? '<span class="srvtag">In casa</span>' : '') + '</span>' +
+    '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small></span></button>';
+}
+
+// sections: [{title, cards: [html], extra: html}]; total = numero di card (per la ricerca)
+function srvGrid(sections, total) {
+  var find = total >= SRV_FIND_FROM
+    ? '<input class="field srvfind f" id="srvfind" data-key="srvfind" type="search" autocomplete="off" spellcheck="false" placeholder="Cerca un server o un amico" value="' + esc(findQ) + '">'
+    : '';
+  return find + sections.map(function (s) {
+    if (!s.cards.length && !s.extra) return '';
+    return '<section class="srvsec"><h2>' + esc(s.title) + (s.cards.length ? ' <span>' + s.cards.length + '</span>' : '') + '</h2>' +
+      '<div class="srvgrid">' + s.cards.join('') + (s.extra || '') + '</div></section>';
+  }).join('') + '<p class="authnote srvnone" hidden>Nessun server o amico con questo nome.</p>';
+}
+
+// La ricerca: nasconde le card che non c'entrano (e le sezioni rimaste vuote)
+function srvMount() {
+  var input = document.getElementById('srvfind');
+  if (!input) return;
+  function run() {
+    findQ = input.value;
+    var q = input.value.trim().toLowerCase();
+    var any = false;
+    Array.prototype.forEach.call(root.querySelectorAll('.srvsec'), function (sec) {
+      var shown = 0;
+      Array.prototype.forEach.call(sec.querySelectorAll('.srv[data-find]'), function (b) {
+        var ok = !q || b.getAttribute('data-find').indexOf(q) >= 0;
+        b.hidden = !ok;
+        if (ok) shown++;
+      });
+      Array.prototype.forEach.call(sec.querySelectorAll('.srv.add, .srvadd'), function (b) { b.hidden = !!q; });
+      sec.hidden = !!q && !shown;
+      if (shown) any = true;
+    });
+    var none = root.querySelector('.srvnone');
+    if (none) none.hidden = !q || any;
+  }
+  input.addEventListener('input', run);
+  run();
+}
+
+// Il posto per «Impostazioni dell'app» (come cAppLink() in app.js): accanto a
+// «Aggiorna l'elenco» nella scelta del server e in fondo alla prima pagina
+function appSettingsLink() { return ''; }
 
 function askPage() {
-  return centerPage('<h1>Nessun server in casa</h1>' +
-    '<p>Entra con il tuo account: vedrai i tuoi PC accesi e i server dei tuoi amici. Puoi sempre aggiungere un amico.</p>' +
-    '<button class="f primary block" data-act="friends" autofocus>Continua</button>' +
-    '<button class="f link" data-act="retry">Cerca di nuovo in casa</button>' +
-    '<button class="f link" data-act="setup">Scrivi l\'indirizzo del server</button>');
+  return authShell('<div class="authico">' + SRV_ICON + '</div>' +
+    '<h1>Il server di casa non risponde</h1>' +
+    '<p class="authsub">da questa rete</p>' +
+    '<p>Entra con il tuo account: vedrai i tuoi server e quelli dei tuoi amici, prima quelli che si raggiungono da qui.</p>' +
+    '<button class="btn primary block f" data-act="friends" data-key="friends" data-autofocus>Entra con il tuo account</button>' +
+    '<div class="srvfoot"><button class="authlink f" data-act="retry" data-key="retry">Cerca di nuovo in casa</button>' +
+    '<button class="authlink f" data-act="setup" data-key="setup">Scrivi l\'indirizzo del server</button>' + appSettingsLink() + '</div>');
 }
 
 function loginPage() {
-  return centerPage('<h1>Accedi</h1>' +
-    '<p>con il tuo account BunkerPlex</p>' +
-    '<input id="u" class="f" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Nome utente">' +
-    '<input id="p" class="f" type="password" autocomplete="current-password" placeholder="Password">' +
+  return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
+    '<input id="u" class="field f" data-key="u" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Nome utente">' +
+    '<input id="p" class="field f" data-key="p" type="password" autocomplete="current-password" placeholder="Password">' +
     '<p class="err" id="lerr"></p>' +
-    '<button class="f primary block" data-act="login">Entra</button>' +
-    (app && app.remoteGoogleStart ? '<div class="or"><span>oppure</span></div><button class="f gbtn" data-act="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' : '') +
-    '<button class="f link" data-act="ask">Indietro</button>');
+    '<button class="btn primary block f" data-act="login" data-key="login">Entra</button>' +
+    (app && app.remoteGoogleStart ? '<div class="author"><span>oppure</span></div><button class="gbtn f" data-act="google" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' : '') +
+    '<button class="authlink f" data-act="ask" data-key="ask">Indietro</button>');
 }
 
 // «Entra con Google»: sul telefono si apre il browser; sulla TV si apre l'indirizzo
@@ -327,14 +657,15 @@ function loginPage() {
 var gflow = null;
 function googlePage(g) {
   var addr = g.short.replace(/^https:\/\//, '');
-  return centerPage('<h1>Entra con Google</h1>' +
-    (TV ? '<p>Dal telefono apri <b>' + esc(addr) + '</b> e scrivi questo codice, poi scegli il tuo account Google:</p>'
-      : '<p>Scegli il tuo account Google nel browser, poi torna qui. Deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account sul PC).</p>' +
-        '<div class="row"><button class="f primary" data-act="gopen" autofocus>Continua con Google</button></div>' +
-        '<p class="note">Oppure da un altro dispositivo apri ' + esc(addr) + ' e scrivi il codice:</p>') +
-    '<h1 style="letter-spacing:.15em">' + esc(g.code.slice(0, 4) + '-' + g.code.slice(4)) + '</h1>' +
+  return authShell('<h1>Entra con Google</h1>' +
+    (TV ? '<p class="authsub">Dal telefono apri <b>' + esc(addr) + '</b>, scrivi questo codice e scegli il tuo account Google</p>'
+      : '<p class="authsub">Scegli il tuo account Google nel browser, poi torna qui</p>' +
+        '<p>Deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account sul PC).</p>' +
+        '<button class="btn primary block f" data-act="gopen" data-key="gopen" data-autofocus>Continua con Google</button>' +
+        '<p class="authnote">Oppure da un altro dispositivo apri ' + esc(addr) + ' e scrivi il codice:</p>') +
+    '<div class="gcode">' + esc(g.code.slice(0, 4) + '-' + g.code.slice(4)) + '</div>' +
     '<p class="err" id="gerr"></p>' +
-    '<div class="row"><button class="f"' + (TV ? ' autofocus' : '') + ' data-act="gback">Indietro</button></div>');
+    '<button class="authlink f"' + (TV ? ' data-autofocus' : '') + ' data-act="gback" data-key="gback">Indietro</button>');
 }
 function googlePoll(g) {
   if (gflow !== g) return;
@@ -356,24 +687,122 @@ function googlePoll(g) {
 }
 
 function loadingPage(text) {
-  return centerPage('<div class="spin"></div><h1>' + esc(text) + '</h1>');
+  return authShell('<div class="spin"></div><h1 class="small">' + esc(text) + '</h1>');
 }
 
-function pcCard(pc) {
-  var off = pc.online === false;
-  var state = pc.online === null || !pc.checked ? 'controllo…' : off ? (pc.error || 'spento o non raggiungibile') : 'online';
-  var libs = off ? '' : pc.libs.map(function (l) {
-    var n = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ');
-    return '<button class="f lib" data-act="lib" data-arg="' + pc.key + '/' + l.id + '">' + esc(l.name) +
-      (n ? '<small>' + esc(n) + '</small>' : '') + '</button>';
+// Dove si raggiunge un server da qui, in parole
+function where(pc, st) {
+  if (pc.updating) return 'si aggiorna…';
+  if (st === 'local') return 'su questa rete';
+  if (st === 'net') return 'via Internet';
+  if (st === 'wait') return 'controllo…';
+  if (pc.cloudOn === false) return 'spento';
+  if (net.state === 'limit' && pc.host) return 'serve un posto nella rete';
+  return 'non raggiungibile';
+}
+
+function statusLine(list) {
+  if (!list.length) return '';
+  var n = { local: 0, net: 0, wait: 0, off: 0 };
+  list.forEach(function (p) { n[reach(p)]++; });
+  var ok = n.local + n.net, t;
+  if (n.wait) t = '<i class="wait"></i>Controllo quali server rispondono da qui…';
+  else if (ok) t = '<i class="live"></i>' + ok + (ok === 1 ? ' raggiungibile' : ' raggiungibili') + ' da qui' + (n.local ? ' · ' + n.local + ' su questa rete' : '');
+  else t = '<i></i>Da qui nessun server risponde';
+  return '<div class="srvstat">' + t + '</div>';
+}
+
+function netNote() {
+  if (net.state === 'limit') {
+    return '<div class="srvwarn"><span><b>La rete di BunkerPlex è al completo</b>Il tuo account ha già ' + ((net.limit && net.limit.limit) || 4) +
+      ' dispositivi: per raggiungere i server fuori da questa rete togline uno.</span>' +
+      '<button class="btn f" data-act="netfree" data-key="netfree">Scegli</button></div>';
+  }
+  if (net.state === 'error') {
+    return '<div class="srvwarn"><span><b>Rete di BunkerPlex non disponibile</b>' + esc(net.error) +
+      '. I server su questa rete si aprono lo stesso.</span><button class="btn f" data-act="netretry" data-key="netretry">Riprova</button></div>';
+  }
+  return '';
+}
+
+function serversPage() {
+  var list = sorted();
+  var best = list.filter(function (p) { return reach(p) !== 'off'; })[0] || list[0];
+  if (pcs[lastPick]) best = pcs[lastPick];
+  var mine = [], theirs = [];
+  list.forEach(function (pc) {
+    var st = reach(pc);
+    // Nella sezione «I tuoi server» basta dove si raggiunge; per gli amici anche di chi e'
+    var w = where(pc, st);
+    var sub = pc.self ? esc(w.charAt(0).toUpperCase() + w.slice(1)) : 'di ' + esc(pc.ownerName) + ' · ' + esc(w);
+    (pc.self ? mine : theirs).push(srvCard({ act: 'pick', arg: pc.key, key: 'srv-' + pc.key, name: pc.name, sub: sub,
+      icon: pc.self ? SRV_ICON : FRIEND_ICON, off: st === 'off', wait: st === 'wait', local: st === 'local',
+      first: TV && !adding && pc === best, find: pc.self ? '' : pc.ownerName, look: pc.look }));
+  });
+  // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
+  friendsList.forEach(function (f) {
+    if (f.status !== 'ok' || list.some(function (p) { return !p.self && p.owner === f.id; })) return;
+    theirs.push(srvCard({ act: 'noshare', arg: f.username, key: 'fr-' + f.id, name: f.username,
+      sub: 'Nessun server condiviso', icon: FRIEND_ICON, off: true }));
+  });
+  var add = adding
+    ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" placeholder="Nome dell\'account del tuo amico" value="' + esc(addName) + '">' +
+      '<button class="btn primary f" data-act="addsend" data-key="addsend">Invia</button></div>'
+    : '<button class="srv add f" data-act="add" data-key="add"><span class="srvart">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account</small></span></button>';
+  var req = friendsList.filter(function (f) { return f.status === 'received'; }).map(function (f) {
+    return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
+      '<button class="btn f" data-act="unfriend" data-arg="' + f.id + '" data-key="dec-' + f.id + '">Rifiuta</button>' +
+      '<button class="btn primary f" data-act="accept" data-arg="' + f.id + '" data-key="acc-' + f.id + '">Accetta</button></div>';
   }).join('');
-  if (!off && pc.checked && !pc.libs.length) libs = '<p class="note">Nessuna raccolta condivisa.</p>';
-  var upd = pc.self && pc.online && pc.checked
-    ? '<div class="row left" style="margin-top:.6rem"><button class="f small" data-act="pcupd" data-arg="' + pc.key + '">' +
-      (pc.updating ? 'Aggiornamento in corso…' : 'Aggiorna il server') + '</button></div>' : '';
-  return '<div class="pc' + (off ? ' off' : '') + '"><div class="pchead"><span class="dot"></span>' +
-    esc(pc.self ? pc.name : pc.ownerName + ' · ' + pc.name) + '<small>' + esc(state) + '</small></div>' +
-    (libs ? '<div class="libs">' + libs + '</div>' : '') + upd + '</div>';
+  var sent = friendsList.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
+  var dev = devices && devices.devices ? ' · ' + devices.devices.length + ' di ' + (devices.limit || 4) : '';
+  return authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' +
+    statusLine(list) + (listNote ? '<p class="authnote">' + esc(listNote) + '</p>' : '') + netNote() + req +
+    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC ed entra lì con il tuo account: comparirà qui.</p>') +
+    srvGrid([{ title: 'I tuoi server', cards: mine }, { title: 'Amici', cards: theirs, extra: add }], mine.length + theirs.length) +
+    (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
+    '<div class="srvfoot"><button class="authlink f" data-act="refresh" data-key="refresh">Aggiorna l\'elenco</button>' + appSettingsLink() +
+    '<button class="authlink f" data-act="devices" data-key="devices">Dispositivi' + dev + '</button>' +
+    '<button class="authlink f" data-act="retry" data-key="retry">Cerca il server di casa</button>' +
+    '<button class="authlink f" data-act="logout" data-key="logout">Esci da ' + esc(account()) + '</button></div>', 'grid', 'srvpicker');
+}
+
+function listErrorPage(e) {
+  return authShell('<h1>Cosa guardi oggi?</h1><p class="authnote">' + esc(e && e.message ? e.message : e) + '</p>' +
+    '<button class="btn primary block f" data-act="refresh" data-key="refresh" data-autofocus>Riprova</button>' +
+    '<div class="srvfoot">' + appSettingsLink() + '<button class="authlink f" data-act="retry" data-key="retry">Cerca il server di casa</button>' +
+    '<button class="authlink f" data-act="logout" data-key="logout">Esci</button></div>', true);
+}
+
+// Un server raggiunto attraverso la rete di BunkerPlex: le sue raccolte
+function pcPage(pc) {
+  var libs = (pc.libs || []).map(function (l, i) {
+    var n = [l.movies ? l.movies + ' film' : '', l.shows ? l.shows + ' serie' : ''].filter(Boolean).join(' · ');
+    return srvCard({ act: 'lib', arg: pc.key + '/' + l.id, key: 'lib-' + l.id, name: l.name || 'Raccolta', sub: esc(n || 'Raccolta'),
+      look: { icon: l.shows && !l.movies ? 'tv' : 'film' }, nodot: true, first: TV && (lastLib ? lastLib === pc.key + '/' + l.id : i === 0) });
+  });
+  return authShell('<button class="authlink back f" data-act="back" data-key="back">‹ Tutti i server</button>' +
+    '<h1 data-pc="' + esc(pc.key) + '">' + esc(pc.name) + '</h1>' +
+    '<p class="authsub">' + (pc.self ? 'Il tuo server' : 'di ' + esc(pc.ownerName)) + ' · via Internet</p>' +
+    (libs.length ? srvGrid([{ title: 'Raccolte', cards: libs }], 0)
+      : '<p class="authnote">' + esc(pc.self ? 'Nessuna raccolta condivisa da fuori casa.' : pc.ownerName + ' non condivide nessuna raccolta.') + '</p>') +
+    '<p class="authnote">Via Internet i video arrivano convertiti a ' + QUALITY + 'p.</p>' +
+    (pc.self ? '<div class="srvfoot"><button class="authlink f" data-act="pcupd" data-arg="' + esc(pc.key) + '" data-key="pcupd">' +
+      (pc.updating ? 'Aggiornamento in corso…' : 'Aggiorna il server') + '</button></div>' : ''), 'grid');
+}
+
+function devicesPage() {
+  var d = devices;
+  var rows = d && d.devices ? d.devices.map(function (x) {
+    return '<div class="devrow"><span><b>' + esc(x.label) + '</b><small>' + (x.kind === 'pc' ? 'PC' : 'App') + ' · ' +
+      (x.online ? 'collegato adesso' : 'spento') + '</small></span>' +
+      '<button class="btn small f" data-act="devdel" data-arg="' + esc(x.id) + '" data-key="dev-' + esc(x.id) + '">Togli</button></div>';
+  }).join('') : '<p class="authnote">' + (d === null ? 'Non riesco a leggere i dispositivi: riprova tra poco.' : 'Un attimo…') + '</p>';
+  var lim = (d && d.limit) || 4;
+  return authShell('<button class="authlink back f" data-act="back" data-key="back"' + (TV ? ' data-autofocus' : '') + '>‹ Tutti i server</button>' +
+    '<h1>Dispositivi</h1><p class="authsub">' + (d && d.devices ? d.devices.length + ' di ' + lim + ' ' : '') + 'nella rete di BunkerPlex</p>' + rows +
+    '<p class="authnote">PC e app con cui raggiungi i server fuori dalla rete in cui sei: al massimo ' + lim +
+    ' per account. Le app si tolgono da sole poco dopo che le chiudi.</p>', true);
 }
 
 // Aggiorna un tuo PC da fuori casa: lo permette solo il PC stesso, e solo al suo
@@ -401,13 +830,13 @@ function updatePc(pc) {
 // Segue l'aggiornamento finche' il PC non torna su (anche 10 minuti se si ricostruisce Docker)
 function watchPc(pc) {
   pc.updating = true;
-  if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true);
+  redraw();
   toast('Aggiorno ' + pc.name + '… torna disponibile in qualche minuto');
   var down = false, tries = 0;
   function done(msg) {
     pc.updating = false;
     toast(msg);
-    loadPc(pc).then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
+    loadPc(pc).then(redraw);
   }
   function tick() {
     tries++;
@@ -427,48 +856,10 @@ function watchPc(pc) {
   setTimeout(tick, 3000);
 }
 
-function friendsPage() {
-  var list = Object.keys(pcs).map(function (k) { return pcs[k]; });
-  var mine = list.filter(function (p) { return p.self; });
-  var theirs = list.filter(function (p) { return !p.self; });
-  var on = theirs.filter(function (p) { return p.online !== false; });
-  var off = theirs.filter(function (p) { return p.online === false; });
-  // Amici senza nessun PC che condivide: compaiono tra gli offline
-  var noPc = friendsList.filter(function (f) { return f.status === 'ok' && !(f.servers || []).length; });
-  var received = friendsList.filter(function (f) { return f.status === 'received'; });
-  var sent = friendsList.filter(function (f) { return f.status === 'sent'; });
-  var html = top();
-  if (received.length) {
-    html += '<h2>Richieste di amicizia</h2>' + received.map(function (f) {
-      return '<div class="req"><span>' + esc(f.username) + ' vuole essere tuo amico</span>' +
-        '<button class="f small primary" data-act="accept" data-arg="' + f.id + '">Accetta</button>' +
-        '<button class="f small" data-act="unfriend" data-arg="' + f.id + '">Rifiuta</button></div>';
-    }).join('');
-  }
-  html += '<h2>I tuoi PC</h2>' + (mine.length ? mine.map(pcCard).join('') :
-    '<p class="note">Nessun tuo PC acceso con questo account.</p>');
-  html += '<h2>Amici online</h2>' + (on.length ? on.map(pcCard).join('') : '<p class="note">Nessun amico online adesso.</p>');
-  if (off.length || noPc.length) {
-    html += '<h2>Amici offline</h2>' + off.map(pcCard).join('') + noPc.map(function (f) {
-      return '<div class="pc off"><div class="pchead"><span class="dot"></span>' + esc(f.username) +
-        '<small>non condivide nessun PC</small></div></div>';
-    }).join('');
-  }
-  html += '<h2>Aggiungi un amico</h2><div class="add"><input id="fn" class="f" autocapitalize="none" placeholder="Nome del suo account">' +
-    '<button class="f primary" data-act="addfriend">Aggiungi</button></div>' +
-    (sent.length ? '<p class="note" style="margin-top:.6rem">In attesa: ' + sent.map(function (f) { return esc(f.username); }).join(', ') + '</p>' : '');
-  if (devices && devices.devices) {
-    html += '<h2>I tuoi dispositivi · ' + devices.devices.length + ' di ' + (devices.limit || 4) + '</h2>' + devices.devices.map(function (d) {
-      return '<div class="req"><span>' + esc(d.label) + '<br><small class="who">' + (d.kind === 'pc' ? 'PC' : 'App') + ' · ' +
-        (d.online ? 'collegato' : 'spento') + '</small></span>' +
-        '<button class="f small" data-act="devdel" data-arg="' + esc(d.id) + '">Togli</button></div>';
-    }).join('') + '<p class="note">PC e app con cui raggiungi amici e tuoi PC: al massimo ' + (devices.limit || 4) +
-      ' per account. Le app si tolgono da sole poco dopo che le chiudi.</p>';
-  }
-  html += '<div class="row left" style="margin-top:2rem"><button class="f" data-act="refresh">Aggiorna</button>' +
-    '<button class="f" data-act="retry">Cerca il server di casa</button>' +
-    '<button class="f" data-act="logout">Esci dall\'account</button></div>';
-  return '<div class="wrap">' + html + '</div>';
+function top() {
+  var who = account();
+  return '<div class="top"><div class="logo"><b>Bunker</b>Plex</div>' +
+    (who ? '<span class="who">' + esc(who) + '</span>' : '') + '</div>';
 }
 
 function posterCard(pc, x) {
@@ -484,7 +875,7 @@ function libPage(pc, libId) {
     items = (Array.isArray(items) ? items : []).filter(function (x) { return x && (x.kind === 'movie' || x.kind === 'show'); });
     items.sort(function (a, b) { return String(a.title).localeCompare(String(b.title), 'it'); });
     var lib = (pc.libs || []).filter(function (l) { return String(l.id) === String(libId); })[0] || { name: 'Raccolta' };
-    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="friends">‹ Amici e PC</button></div>' +
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="btn small f" data-act="back">‹ ' + esc(pc.name) + '</button></div>' +
       '<h1>' + esc(lib.name) + ' <span class="who">' + esc(pc.self ? 'su ' + pc.name : 'di ' + pc.ownerName) + '</span></h1>' +
       (items.length ? '<div class="grid">' + items.map(function (x) { return posterCard(pc, x); }).join('') + '</div>'
         : '<p>Questa raccolta è vuota.</p>') + '</div>';
@@ -501,8 +892,8 @@ function hero(pc, x, extra) {
 
 function moviePage(pc, id) {
   return share(pc, '/items/' + id).then(function (x) {
-    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="back">‹ Indietro</button></div>' +
-      hero(pc, x, '<div class="row left"><button class="f primary" data-act="play" data-arg="' + pc.key + '/' + x.id + '" autofocus>▶ Riproduci</button></div>') + '</div>';
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="btn small f" data-act="back">‹ Indietro</button></div>' +
+      hero(pc, x, '<div class="row left"><button class="btn primary f" data-act="play" data-arg="' + pc.key + '/' + x.id + '" autofocus>▶ Riproduci</button></div>') + '</div>';
   });
 }
 
@@ -513,7 +904,7 @@ function showPage(pc, id) {
     var cur = showSeason[pc.key + '/' + id];
     if (!seasons.some(function (s) { return s.season === cur; })) cur = seasons.length ? seasons[0].season : 0;
     var tabs = seasons.length > 1 ? '<div class="tabs">' + seasons.map(function (s) {
-      return '<button class="f small' + (s.season === cur ? ' on' : '') + '" data-act="season" data-arg="' + pc.key + '/' + id + '/' + s.season + '">' +
+      return '<button class="btn small f' + (s.season === cur ? ' on' : '') + '" data-act="season" data-arg="' + pc.key + '/' + id + '/' + s.season + '">' +
         (s.season ? 'Stagione ' + s.season : 'Speciali') + '</button>';
     }).join('') + '</div>' : '';
     var season = seasons.filter(function (s) { return s.season === cur; })[0];
@@ -523,7 +914,7 @@ function showPage(pc, id) {
         '<span><b>' + esc(e.episode + '. ' + (e.title || 'Episodio ' + e.episode)) + '</b>' +
         (e.overview ? '<small>' + esc(e.overview) + '</small>' : '') + '</span></button>';
     }).join('') : '<p>Nessun episodio.</p>';
-    return '<div class="wrap">' + top() + '<div class="row left"><button class="f small" data-act="back">‹ Indietro</button></div>' +
+    return '<div class="wrap">' + top() + '<div class="row left"><button class="btn small f" data-act="back">‹ Indietro</button></div>' +
       hero(pc, x, '') + tabs + eps + '</div>';
   });
 }
@@ -547,46 +938,107 @@ function play(pc, id) {
 
 // ---- Disegno
 
-var netReady = false;
-function render() {
-  var r = (location.hash || '#ask').slice(1).split('/');
-  var page = r[0] || 'ask';
-  if (page === 'ask') return show(askPage());
-  if (page === 'login') { show(loginPage()); var u = document.getElementById('u'); if (u) u.focus(); return; }
-  if (!app || !app.remoteAccount || !app.remoteAccount()) { go('login'); return; }
-  var ready = netReady ? Promise.resolve() : (show(loadingPage('Mi collego alla rete di BunkerPlex…')), startNet().then(function () {
-    netReady = true;
-    return readFriends();
-  }));
-  ready.then(function () {
-    if (page === 'friends') {
-      show(friendsPage());
-      refreshAll().then(function () { if ((location.hash || '').slice(1) === 'friends') show(friendsPage(), true); });
-      return;
-    }
-    var pc = pcs[r[1]];
-    if (!pc) { go('friends'); return; }
-    var job = pc.checked && pc.online ? Promise.resolve() : loadPc(pc);
-    return job.then(function () {
-      if (page === 'lib') return libPage(pc, r[2]);
-      if (page === 'movie') return moviePage(pc, r[2]);
-      if (page === 'show') return showPage(pc, r[2]);
-      return null;
-    }).then(function (html) { if (html) show(html); else go('friends'); });
-  }).catch(function (e) {
-    show(centerPage('<h1>Non riesco a collegarmi</h1><p>' + esc(e && e.message ? e.message : e) + '</p>' +
-      '<div class="row"><button class="f primary" data-act="again" autofocus>Riprova</button>' +
-      '<button class="f" data-act="retry">Cerca il server di casa</button></div>'));
+function onPicker() { var p = route()[0]; return !p || p === 'ask' || p === 'friends'; }
+
+// La scelta del server: subito quello che si sa, poi le prove in sottofondo la ridisegnano
+function picker() {
+  show(listedAt ? serversPage() : loadingPage('Cerco i tuoi server…'));
+  if (listedAt && Date.now() - listedAt < 30000) return;
+  refreshAll().then(function () {
+    if (onPicker()) show(serversPage(), !!root.querySelector('.srvpicker'));
+  }, function (e) {
+    if (!onPicker()) return;
+    if (root.querySelector('.srvpicker')) toast(e.message); else show(listErrorPage(e));
   });
 }
 
-function show(html, keep) {
-  var key = keep && document.activeElement ? document.activeElement.getAttribute('data-arg') : null;
-  root.innerHTML = html;
-  var el = (key && root.querySelector('[data-arg="' + key + '"]')) || root.querySelector('[autofocus]') || (TV ? root.querySelector('.f') : null);
-  if (el) el.focus();
-  if (!keep) window.scrollTo(0, 0);
+var renderSeq = 0;
+function render() {
+  var my = ++renderSeq;
+  touched = false;
+  var r = route();
+  var page = r[0] || 'ask';
+  if (page === 'login') { show(loginPage()); var u = document.getElementById('u'); if (u) u.focus(); return; }
+  if (!account()) { if (page === 'ask') show(askPage()); else go('login'); return; }
+  if (page === 'ask' || page === 'friends') { picker(); return; }
+  if (page === 'devices') {
+    show(devicesPage());
+    loadDevices().then(function () { if (my === renderSeq) show(devicesPage(), true); });
+    return;
+  }
+  // Un server attraverso la rete di BunkerPlex: le raccolte, poi film e serie
+  var ready = listedAt ? Promise.resolve() : (show(loadingPage('Cerco i tuoi server…')), readServers());
+  ready.then(function () {
+    var pc = pcs[r[1]];
+    if (!pc) return '';
+    if (pc.net !== 'ok') show(loadingPage('Mi collego a ' + pc.name + '…'));
+    return startNet().then(function () { return pc.net === 'ok' ? null : loadPc(pc); }).then(function () {
+      if (pc.net !== 'ok') throw new Error(pc.error || pc.name + ' non risponde: dev\'essere acceso e collegato a Internet');
+      if (page === 'pc') return pcPage(pc);
+      if (page === 'lib') return libPage(pc, r[2]);
+      if (page === 'movie') return moviePage(pc, r[2]);
+      if (page === 'show') return showPage(pc, r[2]);
+      return '';
+    });
+  }).then(function (html) {
+    if (my !== renderSeq) return;
+    if (html) show(html); else go('friends');
+  }).catch(function (e) {
+    if (my !== renderSeq) return;
+    show(authShell('<h1>Non riesco a collegarmi</h1><p>' + esc(e && e.message ? e.message : e) + '</p>' +
+      '<button class="btn primary block f" data-act="again" data-key="again" data-autofocus>Riprova</button>' +
+      '<button class="authlink f" data-act="friends" data-key="friends">Tutti i server</button>'));
+  });
 }
+
+function byKey(key) {
+  var k = String(key).replace(/["\\]/g, '\\$&');
+  return root.querySelector('[data-key="' + k + '"]') || root.querySelector('[data-arg="' + k + '"]');
+}
+function focusKey(key) { var el = byKey(key); if (el && (TV || document.body.classList.contains('kb'))) el.focus(); }
+
+// keep = aggiornamento della stessa pagina: niente animazione, stesso scorrimento, e il
+// fuoco resta dov'era (o, se nessuno ha ancora toccato niente, va al server migliore)
+function show(html, keep) {
+  var a = document.activeElement;
+  var key = keep && a && a !== document.body && root.contains(a) ? (a.getAttribute('data-key') || a.getAttribute('data-arg')) : null;
+  var y = window.pageYOffset;
+  root.className = keep ? 'still' : '';
+  root.innerHTML = html;
+  var el = null;
+  if (key && touched) el = byKey(key);
+  // (sul telefono un aggiornamento non rimette il fuoco in un campo: riaprirebbe la tastiera)
+  if (!el && (!keep || TV)) el = root.querySelector('[data-autofocus],[autofocus]') || (TV ? root.querySelector('.f') : null);
+  if (!el && key) el = byKey(key);
+  srvMount();
+  if (el) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
+  window.scrollTo(0, keep ? y : 0);
+  // Col telecomando il fuoco dev'essere a schermo (sulla TV la prima card puo' cadere sotto)
+  if (el && document.body.classList.contains('kb')) el.scrollIntoView({ block: 'nearest' });
+}
+
+// Gli aggiornamenti in sottofondo ridisegnano la pagina che li mostra (raccolti in uno),
+// ma non mentre si scrive in un campo: si aspetta che lo si lasci
+var redrawT = 0, redrawLater = false;
+function redraw() {
+  clearTimeout(redrawT);
+  redrawT = setTimeout(redrawNow, 120);
+}
+function redrawNow() {
+  var a = document.activeElement;
+  if (a && a.tagName === 'INPUT' && root.contains(a)) { redrawLater = true; return; }
+  redrawLater = false;
+  if (root.querySelector('.srvpicker')) { show(serversPage(), true); return; }
+  var h = root.querySelector('[data-pc]');
+  var pc = h && pcs[h.getAttribute('data-pc')];
+  if (pc && pc.net === 'ok') show(pcPage(pc), true);
+}
+root.addEventListener('focusout', function () {
+  if (redrawLater) setTimeout(function () { if (redrawLater) redrawNow(); }, 0);
+});
+root.addEventListener('input', function (e) {
+  if (e.target.id === 'afname') addName = e.target.value;
+});
 
 // ---- Azioni
 
@@ -596,8 +1048,66 @@ var acts = {
   retry: function () { app && app.retryHome(); },
   setup: function () { app && app.openSetup(); },
   back: function () { history.back(); },
-  again: function () { netReady = false; render(); },
-  refresh: function () { toast('Aggiorno…'); refreshAll().then(function () { show(friendsPage(), true); }); },
+  again: function () { render(); },
+  refresh: function () {
+    toast('Aggiorno l\'elenco…');
+    refreshAll().then(function () {
+      if (onPicker()) show(serversPage(), !!root.querySelector('.srvpicker'));
+    }, function (e) { toast(e.message); });
+  },
+  devices: function () { go('devices'); },
+  // Un server: su questa rete si apre per intero, altrimenti attraverso la rete di BunkerPlex
+  pick: function (key) {
+    var pc = pcs[key];
+    if (!pc) return;
+    lastPick = key;
+    lastLib = '';
+    var st = reach(pc);
+    if (st === 'local' && app.remoteOpen) { toast('Apro ' + pc.name + '…'); app.remoteOpen(pc.localUrl); return; }
+    if (st === 'net' || (st === 'local' && pc.net === 'ok')) { go('pc/' + key); return; }
+    if (st === 'wait') { toast('Sto ancora cercando ' + pc.name + ': un attimo'); return; }
+    toast(pc.cloudOn === false ? pc.name + ' è spento: dev\'essere acceso per guardarlo'
+      : net.state === 'limit' && pc.host ? pc.name + ' è fuori da questa rete: libera un posto nella rete di BunkerPlex'
+      : 'Da qui ' + pc.name + ' non risponde: dev\'essere acceso e collegato a Internet');
+  },
+  noshare: function (name) { toast(name + ' non ha server condivisi accesi: deve accendere la condivisione con gli amici sul suo server'); },
+  add: function () {
+    adding = true;
+    addName = '';
+    show(serversPage(), true);
+    var i = document.getElementById('afname');
+    if (i) { i.focus(); i.scrollIntoView({ block: 'nearest' }); }
+  },
+  addsend: function () {
+    var el = document.getElementById('afname');
+    var name = (el ? el.value : addName).trim();
+    if (!name) { if (el) el.focus(); return; }
+    cloud('POST', '/friends', { username: name }).then(function (r) {
+      toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username);
+      adding = false;
+      addName = '';
+      if (document.activeElement) document.activeElement.blur();
+      return refreshAll();
+    }).then(function () {
+      if (!onPicker()) return;
+      show(serversPage(), true);
+      focusKey('add');
+    }, function (e) { toast(e.message); });
+  },
+  accept: function (id) {
+    cloud('POST', '/friends/' + id + '/accept').then(refreshAll).then(redrawNow, function (e) { toast(e.message); });
+  },
+  unfriend: function (id) {
+    cloud('DELETE', '/friends/' + id).then(refreshAll).then(redrawNow, function (e) { toast(e.message); });
+  },
+  netretry: function () { probeNet(); },
+  netfree: function () {
+    if (!net.limit) return;
+    pickDevice(net.limit).then(function (id) {
+      show(serversPage());
+      if (id) probeNet(id).then(loadDevices).then(redraw);
+    });
+  },
   login: function () {
     var u = document.getElementById('u').value.trim(), p = document.getElementById('p').value;
     var err = document.getElementById('lerr');
@@ -609,6 +1119,7 @@ var acts = {
         err.textContent = 'La password è provvisoria: cambiala prima da BunkerPlex sul PC.';
         return;
       }
+      listedAt = 0;
       go('friends');
     }, function (m) { err.textContent = m; });
   },
@@ -618,6 +1129,7 @@ var acts = {
     bridge('remoteGoogleStart', []).then(function (t) {
       var g = JSON.parse(t);
       gflow = g;
+      listedAt = 0;
       show(googlePage(g));
       if (!TV && app.openUrl) app.openUrl(g.url);
       setTimeout(function () { googlePoll(g); }, 2000);
@@ -625,20 +1137,28 @@ var acts = {
   },
   gopen: function () { if (gflow && app.openUrl) app.openUrl(gflow.url); },
   gback: function () { gflow = null; go('login'); },
-  logout: function () { app.remoteLogout(); proxy = ''; netReady = false; pcs = {}; go('login'); },
-  lib: function (arg) { go('lib/' + arg); },
+  logout: function () {
+    app.remoteLogout();
+    proxy = '';
+    net = { state: '', error: '', limit: null };
+    pcs = {};
+    listedAt = 0;
+    devices = undefined;
+    adding = false;
+    findQ = '';
+    go('login');
+  },
+  lib: function (arg) { lastLib = arg; go('lib/' + arg); },
   pcupd: function (arg) { var pc = pcs[arg]; if (pc && pc.self) updatePc(pc); },
   pickdev: function (id) {
     var done = pickDevice.done;
     pickDevice.done = null;
-    if (!done) return;
-    if (id) show(loadingPage('Tolgo il dispositivo e mi collego…'));
-    done(id || '');
+    if (done) done(id || '');
   },
   devdel: function (id) {
     if (!window.confirm('Togliere questo dispositivo dalla rete di BunkerPlex?')) return;
     cloud('DELETE', '/tailscale/devices/' + id).then(function () { toast('Dispositivo tolto'); return loadDevices(); })
-      .then(function () { show(friendsPage(), true); }, function (e) { toast(e.message); });
+      .then(function () { if (route()[0] === 'devices') show(devicesPage(), true); }, function (e) { toast(e.message); });
   },
   open: function (arg) { go(arg); },
   play: function (arg) { var a = arg.split('/'); var pc = pcs[a[0]]; if (pc) play(pc, a[1]); },
@@ -646,20 +1166,6 @@ var acts = {
     var a = arg.split('/');
     showSeason[a[0] + '/' + a[1]] = +a[2];
     render();
-  },
-  addfriend: function () {
-    var name = document.getElementById('fn').value.trim();
-    if (!name) return;
-    cloud('POST', '/friends', { username: name }).then(function (r) {
-      toast(r.status === 'ok' ? 'Ora tu e ' + r.username + ' siete amici' : 'Richiesta mandata a ' + r.username);
-      return refreshAll();
-    }).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
-  },
-  accept: function (id) {
-    cloud('POST', '/friends/' + id + '/accept').then(refreshAll).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
-  },
-  unfriend: function (id) {
-    cloud('DELETE', '/friends/' + id).then(refreshAll).then(function () { show(friendsPage()); }, function (e) { toast(e.message); });
   }
 };
 
@@ -667,18 +1173,28 @@ document.addEventListener('click', function (e) {
   var el = e.target.closest('[data-act]');
   if (!el || !acts[el.getAttribute('data-act')]) return;
   e.preventDefault();
+  touched = true;
   acts[el.getAttribute('data-act')](el.getAttribute('data-arg'));
 });
 
 document.addEventListener('keydown', function (e) {
   var code = e.keyCode;
+  if (code === 13 || (code >= 37 && code <= 40)) { touched = true; setKb(true); }
   if (code === 13 && e.target.tagName === 'INPUT') {
     e.preventDefault();
-    var b = e.target.id === 'fn' ? 'addfriend' : (e.target.id === 'u' ? null : 'login');
-    if (b) acts[b](); else document.getElementById('p').focus();
+    var id = e.target.id;
+    if (id === 'afname') acts.addsend();
+    else if (id === 'u') document.getElementById('p').focus();
+    else if (id === 'p') acts.login();
+    else if (id === 'srvfind') {
+      var first = Array.prototype.filter.call(root.querySelectorAll('.srv'), function (b) { return !b.hidden && b.getBoundingClientRect().width; })[0];
+      if (first) first.focus();
+    }
     return;
   }
-  // Frecce del telecomando: si va all'elemento piu' vicino in quella direzione
+  // Frecce del telecomando: si va all'elemento piu' vicino in quella direzione. Di lato
+  // conta lo scarto tra i bordi (0 se si sovrappongono), cosi' in una griglia si passa
+  // alla card della riga o colonna accanto; a parita', quella allineata a sinistra o in alto
   var dir = { 37: 'l', 38: 'u', 39: 'r', 40: 'd' }[code];
   if (!dir) return;
   var cur = document.activeElement;
@@ -686,15 +1202,17 @@ document.addEventListener('keydown', function (e) {
   var list = Array.prototype.slice.call(root.querySelectorAll('.f'));
   if (!cur || list.indexOf(cur) < 0) { if (list[0]) { list[0].focus(); e.preventDefault(); } return; }
   var a = cur.getBoundingClientRect(), best = null, bestScore = Infinity;
+  var side = dir === 'l' || dir === 'r';
   list.forEach(function (el) {
     if (el === cur) return;
     var b = el.getBoundingClientRect();
     if (!b.width) return;
     var dx = (b.left + b.width / 2) - (a.left + a.width / 2), dy = (b.top + b.height / 2) - (a.top + a.height / 2);
     var main = dir === 'l' ? -dx : dir === 'r' ? dx : dir === 'u' ? -dy : dy;
-    var cross = dir === 'l' || dir === 'r' ? Math.abs(dy) : Math.abs(dx);
     if (main <= 2) return;
-    var score = main + cross * 2.5;
+    var gap = side ? Math.max(0, b.top - a.bottom, a.top - b.bottom) : Math.max(0, b.left - a.right, a.left - b.right);
+    var align = side ? Math.abs(b.top - a.top) : Math.abs(b.left - a.left);
+    var score = main + gap * 2.5 + align * .05;
     if (score < bestScore) { bestScore = score; best = el; }
   });
   if (best) {
