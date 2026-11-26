@@ -52,6 +52,7 @@
     </div>
     <div class="row"><button class="f" id="remote">Amici e tuoi PC fuori casa</button></div>
     <div class="row"><button class="f" id="central">Entra con l'account</button></div>
+    <div class="row"><button class="f" id="appset">Impostazioni dell'app</button></div>
   </div>
 </div>
 <script>
@@ -83,11 +84,16 @@ function connect() {
   if (app) app.saveServer(v);
 }
 
+// Amici e tuoi PC con Tailscale (remote.html): solo l'app sulle TV; sul telefono c'e'
+// BunkerPlex con l'account (questa pagina serve solo senza Internet)
+var remoteOk = !!(app && app.openRemote && (!app.remoteAllowed || app.remoteAllowed()));
+if (!remoteOk) $('remote').parentNode.hidden = true;
+
 // Chiamate dall'app
 window.setupFound = function (url) { showSearching('Trovato! ' + url.replace('http://', '')); };
-// Niente server in casa: l'app propone gli amici e i tuoi PC (remote.html)
+// Niente server in casa: sulla TV l'app propone gli amici e i tuoi PC (remote.html)
 window.setupNotFound = function () {
-  if (app && app.openRemote) location.replace('remote.html#ask'); else showManual('Server non trovato', '');
+  if (remoteOk) location.replace('remote.html#ask'); else showManual('Server non trovato', '');
 };
 window.setupError = function (url) {
   showManual('Collegamento non riuscito', 'Nessun BunkerPlex risponde a ' + url.replace('http://', '') + '. Il PC è acceso?');
@@ -97,11 +103,14 @@ $('connect').addEventListener('click', connect);
 $('retry').addEventListener('click', search);
 $('remote').addEventListener('click', function () { if (app && app.openRemote) app.openRemote(); });
 $('central').addEventListener('click', function () { if (app && app.openCentral) app.openCentral(); });
+// Versione, aggiornamento e notifiche dell'app: con qualunque server, o nessuno
+$('appset').addEventListener('click', function () { if (app && app.openAppSettings) app.openAppSettings(); });
 $('addr').addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.keyCode === 13) connect(); });
 
 // Frecce del telecomando tra campo e pulsanti
 document.addEventListener('keydown', function (e) {
-  var code = e.keyCode, list = Array.prototype.slice.call(document.querySelectorAll('#manual .f'));
+  var code = e.keyCode, list = Array.prototype.slice.call(document.querySelectorAll('#manual .f'))
+    .filter(function (b) { return b.offsetParent !== null; });
   var i = list.indexOf(document.activeElement);
   if ($('manual').hidden || i < 0) return;
   var next = -1;
@@ -120,7 +129,7 @@ if (location.hash === '#manual') {
   $('addr').focus();
 } else if (offline) {
   window.setupNotFound = function () {
-    if (app && app.openRemote) { location.replace('remote.html#ask'); return; }
+    if (remoteOk) { location.replace('remote.html#ask'); return; }
     showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo. Fuori casa accendi Tailscale su questo dispositivo.');
   };
   showSearching('Il server salvato non risponde, lo cerco sulla rete…');

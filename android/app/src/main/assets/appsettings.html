@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BunkerPlex</title>
+<style>
+  * { box-sizing: border-box; }
+  html { font-size: 14px; font-size: clamp(14px, 1.5vw, 40px); }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #060a07; color: #f2f5f2; font-family: Roboto, "Segoe UI", sans-serif; }
+  .box { width: 40rem; max-width: 92vw; text-align: center; padding: 1.5rem 0; }
+  .logo { font-size: 2.6rem; font-weight: 400; letter-spacing: -.02em; margin-bottom: .4rem; }
+  .logo b { font-weight: 800; }
+  h1 { font-size: 1.5rem; font-weight: 600; margin: 1.6rem 0 .6rem; }
+  h2 { font-size: 1.1rem; font-weight: 600; margin: 0 0 .6rem; }
+  p { color: #9fada3; line-height: 1.6; margin: 0 0 1.2rem; font-size: 1.05rem; }
+  .panel { background: #0e1510; border-radius: .6rem; padding: 1.2rem 1rem .4rem; margin: 1.4rem 0 0; }
+  .panel p { margin-bottom: .8rem; }
+  #ver { color: #f2f5f2; }
+  .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; background: #4cbf7f; margin-right: .4rem; }
+  .dot.old { background: #e0a030; }
+  .msg { color: #e0a030; min-height: 1.6rem; }
+  .row { display: flex; flex-wrap: wrap; gap: .8rem; justify-content: center; margin: 1.2rem 0; }
+  button { font: inherit; font-weight: 700; font-size: 1.1rem; padding: .8rem 1.8rem; border: 0;
+           border-radius: .4rem; background: #ffffff24; color: #f2f5f2; outline: none; }
+  button.primary { background: #1a7f45; color: #ffffff; }
+  button:focus, button.primary:focus { background: #f2f5f2; color: #060a07; transform: scale(1.05); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="logo"><b>Bunker</b>Plex</div>
+  <h1>Impostazioni dell'app</h1>
+  <p>Il servizio account non risponde, quindi qui ci sono solo la versione e l'aggiornamento dell'app.
+     Notifiche e account tornano appena c'è di nuovo la connessione.</p>
+
+  <div class="panel">
+    <h2>App BunkerPlex</h2>
+    <p><span class="dot" id="dot"></span><span id="ver">Versione…</span></p>
+    <p class="msg" id="msg"></p>
+    <div class="row">
+      <button class="f primary" id="update" hidden>Aggiorna l'app</button>
+      <button class="f" id="check">Controlla aggiornamenti</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <button class="f" id="retry">Riprova la connessione</button>
+    <button class="f" id="back">Indietro</button>
+  </div>
+</div>
+<script>
+(function () {
+'use strict';
+// Si apre dall'app (MainActivity) quando le impostazioni del servizio account non si
+// caricano: versione e aggiornamento vengono dall'app e da GitHub, senza nessun server.
+var app = window.BunkerPlexTV;
+var $ = function (id) { return document.getElementById(id); };
+
+function call(name) {
+  try { return app && typeof app[name] === 'function' ? app[name]() : null; } catch (e) { return null; }
+}
+function latest() {
+  try { return JSON.parse(call('latestApp') || 'null') || {}; } catch (e) { return {}; }
+}
+function mine() { return +call('getVersion') || 0; }
+function say(text) { $('msg').textContent = text || ''; }
+
+function draw() {
+  var l = latest(), old = (l.code || 0) > mine();
+  $('ver').textContent = 'Versione ' + (call('getVersionName') || 'sconosciuta') +
+    (old ? ' · è uscita la ' + (l.name || l.code) : l.code ? ' · aggiornata' : '');
+  $('dot').className = 'dot' + (old ? ' old' : '');
+  $('update').hidden = !(old && app && typeof app.update === 'function');
+}
+
+// L'app chiede a GitHub (subito se a mano, se no al massimo ogni 6 ore), poi risponde in fpLatest
+function check(manual) {
+  if (!app || typeof app.checkLatest !== 'function') return;
+  if (manual) say('Controllo su GitHub…');
+  window.fpLatest = function (error) {
+    window.fpLatest = null;
+    draw();
+    if (!manual) return;
+    var l = latest();
+    say(error ? 'Non riesco a controllare gli aggiornamenti (' + error + '): serve la connessione a Internet.'
+      : !l.code ? 'Non trovo ancora una versione pubblicata dell\'app.'
+      : l.code > mine() ? '' : 'L\'app è già aggiornata.');
+    if (!$('update').hidden) $('update').focus();
+  };
+  app.checkLatest(!!manual);
+}
+
+// L'app racconta qui come procede l'aggiornamento (stessi stati della PWA)
+window.fpUpdate = function (state, value) {
+  if (state === 'progress') { say('Scarico l\'aggiornamento… ' + value + '%'); return; }
+  say({
+    install: 'Conferma «Installa» o «Aggiorna» nella finestra di Android.',
+    permission: 'Consenti a BunkerPlex di installare app, poi torna indietro: l\'aggiornamento riparte da solo.',
+    denied: 'Per aggiornarsi da sola BunkerPlex ha bisogno del permesso «Installa app sconosciute»: tocca di nuovo «Aggiorna l\'app» e attivalo.',
+    cancel: 'Aggiornamento annullato: puoi rifarlo quando vuoi.'
+  }[state] || 'Aggiornamento non riuscito: ' + value + '. Controlla la connessione a Internet e riprova.');
+};
+
+$('update').addEventListener('click', function () {
+  if (!app || typeof app.update !== 'function') return;
+  say('Scarico l\'aggiornamento… 0%');
+  app.update();
+});
+$('check').addEventListener('click', function () { check(true); });
+$('retry').addEventListener('click', function () { if (app && app.openAppSettings) app.openAppSettings(); });
+$('back').addEventListener('click', function () { if (app && app.closeAppSettings) app.closeAppSettings(); });
+
+// Frecce del telecomando (l'app gira anche sulle TV): il pulsante prima o dopo
+document.addEventListener('keydown', function (e) {
+  var step = { 37: -1, 38: -1, 39: 1, 40: 1 }[e.keyCode];
+  if (!step) return;
+  var list = Array.prototype.slice.call(document.querySelectorAll('.f')).filter(function (b) { return !b.hidden; });
+  var i = list.indexOf(document.activeElement);
+  var next = list[i < 0 ? 0 : Math.max(0, Math.min(list.length - 1, i + step))];
+  if (next) { e.preventDefault(); next.focus(); }
+});
+
+draw();
+if (!latest().code) check(false);
+if (call('isTv')) ($('update').hidden ? $('check') : $('update')).focus();
+})();
+</script>
+</body>
+</html>
