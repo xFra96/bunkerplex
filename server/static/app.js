@@ -5091,6 +5091,9 @@ function accountFriendsPanel(af, sh) {
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
       '<div class="inline"><input class="field f" id="pcname" data-key="pcname" data-enter="pcname" autocomplete="off" maxlength="30" value="' + esc(af.pc) + '">' +
       '<button class="btn f" data-act="pcname" data-key="pcname-save">Salva</button></div>' : '') +
+    swRow('Mostra agli amici cosa stai guardando', af.share_activity !== false,
+      'data-act="afactivity" data-arg="' + (af.share_activity !== false ? 0 : 1) + '" data-key="afactivity"',
+      af.share_activity !== false ? 'Accanto al tuo nome vedono il titolo che hai in riproduzione' : 'Gli amici vedono solo se sei online') +
     '<p class="kvnote">Gli amici vedono solo le tue raccolte e possono soltanto guardare. Il collegamento è cifrato e il servizio account garantisce che dall\'altra parte ci sia davvero il loro server.</p></div>';
 }
 
@@ -6978,6 +6981,9 @@ var actions = {
   },
   noticedel: function (arg) {
     noticeApi('DELETE', '/notices/devices/' + arg).then(function () { toast('Dispositivo tolto'); render(); }, function (e) { toast(e.message); });
+  },
+  afactivity: function (arg) {
+    post('/account-friends/activity', { on: arg === '1' }).then(function () { render(); }, function (e) { toast(e.message); });
   },
   afshare: function (arg) {
     toast(arg === '1' ? 'Apro la porta per gli amici…' : 'Spengo la condivisione…');
@@ -9077,6 +9083,34 @@ function activityOpen() { return !modal.hidden && modal.classList.contains('corn
 // ---- Amici, accanto alla campanella: chi e' acceso adesso, e le sue raccolte a un clic.
 // Ci sono anche i tuoi altri PC e gli amici spenti (con le raccolte, ma senza video).
 var accountFriends = [];             // gli amici dell'account (anche quelli che non condividono)
+var friendsWatching = {};            // posto dell'amico -> [cosa sta guardando adesso]
+var friendsWatchingAt = 0;
+
+function loadFriendsWatching() {
+  friendsWatchingAt = Date.now();
+  return api('/friends/now').then(function (r) {
+    friendsWatching = (r && r.now) || {};
+    renderActivity();
+  }, function () {});
+}
+
+// «Sta guardando Breaking Bad · S1 · E2» (o «ha in pausa ...»), con il titolo da aprire se e' nelle sue raccolte
+function watchingRows(fr) {
+  return (friendsWatching[fr.n] || []).map(function (w, i) {
+    var isEp = w.kind === 'episode';
+    var name = isEp && w.show ? w.show : w.title;
+    var sub = isEp ? (w.season != null ? 'S' + w.season + ' · E' + w.episode + (w.title ? ' · ' + w.title : '') : w.title)
+      : (w.year || '');
+    var left = w.duration > 0 ? Math.max(0, Math.round((w.duration - w.position) / 60)) : 0;
+    var note = (w.paused ? 'In pausa' : 'Sta guardando') + (left ? ' · mancano ' + left + ' min' : '');
+    var body = '<span class="wplay" aria-hidden="true">' + (w.paused ? IC.pause : IC.play) + '</span>' +
+      '<span class="acttxt"><small>' + esc(note) + '</small><b>' + esc(name) + '</b>' + (sub ? '<small>' + esc(String(sub)) + '</small>' : '') + '</span>';
+    var href = w.show_id ? '#/show/' + w.show_id : w.id ? '#/item/' + w.id : '';
+    return href
+      ? '<button class="actrow watching f" data-act="actgo" data-arg="' + href + '" data-key="frw-' + fr.n + '-' + i + '">' + body + CHEVRON + '</button>'
+      : '<div class="actrow watching">' + body + '</div>';
+  }).join('');
+}
 
 function friendsNowRows() {
   var on = friends.filter(function (f) { return f.online !== false; });
@@ -9096,9 +9130,10 @@ function friendsNowRows() {
         return '<button class="actrow f" data-act="actgo" data-arg="#/lib/' + l.id + '" data-key="frnow-' + fr.n + '-' + l.id + '">' +
           avatar(l.name) + '<span class="acttxt"><b>' + esc(l.name) + '</b><small>' + esc(n || 'raccolta') + '</small></span>' + CHEVRON + '</button>';
       }).join('');
+      var now = offline ? '' : watchingRows(fr);
       return '<div class="frnow' + (offline ? ' off' : '') + '"><p class="frwho"><span class="odot' + (offline ? ' off' : '') + '" aria-hidden="true"></span>' +
         esc(who) + '<small>' + (fr.quiet ? 'non condivide' : offline ? 'spento o non raggiungibile' : 'online') + '</small></p>' +
-        (libsHtml || (fr.quiet ? '' : '<p class="actempty">Nessuna raccolta condivisa.</p>')) + '</div>';
+        now + (libsHtml || (fr.quiet ? '' : '<p class="actempty">Nessuna raccolta condivisa.</p>')) + '</div>';
     }).join('');
   }
   return '<div class="sheet actsheet" role="dialog" aria-label="Amici"><h3>Amici</h3>' +
@@ -9163,6 +9198,7 @@ function openFriendsNow() {
   Promise.all([loadLibs(true), auth && auth.cloud ? api('/account-friends').then(function (af) {
     accountFriends = (af && af.friends) || [];
   }, function () {}) : null]).then(renderActivity, function () {});
+  loadFriendsWatching();
 }
 
 // Appena aggiornato: un avviso una volta per dispositivo (poi resta nella campanella)
@@ -9251,6 +9287,7 @@ function pollActivity() {
   var busy = (act.info && act.info.scanning) || (act.upd && act.upd.phase) || activityOpen();
   act.timer = setTimeout(pollActivity, busy ? 3000 : 20000);
   if (player) return;
+  if (activityOpen() && modal.classList.contains('friendsnow') && Date.now() - friendsWatchingAt > 15000) loadFriendsWatching();
   api('/info').then(function (i) {
     var wasScanning = act.info && act.info.scanning;
     act.info = i;

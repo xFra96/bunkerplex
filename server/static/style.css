@@ -1091,6 +1091,13 @@ html.tv #modal.corner { padding-right: calc(var(--pad) + 5.4rem); }
 .odot { width: .55rem; height: .55rem; flex: none; border-radius: 50%; background: var(--accent-text); }
 .odot.off { background: var(--ink2); opacity: .6; }
 .frnow.off .actrow { opacity: .7; }
+/* Cosa sta guardando l'amico, sopra le sue raccolte */
+.actrow.watching .acttxt small:first-child { margin: 0 0 .15rem; color: var(--accent-text); font-weight: 600; font-size: .8rem; }
+.actrow.watching .wplay { width: 2.2rem; height: 2.2rem; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--surface2); color: var(--accent-text); }
+.actrow.watching .wplay .ic { width: 1rem; height: 1rem; fill: currentColor; }
+div.actrow.watching:hover { background: none; }
+.actrow.watching:focus .acttxt small:first-child, .actrow.watching:focus .wplay { color: var(--bg); }
+body:not(.kb) .actrow.watching:focus .acttxt small:first-child, body:not(.kb) .actrow.watching:focus .wplay { color: var(--accent-text); }
 .frnow .actrow .avatar { width: 2.2rem; height: 2.2rem; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-style: normal; font-weight: 700; font-size: .8rem; background: var(--bg); color: var(--ink); }
 
 /* Barra di avanzamento (lettura dei titoli): la vera percentuale, o in movimento se non si sa */
