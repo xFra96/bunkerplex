@@ -60,7 +60,10 @@ function setup() {
   };
   const login = async (name, kind, device = name + '-dev') =>
     (await call('POST', '/login', { username: name, verifier: VER, device, kind })).body.token;
-  return { env, call, addUser, login };
+  // Un server gia' noto all'account (registrato prima dei codici di collegamento):
+  // puo' ancora prendere la credenziale con il gettone del proprietario
+  const known = (uid, sid = SID) => env.DB.raw.prepare("INSERT OR IGNORE INTO servers(user_id, sid, name, url, pin, t) VALUES(?, ?, 'PC', '', '', 0)").run(uid, sid);
+  return { env, call, addUser, login, known };
 }
 
 async function twoFriends() {
@@ -68,6 +71,7 @@ async function twoFriends() {
   const anna = t.addUser('anna');
   const bob = t.addUser('bob');
   t.env.DB.raw.prepare("INSERT INTO friends(a, b, status, t) VALUES(?, ?, 'ok', 0)").run(anna, bob);
+  t.known(anna);
   return { ...t, anna, bob };
 }
 
@@ -404,7 +408,7 @@ test("aspetto del server: icona e immagine dal proprietario, l'amico le vede, gl
   const t = await twoFriends();
   const annaPc = await t.login('anna', 'server', 'PC di Anna');
   await t.call('POST', `/servers/${SID}/claim`, { name: 'PC Anna' }, annaPc);
-  t.env.DB.raw.prepare("INSERT INTO servers(user_id, sid, name, url, pin, t, friends) VALUES(?, ?, 'PC Anna', 'https://x', ?, 0, 1)")
+  t.env.DB.raw.prepare("INSERT OR REPLACE INTO servers(user_id, sid, name, url, pin, t, friends) VALUES(?, ?, 'PC Anna', 'https://x', ?, 0, 1)")
     .run(t.anna, SID, PIN);
   const anna = await t.login('anna', 'pwa');
   const bob = await t.login('bob', 'pwa');
@@ -564,6 +568,105 @@ test('notifiche: le chiamate del dispositivo rispondono anche alla PWA di un ser
   const again = await noticeDev(t, 'anna', 'web');
   assert.equal((await t.call('POST', `/avvisi/${again.dev}/push`, sub)).status, 200);
   assert.equal(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM notice_devices WHERE endpoint IS NOT NULL').get().n, 1);
+});
+
+test('profili: principale + aggiunti, PIN, biglietto firmato, visti separati per profilo', async () => {
+  const t = await twoFriends();
+  const anna = await t.login('anna', 'pwa');
+  let r = await t.call('GET', '/profiles', undefined, anna);
+  assert.deepEqual(r.body.profiles.map((p) => [p.id, p.name, p.main]), [[0, 'anna', true]]);
+  r = await t.call('POST', '/profiles', { name: 'Leo', avatar: 'fox', color: '#2ecc71', kids: true }, anna);
+  assert.equal(r.status, 200);
+  const leo = r.body.profile;
+  assert.deepEqual([leo.name, leo.avatar, leo.kids, leo.pin], ['Leo', 'fox', true, false]);
+  assert.equal((await t.call('POST', '/profiles', { name: 'leo' }, anna)).status, 409);
+  assert.equal((await t.call('POST', '/profiles', { name: 'X', avatar: 'drago' }, anna)).status, 400);
+  // Il principale si personalizza (anche il PIN)
+  r = await t.call('PUT', '/profiles/0', { avatar: 'cat', pin: '1234' }, anna);
+  assert.deepEqual([r.body.profile.avatar, r.body.profile.pin, r.body.profile.kids], ['cat', true, false]);
+  assert.equal((await t.call('POST', '/profiles/0/open', {}, anna)).status, 412);
+  assert.equal((await t.call('POST', '/profiles/0/open', { pin: '0000' }, anna)).status, 401);
+  const open = await t.call('POST', '/profiles/0/open', { pin: '1234' }, anna);
+  assert.equal(open.status, 200);
+  const free = await t.call('POST', `/profiles/${leo.id}/open`, {}, anna);
+  assert.equal(free.status, 200);
+  const claims = JSON.parse(Buffer.from(free.body.ticket.split('.')[1], 'base64url'));
+  assert.deepEqual([claims.typ, claims.sub, claims.pid], ['profile', String(t.anna), leo.id]);
+  // Bob non vede ne' apre i profili di Anna
+  const bob = await t.login('bob', 'pwa');
+  assert.equal((await t.call('POST', `/profiles/${leo.id}/open`, {}, bob)).status, 404);
+  assert.equal((await t.call('GET', `/state?profile=${leo.id}`, undefined, bob)).status, 404);
+  // Visti: ognuno i suoi
+  await t.call('POST', '/state', { rows: [{ k: 'm10', w: 1, t: 5 }] }, anna);
+  await t.call('POST', `/state?profile=${leo.id}`, { rows: [{ k: 'm20', pos: 30, t: 5 }] }, anna);
+  assert.deepEqual((await t.call('GET', '/state', undefined, anna)).body.rows.map((x) => x.k), ['m10']);
+  assert.deepEqual((await t.call('GET', `/state?profile=${leo.id}`, undefined, anna)).body.rows.map((x) => x.k), ['m20']);
+  // 5 PIN sbagliati: bloccato
+  for (let i = 0; i < 5; i++) await t.call('POST', '/profiles/0/open', { pin: '9999' }, anna);
+  assert.equal((await t.call('POST', '/profiles/0/open', { pin: '1234' }, anna)).status, 429);
+  // Togliere un profilo toglie i suoi visti; il principale non si toglie
+  assert.equal((await t.call('DELETE', '/profiles/0', undefined, anna)).status, 400);
+  assert.equal((await t.call('DELETE', `/profiles/${leo.id}`, undefined, anna)).status, 200);
+  assert.equal(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM pstate').get().n, 0);
+  // Al massimo 6 profili
+  for (const n of ['a1', 'a2', 'a3', 'a4', 'a5']) assert.equal((await t.call('POST', '/profiles', { name: n }, anna)).status, 200);
+  assert.equal((await t.call('POST', '/profiles', { name: 'a6' }, anna)).status, 400);
+});
+
+test('collegamento con il codice: nuovo server, sostituzione sulla stessa macchina, credenziale come proprietario', async () => {
+  const t = await twoFriends();
+  const anna = await t.login('anna', 'pwa');
+  const NEW = 'feedbeef';
+  const MACHINE = 'ab'.repeat(16);
+  // Senza codice un server nuovo non entra
+  assert.equal((await t.call('POST', `/servers/${NEW}/claim`, {}, await t.login('anna', 'server'))).status, 428);
+  // Il server vecchio (SID) della stessa macchina
+  const old = (await t.call('POST', `/servers/${SID}/claim`, {}, await t.login('anna', 'server'))).body.credential;
+  await t.call('POST', '/server/heartbeat', { name: 'Salotto', pin: PIN, friends: true, machine: MACHINE }, old);
+  // Reinstallazione: codice dal server nuovo
+  const st = await t.call('POST', '/claim/start', { sid: NEW, machine: MACHINE, name: 'PC nuovo', version: '9' });
+  assert.match(st.body.code, /^[A-Z2-9]{8}$/);
+  assert.equal((await t.call('POST', '/claim/poll', { code: st.body.code, poll: st.body.poll })).body.status, 'pending');
+  assert.equal((await t.call('POST', '/claim/poll', { code: st.body.code, poll: 'x' })).status, 404);
+  let info = await t.call('GET', `/claim/${st.body.code}`, undefined, anna);
+  assert.deepEqual(info.body.same_machine.map((s) => [s.sid, s.online]), [[SID, true]]);
+  // Acceso: non si sostituisce
+  assert.equal((await t.call('POST', `/claim/${st.body.code}`, { name: 'Salotto', replace: SID }, anna)).status, 409);
+  t.env.DB.raw.prepare('UPDATE server_creds SET last_seen = 1 WHERE sid = ?').run(SID);
+  // Un altro account non vede le macchine di Anna
+  info = await t.call('GET', `/claim/${st.body.code}`, undefined, await t.login('bob', 'pwa'));
+  assert.deepEqual(info.body.same_machine, []);
+  const ok = await t.call('POST', `/claim/${st.body.code}`, { name: 'Salotto', replace: SID }, anna);
+  assert.deepEqual([ok.status, ok.body.sid, ok.body.replaced], [200, SID, true]);
+  assert.equal((await t.call('POST', `/claim/${st.body.code}`, { name: 'Salotto' }, anna)).status, 409);
+  const done = await t.call('POST', '/claim/poll', { code: st.body.code, poll: st.body.poll });
+  assert.deepEqual([done.body.status, done.body.sid, done.body.owner.username, done.body.name], ['done', SID, 'anna', 'Salotto']);
+  // La credenziale vecchia non vale piu', la nuova si'
+  assert.equal((await t.call('POST', '/server/heartbeat', { name: 'x', pin: PIN }, old)).status, 401);
+  const cred = done.body.credential;
+  assert.equal((await t.call('POST', '/server/heartbeat', { name: 'Salotto', pin: PIN, friends: true, machine: MACHINE }, cred)).status, 200);
+  // Bob (amico) continua a vedere lo stesso server
+  const theirs = await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'));
+  assert.deepEqual(theirs.body.servers.map((s) => s.sid), [SID]);
+  const mine = await t.call('GET', '/servers', undefined, anna);
+  assert.deepEqual(mine.body.servers.map((s) => [s.sid, s.name, s.machine]), [[SID, 'Salotto', MACHINE]]);
+  // Seconda installazione sulla stessa macchina, entrambe accese: separate, nome unico
+  const st2 = await t.call('POST', '/claim/start', { sid: NEW, machine: MACHINE, name: 'Docker' });
+  assert.equal((await t.call('POST', `/claim/${st2.body.code}`, { name: 'salotto' }, anna)).status, 409);
+  assert.equal((await t.call('POST', `/claim/${st2.body.code}`, { name: 'Salotto (Docker)' }, anna)).status, 200);
+  const c2 = (await t.call('POST', '/claim/poll', { code: st2.body.code, poll: st2.body.poll })).body;
+  assert.equal(c2.sid, NEW);
+  // Con la credenziale il server legge visti e profili del proprietario, non altro
+  await t.call('POST', '/state', { rows: [{ k: 'm1', w: 1, t: 5 }] }, anna);
+  assert.deepEqual((await t.call('GET', '/state', undefined, c2.credential)).body.rows.map((x) => x.k), ['m1']);
+  assert.equal((await t.call('GET', '/profiles', undefined, c2.credential)).status, 200);
+  assert.equal((await t.call('GET', '/devices', undefined, c2.credential)).status, 403);
+  assert.equal((await t.call('POST', '/password', {}, c2.credential)).status, 403);
+  // Il biglietto di un profilo lo verifica anche il server senza cryptography
+  const tk = (await t.call('POST', '/profiles/0/open', {}, c2.credential)).body.ticket;
+  assert.equal((await t.call('POST', '/server/verify', { token: tk }, c2.credential)).status, 200);
+  const bobTk = (await t.call('POST', '/profiles/0/open', {}, await t.login('bob', 'pwa'))).body.ticket;
+  assert.equal((await t.call('POST', '/server/verify', { token: bobTk }, c2.credential)).status, 403);
 });
 
 test('la TV entra dal telefono: codice, conferma con l\'account, gettone una volta sola', async () => {

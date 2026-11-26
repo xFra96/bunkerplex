@@ -212,6 +212,8 @@ def get_libraries():
         out = [dict(lib, mine=False) for lib in out if lib["id"] in ids]
     elif u is not None:
         out = [lib for lib in out if lib.get("owner") == u["id"] or lib.get("shared")]
+        if u.get("kids"):
+            out = [lib for lib in out if lib.get("kids")]
         for lib in out:
             lib["mine"] = lib.get("owner") == u["id"]
     return out
@@ -558,7 +560,16 @@ def init_db():
                           ("shows", "imdb_rating REAL"), ("shows", "imdb_votes INT"),
                           # Locandina TMDB scelta a mano con «Cambia locandina» (percorso TMDB):
                           # gli aggiornamenti della scheda la tengono
-                          ("items", "poster_pick TEXT"), ("shows", "poster_pick TEXT")):
+                          ("items", "poster_pick TEXT"), ("shows", "poster_pick TEXT"),
+                          # Profili nel servizio account (vedi sync_profiles): cloud_pid = id del
+                          # profilo nell'account, state_rev = contatore dei suoi visti; avatar, colore,
+                          # kids (solo raccolte per bambini), pin (1 = chiede il PIN)
+                          ("profiles", "cloud_pid INT"), ("profiles", "avatar TEXT"), ("profiles", "color TEXT"),
+                          ("profiles", "kids INT DEFAULT 0"), ("profiles", "pin INT DEFAULT 0"),
+                          ("profiles", "state_rev INT DEFAULT 0"),
+                          # Il profilo principale dell'account (id 0): nome, avatar, colore, PIN
+                          ("users", "p_name TEXT"), ("users", "p_avatar TEXT"), ("users", "p_color TEXT"),
+                          ("users", "p_pin INT DEFAULT 0")):
         if column.split()[0] not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
     con.execute("CREATE INDEX IF NOT EXISTS items_collection ON items(collection_id)")
@@ -2913,11 +2924,11 @@ def session_user(token):
         con = db(raw=True)
         try:
             r = con.execute("SELECT s.user_id, s.last_seen, s.profile, COALESCE(s.home, 0) AS home, "
-                            "p.id AS pid, p.name AS pname, "
+                            "p.id AS pid, p.name AS pname, p.cloud_pid, COALESCE(p.kids, 0) AS kids, u.p_name, "
                             "u.id, u.name, u.admin, u.must_change, u.cloud_id, COALESCE(u.guest, 0) AS guest "
                             "FROM user_sessions s JOIN users u ON u.id=s.user_id "
                             "LEFT JOIN profiles p ON p.id=s.profile AND p.user_id=u.id WHERE s.token=? "
-                            "AND COALESCE(u.disabled, 0)=0 AND (u.id=COALESCE((" + OWNER_SQL + "), u.id) "
+                            "AND COALESCE(u.disabled, 0)=0 AND (u.id=COALESCE((" + owner_sql() + "), u.id) "
                             "OR COALESCE(u.guest, 0)=1)",
                             (key,)).fetchone()
             if r and time.time() - (r["last_seen"] or 0) > 3600:
@@ -2944,13 +2955,19 @@ def session_user(token):
         return None
     linked = r["cloud_id"] is not None
     guest = bool(r["guest"])
+    kids = bool(r["pid"] and r["kids"])
+    libs = guest_libs() if guest else visible_libs(r["id"])
+    if kids:                     # profilo bambini: solo le raccolte per bambini
+        with config_lock:
+            ok = {lib["id"] for lib in config.get("libraries") or [] if lib.get("kids")}
+        libs = [x for x in libs if x in ok]
     # sid: di chi sono visti, ripresa e lista (l'account, o -id del profilo scelto)
-    return {"id": r["id"], "name": r["name"], "admin": linked and bool(r["admin"]) and not guest, "linked": linked,
-            "guest": guest, "must_change": linked and bool(r["must_change"]),
-            "libs": guest_libs() if guest else visible_libs(r["id"]), "session": token,
+    return {"id": r["id"], "name": r["name"], "admin": linked and bool(r["admin"]) and not guest and not kids,
+            "linked": linked, "guest": guest, "must_change": linked and bool(r["must_change"]),
+            "libs": libs, "session": token, "kids": kids,
             "sid": -r["pid"] if r["pid"] else r["id"],
-            "profile": r["pid"] or (0 if r["profile"] is not None else None), "pname": r["pname"] or r["name"],
-            "home": bool(r["home"])}
+            "profile": profile_public_id(linked, r["pid"], r["cloud_pid"]) if r["pid"] else (0 if r["profile"] is not None else None),
+            "pname": r["pname"] or r["p_name"] or r["name"], "home": bool(r["home"])}
 
 
 def share_token_of(scope):
@@ -3169,13 +3186,18 @@ def with_session(data, token):
     return resp
 
 
-OWNER_SQL = "SELECT id FROM users WHERE cloud_id IS NOT NULL ORDER BY created, id LIMIT 1"
+def owner_sql(cols="id"):
+    """Il proprietario di questo server: l'account a cui il server e' collegato nel
+    servizio (credenziale del server, vedi «Collegamento all'account»); prima del
+    collegamento, il primo account entrato."""
+    cred = server_cred()
+    first = f"(cloud_id={int(cred['owner'])}) DESC, " if cred and isinstance(cred.get("owner"), int) else ""
+    return f"SELECT {cols} FROM users WHERE cloud_id IS NOT NULL ORDER BY {first}created, id LIMIT 1"
 
 
 def owner_row(con):
-    """Il proprietario di questo server: il primo account entrato (None se nessuno)."""
-    return con.execute("SELECT id, name, cloud_id FROM users WHERE cloud_id IS NOT NULL "
-                       "ORDER BY created, id LIMIT 1").fetchone()
+    """Il proprietario di questo server (None se nessuno)."""
+    return con.execute(owner_sql("id, name, cloud_id")).fetchone()
 
 
 def owner_only_error(owner):
@@ -3403,7 +3425,7 @@ def lib_export(uid):
             folders = [{"path": p, "display": display_path(p)} for p in lib["folders"]]
             folders += [m for m in lib.get("missing") or [] if m not in folders]
             out.append({"id": lib["sync_id"], "name": lib["name"], "shared": bool(lib.get("shared")),
-                        "folders": folders})
+                        "kids": bool(lib.get("kids")), "folders": folders})
             if not lib.get("synced"):
                 lib["synced"] = True
                 changed = True
@@ -3481,6 +3503,9 @@ def reconcile_libraries(uid):
                 changed = True
             if bool(lib.get("shared")) != bool(c.get("shared")):
                 lib["shared"] = bool(c.get("shared"))
+                changed = True
+            if bool(lib.get("kids")) != bool(c.get("kids")):
+                lib["kids"] = bool(c.get("kids"))
                 changed = True
             taken = {p for other in libs if other is not lib for p in other["folders"]}
             folders, missing = [], []
@@ -3648,8 +3673,10 @@ def auth_state():
                         last_sync=me["last_sync"] or 0,
                         pending=pending_changes(con, me["id"]) if linked else 0,
                         # «Chi guarda?» dopo il login: i profili dell'account e quello scelto qui
-                        watchers=profiles_of(con, me), watcher=u.get("profile"),
-                        home=bool(u.get("home")))
+                        watchers=profiles_of(con, me), watcher=u.get("profile"), kids=bool(u.get("kids")),
+                        profiles_cloud=linked, home=bool(u.get("home")))
+            if user["kids"]:
+                user["manager"] = False
     finally:
         con.close()
     return {"on": True, "cloud": cloud_on, "user": user, "offline": offline, "profiles": profiles,
@@ -3658,17 +3685,24 @@ def auth_state():
             "setup": cloud_on and SETUP_FILE.is_file() and cloud_ready() is False,
             "google": cloud_on and bool(cloud_status.get("google")),
             "reset": cloud_on and bool(cloud_status.get("reset")),
-            "server": SERVER_NAME, "pc": pc_name(), "owner": owner["name"] if owner else ""}
+            "server": SERVER_NAME, "pc": pc_name(), "owner": owner["name"] if owner else "",
+            "claim": claim_info() if cloud_on else None}
 
 
-# ---- Profili dell'account («Chi guarda?» dopo il login) ---------------------------
-# Un account puo' avere dei profili (famiglia): ognuno con i suoi visti, punti di
-# ripresa e La mia lista; raccolte, chiavi e impostazioni restano dell'account.
-# Si sceglie il profilo solo DOPO essere entrati con la password dell'account:
-# non e' mai un modo per entrare senza password. Il profilo principale (id 0) e'
-# l'account stesso e si sincronizza con lui; gli altri restano su questo server.
+# ---- Profili dell'account («Chi guarda?», come Netflix) ------------------------------
+# Un account ha fino a 6 profili: il principale (id 0, l'account stesso) e fino a 5
+# aggiunti, con nome, avatar, colore, PIN facoltativo e «bambini» (solo le raccolte
+# per bambini, niente impostazioni). Con l'account i profili stanno nel servizio
+# account e sono gli stessi su ogni server, TV e telefono: visti, ripresa e lista di
+# ogni profilo si sincronizzano come quelli dell'account (vedi sync_profiles).
+# Qui ne resta una copia (tabella profiles, cloud_pid = id nel servizio) per i visti
+# di questo PC (user_items con user_id = -id locale). Gli id che vedono le app sono
+# quelli del servizio; senza account (utente «Casa») restano quelli di qui.
+# Si sceglie il profilo solo DOPO essere entrati con l'account: non e' mai un modo
+# per entrare senza password. Con il PIN serve il PIN (o il biglietto del servizio).
 
 MAX_PROFILES = 5                 # oltre al principale
+PROFILE_FIELDS = ("name", "avatar", "color", "kids", "pin")
 
 
 def profile_name(raw):
@@ -3680,37 +3714,176 @@ def profile_name(raw):
     return name
 
 
+def profile_public_id(linked, lid, cloud_pid):
+    """L'id che vedono le app: quello del servizio; -id locale se non ancora sincronizzato."""
+    if not linked:
+        return lid
+    return cloud_pid if cloud_pid else -lid
+
+
 def profiles_of(con, me):
     """I profili dell'account: il principale (id 0, l'account) e quelli aggiunti."""
-    return [{"id": 0, "name": me["name"], "main": True}] + [
-        {"id": r["id"], "name": r["name"], "main": False}
-        for r in con.execute("SELECT id, name FROM profiles WHERE user_id=? ORDER BY created, id", (me["id"],))]
+    linked = me["cloud_id"] is not None if "cloud_id" in me.keys() else False
+    full = con.execute("SELECT * FROM users WHERE id=?", (me["id"],)).fetchone()
+    main = {"id": 0, "name": (full["p_name"] if full else None) or me["name"], "main": True,
+            "avatar": (full["p_avatar"] if full else None) or "", "color": (full["p_color"] if full else None) or "",
+            "kids": False, "pin": bool(full and full["p_pin"])}
+    return [main] + [
+        {"id": profile_public_id(linked, r["id"], r["cloud_pid"]), "name": r["name"], "main": False,
+         "avatar": r["avatar"] or "", "color": r["color"] or "", "kids": bool(r["kids"]), "pin": bool(r["pin"]),
+         "synced": bool(r["cloud_pid"]) or not linked}
+        for r in con.execute("SELECT * FROM profiles WHERE user_id=? ORDER BY created, id", (me["id"],))]
+
+
+def local_profile(con, uid, linked, pub):
+    """La riga di qui di un profilo (id delle app); None per il principale."""
+    if not pub:
+        return None
+    if linked and pub > 0:
+        r = con.execute("SELECT * FROM profiles WHERE user_id=? AND cloud_pid=?", (uid, pub)).fetchone()
+    else:
+        r = con.execute("SELECT * FROM profiles WHERE user_id=? AND id=?", (uid, abs(pub))).fetchone()
+    if not r:
+        raise HTTPException(404, "Questo profilo non c'è più")
+    return r
 
 
 def drop_profile_state(con, pid):
-    for table in ("user_items", "user_shows"):
+    for table in ("user_items", "user_shows", "cloud_state"):
         con.execute(f"DELETE FROM {table} WHERE user_id=?", (-pid,))
     con.execute("UPDATE user_sessions SET profile=NULL WHERE profile=?", (pid,))
 
 
-def profile_owner():
-    """L'account che chiede (gia' entrato con la password su questo dispositivo)."""
+def profile_owner(manage=False):
+    """L'account che chiede (gia' entrato con la password su questo dispositivo).
+    manage: per aggiungere, cambiare, togliere (mai da un profilo bambini)."""
     u = CURRENT.get()
     if u is None or u.get("friend") or not u.get("session"):
         raise HTTPException(401, "Entra con il tuo account per continuare")
+    if manage and (u.get("kids") or u.get("guest")):
+        raise HTTPException(403, "Da questo profilo i profili non si cambiano")
     return u
 
 
 def profile_name_free(con, uid, name, but=0):
-    me = con.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()
-    if (me and me["name"].lower() == name.lower()) or con.execute(
+    me = con.execute("SELECT name, p_name FROM users WHERE id=?", (uid,)).fetchone()
+    if (me and (me["p_name"] or me["name"]).lower() == name.lower()) or con.execute(
             "SELECT 1 FROM profiles WHERE user_id=? AND name=? AND id<>?", (uid, name, but)).fetchone():
         raise HTTPException(409, "C'è già un profilo con questo nome")
 
 
 def profiles_reply(con, u, current):
-    me = con.execute("SELECT id, name FROM users WHERE id=?", (u["id"],)).fetchone()
-    return {"ok": True, "profiles": profiles_of(con, me), "current": current}
+    me = con.execute("SELECT id, name, cloud_id FROM users WHERE id=?", (u["id"],)).fetchone()
+    return {"ok": True, "profiles": profiles_of(con, me), "current": current,
+            "cloud": me["cloud_id"] is not None, "max": MAX_PROFILES + 1}
+
+
+def account_token(uid):
+    """Con che cosa parlare al servizio per questo account: il suo gettone, oppure (solo
+    per il proprietario entrato dalla PWA o dalla TV) la credenziale del server.
+    Torna (gettone, e' la credenziale) o (None, False)."""
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token, cloud_id FROM users WHERE id=?", (uid,)).fetchone()
+    finally:
+        con.close()
+    if r and r["token"]:
+        return r["token"], False
+    cred = server_cred()
+    if r and cred and r["cloud_id"] == cred["owner"]:
+        return cred["secret"], True
+    return None, False
+
+
+def sync_profiles(uid, token, via_cred=False):
+    """I profili dell'account qui: quelli nuovi del servizio arrivano, quelli tolti se ne
+    vanno (con i loro visti di qui), quelli nati qui prima della sincronizzazione salgono
+    nel servizio (con i loro visti). Torna [(id locale, id nel servizio)]."""
+    res = accounts.call("GET", "/profiles", token=token)
+    cloud = [p for p in res.get("profiles") or [] if isinstance(p, dict) and isinstance(p.get("id"), int)]
+    main = next((p for p in cloud if p.get("main")), None)
+    extra = [p for p in cloud if not p.get("main")]
+    con = db(raw=True)
+    try:
+        if main:
+            con.execute("UPDATE users SET p_name=?, p_avatar=?, p_color=?, p_pin=? WHERE id=?",
+                        (str(main.get("name") or "")[:24] or None, str(main.get("avatar") or ""),
+                         str(main.get("color") or ""), int(bool(main.get("pin"))), uid))
+        rows = con.execute("SELECT * FROM profiles WHERE user_id=? ORDER BY created, id", (uid,)).fetchall()
+        linked = {r["cloud_pid"] for r in rows if r["cloud_pid"]}
+        for r in rows:
+            if r["cloud_pid"]:
+                continue
+            # Nato qui (versione di prima, o senza Internet): si unisce a quello con lo
+            # stesso nome nel servizio, altrimenti si crea li'
+            match = next((p for p in extra if p["id"] not in linked and str(p.get("name", "")).lower() == r["name"].lower()), None)
+            if not match and not via_cred and len(extra) < MAX_PROFILES:
+                try:
+                    made = accounts.call("POST", "/profiles", {"name": r["name"], "avatar": r["avatar"] or "",
+                                                               "color": r["color"] or "", "kids": bool(r["kids"])}, token)
+                    match = made.get("profile")
+                    if match:
+                        extra.append(match)
+                except accounts.CloudError as ex:
+                    print("Profilo", r["name"], "non portato nell'account:", ex.detail, flush=True)
+            if match:
+                con.execute("UPDATE profiles SET cloud_pid=?, state_rev=0 WHERE id=?", (match["id"], r["id"]))
+                con.execute("UPDATE user_items SET dirty=1 WHERE user_id=?", (-r["id"],))
+                con.execute("UPDATE user_shows SET dirty=1 WHERE user_id=?", (-r["id"],))
+                linked.add(match["id"])
+        for p in extra:
+            vals = (str(p.get("name") or "Profilo")[:24], str(p.get("avatar") or ""), str(p.get("color") or ""),
+                    int(bool(p.get("kids"))), int(bool(p.get("pin"))))
+            if p["id"] in linked:
+                con.execute("UPDATE profiles SET name=?, avatar=?, color=?, kids=?, pin=? WHERE user_id=? AND cloud_pid=?",
+                            (*vals, uid, p["id"]))
+            else:
+                con.execute("INSERT INTO profiles(user_id, name, avatar, color, kids, pin, cloud_pid, created) "
+                            "VALUES(?,?,?,?,?,?,?,?)", (uid, *vals, p["id"], time.time()))
+        ids = {p["id"] for p in extra}
+        for r in con.execute("SELECT id, cloud_pid FROM profiles WHERE user_id=? AND cloud_pid IS NOT NULL",
+                             (uid,)).fetchall():
+            if r["cloud_pid"] not in ids:
+                drop_profile_state(con, r["id"])
+                con.execute("DELETE FROM profiles WHERE id=?", (r["id"],))
+        con.commit()
+        out = [(r["id"], r["cloud_pid"]) for r in con.execute(
+            "SELECT id, cloud_pid FROM profiles WHERE user_id=? AND cloud_pid IS NOT NULL", (uid,))]
+    finally:
+        con.close()
+    user_cache.clear()
+    return out
+
+
+def profiles_cloud_call(u, method, path, body=None):
+    """Una modifica ai profili nel servizio, poi la copia di qui si allinea."""
+    token, via_cred = account_token(u["id"])
+    if not token:
+        raise HTTPException(401, "Rientra con la password per cambiare i profili")
+    try:
+        res = accounts.call(method, path, body, token)
+        sync_profiles(u["id"], token, via_cred)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Serve Internet per cambiare i profili")
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if 400 <= ex.status < 500 else 502, ex.detail)
+    return res
+
+
+def profile_body(body, local=False):
+    out = {}
+    if "name" in body:
+        out["name"] = profile_name(body.get("name"))
+    for k in ("avatar", "color"):
+        if k in body:
+            out[k] = str(body.get(k) or "")[:40]
+    if "kids" in body:
+        out["kids"] = bool(body.get("kids"))
+    if "pin" in body:
+        if local:
+            raise HTTPException(400, "Il PIN si mette con l'account")
+        out["pin"] = str(body.get("pin") or "")
+    return out
 
 
 @app.get("/api/profiles")
@@ -3723,71 +3896,188 @@ def profiles_list():
         con.close()
 
 
+@app.post("/api/profiles/refresh")
+async def profiles_refresh():
+    """I profili sono cambiati nel servizio (dalla PWA o dalla TV): si rileggono subito."""
+    u = profile_owner()
+    if u.get("linked"):
+        token, via_cred = account_token(u["id"])
+        if token:
+            try:
+                await asyncio.to_thread(sync_profiles, u["id"], token, via_cred)
+            except (accounts.CloudOffline, accounts.CloudError):
+                pass
+    return profiles_list()
+
+
 @app.post("/api/profiles")
 async def profiles_add(request: Request):
     """Un profilo nuovo nell'account (visti, ripresa e lista partono da zero)."""
-    u = profile_owner()
-    name = profile_name((await read_json(request)).get("name"))
+    u = profile_owner(manage=True)
+    body = await read_json(request)
+    if u.get("linked"):
+        data = profile_body(dict(body, name=body.get("name")))
+        await asyncio.to_thread(profiles_cloud_call, u, "POST", "/profiles", data)
+        sync_soon()
+        return profiles_list()
+    data = profile_body(dict(body, name=body.get("name")), local=True)
     con = db(raw=True)
     try:
         if con.execute("SELECT COUNT(*) FROM profiles WHERE user_id=?", (u["id"],)).fetchone()[0] >= MAX_PROFILES:
             raise HTTPException(400, f"Al massimo {MAX_PROFILES + 1} profili per account")
-        profile_name_free(con, u["id"], name)
-        con.execute("INSERT INTO profiles(user_id, name, created) VALUES(?,?,?)", (u["id"], name, time.time()))
+        profile_name_free(con, u["id"], data["name"])
+        con.execute("INSERT INTO profiles(user_id, name, avatar, color, kids, created) VALUES(?,?,?,?,?,?)",
+                    (u["id"], data["name"], data.get("avatar", ""), data.get("color", ""), int(data.get("kids", False)),
+                     time.time()))
         con.commit()
         return profiles_reply(con, u, u.get("profile"))
     finally:
         con.close()
 
 
-@app.post("/api/profiles/select")
-async def profiles_select(request: Request):
-    """Chi guarda su questo dispositivo (resta finche' non si cambia o si esce)."""
-    u = profile_owner()
-    pid = int((await read_json(request)).get("id") or 0)
+async def profile_change(pid, body):
+    u = profile_owner(manage=True)
+    if u.get("linked"):
+        if pid < 0:
+            raise HTTPException(409, "Questo profilo si sta ancora copiando nell'account: riprova tra poco")
+        await asyncio.to_thread(profiles_cloud_call, u, "PUT", f"/profiles/{pid}", profile_body(body))
+        return profiles_list()
+    data = profile_body(body, local=True)
     con = db(raw=True)
     try:
-        if pid and not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
-            raise HTTPException(404, "Questo profilo non c'è più")
-        con.execute("UPDATE user_sessions SET profile=? WHERE token=? AND user_id=?",
-                    (pid, token_hash(u["session"]), u["id"]))
+        if not pid:
+            if "name" in data:
+                profile_name_free(con, u["id"], data["name"])
+            con.execute("UPDATE users SET p_name=COALESCE(?, p_name), p_avatar=COALESCE(?, p_avatar), "
+                        "p_color=COALESCE(?, p_color) WHERE id=?",
+                        (data.get("name"), data.get("avatar"), data.get("color"), u["id"]))
+        else:
+            r = local_profile(con, u["id"], False, pid)
+            if "name" in data:
+                profile_name_free(con, u["id"], data["name"], r["id"])
+            con.execute("UPDATE profiles SET name=COALESCE(?, name), avatar=COALESCE(?, avatar), "
+                        "color=COALESCE(?, color), kids=COALESCE(?, kids) WHERE id=?",
+                        (data.get("name"), data.get("avatar"), data.get("color"),
+                         None if "kids" not in data else int(data["kids"]), r["id"]))
         con.commit()
-        user_cache.pop(token_hash(u["session"]), None)
-        return profiles_reply(con, u, pid)
+        user_cache.clear()
+        return profiles_reply(con, u, u.get("profile"))
     finally:
         con.close()
+
+
+@app.put("/api/profiles/{pid}")
+async def profiles_update(pid: int, request: Request):
+    """Nome, avatar, colore, bambini, PIN ("" lo toglie) di un profilo (0 = principale)."""
+    return await profile_change(pid, await read_json(request))
 
 
 @app.post("/api/profiles/{pid}/rename")
 async def profiles_rename(pid: int, request: Request):
-    u = profile_owner()
-    name = profile_name((await read_json(request)).get("name"))
+    return await profile_change(pid, {"name": (await read_json(request)).get("name")})
+
+
+@app.delete("/api/profiles/{pid}")
+async def profiles_delete(pid: int):
+    """Toglie un profilo con i suoi visti, ripresa e lista (non tocca l'account)."""
+    u = profile_owner(manage=True)
+    if not pid:
+        raise HTTPException(400, "Il profilo principale è l'account: non si toglie")
+    if u.get("linked") and pid > 0:
+        await asyncio.to_thread(profiles_cloud_call, u, "DELETE", f"/profiles/{pid}")
+        return profiles_list()
     con = db(raw=True)
     try:
-        if not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
-            raise HTTPException(404, "Questo profilo non c'è più")
-        profile_name_free(con, u["id"], name, pid)
-        con.execute("UPDATE profiles SET name=? WHERE id=?", (name, pid))
+        r = local_profile(con, u["id"], u.get("linked"), pid)
+        drop_profile_state(con, r["id"])
+        con.execute("DELETE FROM profiles WHERE id=?", (r["id"],))
         con.commit()
         user_cache.clear()
-        return profiles_reply(con, u, u.get("profile"))
+        return profiles_reply(con, u, None if u.get("profile") == pid else u.get("profile"))
     finally:
         con.close()
 
 
-@app.delete("/api/profiles/{pid}")
-def profiles_delete(pid: int):
-    """Toglie un profilo con i suoi visti, ripresa e lista (non tocca l'account)."""
+def profile_ticket_ok(ticket, cloud_uid, pid):
+    """Il biglietto del servizio per quel profilo (POST /profiles/<id>/open) e' valido?"""
+    if not ticket or len(ticket) > 2000 or ticket.count(".") != 2:
+        return False
+    try:
+        h, p, s = ticket.split(".")
+        head, claims, sig = json.loads(b64url(h)), json.loads(b64url(p)), b64url(s)
+    except Exception:
+        return False
+    if (not isinstance(head, dict) or not isinstance(claims, dict) or head.get("alg") != "ES256"
+            or claims.get("iss") != "bunkerplex" or claims.get("typ") != "profile"
+            or str(claims.get("sub")) != str(cloud_uid) or claims.get("pid") != pid
+            or not isinstance(claims.get("exp"), (int, float)) or claims["exp"] < time.time()):
+        return False
+    pub = access_key(str(head.get("kid") or ""))
+    if pub is not None:
+        if len(sig) != 64:
+            return False
+        try:
+            pub.verify(encode_dss_signature(int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")),
+                       (h + "." + p).encode(), ec.ECDSA(hashes.SHA256()))
+            return True
+        except InvalidSignature:
+            return False
+    cred = server_cred()
+    if not cred:
+        return False
+    try:
+        res = accounts.call("POST", "/server/verify", {"token": ticket}, cred["secret"], timeout=8)
+    except Exception:
+        return False
+    return (res.get("claims") or {}).get("jti") == claims.get("jti")
+
+
+def profile_unlock(u, pid, pin, ticket):
+    """Un profilo con il PIN si apre con il biglietto del servizio o con il PIN giusto."""
+    if ticket and profile_ticket_ok(ticket, cloud_id_of(u["id"]), pid):
+        return
+    if not pin:
+        raise HTTPException(412, "Questo profilo ha un PIN")
+    token, _ = account_token(u["id"])
+    if not token:
+        raise HTTPException(401, "Rientra con la password per aprire questo profilo")
+    try:
+        accounts.call("POST", f"/profiles/{pid}/open", {"pin": str(pin)}, token, 8)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Serve Internet per controllare il PIN")
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (401, 404, 412, 429) else 502, ex.detail)
+
+
+def select_profile(con, u, session, pub):
+    """Mette il profilo (id delle app) sull'ingresso di questo dispositivo."""
+    r = local_profile(con, u["id"], u.get("linked"), pub)
+    con.execute("UPDATE user_sessions SET profile=? WHERE token=? AND user_id=?",
+                (r["id"] if r else 0, token_hash(session), u["id"]))
+    con.commit()
+    user_cache.pop(token_hash(session), None)
+    return r
+
+
+@app.post("/api/profiles/select")
+async def profiles_select(request: Request):
+    """Chi guarda su questo dispositivo (resta finche' non si cambia o si esce).
+    {id, pin?, ticket?}: per un profilo con il PIN serve il PIN o il biglietto."""
     u = profile_owner()
+    body = await read_json(request)
+    pid = int(body.get("id") or 0)
     con = db(raw=True)
     try:
-        if not con.execute("SELECT 1 FROM profiles WHERE id=? AND user_id=?", (pid, u["id"])).fetchone():
-            raise HTTPException(404, "Questo profilo non c'è più")
-        drop_profile_state(con, pid)
-        con.execute("DELETE FROM profiles WHERE id=?", (pid,))
-        con.commit()
-        user_cache.clear()
-        return profiles_reply(con, u, None if u.get("profile") == pid else u.get("profile"))
+        r = local_profile(con, u["id"], u.get("linked"), pid)
+        locked = bool(r["pin"]) if r else bool(con.execute("SELECT p_pin FROM users WHERE id=?", (u["id"],)).fetchone()["p_pin"])
+    finally:
+        con.close()
+    if locked and u.get("linked") and pid >= 0:
+        await asyncio.to_thread(profile_unlock, u, pid, body.get("pin"), str(body.get("ticket") or ""))
+    con = db(raw=True)
+    try:
+        select_profile(con, u, u["session"], pid)
+        return profiles_reply(con, u, pid)
     finally:
         con.close()
 
@@ -4568,7 +4858,7 @@ def manager_only():
     u = CURRENT.get()
     if u is not None and u.get("home"):
         raise HTTPException(403, "Senza Internet, entrati da casa, si guarda soltanto: le impostazioni si cambiano quando torna la rete")
-    if u is None or u.get("friend") or u.get("guest") or not can_manage(u["id"], u.get("admin")):
+    if u is None or u.get("friend") or u.get("guest") or u.get("kids") or not can_manage(u["id"], u.get("admin")):
         raise HTTPException(403, "Solo un amministratore o il proprietario di questo server può cambiarlo")
     return u
 
@@ -5075,28 +5365,39 @@ def sync_loop():
         if not auth_on() or not cloud_ping():
             continue
         try:
+            ensure_cred_owner()       # collegato con il codice: il proprietario ha la sua copia qui
+        except Exception as ex:
+            print("Proprietario del server:", repr(ex), flush=True)
+        try:
             notice_update_available()
         except Exception as ex:
             print("Avviso dell'aggiornamento non preparato:", repr(ex), flush=True)
         try:
             con = db(raw=True)
             try:
-                users = con.execute("SELECT id, token FROM users WHERE cloud_id IS NOT NULL "
-                                    "AND token IS NOT NULL AND must_change=0").fetchall()
+                users = [(r["id"], r["token"], False) for r in con.execute(
+                    "SELECT id, token FROM users WHERE cloud_id IS NOT NULL AND token IS NOT NULL AND must_change=0")]
+                cred = server_cred()
+                if cred:
+                    r = con.execute("SELECT id FROM users WHERE cloud_id=? AND token IS NULL "
+                                    "AND COALESCE(guest, 0)=0", (cred["owner"],)).fetchone()
+                    if r:
+                        users.append((r["id"], cred["secret"], True))
             finally:
                 con.close()
         except sqlite3.Error:
             continue
-        for u in users:
+        for uid, token, via_cred in users:
+            u = {"id": uid}
             try:
                 # Le modifiche fatte senza Internet partono ora e si uniscono a quelle
                 # degli altri PC voce per voce (vince la piu' recente): niente da scegliere
-                sync_user(u["id"], u["token"])
+                sync_user(uid, token, via_cred)
             except accounts.CloudOffline:
                 mark_cloud(False)
                 break             # niente Internet: si riprova al prossimo giro
             except accounts.CloudError as ex:
-                if ex.status == 401:
+                if ex.status == 401 and not via_cred:
                     drop_cloud_token(u["id"])
                 elif ex.status == 403 and "disattivato" in str(ex.detail):
                     set_disabled(uid=u["id"])
@@ -5140,7 +5441,10 @@ def set_disabled(cloud_id=None, uid=None, off=True):
     user_cache.clear()
 
 
-def sync_user(uid, token):
+def sync_user(uid, token, via_cred=False):
+    """via_cred: il proprietario non ha dato la password su questo PC (e' entrato dalla
+    PWA o dalla TV): si sincronizza con la credenziale del server, solo impostazioni,
+    visti e profili; amici e avvisi aspettano che entri con la password."""
     refresh_role(uid, token)
     push_settings(uid, token)
     pull_settings(uid, token)
@@ -5149,8 +5453,21 @@ def sync_user(uid, token):
     push_state(uid, token)
     pull_state(uid, token)
     apply_cloud_state(uid)
-    sync_friends(uid, token)          # amici dell'account (un servizio di prima risponde 404: niente)
-    sync_notices(uid, token)          # avvisi per telefoni e tablet: partono quelli in coda, arrivano gli ultimi
+    try:
+        profs = sync_profiles(uid, token, via_cred)
+    except accounts.CloudError as ex:
+        if ex.status != 404:          # servizio di prima: niente profili nell'account
+            raise
+        profs = []
+    for lid, cpid in profs:           # visti, ripresa e lista di ogni profilo
+        push_state(-lid, token, cpid)
+        pull_state(-lid, token, cpid)
+        apply_cloud_state(-lid)
+    if via_cred:
+        publish_presence(uid, token)
+    else:
+        sync_friends(uid, token)      # amici dell'account (un servizio di prima risponde 404: niente)
+        sync_notices(uid, token)      # avvisi per telefoni e tablet: partono quelli in coda, arrivano gli ultimi
     con = db(raw=True)
     try:
         con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
@@ -5215,8 +5532,13 @@ def remember_cloud(con, uid, rows):
                     out)
 
 
-def push_state(uid, token):
-    """Visti e lista cambiati su questo PC, per titolo TMDB (i titoli senza scheda restano qui)."""
+def state_path(profile):
+    return f"/state?profile={int(profile)}" if profile else "/state"
+
+
+def push_state(uid, token, profile=None):
+    """Visti e lista cambiati su questo PC, per titolo TMDB (i titoli senza scheda restano qui).
+    uid: di chi sono in user_items (-id locale per un profilo), profile: id nel servizio."""
     con = db(raw=True)
     try:
         con.execute("UPDATE user_items SET dirty=0 WHERE user_id=? AND dirty=1 "
@@ -5243,7 +5565,7 @@ def push_state(uid, token):
                 rows.append({"k": f"s{r['tmdb_id']}", "pos": 0, "w": 0, "fav": r["fav"] or 0, "lp": 0,
                              "t": r["t"] or time.time()})
         for part in chunks(rows):
-            accounts.call("POST", "/state", {"rows": part}, token)
+            accounts.call("POST", state_path(profile), {"rows": part}, token)
             remember_cloud(con, uid, part)
             con.commit()
         con.executemany("UPDATE user_items SET dirty=0 WHERE user_id=? AND item_id=? AND t=?", done_items)
@@ -5253,14 +5575,16 @@ def push_state(uid, token):
         con.close()
 
 
-def pull_state(uid, token):
+def pull_state(uid, token, profile=None):
+    # Il contatore: dell'account (users) o del profilo (profiles, uid = -id locale)
+    table, rid = ("profiles", -uid) if uid < 0 else ("users", uid)
     con = db(raw=True)
     try:
-        last = con.execute("SELECT state_rev FROM users WHERE id=?", (uid,)).fetchone()["state_rev"] or 0
+        last = con.execute(f"SELECT state_rev FROM {table} WHERE id=?", (rid,)).fetchone()["state_rev"] or 0
         # Un po' di margine: due PC possono scrivere nello stesso istante
         since, top = max(0, last - 5000), last
         while True:
-            res = accounts.call("GET", f"/state?since={since}", token=token)
+            res = accounts.call("GET", state_path(profile) + ("&" if profile else "?") + f"since={since}", token=token)
             rows = res.get("rows") or []
             remember_cloud(con, uid, rows)
             con.commit()
@@ -5269,7 +5593,7 @@ def pull_state(uid, token):
             if not res.get("more") or not rows:
                 break
             since = max(int(r["rev"]) for r in rows)
-        con.execute("UPDATE users SET state_rev=? WHERE id=?", (top, uid))
+        con.execute(f"UPDATE {table} SET state_rev=? WHERE id=?", (top, rid))
         con.commit()
     finally:
         con.close()
@@ -5391,7 +5715,7 @@ def server_owner():
     """L'id del padrone di questo server, o None se non c'e' ancora nessun account."""
     con = db(raw=True)
     try:
-        r = con.execute("SELECT id FROM users WHERE cloud_id IS NOT NULL ORDER BY created, id LIMIT 1").fetchone()
+        r = con.execute(owner_sql()).fetchone()
     finally:
         con.close()
     return r["id"] if r else None
@@ -5665,7 +5989,7 @@ def libraries_list():
             # tutta su un altro tuo PC, che la fa vedere da lì: nel menu c'è già sotto quel PC
             "remote": bool(lib.get("sync_id")) and lib["sync_id"] in elsewhere
                       and not any(state(p).get("online") for p in lib["folders"]),
-            "mine": lib.get("mine", True), "shared": bool(lib.get("shared")),
+            "mine": lib.get("mine", True), "shared": bool(lib.get("shared")), "kids": bool(lib.get("kids")),
             "movies": movies.get(lib["id"], 0), "shows": shows.get(lib["id"], 0),
             "folders": [dict(state(p), count=sum(1 for x in paths if x.startswith(p + "/")))
                         for p in lib["folders"]],
@@ -5731,6 +6055,9 @@ async def libraries_create(request: Request):
 @app.patch("/api/libraries/{lib_id}")
 async def libraries_rename(lib_id: int, request: Request):
     body = await read_json(request)
+    u = CURRENT.get()
+    if u is not None and (u.get("kids") or u.get("guest") or u.get("friend")):
+        raise HTTPException(403, "Da questo profilo le raccolte non si cambiano")
     get_libraries()
     with config_lock:
         lib = _library(lib_id)
@@ -5738,6 +6065,9 @@ async def libraries_rename(lib_id: int, request: Request):
             lib["name"] = _clean_name(body.get("name"))
         if "shared" in body:      # visibile anche agli altri account di questo PC
             lib["shared"] = bool(body.get("shared"))
+        if "kids" in body:        # per bambini: la vedono anche i profili bambini
+            lib["kids"] = bool(body.get("kids"))
+            user_cache.clear()
         save_config()
     lib_changed()
     return {"ok": True}
@@ -6128,14 +6458,13 @@ def set_state(con, item_ids, **fields):
     if u is None:
         con.executemany(f"UPDATE items SET {sets} WHERE id=?", [(*values, i) for i in item_ids])
         return
-    # Un profilo (sid negativo) resta su questo server: niente da mandare all'account
+    # Un profilo (sid negativo) va nel servizio come l'account (vedi sync_profiles)
     sid = u.get("sid") or u["id"]
     con.executemany("INSERT OR IGNORE INTO user_items(user_id, item_id) VALUES(?,?)",
                     [(sid, i) for i in item_ids])
-    con.executemany(f"UPDATE user_items SET {sets}, t=?, dirty=? WHERE user_id=? AND item_id=?",
-                    [(*values, time.time(), int(sid > 0), sid, i) for i in item_ids])
-    if sid > 0:
-        sync_soon()
+    con.executemany(f"UPDATE user_items SET {sets}, t=?, dirty=1 WHERE user_id=? AND item_id=?",
+                    [(*values, time.time(), sid, i) for i in item_ids])
+    sync_soon()
 
 
 def set_show_fav(con, show_id, fav):
@@ -6145,11 +6474,10 @@ def set_show_fav(con, show_id, fav):
     if not get_show(con, show_id):
         return 0
     sid = u.get("sid") or u["id"]
-    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) VALUES(?,?,?,?,?) "
-                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=excluded.dirty",
-                (sid, show_id, fav, time.time(), int(sid > 0)))
-    if sid > 0:
-        sync_soon()
+    con.execute("INSERT INTO user_shows(user_id, show_id, fav, t, dirty) VALUES(?,?,?,?,1) "
+                "ON CONFLICT(user_id, show_id) DO UPDATE SET fav=excluded.fav, t=excluded.t, dirty=1",
+                (sid, show_id, fav, time.time()))
+    sync_soon()
     return 1
 
 
@@ -7697,12 +8025,47 @@ async def auth_access(request: Request):
                 u = con.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
             else:
                 u = con.execute("SELECT * FROM users WHERE cloud_id=? AND COALESCE(disabled, 0)=0", (c["own"],)).fetchone()
+                cred = server_cred()
+                if not u and cred and cred["owner"] == c["own"]:
+                    # Collegato con il codice, mai entrato qui con la password: la sua copia nasce ora
+                    con.close()
+                    ensure_cred_owner()
+                    con2 = db(raw=True)
+                    u = con2.execute("SELECT * FROM users WHERE cloud_id=?", (c["own"],)).fetchone()
+                    return finish(con2, u)
+            return finish(con, u)
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    def finish(con, u):
+        try:
             if not u:
                 raise HTTPException(404, "Su questo server il tuo account non c'è: entra una volta dal server")
             token = open_session(con, u["id"], str(body.get("device") or "PWA"))
             con.execute("UPDATE users SET last_login=? WHERE id=?", (time.time(), u["id"]))
             con.commit()
-            return {"ok": True, "session": token, "user": user_json(u)}
+            out = {"ok": True, "session": token, "user": user_json(u)}
+            # Il profilo gia' scelto sulla PWA o sulla TV (biglietto del servizio)
+            pid, ticket = body.get("profile"), str(body.get("profile_ticket") or "")
+            if owner_tok and isinstance(pid, int) and pid >= 0 and ticket and profile_ticket_ok(ticket, c["own"], pid):
+                if pid and not con.execute("SELECT 1 FROM profiles WHERE user_id=? AND cloud_pid=?",
+                                           (u["id"], pid)).fetchone():
+                    tok, via = account_token(u["id"])
+                    if tok:
+                        try:
+                            sync_profiles(u["id"], tok, via)
+                        except Exception:
+                            pass
+                try:
+                    me = {"id": u["id"], "linked": True}
+                    select_profile(con, me, token, pid)
+                    out["profile"] = pid
+                except HTTPException:
+                    pass
+            return out
         finally:
             con.close()
     return await in_thread(work)
@@ -7820,7 +8183,7 @@ def owner_user(where, value):
     con = db(raw=True)
     try:
         r = con.execute("SELECT id, name, admin, must_change FROM users WHERE " + where + " AND COALESCE(disabled, 0)=0 "
-                        "AND cloud_id IS NOT NULL AND id=(" + OWNER_SQL + ")", (value,)).fetchone()
+                        "AND cloud_id IS NOT NULL AND id=(" + owner_sql() + ")", (value,)).fetchone()
     finally:
         con.close()
     if not r:
@@ -10119,11 +10482,241 @@ def drop_server_cred():
 def heartbeat_body(uid):
     friends = bool(friends_shared(uid) and share_on())
     pin = share_tls["pin"] if share_tls["on"] else ""
-    return {"name": pc_name(), "url": presence_url() if (friends or self_reach(uid)) else "",
+    return {"name": pc_name(), "machine": machine_id(), "url": presence_url() if (friends or self_reach(uid)) else "",
             "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION,
             "secure_port": SECURE_PORT if secure["on"] else 0,
             # Da fuori casa: l'indirizzo pubblico (Funnel), se acceso. Lo usa la PWA.
             "public": public["url"] if public["on"] and public["url"].startswith("https://") else ""}
+
+
+# ---- Collegamento all'account (codice, come plex.tv/claim) ----------------------------
+# Un server nuovo non diventa del primo account che ci entra: chiede al servizio un
+# codice (8 caratteri, 15 minuti), lo mostra (pagina di accesso, Impostazioni) e il
+# proprietario lo conferma da un suo dispositivo dandogli un nome. Intanto qui si
+# chiede ogni pochi secondi se e' stato confermato: arriva la credenziale del server.
+# Chi e' gia' entrato qui con l'account lo collega direttamente (POST /api/server/claim).
+# machine_id: impronta della macchina. Reinstallando BunkerPlex sullo stesso PC il
+# servizio propone di sostituire il server di prima (spento): questo ne prende il sid,
+# e con lui nome, aspetto, amici e nome DNS.
+
+claim_state = {"code": "", "poll": "", "exp": 0.0, "error": "", "need": False}
+claim_lock = threading.Lock()
+
+
+def machine_id():
+    """Impronta stabile della macchina (non dell'installazione). Dentro Docker la passa
+    chi installa (BUNKERPLEX_MACHINE); poi resta salvata. "" = non si sa."""
+    with config_lock:
+        saved = config.get("machine_id") or ""
+    raw = os.environ.get("BUNKERPLEX_MACHINE", "").strip()
+    if not raw and not Path("/.dockerenv").exists():
+        # /etc/machine-id dentro Docker e' del contenitore, non della macchina
+        for p in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+            try:
+                raw = Path(p).read_text().strip()
+            except OSError:
+                continue
+            if raw:
+                break
+    if not raw and os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as k:
+                raw = str(winreg.QueryValueEx(k, "MachineGuid")[0])
+        except OSError:
+            raw = ""
+    if not raw:
+        return saved
+    mid = hashlib.sha256(("bunkerplex-machine:" + raw.lower()).encode()).hexdigest()[:32]
+    if mid != saved:
+        with config_lock:
+            config["machine_id"] = mid
+            save_config()
+    return mid
+
+
+def claim_start():
+    """Un codice per collegare questo server (nuovo se non c'e' o sta per scadere)."""
+    with claim_lock:
+        if claim_state["code"] and claim_state["exp"] - time.time() > 60:
+            return dict(claim_state)
+        res = accounts.call("POST", "/claim/start", {"sid": pc_id(), "machine": machine_id(), "name": pc_name(),
+                                                     "version": VERSION}, timeout=8)
+        code, poll = str(res.get("code") or ""), str(res.get("poll") or "")
+        if not re.fullmatch(r"[A-Z0-9]{8}", code) or not re.fullmatch(r"[0-9a-f]{64}", poll):
+            raise accounts.CloudError(502, "Risposta non valida dal servizio account")
+        claim_state.update(code=code, poll=poll, exp=float(res.get("exp") or time.time() + 900), error="")
+    threading.Thread(target=claim_loop, args=(code,), daemon=True).start()
+    return dict(claim_state)
+
+
+def claim_loop(code):
+    """Aspetta la conferma del proprietario (finche' il codice vale)."""
+    while claim_state["code"] == code and time.time() < claim_state["exp"]:
+        time.sleep(3)
+        try:
+            if claim_poll():
+                return
+        except accounts.CloudOffline:
+            continue
+        except accounts.CloudError as ex:
+            if ex.status == 404:
+                break
+        except Exception as ex:
+            print("Collegamento all'account:", repr(ex), flush=True)
+    with claim_lock:
+        if claim_state["code"] == code:
+            claim_state.update(code="", poll="", exp=0.0)
+
+
+def claim_poll():
+    """True quando il proprietario ha confermato: credenziale salvata, server collegato."""
+    with claim_lock:
+        code, poll = claim_state["code"], claim_state["poll"]
+    if not code:
+        return bool(server_cred())
+    res = accounts.call("POST", "/claim/poll", {"code": code, "poll": poll}, timeout=8)
+    if res.get("status") != "done":
+        return False
+    secret, sid = str(res.get("credential") or ""), str(res.get("sid") or "")
+    owner = res.get("owner") or {}
+    if (not re.fullmatch(r"[0-9a-f]{8}", sid) or not re.fullmatch(r"s_" + sid + r"_[0-9a-f]{64}", secret)
+            or not isinstance(owner.get("id"), int)):
+        raise accounts.CloudError(502, "Risposta non valida dal servizio account")
+    with config_lock:
+        if sid != config.get("pc_id"):
+            print("Questo server sostituisce quello di prima sulla stessa macchina:", sid, flush=True)
+            config["pc_id"] = sid
+        name = str(res.get("name") or "").strip()[:40]
+        if name:
+            config["pc_name"] = name
+        save_config()
+    set_server_cred({"secret": secret, "owner": owner["id"], "owner_name": str(owner.get("username") or "")})
+    with claim_lock:
+        claim_state.update(code="", poll="", exp=0.0, need=False, error="")
+    ensure_cred_owner()
+    sync_soon()
+    print("Server collegato all'account", owner.get("username"), flush=True)
+    return True
+
+
+def ensure_cred_owner():
+    """Il proprietario (dalla credenziale) ha la sua copia su questo PC: se ci sono gia'
+    i dati dell'utente di questo PC senza account («Casa»), li prende lui."""
+    cred = server_cred()
+    if not cred:
+        return None
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT id FROM users WHERE cloud_id=?", (cred["owner"],)).fetchone()
+        if r:
+            return r["id"]
+        name = cred.get("owner_name") or "Proprietario"
+        local = con.execute("SELECT id FROM users WHERE cloud_id IS NULL ORDER BY created, id LIMIT 1").fetchone()
+        if local:
+            link_local(con, local["id"], cred["owner"])
+            con.execute("UPDATE users SET name=? WHERE id=?", (name, local["id"]))
+            uid = local["id"]
+        else:
+            uid = con.execute("INSERT INTO users(name, admin, must_change, cloud_id, created, last_login, guest) "
+                              "VALUES(?,0,0,?,?,?,0)", (name, cred["owner"], time.time(), time.time())).lastrowid
+        con.commit()
+    finally:
+        con.close()
+    user_cache.clear()
+    adopt_legacy(uid)
+    return uid
+
+
+def claim_info():
+    cred = server_cred()
+    return {"claimed": bool(cred), "owner": (cred or {}).get("owner_name", ""),
+            "need": not cred and bool(claim_state["need"]),
+            "code": "" if cred else claim_state["code"], "exp": claim_state["exp"], "name": pc_name(),
+            "sid": pc_id(), "machine": bool(machine_id())}
+
+
+def claim_here(request):
+    """Il codice si da' solo a chi e' nella rete di casa (non da Internet, non agli amici)."""
+    port = (request.scope.get("server") or ("", 0))[1]
+    host = (request.scope.get("client") or ("",))[0]
+    if port in (PUBLIC_PORT, SHARE_PORT) or is_public(host):
+        raise HTTPException(403, "Il codice si vede solo dalla rete di casa")
+
+
+@app.get("/api/auth/claim")
+def claim_get(request: Request):
+    claim_here(request)
+    return claim_info()
+
+
+@app.post("/api/auth/claim")
+async def claim_new(request: Request):
+    """Mostra un codice per collegare questo server a un account."""
+    claim_here(request)
+    if not auth_on():
+        raise HTTPException(400, "Su questo server il servizio account è spento")
+    if server_cred():
+        return claim_info()
+    try:
+        await asyncio.to_thread(claim_start)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Serve Internet per collegare il server")
+    except accounts.CloudError as ex:
+        raise HTTPException(502, ex.detail)
+    return claim_info()
+
+
+def claim_user_token():
+    """Il gettone dell'account di chi chiede (entrato con la password su questo PC)."""
+    u = CURRENT.get()
+    if u is None or u.get("friend") or u.get("guest") or u.get("kids") or not u.get("linked"):
+        raise HTTPException(401, "Entra con il tuo account per collegare il server")
+    con = db(raw=True)
+    try:
+        r = con.execute("SELECT token FROM users WHERE id=?", (u["id"],)).fetchone()
+    finally:
+        con.close()
+    if not r or not r["token"]:
+        raise HTTPException(401, "Rientra con la password per collegare il server")
+    return r["token"]
+
+
+@app.get("/api/server/claim")
+async def claim_preview():
+    """Prima di collegare: i tuoi server sulla stessa macchina (da sostituire, se spenti)."""
+    token = claim_user_token()
+    if server_cred():
+        return dict(claim_info(), same_machine=[])
+    try:
+        st = await asyncio.to_thread(claim_start)
+        res = await asyncio.to_thread(accounts.call, "GET", f"/claim/{st['code']}", None, token, 8)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Serve Internet per collegare il server")
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (403, 404, 409) else 502, ex.detail)
+    return dict(claim_info(), same_machine=res.get("same_machine") or [], taken=bool(res.get("taken")))
+
+
+@app.post("/api/server/claim")
+async def claim_confirm(request: Request):
+    """Collega questo server all'account di chi e' entrato qui: name, replace = sid del
+    server di prima sulla stessa macchina da sostituire (facoltativo)."""
+    token = claim_user_token()
+    body = await read_json(request)
+    if server_cred():
+        raise HTTPException(409, "Questo server è già collegato")
+    try:
+        st = await asyncio.to_thread(claim_start)
+        await asyncio.to_thread(accounts.call, "POST", f"/claim/{st['code']}",
+                                {"name": str(body.get("name") or pc_name())[:40], "replace": body.get("replace") or None},
+                                token, 8)
+        await asyncio.to_thread(claim_poll)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Serve Internet per collegare il server")
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if ex.status in (400, 403, 404, 409) else 502, ex.detail)
+    return claim_info()
 
 
 def heartbeat(body, cred):
@@ -10138,27 +10731,37 @@ def heartbeat(body, cred):
 
 
 def presence_v2(uid, token):
-    """Presenza con la credenziale del server. False = va fatta come prima (PUT /servers)."""
+    """Presenza con la credenziale del server. False = va fatta come prima (PUT /servers).
+    token: gettone dell'account, o la credenziale stessa (s_...) quando il proprietario
+    e' entrato solo dalla PWA o dalla TV."""
     if cloud_v2["on"] is False or uid != server_owner():
         return False
     me = cloud_id_of(uid)
     cred = server_cred()
+    user_token = token if token and not token.startswith("s_") else None
     try:
         if cred and cred["owner"] != me:
             drop_server_cred()                       # il PC ha cambiato proprietario
             cred = None
         if not cred:
-            cred = claim_cred(token)
+            if not user_token:
+                return True
+            cred = claim_cred(user_token)
         body = heartbeat_body(uid)
         try:
             heartbeat(body, cred)
         except accounts.CloudError as ex:
-            if ex.status != 401:
+            if ex.status != 401 or not user_token:
                 raise
             set_server_cred(None)                    # credenziale persa o ripresa: si riprende
-            cred = claim_cred(token)
+            cred = claim_cred(user_token)
             heartbeat(body, cred)
+        claim_state.update(need=False)
     except accounts.CloudError as ex:
+        if ex.status == 428:                         # server nuovo: si collega con il codice
+            claim_state.update(need=True)
+            cloud_v2.update(on=True, error="")
+            return True
         if ex.status == 404:                         # servizio account di prima
             cloud_v2.update(on=False, error="")
             return False

@@ -45,6 +45,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -52,6 +54,8 @@ import java.util.concurrent.TimeUnit
  * Ogni volta che si apre l'app: 1) l'accesso (se e' ancora valido si salta; la prima
  * volta QR e codice da confermare dal telefono o dal PC), 2) quale server guardare,
  * 3) «Chi guarda?» se l'account ha piu' profili. Come sul web.
+ * Con l'account del servizio «Chi guarda?» viene prima del server (Profiles.kt) e il
+ * server riceve gia' il profilo: il punto 3 resta per i server vecchi e senza Internet.
  */
 object Access {
     /** Il server scelto a questa apertura: null = da scegliere, "here" o "f<n>". */
@@ -87,7 +91,7 @@ fun MainActivity.proceed() {
 
 /** Pagina d'accesso: logo in alto, contenuto al centro. */
 @Composable
-private fun AuthPage(content: @Composable () -> Unit) {
+fun AuthPage(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize().background(C.bg).verticalScroll(rememberScrollState()), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.fillMaxWidth().padding(top = 44.dp, bottom = 40.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Wordmark(40.dp, 26.sp)
@@ -332,7 +336,12 @@ fun WatchersScreen(act: MainActivity) {
                         FocusBox(if (isFirst) Modifier.focusRequester(first) else Modifier, onClick = {
                             Thread {
                                 try {
-                                    Api.post("/api/profiles/select", JSONObject().put("id", id))
+                                    // Con il biglietto dell'account (se la TV l'ha gia' per quel profilo) il PIN non serve
+                                    val req = JSONObject().put("id", id)
+                                    val ticket = if (CloudTv.on(act)) CloudProfiles.ticket(act, id) else ""
+                                    if (ticket.isNotEmpty()) req.put("ticket", ticket)
+                                    Api.post("/api/profiles/select", req)
+                                    HomeMemory.server = ""
                                     Api.user = p.optString("name")
                                     Access.whoDone = true
                                     act.runOnUiThread { act.proceed() }
@@ -341,10 +350,12 @@ fun WatchersScreen(act: MainActivity) {
                         }) { f ->
                             Column(Modifier.width(150.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Box(Modifier.size(132.dp).lift(f, 1.08f).ring(f, CircleShape, 4.dp).padding(8.dp)) {
-                                    Face(p.optString("name"), 116.dp)
+                                    ProfileFace(p, 116.dp)
                                 }
                                 Txt(p.optString("name"), Modifier.padding(top = 14.dp), size = 19.sp,
                                     color = if (f) C.ink else C.ink2, weight = if (f) FontWeight.Bold else FontWeight.SemiBold)
+                                if (p.optBoolean("kids")) Txt("Bambini", Modifier.padding(top = 4.dp), size = 14.sp,
+                                    color = C.accentText, weight = FontWeight.Bold)
                             }
                         }
                     }
@@ -407,6 +418,7 @@ object CloudTv {
         Remote.logout(ctx)
         Api.saveSession(ctx, "")
         prefs(ctx).edit().remove("cloud_sid").apply()
+        CloudProfiles.clear(ctx)
         resumed = false
     }
 
@@ -453,6 +465,53 @@ object CloudTv {
         try { Remote.call(ctx, "GET", "/", null); true } catch (e: Remote.CloudError) { e.status != 0 }
 
     /**
+     * Un BunkerPlex in casa non ancora collegato a un account (come plex.tv/claim): il
+     * server di casa salvato e, se nell'account non ci sono server tuoi, quello che si
+     * trova sulla rete. known = i sid gia' nell'elenco. Torna indirizzo e collegamento
+     * (GET /api/auth/claim), o null. Lento: fuori dal thread dell'interfaccia.
+     */
+    fun unclaimed(known: Set<String>, search: Boolean): Pair<String, JSONObject>? {
+        val tried = mutableSetOf<String>()
+        fun check(url: String): JSONObject? {
+            if (!tried.add(url)) return null
+            val info = Net.info(url, 3000) ?: return null
+            if (info.optString("sid") in known) return null
+            val c = claimInfo(url) ?: return null
+            return c.takeIf { it.has("claimed") && !it.optBoolean("claimed") }
+        }
+        if (Api.home.isNotEmpty()) check(Api.home)?.let { return Api.home to it }
+        if (search) Net.discover()?.let { url -> check(url)?.let { return url to it } }
+        return null
+    }
+
+    /** Lo stato del collegamento di quel server (aperto, solo dalla rete di casa); null se non risponde. */
+    fun claimInfo(url: String): JSONObject? =
+        try { JSONObject(Net.get("$url/api/auth/claim", 4000, auth = false)) } catch (_: Exception) { null }
+
+    /** Chiede al server il codice da confermare dal telefono (POST /api/auth/claim). */
+    fun claimCode(url: String): JSONObject {
+        // Senza la sessione della TV: e' un altro server
+        val c = URL("$url/api/auth/claim").openConnection() as HttpURLConnection
+        c.connectTimeout = 5000
+        c.readTimeout = 15000
+        c.requestMethod = "POST"
+        c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        try {
+            c.outputStream.use { it.write("{}".toByteArray()) }
+            val code = c.responseCode
+            val text = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            if (code >= 400) {
+                val detail = try { JSONObject(text).optString("detail") } catch (_: Exception) { "" }
+                throw IOException(detail.ifBlank { "Errore del server ($code)" })
+            }
+            return JSONObject(text)
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    /**
      * Senza servizio account: l'ultimo server usato, con la sessione che la TV ha gia'
      * (il server la riconosce anche senza Internet). false = non risponde o va rifatto
      * l'accesso: allora la ricerca sulla rete di casa.
@@ -465,9 +524,13 @@ object CloudTv {
     }
 
     /** La sessione salvata vale ancora su quel server? */
-    private fun sessionOk(base: String): Boolean {
-        if (Api.home != base || Net.session.isEmpty()) return false
-        return try { Api.obj("/api/auth/state").optJSONObject("user") != null } catch (_: Exception) { false }
+    private fun sessionOk(base: String): Boolean = sessionUser(base) != null
+
+    /** Chi e' entrato con la sessione salvata su quel server (null = da rifare). */
+    private fun sessionUser(base: String): JSONObject? {
+        if (Api.home != base || Net.session.isEmpty()) return null
+        Api.base = base
+        return try { Api.obj("/api/auth/state").optJSONObject("user") } catch (_: Exception) { null }
     }
 
     /**
@@ -483,12 +546,35 @@ object CloudTv {
         val base = reach(ctx, host)
             ?: throw IOException(if (mine) "${host.optString("name").ifEmpty { "Il server" }} non risponde: la TV è nella stessa rete di casa?"
                 else "Il server di ${s.optJSONObject("owner")?.optString("username")} non risponde: dev'essere acceso, con l'indirizzo pubblico se sei fuori casa")
-        if (!sessionOk(base)) {
+        // Il profilo scelto in «Chi guarda?» dell'account, col suo biglietto (solo sui propri server)
+        val prof = if (mine) CloudProfiles.current(ctx) else null
+        val pid = prof?.optInt("id", -1) ?: -1
+        val ticket = if (pid >= 0) CloudProfiles.ticket(ctx, pid) else ""
+        var applied = false
+        val user = sessionUser(base)
+        if (user == null) {
             val token = JSONObject(Remote.call(ctx, "POST", "/servers/$sid/access", "{}")).getString("token")
             Api.saveServer(ctx, base)
-            val (body, _) = Api.post("/api/auth/access",
-                JSONObject().put("token", token).put("device", "TV " + (Build.MODEL ?: "Android")))
-            Api.saveSession(ctx, JSONObject(body).getString("session"))
+            val req = JSONObject().put("token", token).put("device", "TV " + (Build.MODEL ?: "Android"))
+            if (ticket.isNotEmpty()) req.put("profile", pid).put("profile_ticket", ticket)
+            val (body, _) = Api.post("/api/auth/access", req)
+            val r = JSONObject(body)
+            Api.saveSession(ctx, r.getString("session"))
+            // Server nuovo: la sessione nasce gia' sul profilo (niente «Chi guarda?» del server).
+            // Server vecchio: niente "profile" nella risposta, si sceglie li' come prima
+            applied = ticket.isNotEmpty() && r.has("profile") && !r.isNull("profile")
+        } else if (ticket.isNotEmpty() && user.optBoolean("profiles_cloud")) {
+            // La sessione di prima vale ancora: si porta sul profilo scelto adesso
+            applied = !user.isNull("watcher") && user.optInt("watcher", -1) == pid
+            if (!applied) applied = try {
+                Api.post("/api/profiles/select", JSONObject().put("id", pid).put("ticket", ticket))
+                true
+            } catch (_: Exception) { false }
+        }
+        if (applied) {
+            Access.whoDone = true
+            Api.user = prof?.optString("name")?.ifEmpty { null }
+            HomeMemory.server = ""          // la Home in memoria poteva essere di un altro profilo
         }
         Api.base = base
         prefs(ctx).edit().putString("cloud_base_$sid", base).putString("cloud_sid", s.optString("sid")).apply()
@@ -518,8 +604,9 @@ fun CloudLoginScreen(act: MainActivity) {
             while (System.currentTimeMillis() < until) {
                 delay(2500)
                 if (withContext(Dispatchers.IO) { Remote.tvPoll(act, poll) }) {
+                    CloudProfiles.clear(act)
                     Access.reset()
-                    act.reset(Screen.Servers)
+                    act.reset(Screen.Profiles())
                     return@LaunchedEffect
                 }
             }
@@ -586,6 +673,10 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
     var round by remember { mutableIntStateOf(0) }
     var adding by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
+    // Un BunkerPlex in casa da collegare all'account: indirizzo e codice
+    var claim by remember { mutableStateOf<Pair<String, JSONObject>?>(null) }
+    // Profilo bambini: niente amici, niente uscita dall'account
+    val kids = remember { CloudProfiles.kids(act) }
     fun friendTask(done: String?, job: () -> Unit) {
         Thread {
             try { job(); act.runOnUiThread { done?.let { act.toast(it) }; round++ } }
@@ -639,11 +730,49 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
             if (!CloudTv.on(act)) act.reset(Screen.CloudLogin)      // accesso scaduto
         }
     }
+    // Un server che risponde in casa ma non e' ancora nell'account: si mostra il suo codice
+    // (lo si conferma dal telefono) e si aspetta che il server si colleghi da solo
+    LaunchedEffect(list != null) {
+        val l = list ?: return@LaunchedEffect
+        if (kids) return@LaunchedEffect
+        val own = l.any { it.optString("role") == "owner" }
+        val found = withContext(Dispatchers.IO) { CloudTv.unclaimed(l.map { it.optString("sid") }.toSet(), !own) }
+            ?: return@LaunchedEffect
+        val url = found.first
+        var c = found.second
+        while (true) {
+            if (c.optBoolean("claimed")) {
+                claim = null
+                act.toast("${c.optString("name").ifEmpty { "Il server" }} ora è nel tuo account")
+                round++
+                return@LaunchedEffect
+            }
+            val left = c.optDouble("exp", 0.0) - System.currentTimeMillis() / 1000.0
+            if (c.optString("code").isEmpty() || left < 60) {
+                c = try { withContext(Dispatchers.IO) { CloudTv.claimCode(url) } } catch (_: Exception) { claim = null; return@LaunchedEffect }
+                if (!c.optBoolean("claimed") && c.optString("code").isEmpty()) { claim = null; return@LaunchedEffect }
+            }
+            claim = url to c
+            delay(4000)
+            c = withContext(Dispatchers.IO) { CloudTv.claimInfo(url) } ?: c
+        }
+    }
     val first = remember { FocusRequester() }
     AuthPage {
         Title("Cosa guardi oggi?", size = 34.sp, lines = 1)
         Txt("Scegli il server: i tuoi e quelli dei tuoi amici", Modifier.padding(top = 8.dp, bottom = 24.dp), size = 18.sp, color = C.ink2)
-        friends.filter { it.optString("status") == "received" }.forEach { fr ->
+        claim?.let { (_, c) ->
+            val code = c.optString("code")
+            Column(Modifier.width(620.dp).padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp)).background(C.accent.copy(alpha = 0.16f))
+                .padding(horizontal = 18.dp, vertical = 14.dp)) {
+                Txt("Nuovo server in casa: ${c.optString("name").ifEmpty { "BunkerPlex" }}", size = 18.sp, weight = FontWeight.Bold)
+                Txt("Per aggiungerlo al tuo account. Sul telefono: BunkerPlex → Server → Aggiungi un server, e scrivi il codice",
+                    Modifier.padding(top = 4.dp), size = 15.sp, color = C.ink2, lines = 2)
+                Txt(if (code.length == 8) code.take(4) + " " + code.drop(4) else code, Modifier.padding(top = 10.dp),
+                    size = 40.sp, weight = FontWeight.ExtraBold)
+            }
+        }
+        if (!kids) friends.filter { it.optString("status") == "received" }.forEach { fr ->
             Row(Modifier.width(620.dp).padding(bottom = 14.dp).clip(RoundedCornerShape(14.dp)).background(C.accent.copy(alpha = 0.16f))
                 .padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Txt("${fr.optString("username")} vuole essere tuo amico", Modifier.weight(1f), size = 17.sp)
@@ -656,31 +785,39 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
         if (l == null) Txt("…", color = C.ink3)
         else Nearest {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (l.isEmpty()) Txt("Nessun server nel tuo account: installa BunkerPlex su un PC ed entra lì con il tuo account.",
+                if (l.isEmpty()) Txt("Nessun server nel tuo account: installa BunkerPlex su un PC, poi aggiungilo dal telefono (BunkerPlex → Server → Aggiungi un server).",
                     Modifier.width(620.dp), color = C.ink2, lines = 3)
+                // I tuoi server sulla stessa macchina (BunkerPlex reinstallato sullo stesso PC)
+                val machines = l.filter { it.optString("role") == "owner" && it.optString("machine").isNotEmpty() }
+                    .groupBy { it.optString("machine") }
                 l.forEachIndexed { i, s ->
                     val friend = s.optString("role") == "friend"
                     val off = s.opt("online") == false
+                    val twins = (if (friend) emptyList<JSONObject>() else machines[s.optString("machine")] ?: emptyList<JSONObject>())
+                        .filter { it !== s }.map { it.optString("name").ifEmpty { "PC" } }
                     val sub = (if (friend) "di " + (s.optJSONObject("owner")?.optString("username") ?: "") else "Il tuo server") +
-                        (if (off) " · spento o non raggiungibile" else if (s.optBoolean("local")) " · in casa" else if (s.opt("online") == true) " · acceso" else "")
+                        (if (off) " · spento o non raggiungibile" else if (s.optBoolean("local")) " · in casa" else if (s.opt("online") == true) " · acceso" else "") +
+                        (if (twins.isNotEmpty()) " · Stessa macchina di " + twins.joinToString(", ") else "")
                     SrvCard(if (i == 0) Modifier.focusRequester(first) else Modifier,
                         if (friend) Ic.friends else Ic.screen, s.optString("name").ifEmpty { "PC" }, sub, !off) { pick(s, l) }
                 }
                 // Gli amici senza server nell'elenco: non condividono, o sono spenti
-                friends.filter { fr -> fr.optString("status") == "ok" &&
+                if (!kids) friends.filter { fr -> fr.optString("status") == "ok" &&
                     l.none { it.optString("role") == "friend" && it.optJSONObject("owner")?.optInt("id") == fr.optInt("id") } }.forEach { fr ->
                     SrvCard(Modifier, Ic.friends, fr.optString("username"), "Amico · nessun server condiviso acceso", false) {
                         act.toast("${fr.optString("username")} deve accendere la condivisione con gli amici sul suo server")
                     }
                 }
-                if (adding) {
-                    Row(Modifier.width(620.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Field(name, { name = it }, "Nome dell'account del tuo amico") { send() }
-                        Spacer(Modifier.width(12.dp))
-                        Btn("Invia", primary = true) { send() }
-                    }
-                } else SrvCard(if (l.isEmpty()) Modifier.focusRequester(first) else Modifier, Ic.plus, "Aggiungi un amico",
-                    "Con il nome del suo account: vedrai i suoi server accesi", true, add = true) { adding = true }
+                if (!kids) {
+                    if (adding) {
+                        Row(Modifier.width(620.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Field(name, { name = it }, "Nome dell'account del tuo amico") { send() }
+                            Spacer(Modifier.width(12.dp))
+                            Btn("Invia", primary = true) { send() }
+                        }
+                    } else SrvCard(if (l.isEmpty()) Modifier.focusRequester(first) else Modifier, Ic.plus, "Aggiungi un amico",
+                        "Con il nome del suo account: vedrai i suoi server accesi", true, add = true) { adding = true }
+                }
                 val sent = friends.filter { it.optString("status") == "sent" }.map { it.optString("username") }
                 if (sent.isNotEmpty()) Txt("In attesa di risposta: " + sent.joinToString(", "), color = C.ink3, size = 15.sp)
             }
@@ -688,10 +825,13 @@ fun CloudServersScreen(act: MainActivity, refresh: Int) {
         busy?.let { Txt(it, Modifier.padding(top = 14.dp), color = C.ink2, lines = 2) }
         msg?.let { Txt(it, Modifier.padding(top = 14.dp), color = C.warn, lines = 3) }
         Row(Modifier.padding(top = 24.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Btn("Aggiorna", icon = Ic.restart) { round++ }
-            Btn("Amici e tuoi PC fuori casa") { act.remote("friends") }
-            Btn("Esci dall'account") {
-                Thread { CloudTv.logout(act); act.runOnUiThread { Access.reset(); act.reset(Screen.CloudLogin) } }.start()
+            Btn("Aggiorna", if (kids && l?.isEmpty() == true) Modifier.focusRequester(first) else Modifier, Ic.restart) { round++ }
+            Btn("Cambia profilo") { act.reset(Screen.Profiles(auto = false)) }
+            if (!kids) {
+                Btn("Amici e tuoi PC fuori casa") { act.remote("friends") }
+                Btn("Esci dall'account") {
+                    Thread { CloudTv.logout(act); act.runOnUiThread { Access.reset(); act.reset(Screen.CloudLogin) } }.start()
+                }
             }
         }
     }

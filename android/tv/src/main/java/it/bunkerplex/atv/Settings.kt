@@ -56,6 +56,12 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
         }
     }
     val user = state?.optJSONObject("user")
+    // Profilo bambini: niente impostazioni del server ne' gestione (restano cambia profilo e l'app)
+    val kids = user?.optBoolean("kids") == true
+    // Il profilo scelto qui (con l'account: avatar e colore come in «Chi guarda?»)
+    val watcher = user?.takeIf { !it.isNull("watcher") }?.let { u ->
+        u.optJSONArray("watchers").objects().firstOrNull { it.optInt("id") == u.optInt("watcher", -1) }
+    }
     val first = remember { FocusRequester() }
 
     Page(act, "settings") {
@@ -69,12 +75,14 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
             // ---- Chi guarda
             Section("Chi guarda") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    val name = user?.optString("name") ?: Api.user ?: ""
-                    if (name.isNotEmpty()) Face(name, 56.dp)
+                    val name = watcher?.optString("name") ?: user?.optString("name") ?: Api.user ?: ""
+                    if (watcher != null) ProfileFace(watcher, 56.dp)
+                    else if (name.isNotEmpty()) Face(name, 56.dp)
                     Column(Modifier.padding(start = 18.dp)) {
                         Txt(name.ifEmpty { "…" }, size = 22.sp, weight = FontWeight.Bold)
                         val sub = when {
                             user == null -> ""
+                            kids -> "Profilo bambini"
                             user.optString("google").isNotEmpty() -> "Account BunkerPlex con Google (${user.optString("google")})"
                             user.optBoolean("linked") -> "Account BunkerPlex"
                             else -> "Profilo di questo PC"
@@ -83,13 +91,13 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
                     }
                 }
                 Row(Modifier.padding(top = 18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Btn("Cambia profilo", Modifier.focusRequester(first), Ic.restart) { act.switchProfile() }
-                    Btn("Account") { act.go(Screen.Account) }
+                    Btn("Cambia profilo", Modifier.focusRequester(first), Ic.restart) { act.changeProfile() }
+                    if (!kids) Btn("Account") { act.go(Screen.Account) }
                 }
             }
 
             // ---- Server
-            Section("Server") {
+            if (!kids) Section("Server") {
                 val i = info
                 Line("Nome", i?.optString("name")?.ifEmpty { null } ?: "…")
                 Line("Indirizzo", Api.base.removePrefix("http://") + if (Api.base != Api.home) "  (fuori casa)" else "")
@@ -124,7 +132,8 @@ fun SettingsScreen(act: MainActivity, refresh: Int) {
             }
 
             // ---- Le impostazioni del server
-            Section("Server e raccolte") {
+            if (kids) Row(Modifier.padding(top = 28.dp)) { Btn("Esci dall'app") { act.finish() } }
+            else Section("Server e raccolte") {
                 Txt("Raccolte, schede, sottotitoli, amici e dispositivi di questo PC.", color = C.ink2, lines = 2)
                 Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Btn("Raccolte") { act.go(Screen.Libraries) }

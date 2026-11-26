@@ -91,9 +91,57 @@ CREATE TABLE IF NOT EXISTS server_creds(
   version TEXT,
   created REAL NOT NULL,
   last_seen REAL NOT NULL DEFAULT 0, -- ultima presenza: acceso se recente (10 minuti)
-  secure_port INTEGER NOT NULL DEFAULT 0 -- porta https con certificato valido (0 = non ancora)
+  secure_port INTEGER NOT NULL DEFAULT 0, -- porta https con certificato valido (0 = non ancora)
+  machine TEXT                       -- impronta della macchina: reinstallando sullo stesso PC si propone di sostituire
 );
 CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id);
+
+-- Collegamento di un server nuovo all'account con un codice (come plex.tv/claim): 15 minuti.
+-- Il server chiede il codice (poll_hash = impronta del suo segreto), il proprietario lo conferma
+-- (user_id, target = sid finale, anche quello di un server sostituito), il server prende la credenziale.
+CREATE TABLE IF NOT EXISTS claims(
+  code TEXT PRIMARY KEY,
+  sid TEXT NOT NULL,
+  machine TEXT,
+  name TEXT,
+  version TEXT,
+  poll_hash TEXT NOT NULL,
+  user_id INTEGER,
+  target TEXT,
+  secret TEXT,                       -- la credenziale, finche' il server non la ritira
+  exp REAL NOT NULL
+);
+
+-- Profili dell'account («Chi guarda?»): main = 1 per il principale (id 0 nelle API).
+CREATE TABLE IF NOT EXISTS profiles(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  main INTEGER NOT NULL DEFAULT 0,
+  name TEXT,
+  avatar TEXT,
+  color TEXT,
+  kids INTEGER NOT NULL DEFAULT 0,   -- solo raccolte per bambini, niente impostazioni
+  pin_hash TEXT,                     -- PIN di 4 cifre (impronta)
+  pin_fails INTEGER NOT NULL DEFAULT 0,
+  pin_locked REAL NOT NULL DEFAULT 0,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS profiles_user ON profiles(user_id);
+
+-- Visti, ripresa e lista dei profili aggiunti (il principale resta in state).
+CREATE TABLE IF NOT EXISTS pstate(
+  user_id INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  k TEXT NOT NULL,
+  pos REAL NOT NULL DEFAULT 0,
+  w INTEGER NOT NULL DEFAULT 0,
+  fav REAL NOT NULL DEFAULT 0,
+  lp REAL NOT NULL DEFAULT 0,
+  t REAL NOT NULL,
+  rev INTEGER NOT NULL,
+  PRIMARY KEY(user_id, pid, k)
+);
+CREATE INDEX IF NOT EXISTS pstate_rev ON pstate(user_id, pid, rev);
 
 -- Nomi DNS dei server: <ip-con-trattini>.<sid>.<SERVER_DOMAIN> -> indirizzo di casa.
 CREATE TABLE IF NOT EXISTS server_dns(

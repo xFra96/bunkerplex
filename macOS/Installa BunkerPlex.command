@@ -94,6 +94,8 @@ fi
 # Indirizzo del Mac in casa: dentro Docker il server non lo vede (serve al QR dell'app)
 ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
 export BUNKERPLEX_LAN_IP="$ip"
+# Impronta della macchina: dentro Docker il server non la vede (riconosce una reinstallazione sullo stesso Mac)
+export BUNKERPLEX_MACHINE=$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/ {print $4}')
 # Indirizzo Tailscale (100.64.0.0/10), se c'e': gli amici entrano da li' e sul router non si apre nulla
 export BUNKERPLEX_TAILSCALE_IP=$(ifconfig 2>/dev/null | awk '$1=="inet" && $2 ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./ {print $2; exit}')
 

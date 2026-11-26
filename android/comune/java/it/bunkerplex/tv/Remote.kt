@@ -68,7 +68,8 @@ object Remote {
             val text = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
             if (code >= 400) {
                 val detail = try { JSONObject(text).optString("detail") } catch (_: Exception) { "" }
-                if (code == 401 && path != "/login") logout(ctx)
+                // 401 = accesso scaduto; non il PIN sbagliato di un profilo (/profiles/<id>/open)
+                if (code == 401 && path != "/login" && !path.endsWith("/open")) logout(ctx)
                 throw CloudError(code, detail.ifBlank { "Servizio account: errore $code" }, text)
             }
             return text
