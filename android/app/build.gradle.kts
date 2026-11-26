@@ -7,6 +7,12 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Notifiche istantanee con Firebase Cloud Messaging: servono le chiavi del progetto
+// Firebase in app/google-services.json (su GitHub dal segreto GOOGLE_SERVICES_JSON,
+// mai nel codice). Senza il file l'APK si compila lo stesso: Firebase resta spento e
+// l'app controlla gli avvisi da sola ogni 15 minuti circa (vedi Notices).
+if (file("google-services.json").isFile) apply(plugin = "com.google.gms.google-services")
+
 android {
     namespace = "it.bunkerplex.tv"
     compileSdk = 35
@@ -75,4 +81,6 @@ dependencies {
     implementation("org.jellyfin.media3:media3-ffmpeg-decoder:1.8.0+1")
     // adb in Kotlin: dal telefono installa l'app TV sulle TV di casa (TvInstaller)
     implementation("dev.mobile:dadb:2.0.0")
+    // Notifiche push (vedi NoticePush). 24.1.x: l'ultima che va ancora da Android 5 (minSdk 21)
+    implementation("com.google.firebase:firebase-messaging:24.1.2")
 }
