@@ -8107,6 +8107,43 @@ if (APP) {
 setTimeout(checkServerUpdate, 1500);
 setInterval(checkServerUpdate, 30 * 60 * 1000);
 
+// Interfaccia nuova: quando il server si aggiorna da solo (o la PWA centrale cambia)
+// le schede gia' aperte tengono in memoria quella vecchia. Ogni 5 minuti, e quando si
+// torna sulla scheda, si guarda se app.js e' cambiato (ETag / Last-Modified): se si',
+// si ricarica la pagina, ma mai durante un video, con una finestra aperta o mentre si scrive.
+var uiStamp = { url: '', first: '', stale: false };
+(function () {
+  var s = document.currentScript && document.currentScript.src;
+  if (s && /^https?:/.test(s)) uiStamp.url = s.split('#')[0];
+})();
+
+function uiBusy() {
+  var a = document.activeElement;
+  // Si sta scrivendo: un campo con dentro qualcosa (il cursore in un campo vuoto non conta)
+  var typing = a && (((a.tagName === 'INPUT' || a.tagName === 'TEXTAREA') && a.value) || a.isContentEditable);
+  return !!player || serverUpdating || !modal.hidden || typing || document.body.classList.contains('playing');
+}
+
+function checkUiStamp() {
+  if (!uiStamp.url) return;
+  if (uiStamp.stale) { if (!uiBusy()) location.reload(); return; }
+  fetch(uiStamp.url, { method: 'HEAD', cache: 'no-store' }).then(function (r) {
+    if (!r.ok) return;
+    var tag = r.headers.get('ETag') || r.headers.get('Last-Modified') || '';
+    if (!tag) return;
+    if (!uiStamp.first) { uiStamp.first = tag; return; }
+    if (tag !== uiStamp.first) {
+      uiStamp.stale = true;
+      if (!uiBusy()) location.reload();
+    }
+  }).catch(function () {});
+}
+setTimeout(checkUiStamp, 3000);
+setInterval(checkUiStamp, 5 * 60 * 1000);
+document.addEventListener('visibilitychange', function () { if (!document.hidden) checkUiStamp(); });
+// Rimandata (video, finestra aperta...): appena si cambia pagina
+window.addEventListener('hashchange', function () { if (uiStamp.stale) setTimeout(checkUiStamp, 0); });
+
 // ---------------------------------------------------------------- Attivita' (in alto a destra)
 // Un solo posto per sapere cosa sta facendo il server e cosa va guardato: la
 // lettura dei titoli in corso (con la sua percentuale), un aggiornamento, e le
