@@ -1556,7 +1556,9 @@ async function sendPush(env, dev, payload) {
     method: 'POST',
     headers: {
       Authorization: await vapidHeader(keys, dev.endpoint, env.MAIL_FROM || 'bunkerplex@outlook.it'),
-      TTL: '86400', Urgency: 'normal', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream'
+      // high: Android in risparmio energetico (Doze) e iOS consegnano subito invece
+      // di aspettare il prossimo risveglio del telefono
+      TTL: '86400', Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream'
     },
     body: await encryptPush(dev.p256dh, dev.auth, JSON.stringify(payload))
   });

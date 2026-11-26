@@ -3586,9 +3586,11 @@ function installPanel() {
 
 // ---- Notifiche su telefoni e tablet
 // Gli avvisi dell'account (nuovi titoli, amici, aggiornamenti) li manda il servizio
-// account. Nell'app Android li controlla l'app da sola ogni 15 minuti circa;
-// su iPhone e iPad (e nei browser) arrivano come notifiche push alla pagina
-// «BunkerPlex Avvisi» del servizio, da aggiungere alla schermata Home.
+// account e arrivano come notifiche push alla pagina «BunkerPlex Avvisi» del
+// servizio: su iPhone e iPad aggiunta alla schermata Home, sui telefoni Android
+// aperta in Chrome (l'app la apre da sola). Il vecchio controllo dell'app Android
+// ogni 15 minuti circa arrivava in ritardo (Android lo rimanda per la batteria):
+// resta solo per chi lo aveva gia' acceso, con l'invito a passare a Chrome.
 var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 var NOTICE_KINDS = [['titles', 'Nuovi film ed episodi sui tuoi PC'], ['friends_titles', 'Novità sui PC dei tuoi amici'],
   ['friends', 'Richieste di amicizia'], ['update', 'Aggiornamenti del server']];
@@ -3600,9 +3602,29 @@ function noticeWhen(t) {
 function noticeHereHtml() {
   if (PHONE_APP && typeof tvApp.noticesState === 'function') {
     var st = tvCall('noticesState');
+    var chrome = typeof tvApp.openUrl === 'function';
+    var chromeBtn = function (label, primary) {
+      return '<button class="btn' + (primary ? ' primary' : '') + ' f" data-act="noticeon" data-arg="chrome" data-key="noticechrome">' + label + '</button>';
+    };
     if (st === 'on') {
-      return '<p>' + dot(true) + ' Attive su questo dispositivo: l\'app controlla gli avvisi ogni 15 minuti circa, anche chiusa.</p>' +
-        '<div class="actions"><button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button></div>';
+      return '<p>' + dot(true) + ' Attive su questo dispositivo: l\'app controlla gli avvisi ogni 15 minuti circa, ' +
+        'ma Android per risparmiare batteria spesso li fa arrivare molto più tardi.</p>' +
+        (chrome ? '<p>Con Chrome arrivano subito, appena c\'è un film o un episodio nuovo.</p>' : '') +
+        '<div class="actions">' + (chrome ? chromeBtn('Passa alle notifiche istantanee', true) : '') +
+        '<button class="btn f" data-act="noticeoff" data-key="noticeoff">Spegni su questo dispositivo</button></div>';
+    }
+    if (chrome && st === 'off') {
+      var on = false;
+      try { on = localStorage.getItem('bpChromePush') === '1'; } catch (e) { /* niente */ }
+      if (on) {
+        return '<p>' + dot(true) + ' Le notifiche arrivano subito da Chrome (pagina <b>BunkerPlex Avvisi</b>), anche con l\'app chiusa.</p>' +
+          '<p><small>Se non arrivano, riapri la pagina e tocca «Attiva le notifiche», e controlla che Chrome possa mostrare notifiche.</small></p>' +
+          '<div class="actions">' + chromeBtn('Riapri la pagina degli avvisi') + '</div>';
+      }
+      return '<p>Ricevi un avviso appena arrivano film ed episodi nuovi, da te o dagli amici, e per amicizie e aggiornamenti. Funziona anche fuori casa.</p>' +
+        '<ol class="steps"><li>Tocca «Attiva le notifiche»: si apre la pagina degli avvisi in Chrome</li>' +
+        '<li>Lì tocca di nuovo <b>Attiva le notifiche</b> e permetti a Chrome di mostrarle</li></ol>' +
+        '<div class="actions">' + chromeBtn('Attiva le notifiche', true) + '</div>';
     }
     if (st === 'denied') {
       return '<p>' + dot(false) + ' Android non permette all\'app di mostrare notifiche.</p>' +
@@ -5908,6 +5930,17 @@ var actions = {
   },
   noticeon: function (arg) {
     var kind = arg || 'web';
+    if (kind === 'chrome') {
+      // App Android: le push del browser (istantanee) nella pagina degli avvisi aperta in Chrome;
+      // il vecchio controllo ogni 15 minuti si spegne, se no gli avvisi arriverebbero due volte
+      post('/notices/devices', { kind: 'web', label: deviceLabel('android') + ' · Chrome', open: location.origin + '/' }).then(function (r) {
+        if (tvCall('noticesState') !== 'off') tvApp.noticesSet('');
+        try { localStorage.setItem('bpChromePush', '1'); } catch (e) { /* niente */ }
+        tvApp.openUrl(r.url);
+        render();
+      }, function (e) { toast(e.message); });
+      return;
+    }
     // La pagina degli avvisi si apre subito (Safari blocca le finestre aperte dopo un'attesa)
     var win = kind === 'android' ? null : window.open('about:blank', '_blank');
     post('/notices/devices', { kind: kind, label: deviceLabel(kind), open: location.origin + '/' }).then(function (r) {
