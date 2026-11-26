@@ -186,7 +186,8 @@ CREATE TABLE IF NOT EXISTS notice_devices(
   p256dh TEXT,
   auth TEXT,
   created REAL NOT NULL,
-  last_seen REAL
+  last_seen REAL,
+  fcm TEXT                           -- gettone Firebase Cloud Messaging (app Android)
 );
 CREATE INDEX IF NOT EXISTS notice_devices_user ON notice_devices(user_id);
 
