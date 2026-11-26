@@ -2965,10 +2965,11 @@ function settingsShell(area, title, sub, body) {
     return '<a class="snav f' + (on ? ' on' : '') + '"' + (on ? ' aria-current="page"' : '') + ' href="#/settings/' + a[0] + '" data-key="snav-' + a[0] + '">' +
       (a[0] === 'account' && auth && auth.user ? face(auth.user.name) : stile(a[0])) + '<span>' + esc(a[1]) + '</span></a>';
   }).join('');
-  // Telefono: niente menu laterale, in alto «‹ Impostazioni» per tornare (come nelle
-  // app del telefono). PC e TV: menu a sinistra e contenuto a destra.
-  return '<div class="page settings"><div class="sgrid">' +
-    '<nav class="scol" aria-label="Aree delle impostazioni"><a class="snav home f" href="#/settings" data-key="snav-home">' + stile('home') + '<span>Panoramica</span></a>' + nav + '</nav>' +
+  // Telefono e TV: niente menu laterale, si entra in un'area e si torna con «‹ Impostazioni»
+  // (o il tasto Indietro), come nelle impostazioni dei telefoni e di Android TV.
+  // PC: menu a sinistra e contenuto a destra. La Panoramica non e' una voce del menu.
+  return '<div class="page settings"><div class="sgrid' + (TVLOOK ? ' nonav' : '') + '">' +
+    (TVLOOK ? '' : '<nav class="scol" aria-label="Aree delle impostazioni">' + nav + '</nav>') +
     // Persone si apre da Account: si torna li'
     '<div class="smain"><a class="sup f" href="' + (area === 'people' ? '#/settings/account' : '#/settings') + '" data-key="sup">' + IC.back +
       '<span>' + (area === 'people' ? 'Account' : 'Impostazioni') + '</span></a>' +
@@ -7213,7 +7214,8 @@ async function render() {
   var key = focusMemory[h];
   var el = byKey(key);
   if (el && !view.contains(el)) el = null;
-  if (!el && !player) el = view.querySelector('[data-autofocus]') || view.querySelector('.f') || rail.querySelector('.railitem.on');
+  // Nelle Impostazioni il primo fuoco va al contenuto, non al menu laterale ne' a «‹ Impostazioni»
+  if (!el && !player) el = view.querySelector('[data-autofocus]') || view.querySelector('.f:not(.sup):not(.snav)') || view.querySelector('.f') || rail.querySelector('.railitem.on');
   if (samePage && hadFocusInRail) el = null;   // un aggiornamento in sottofondo non sposta chi sta usando il menu
   if (kb) {
     if (!key && !samePage) window.scrollTo(0, 0);
