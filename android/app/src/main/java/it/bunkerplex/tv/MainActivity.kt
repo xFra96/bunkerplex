@@ -245,8 +245,11 @@ class MainActivity : AppCompatActivity() {
         if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showRemote("ask")
     }
 
-    /** La pagina dell'app senza server di casa: amici e tuoi PC, raggiunti con Tailscale. */
+    /** La pagina dell'app senza server di casa: amici e tuoi PC, raggiunti con Tailscale.
+     *  Solo sulla TV: sul telefono la scelta del server e' sempre quella della PWA
+     *  (si apre il server per intero, con Home, ripresa e il resto), mai la vista ridotta. */
     private fun showRemote(hash: String) {
+        if (!isTelevision) return showCentral()
         onSetup = true
         clearHistoryOnLoad = true
         web.loadUrl("file:///android_asset/remote.html#$hash")
