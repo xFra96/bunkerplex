@@ -83,6 +83,9 @@ sealed class Screen {
     data object CloudLogin : Screen()
     data object CloudGoogle : Screen()
     data object Watchers : Screen()
+    /** «Chi guarda?» dell'account (change = da «Cambia profilo», sul server di adesso; auto = si salta con un solo profilo). */
+    data class Profiles(val change: Boolean = false, val auto: Boolean = true) : Screen()
+    data class Pin(val json: String, val change: Boolean) : Screen()
     data class Reset(val email: String) : Screen()
     data class Google(val link: Boolean) : Screen()
     data object NewPassword : Screen()
@@ -122,10 +125,10 @@ class MainActivity : ComponentActivity() {
         // quando si e' gia' sulla Home, la versione nuova si propone li'
         update.onAvailable = { if (stack.lastOrNull() == Screen.Home) offerUpdate() }
         update.start()
-        // Con l'account: l'elenco dei server del servizio (e il server di prima). Senza:
-        // l'accesso, oppure il server scelto a mano come prima.
+        // Con l'account: «Chi guarda?» dell'account, poi l'elenco dei server del servizio (e
+        // il server di prima). Senza: l'accesso, oppure il server scelto a mano come prima.
         stack.add(when {
-            CloudTv.on(this) -> Screen.Servers
+            CloudTv.on(this) -> Screen.Profiles()
             Api.base.isEmpty() -> Screen.CloudLogin
             else -> Screen.Who
         })
@@ -155,6 +158,8 @@ class MainActivity : ComponentActivity() {
                     Screen.CloudLogin -> CloudLoginScreen(this@MainActivity)
                     Screen.CloudGoogle -> CloudGoogleScreen(this@MainActivity)
                     Screen.Watchers -> WatchersScreen(this@MainActivity)
+                    is Screen.Profiles -> key(refresh) { ProfilesScreen(this@MainActivity, top) }
+                    is Screen.Pin -> PinScreen(this@MainActivity, top)
                     is Screen.Reset -> ResetScreen(this@MainActivity, top)
                     Screen.Phone -> LinkScreen(this@MainActivity, false)
                     is Screen.Google -> GoogleScreen(this@MainActivity, top)
