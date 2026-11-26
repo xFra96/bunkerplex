@@ -402,8 +402,9 @@ var PLUS_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5
 
 function authShell(inner, wide) {
   // wide: piu' largo; 'grid': largo per la griglia dei server
+  // L'ingranaggio sta in fondo: si vede in alto a destra, ma il primo elemento resta quello della pagina
   return '<div class="auth"><div class="authcard' + (wide ? ' wide' : '') + (wide === 'grid' ? ' grid' : '') + '">' +
-    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + inner + '</div></div>';
+    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' + inner + '</div>' + cAppLink() + '</div>';
 }
 
 // ---- Scelta del server: card in griglia, divise in sezioni, con la ricerca quando sono tante.
@@ -1010,8 +1011,7 @@ function cLoginPage() {
       '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
       '<button class="btn primary block f" data-act="cnext" data-key="cnext">Continua</button>' +
       '<div class="author"><span>oppure</span></div>' +
-      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note +
-      cAppLink());
+      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note);
   }
   var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
   var back = '<button class="authlink f" data-act="cback" data-key="cback">Usa un\'altra email</button>';
@@ -1173,15 +1173,18 @@ async function cServersPage() {
       tool: mine.length ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' },
       { title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }], mine.length + theirs.length) +
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
-    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' + cAppLink() +
+    '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
 // Le impostazioni dell'app (#/app), dall'accesso e dalla scelta del server: servono
 // anche senza un server raggiungibile (fuori casa, server spento o vecchio, solo
 // quello di un amico). La pagina arriva dal servizio account, come l'accesso.
+// Si aprono dall'ingranaggio in alto a destra delle pagine prima del server.
+var GEAR_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 function cAppLink() {
-  return APP ? '<a class="authlink f" href="#/app" data-key="capp">Impostazioni dell\'app</a>' : '';
+  if (!CENTRAL || !APP || location.hash === '#/app') return '';
+  return '<a class="authgear f" href="#/app" data-key="capp" aria-label="Impostazioni dell\'app" title="Impostazioni dell\'app">' + GEAR_ICON + '</a>';
 }
 
 async function cAppPage() {

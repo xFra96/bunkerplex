@@ -1393,6 +1393,15 @@ html.lite .sheet { animation: none !important; }
 .authlink { display: block; align-self: center; margin-top: 1.1rem; padding: .3rem .6rem; border-radius: var(--r); color: var(--ink2); font-weight: 600; font-size: .95rem; text-align: center; }
 .authlink:hover { color: var(--ink); }
 .authlink:focus { background: var(--ink); color: var(--bg); }
+/* Impostazioni dell'app: ingranaggio in alto a destra delle pagine prima del server */
+.auth { position: relative; }
+.authgear { position: absolute; top: calc(.9rem + env(safe-area-inset-top)); right: calc(.9rem + env(safe-area-inset-right));
+  display: flex; align-items: center; justify-content: center; width: 2.9rem; height: 2.9rem; border-radius: 50%;
+  color: var(--ink2); transition: color .15s, background .15s; }
+.authgear svg { width: 1.6rem; height: 1.6rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.authgear:hover { color: var(--ink); background: #ffffff14; }
+.authgear:focus { background: var(--ink); color: var(--bg); outline: none; }
+html.tv .authgear { top: 3.6rem; right: calc(var(--pad) - .4rem); }   /* sulla TV in alto a destra c'e' l'orologio */
 .author { display: flex; align-items: center; gap: .9rem; margin: 1.6rem 0 1.2rem; color: var(--ink3); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
 .author::before, .author::after { content: ""; flex: 1; height: 1px; background: var(--surface2); }
 .gbtn { display: flex; align-items: center; justify-content: center; gap: .75rem; width: 100%; padding: .9rem 1.2rem; border-radius: .6rem;
