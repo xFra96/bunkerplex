@@ -179,8 +179,9 @@ class MainActivity : AppCompatActivity() {
         // Gettone FCM arrivato al servizio account: la pagina mostra subito «istantanee»
         Notices.changed = { js("window.fpNoticePerm&&fpNoticePerm()") }
         Notices.ensure(this)
-        // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server
-        thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", false) } catch (_: Exception) {} }
+        // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server:
+        // a ogni apertura si chiede subito, e la pagina propone la versione nuova (checkUpdate)
+        thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", true) } catch (_: Exception) {} }
     }
 
     private val isTelevision by lazy {

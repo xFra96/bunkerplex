@@ -72,18 +72,22 @@ class Update(private val act: Activity) {
         file.delete()     // l'APK di un aggiornamento gia' fatto (o lasciato a meta')
         ContextCompat.registerReceiver(act, result, IntentFilter(ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
         show(Releases.cached(act, PREFIX))
-        thread { refresh() }
+        thread { refresh(force = true) }     // a ogni apertura si chiede subito a GitHub
     }
 
     fun stop() {
         try { act.unregisterReceiver(result) } catch (_: Exception) {}
     }
 
+    /** Chiamata quando GitHub risponde con una versione piu' nuova (sul thread principale). */
+    var onAvailable: (() -> Unit)? = null
+
     private fun show(l: Releases.Latest?) {
         if (l == null) return
         latest = l
         latestCode = l.code
         latestName = l.name
+        if (available) onAvailable?.invoke()
     }
 
     /** Chiede a GitHub l'ultima versione (al massimo ogni 6 ore, o subito con force).
