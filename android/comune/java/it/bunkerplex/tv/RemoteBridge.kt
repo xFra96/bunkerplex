@@ -79,6 +79,34 @@ abstract class RemoteBridge(private val act: Activity, private val web: WebView,
         }
     }
 
+    /** Sulla TV si entra dal telefono: codice, indirizzo e righe del QR (vedi Remote.tvStart). */
+    @JavascriptInterface
+    fun remoteTvStart(cb: Int) {
+        thread {
+            try {
+                val res = Remote.tvStart(act)
+                res.put("qr", org.json.JSONArray(Remote.qrRows(res.optString("url"))))
+                done(cb, true, res.toString())
+            } catch (e: Exception) {
+                done(cb, false, e.message ?: "Servizio account non raggiungibile")
+            }
+        }
+    }
+
+    /** Confermato dal telefono? Quando si', il gettone dell'account resta all'app. */
+    @JavascriptInterface
+    fun remoteTvPoll(poll: String, cb: Int) {
+        thread {
+            try {
+                done(cb, true, Remote.tvPoll(act, poll).toString())
+            } catch (e: Remote.CloudError) {
+                done(cb, false, JSONObject().put("status", e.status).put("detail", e.message).toString())
+            } catch (e: Exception) {
+                done(cb, false, JSONObject().put("status", 0).put("detail", e.message ?: "").toString())
+            }
+        }
+    }
+
     /** Apre un indirizzo nel browser del dispositivo (Google non accetta l'accesso
      *  dentro le finestre delle app). */
     @JavascriptInterface

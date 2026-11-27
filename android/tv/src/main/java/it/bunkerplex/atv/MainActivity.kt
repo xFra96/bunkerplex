@@ -76,14 +76,13 @@ sealed class Screen {
     data object NewVersion : Screen()
     data object Account : Screen()
     data object Phone : Screen()
-    data class Link(val google: Boolean) : Screen()
+    data object Link : Screen()
     data object Servers : Screen()
     data object CloudLogin : Screen()
     data object Watchers : Screen()
     /** «Chi guarda?» dell'account (change = da «Cambia profilo», sul server di adesso; auto = si salta con un solo profilo). */
     data class Profiles(val change: Boolean = false, val auto: Boolean = true) : Screen()
     data class Pin(val json: String, val change: Boolean) : Screen()
-    data class Google(val link: Boolean) : Screen()
     data object NewPassword : Screen()
     data class Conflicts(val json: String) : Screen()
     class Confirm(val text: String, val yes: String, val action: () -> Unit) : Screen()
@@ -144,7 +143,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Settings -> SettingsScreen(this@MainActivity, refresh)
                     Screen.NewVersion -> NewVersionScreen(this@MainActivity)
                     Screen.Account -> AccountScreen(this@MainActivity, refresh)
-                    is Screen.Link -> LinkScreen(this@MainActivity, top.google)
+                    Screen.Link -> LinkScreen(this@MainActivity)
                     Screen.Servers -> key(refresh) {
                         if (CloudTv.on(this@MainActivity)) CloudServersScreen(this@MainActivity, refresh)
                         else ServersScreen(this@MainActivity, refresh)
@@ -153,8 +152,7 @@ class MainActivity : ComponentActivity() {
                     Screen.Watchers -> WatchersScreen(this@MainActivity)
                     is Screen.Profiles -> key(refresh) { ProfilesScreen(this@MainActivity, top) }
                     is Screen.Pin -> PinScreen(this@MainActivity, top)
-                    Screen.Phone -> LinkScreen(this@MainActivity, false)
-                    is Screen.Google -> GoogleScreen(this@MainActivity, top)
+                    Screen.Phone -> LinkScreen(this@MainActivity)
                     Screen.NewPassword -> NewPasswordScreen(this@MainActivity)
                     is Screen.Conflicts -> ConflictsScreen(this@MainActivity, top)
                     is Screen.Confirm -> ConfirmScreen(this@MainActivity, top)
@@ -430,7 +428,7 @@ class MainActivity : ComponentActivity() {
                     // Senza Internet, dalla rete di casa: dentro senza login (vedi homeEntry)
                 } else if (s.optBoolean("cloud") && !s.optBoolean("setup")) {
                     // Prima configurazione: QR e codice da confermare dal telefono o dal PC
-                    reset(Screen.Link(s.optBoolean("google")))
+                    reset(Screen.Link)
                 } else state = s
             } catch (e: Exception) {
                 error = "Non riesco a raggiungere BunkerPlex (${Api.base})."
