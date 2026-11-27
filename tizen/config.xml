@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BunkerPlex per le TV Samsung (Tizen). L'app e' una cornice: dentro c'e' la PWA
+     centrale (la stessa del browser della TV), con l'aspetto da TV e l'accesso dal
+     telefono. L'app aggiunge l'icona sulla Home, i tasti del telecomando (Indietro,
+     play/pausa...) e l'uscita con Indietro dalla Home. Vedi tizen/LEGGIMI.md. -->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="https://bunkerplex.it/tizen" version="1.0.0" viewmodes="maximized">
+  <tizen:application id="BnkrPlex01.BunkerPlex" package="BnkrPlex01" required_version="3.0"/>
+  <tizen:profile name="tv-samsung"/>
+  <content src="index.html"/>
+  <icon src="icon.png"/>
+  <name>BunkerPlex</name>
+  <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
+  <access origin="*" subdomains="true"/>
+  <tizen:allow-navigation>*</tizen:allow-navigation>
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable"
+                 encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

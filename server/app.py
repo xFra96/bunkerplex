@@ -3687,7 +3687,9 @@ def auth_state():
             "google": cloud_on and bool(cloud_status.get("google")),
             "reset": cloud_on and bool(cloud_status.get("reset")),
             "server": SERVER_NAME, "pc": pc_name(), "owner": owner["name"] if owner else "",
-            "claim": claim_info() if cloud_on else None}
+            "claim": claim_info() if cloud_on else None,
+            # La PWA centrale: l'indirizzo da aprire nel browser di una smart TV (Samsung, LG...)
+            "central": accounts.cloud_url() if cloud_on else ""}
 
 
 # ---- Profili dell'account («Chi guarda?», come Netflix) ------------------------------
@@ -4546,8 +4548,12 @@ def auth_pair_start(request: Request):
     host = request.headers.get("host", "")
     port = host.rsplit(":", 1)[1] if ":" in host and not host.endswith("]") else "32500"
     ip = private_ip(host)
-    url = f"http://{ip}:{port}/#/pair/{code}" if ip else ""
-    return {"code": code, "url": url, "base": f"http://{ip}:{port}" if ip else "",
+    # Il browser di una smart TV (Samsung, LG...) a casa di un amico apre il server dal
+    # suo indirizzo pubblico: il QR porta li', non alla rete di casa del PC
+    name = host.rsplit(":", 1)[0].strip("[]").lower()
+    base = f"https://{name}" if name.endswith(".ts.net") else (f"http://{ip}:{port}" if ip else "")
+    url = f"{base}/#/pair/{code}" if base else ""
+    return {"code": code, "url": url, "base": base,
             "svg": qr_svg(url) if url else "", "qr": qr_rows(url) if url else [], "ttl": PAIR_TTL}
 
 
