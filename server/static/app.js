@@ -945,6 +945,16 @@ function cSave() {
   var o = {};
   C_SAVED.forEach(function (k) { o[k] = C[k]; });
   try { localStorage.setItem('bpCentral', JSON.stringify(o)); } catch (e) { /* niente */ }
+  cShareToken();
+}
+
+// Il gettone dell'account all'app Android del telefono: l'installazione sulle TV Samsung
+// lo usa per chiedere il certificato anche quando poi si guarda dal server di casa
+// (dove la pagina non ce l'ha). Subito, prima di passare al server.
+function cShareToken() {
+  if (!APP || !C.token || typeof tvApp.ssAccount !== 'function' || cShareToken.sent === C.token) return;
+  cShareToken.sent = C.token;
+  callSafe(function () { tvApp.ssAccount(C.token); });
 }
 
 function cLoad() {
@@ -953,7 +963,7 @@ function cLoad() {
     C_SAVED.forEach(function (k) { if (o[k] !== undefined) C[k] = o[k]; });
   } catch (e) { /* niente */ }
 }
-if (CENTRAL) cLoad();
+if (CENTRAL) { cLoad(); cShareToken(); }
 
 // Sessione su un server, per non crearne una nuova a ogni apertura
 function cSessKey(sid) { return 'bpSess:' + sid; }
