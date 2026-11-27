@@ -256,7 +256,9 @@ object Notices {
 /** Gli avvisi istantanei da Firebase Cloud Messaging (messaggi "data" ad alta priorita'). */
 class NoticePush : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
-        Notices.received(applicationContext, message.data)
+        // Versione nuova dell'app (topic "app-update", per tutti i telefoni): vedi AppUpdates
+        if (message.data["kind"] == "app_update") AppUpdates.pushed(applicationContext, message.data)
+        else Notices.received(applicationContext, message.data)
     }
 
     /** Firebase ha cambiato il gettone di questo telefono: lo sa subito anche il servizio account. */

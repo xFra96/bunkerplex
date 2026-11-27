@@ -32,6 +32,7 @@
 // aggiornamenti, che e' privato: i PC senza token propri si aggiornano da qui
 // (vedi /aggiornamenti/ e /scarica). GITHUB_REPO se diverso da xFra96/bunkerplex.
 
+const BREVO_CRON = '0 6 * * 1';   // come in wrangler.toml
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
 const LOCK_FAILS = 5;         // password sbagliate prima del blocco
 const LOCK_SECONDS = 300;
@@ -45,12 +46,17 @@ export default {
       return json({ detail: 'Errore del servizio account' }, 500);
     }
   },
-  // Trigger cron (una volta a settimana): Brevo spegne le chiavi API che non
-  // usa nessuno per 90 giorni, e le email di recupero possono mancare a lungo.
+  // Trigger cron. Una volta a settimana: Brevo spegne le chiavi API che non usa
+  // nessuno per 90 giorni, e le email di recupero possono mancare a lungo.
+  // Ogni ora: una release nuova dell'app Android sfuggita a POST /app-update.
   async scheduled(event, env) {
-    if (resetOn(env)) {
-      await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': env.BREVO_API_KEY, Accept: 'application/json' } });
+    if (event.cron === BREVO_CRON) {
+      if (resetOn(env)) {
+        await fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': env.BREVO_API_KEY, Accept: 'application/json' } });
+      }
+      return;
     }
+    await announceApp(env).catch(() => null);
   }
 };
 
@@ -616,8 +622,11 @@ async function claimUserRoutes(request, env, path, method, user) {
 // Con la credenziale del server si leggono e scrivono i dati del proprietario che
 // servono al server (impostazioni, visti, profili): cosi' funziona anche quando sul PC
 // il proprietario e' entrato solo dalla PWA o dalla TV (gettone d'accesso, nessuna password).
+// /notices: il server collegato con il codice manda gli avvisi (nuovi titoli, aggiornamenti) al
+// telefono del proprietario anche se lui sul PC non ha mai scritto la password.
 const SERVER_AS_OWNER = [['GET', /^\/me$/], ['GET', /^\/settings$/], ['PUT', /^\/settings$/], ['GET', /^\/state$/],
-  ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/]];
+  ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/],
+  ['POST', /^\/notices$/], ['GET', /^\/notices$/]];
 
 async function serverAsOwner(request, env, path, method) {
   if (!/^Bearer s_/.test(request.headers.get('Authorization') || '')) return null;
@@ -3195,6 +3204,9 @@ async function route(request, env) {
   if (path === '/scarica' && method === 'GET') {
     return download(env);
   }
+  if (path === '/app-update' && method === 'POST') {
+    return json(await announceApp(env));
+  }
 
   // Primo amministratore: solo se non c'e' ancora nessun account e con la chiave segreta
   if (path === '/setup' && method === 'POST') {
@@ -3944,6 +3956,120 @@ async function updates(request, env, url) {
   const want = (request.headers.get('Accept') || '').split(',')[0].trim();
   const accept = GH_ACCEPT.includes(want) ? want : GH_ACCEPT[0];
   return ghPass(await ghRequest(env, path + query, accept));
+}
+
+// ---- Aggiornamento dell'app Android: avviso a tutti i telefoni
+//
+// Appena esce una release app-vX.Y, .github/workflows/app-android.yml chiama
+// POST /app-update (e ogni ora il cron riprova, se quella chiamata e' andata persa):
+// qui si manda un messaggio FCM al topic "app-update", a cui ogni app per telefono e
+// tablet si iscrive da sola. L'app confronta il numero con quello installato e mostra
+// «Aggiornamento di BunkerPlex disponibile» (android/app/.../AppUpdates.kt).
+// Il topic e' uguale per tutti e la versione la dice GitHub, non chi chiama: per
+// questo la chiamata non chiede credenziali. Una volta per versione (kv 'app_update').
+
+const APP_TOPIC = 'app-update';
+const APP_PREFIX = 'app-v';
+const APP_PING_SECONDS = 20;     // POST /app-update: al massimo un giro su GitHub ogni 20 s
+
+function appVersion(tag) {
+  if (!tag.startsWith(APP_PREFIX)) return null;
+  const parts = tag.slice(APP_PREFIX.length).split('.');
+  if (!parts.length || parts.length > 3 || !parts.every((p) => /^\d{1,6}$/.test(p))) return null;
+  const n = parts.map(Number);
+  while (n.length < 3) n.push(0);
+  return n;
+}
+
+const versionCmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+
+// L'ultima release pubblicata dell'app: { tag, name, code } (code da BunkerPlex.json), o null
+async function latestApp(env) {
+  const r = await ghRequest(env, 'git/matching-refs/tags/' + APP_PREFIX, GH_ACCEPT[0]);
+  if (!r.ok) return null;
+  const refs = await r.json().catch(() => []);
+  const tags = (Array.isArray(refs) ? refs : [])
+    .map((x) => String((x && x.ref) || '').replace(/^refs\/tags\//, ''))
+    .map((tag) => ({ tag, v: appVersion(tag) }))
+    .filter((x) => x.v)
+    .sort((a, b) => versionCmp(b.v, a.v));
+  for (const { tag } of tags.slice(0, 3)) {
+    const rr = await ghRequest(env, 'releases/tags/' + tag, GH_ACCEPT[0]);
+    if (!rr.ok) continue;
+    const rel = await rr.json().catch(() => ({}));
+    if (rel.draft || rel.prerelease) continue;
+    const assets = rel.assets || [];
+    const meta = assets.find((a) => a.name === 'BunkerPlex.json');
+    if (!meta || !assets.some((a) => a.name === 'BunkerPlex.apk')) continue;   // allegati non ancora caricati
+    let res = await ghRequest(env, 'releases/assets/' + meta.id, 'application/octet-stream');
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const where = res.headers.get('Location') || '';
+      if (!/^https:\/\//.test(where)) continue;
+      res = await fetch(where);
+    }
+    if (!res.ok) continue;
+    const info = await res.json().catch(() => ({}));
+    const code = Number(info.code);
+    if (!Number.isSafeInteger(code) || code <= 0) continue;
+    return { tag, name: cleanText(info.version || tag.slice(APP_PREFIX.length), 20), code };
+  }
+  return null;
+}
+
+async function kvGet(env, k) {
+  return env.DB.prepare('SELECT v FROM kv WHERE k = ?').bind(k).first('v');
+}
+
+async function kvSet(env, k, v) {
+  await env.DB.prepare('INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').bind(k, String(v)).run();
+}
+
+// Un messaggio "data" ad alta priorita' a tutti gli iscritti a un topic (stato HTTP di FCM)
+async function sendFcmTopic(env, sa, topic, payload) {
+  const data = {};
+  for (const [k, v] of Object.entries(payload)) if (v != null) data[k] = String(v);
+  const send = async () => fetch('https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(sa.project_id) + '/messages:send', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + await fcmAccessToken(env, sa), 'Content-Type': 'application/json' },
+    // Telefono spento o senza rete: FCM lo consegna appena torna, entro una settimana
+    body: JSON.stringify({ message: { topic, data, android: { priority: 'high', ttl: '604800s' } } })
+  });
+  let res = await send();
+  if (res.status === 401) {
+    fcmAuth = null;
+    res = await send();
+  }
+  return res.status;
+}
+
+async function announceApp(env) {
+  const sa = fcmAccount(env);
+  if (!sa) return { sent: false, reason: 'FCM non configurato' };
+  await ensureNotices(env);
+  const at = Number(await kvGet(env, 'app_update_at')) || 0;
+  if (now() - at < APP_PING_SECONDS) return { sent: false, reason: 'Riprova tra poco' };
+  await kvSet(env, 'app_update_at', now());
+  const latest = await latestApp(env);
+  if (!latest) return { sent: false, reason: "Nessuna release dell'app su GitHub" };
+  // La versione si prende prima di spedire: due chiamate insieme non mandano due notifiche
+  const before = await kvGet(env, 'app_update');
+  if (latest.code <= (Number(before) || 0)) return { sent: false, version: latest.name, code: latest.code };
+  const claim = before == null
+    ? await env.DB.prepare("INSERT OR IGNORE INTO kv(k, v) VALUES('app_update', ?)").bind(String(latest.code)).run()
+    : await env.DB.prepare("UPDATE kv SET v = ? WHERE k = 'app_update' AND v = ?").bind(String(latest.code), before).run();
+  if (!claim.meta.changes) return { sent: false, version: latest.name, code: latest.code };
+  const status = await sendFcmTopic(env, sa, APP_TOPIC, {
+    kind: 'app_update', code: latest.code, name: latest.name,
+    title: 'Aggiornamento di BunkerPlex disponibile',
+    body: `È uscita la versione ${latest.name} dell'app BunkerPlex. Tocca per aggiornarla.`
+  }).catch(() => 502);
+  if (status !== 200) {
+    // Si riprova alla prossima chiamata (o al prossimo giro del cron)
+    if (before == null) await env.DB.prepare("DELETE FROM kv WHERE k = 'app_update'").run();
+    else await kvSet(env, 'app_update', before);
+    return { sent: false, reason: 'FCM ha risposto ' + status };
+  }
+  return { sent: true, version: latest.name, code: latest.code };
 }
 
 // Link da dare a chi installa BunkerPlex la prima volta: l'ultimo BunkerPlex.zip.

@@ -11,6 +11,7 @@
 # Notifiche istantanee (Firebase Cloud Messaging): il segreto GOOGLE_SERVICES_JSON e'
 # il file google-services.json del progetto Firebase (vedi docs/notifiche-firebase.md).
 # Senza segreto l'APK si fa lo stesso: le notifiche arrivano col controllo ogni 15 minuti.
+# Dopo la pubblicazione il servizio account avvisa tutti i telefoni (POST /app-update).
 
 name: Pubblica l'app Android
 
@@ -139,3 +140,17 @@ jobs:
           fi
           # I server e le app di prima prendono l'app dalla release fissa app-tv
           gh release upload app-tv out/BunkerPlex.apk --clobber || true
+
+      # I telefoni lo sanno subito: il servizio account legge la release appena
+      # pubblicata e manda a tutti la notifica «Aggiornamento di BunkerPlex
+      # disponibile» (FCM, topic app-update). Se qui non va, ci riprova il suo cron orario.
+      - name: Avvisa i telefoni
+        continue-on-error: true
+        run: |
+          sleep 10
+          for i in 1 2 3; do
+            out=$(curl -fsS -X POST https://bunkerplex-account.bunkerplex.workers.dev/app-update) && echo "$out"
+            case "$out" in *'"sent":true'*|*'"code":'*) exit 0 ;; esac
+            sleep 30
+          done
+          echo "::warning::Il servizio account non ha mandato la notifica: ci riprova da solo entro un'ora"

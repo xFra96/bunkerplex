@@ -49,7 +49,8 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <!-- Firebase si accende solo con «Attiva le notifiche» (mai sulle TV) -->
+        <!-- Firebase si accende sul telefono all'avvio (topic degli aggiornamenti, AppUpdates)
+             o con «Attiva le notifiche»; mai sulle TV -->
         <meta-data
             android:name="firebase_messaging_auto_init_enabled"
             android:value="false" />
@@ -66,7 +67,7 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <!-- Controllo periodico degli aggiornamenti dell'app: notifica quando ne esce uno (AppUpdates) -->
+        <!-- Controllo periodico degli aggiornamenti dell'app, di riserva al topic FCM (AppUpdates) -->
         <service
             android:name=".AppUpdateJob"
             android:exported="false"

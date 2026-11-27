@@ -39,13 +39,31 @@ Se resta «per ora l'app controlla gli avvisi ogni 15 minuti circa»: il segreto
 oppure il telefono non ha Google Play. Appena il segreto è giusto l'app passa da sola alle notifiche istantanee
 (al primo controllo o alla prossima apertura).
 
+## Aggiornamenti del server
+
+Il server avvisa il telefono del proprietario (avvisi dell'account, tipo «aggiornamenti»):
+
+- **«BunkerPlex aggiornato»** dopo ogni aggiornamento installato, anche quello automatico di notte
+  (`notice_updated` in `server/app.py`, con il numero della versione);
+- **«Aggiornamento di BunkerPlex disponibile»** quando l'installazione automatica è spenta (`notice_update_available`).
+
+Partono alla sincronizzazione con il servizio account, anche se il server è collegato con il codice e il
+proprietario sul PC non ha mai scritto la password (il Worker accetta `/notices` con la credenziale del server).
+
 ## Aggiornamenti dell'app
 
-Indipendente dagli avvisi dell'account e da Firebase: l'app Android (telefono e tablet, non TV) controlla da
-sola ogni 6 ore circa, anche chiusa, l'ultima release `app-v*` su GitHub (`AppUpdates.kt`, `AppUpdateJob`).
-Se è più nuova di quella installata mostra **«Aggiornamento di BunkerPlex disponibile»** sul canale
-«Aggiornamenti dell'app», una volta per versione; toccandola si apre l'app, che propone «Aggiorna ora».
-Con l'app aperta non si notifica (lo propone già la pagina). Serve il permesso delle notifiche: da Android 13
+Sul telefono e sul tablet (non sulle TV) arriva **«Aggiornamento di BunkerPlex disponibile»** appena esce una
+release `app-v*`, anche con l'app chiusa e senza aver attivato gli avvisi dell'account (canale «Aggiornamenti
+dell'app», una volta per versione); toccandola si apre l'app, che propone «Aggiorna ora».
+
+- **Subito, con FCM**: a ogni avvio l'app si iscrive al topic `app-update` (`AppUpdates.kt`). Finita la
+  pubblicazione, `.github/workflows/app-android.yml` chiama `POST /app-update` del Worker, che legge da GitHub
+  l'ultima release (numero da `BunkerPlex.json`) e manda a tutti un messaggio «data» ad alta priorità
+  (`announceApp` in `cloud/worker.js`, una volta per versione: kv `app_update`). Se quella chiamata va persa,
+  ci riprova il cron orario del Worker. Nessun dato personale: il topic è uguale per tutti, e la versione la
+  dice GitHub, non chi chiama (per questo `POST /app-update` non chiede credenziali).
+- **Di riserva** (APK senza Firebase, telefono senza Google Play): `AppUpdateJob` chiede a GitHub ogni 6 ore
+  circa, quando Android lo lascia girare (con l'app usata poco anche una volta al giorno). Serve il permesso delle notifiche: da Android 13
 l'app lo chiede una volta sola al primo avvio (preferenza `notify_asked`); chi dice di no può darlo dopo con
 «Attiva le notifiche» o dalle impostazioni di Android.
 
