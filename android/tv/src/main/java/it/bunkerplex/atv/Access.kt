@@ -82,7 +82,8 @@ fun MainActivity.proceed() {
             when {
                 user == null -> reset(if (CloudTv.on(this)) Screen.Servers else Screen.Who)
                 Access.src == null -> reset(Screen.Servers)
-                !Access.whoDone && (user.optJSONArray("watchers")?.length() ?: 0) > 1 -> reset(Screen.Watchers)
+                // «Chi guarda?» del server: solo se la sessione di questa TV non ha gia' un profilo
+                !Access.whoDone && user.isNull("watcher") && (user.optJSONArray("watchers")?.length() ?: 0) > 1 -> reset(Screen.Watchers)
                 else -> reset(Screen.Home)
             }
         }

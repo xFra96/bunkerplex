@@ -17,15 +17,24 @@
 <body>
 <div id="intro" aria-hidden="true"><div class="intro-glow"></div><div class="intro-box"><div class="intro-word"><span class="intro-badge"><svg viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a7f45"/><path class="intro-play" d="M25 18l22 14-22 14z" fill="#ffffff"/></svg></span><span class="intro-name"><b><i style="--i:0">B</i><i style="--i:1">u</i><i style="--i:2">n</i><i style="--i:3">k</i><i style="--i:4">e</i><i style="--i:5">r</i></b><i style="--i:6">P</i><i style="--i:7">l</i><i style="--i:8">e</i><i style="--i:9">x</i></span></div><i class="intro-line"></i></div></div>
 <script>
-/* Apertura: il nome compare e lascia il posto alla Home. Una volta per sessione,
-   mai sui dispositivi lenti o con le animazioni ridotte. */
+/* Apertura: il nome compare e lascia il posto alla Home. Una volta sola, all'apertura
+   (prima dell'accesso, se c'e'): mai al ritorno dall'accesso (Google, link dell'email,
+   un'altra pagina di BunkerPlex), mai sui dispositivi lenti o con le animazioni ridotte. */
 (function () {
   var el = document.getElementById('intro');
   var skipIt = false;
   try {
     var prefs = JSON.parse(localStorage.getItem('fpDevice')) || {};
-    skipIt = sessionStorage.getItem('fp-intro') === '1' || prefs.anim === 'lite' || (prefs.anim !== 'full' && prefs.slow);
+    var last = +localStorage.getItem('fp-intro-at') || 0, now = Date.now();
+    var ref = '';
+    try { ref = document.referrer ? new URL(document.referrer).origin : ''; } catch (e) {}
+    skipIt = sessionStorage.getItem('fp-intro') === '1' ||
+      ref === location.origin ||                           // da un'altra pagina di qui (es. fine di Google)
+      /^#\/(entra|attiva|reset)\?/.test(location.hash) ||  // link dell'email per entrare
+      (now > last && now - last < 120000) ||                // appena vista (es. l'app riaperta dopo Google)
+      prefs.anim === 'lite' || (prefs.anim !== 'full' && prefs.slow);
     sessionStorage.setItem('fp-intro', '1');
+    if (!skipIt) localStorage.setItem('fp-intro-at', String(now));
   } catch (e) {}
   if (skipIt) { el.parentNode.removeChild(el); return; }
   var done = false;

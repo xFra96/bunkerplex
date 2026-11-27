@@ -1043,7 +1043,6 @@ function cForget() {
   cDrop();
   C.token = ''; C.user = null; C.sid = ''; C.list = null; C.friends = []; C.profiles = null; C.pid = null;
   cache.pinAsk = null; cache.pEdit = null;
-  try { sessionStorage.removeItem('bpWho'); } catch (e) { /* niente */ }
   cSave();
 }
 
@@ -1082,7 +1081,8 @@ async function cProfiles(force) {
 }
 
 // Si chiede «Chi guarda?» (come Netflix): con piu' profili, o con un solo profilo con il PIN.
-// A ogni apertura dell'app; il profilo di prima resta proposto per primo.
+// Una volta per dispositivo: il profilo scelto resta (anche chiudendo l'app) finche' non
+// si cambia da «Cambia profilo», finche' esiste e, se ha il PIN, finche' vale il suo biglietto.
 function cNeedWho() {
   var list = C.profiles || [];
   if (!list.length) return false;
@@ -1091,8 +1091,7 @@ function cNeedWho() {
     return false;
   }
   if (C.pid === null || !profById(C.pid)) return true;
-  if ((profById(C.pid) || {}).pin && !cTicketGet(C.pid)) return true;
-  try { return sessionStorage.getItem('bpWho') !== '1'; } catch (e) { return false; }
+  return !!((profById(C.pid) || {}).pin && !cTicketGet(C.pid));
 }
 
 // Apre un profilo nel servizio (con il PIN, se ne ha uno): biglietto per i server.
@@ -8430,7 +8429,6 @@ var actions = {
       try {
         sessionStorage.setItem('fpNoAuto', '1');
         sessionStorage.removeItem('fpServer:' + who);
-        sessionStorage.removeItem('fpWho:' + who);
       } catch (e) { /* niente */ }
       cache.srvData = null;
       cache.pinAsk = null; cache.pEdit = null; cache.claimPrev = null;
@@ -9638,20 +9636,14 @@ function canManageProfiles() {
   return !!(u && !u.guest && !u.friend);
 }
 
-// «Chi guarda?» gia' risposto in questa apertura dell'app
-function whoKey() {
-  return CENTRAL && C.profiles ? 'bpWho' : 'fpWho:' + (auth && auth.user ? auth.user.id : '');
-}
-
-// Servita dal server: con piu' profili (o uno solo con il PIN) si chiede a ogni apertura
+// Servita dal server: con piu' profili (o uno solo con il PIN) si chiede finche' la
+// sessione di questo dispositivo non ha un profilo; poi resta, anche chiudendo l'app
 function needWatcher() {
   if (CENTRAL && C.profiles) return false;
   var u = auth && auth.user, list = profList();
   if (!u || !list.length) return false;
   if (list.length === 1 && !list[0].pin) return false;
-  if (u.watcher === null || u.watcher === undefined) return true;
-  // A ogni apertura si richiede chi guarda (il profilo resta proposto per primo)
-  try { return sessionStorage.getItem(whoKey()) !== '1'; } catch (e) { return false; }
+  return u.watcher === null || u.watcher === undefined;
 }
 
 function watcherName() {
@@ -9728,7 +9720,6 @@ function whoChoose(id, pin) {
   go.then(function () {
     whoChoose.busy = false;
     cache.pinAsk = null;
-    try { sessionStorage.setItem(whoKey(), '1'); } catch (e) { /* niente */ }
     toast('Ciao ' + p.name);
     if (location.hash === '#/home') render(); else location.replace('#/home');
   }, function (e) {

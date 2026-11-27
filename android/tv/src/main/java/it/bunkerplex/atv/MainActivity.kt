@@ -114,7 +114,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Api.load(this)
-        Access.reset()                   // a ogni apertura: server e «Chi guarda?» da scegliere
+        Access.reset()                   // a ogni apertura si riparte dal profilo e dal server di prima
         setupImages()
         // A ogni apertura si chiede a GitHub (Releases.check): se la risposta arriva
         // quando si e' gia' sulla Home, la versione nuova si propone li'

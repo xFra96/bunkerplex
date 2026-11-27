@@ -44,8 +44,9 @@ import org.json.JSONObject
 // ---------------------------------------------------------------- Profili dell'account
 //
 // «Chi guarda?» come Netflix: con l'account i profili stanno nel servizio account e
-// sono gli stessi su ogni TV, telefono e server. Si sceglie dopo l'accesso, a ogni
-// apertura dell'app, PRIMA del server. Aprendo un profilo (col PIN, se ne ha uno) il
+// sono gli stessi su ogni TV, telefono e server. Si sceglie dopo l'accesso, PRIMA del
+// server, e resta scelto anche chiudendo l'app (fino a «Cambia profilo»; con il PIN
+// finche' vale il suo biglietto). Aprendo un profilo (col PIN, se ne ha uno) il
 // servizio da' un biglietto che vale 30 giorni: la TV lo tiene per profilo e lo passa
 // al server (/api/auth/access, /api/profiles/select), cosi' la sessione nasce gia' sul
 // profilo e il PIN si chiede solo qui. Senza account (o senza Internet) resta il
@@ -91,6 +92,11 @@ object CloudProfiles {
         prefs(ctx).edit().putString("cloud_profile", p.toString())
             .putString("cloud_ticket_$id", r.optString("ticket"))
             .putLong("cloud_ticket_exp_$id", r.optLong("exp")).apply()
+    }
+
+    /** Il profilo scelto con i dati di adesso (nome, avatar, bambini), senza riaprirlo. */
+    fun update(ctx: Context, p: JSONObject) {
+        prefs(ctx).edit().putString("cloud_profile", p.toString()).apply()
     }
 
     /** Il profilo scelto e' per bambini. */
@@ -218,13 +224,26 @@ fun ProfilesScreen(act: MainActivity, s: Screen.Profiles) {
     LaunchedEffect(round) {
         try {
             val l = withContext(Dispatchers.IO) { CloudProfiles.list(act) }
-            // Un solo profilo senza PIN: si salta, come Netflix
-            if (s.auto && !s.change && l.size == 1 && !l[0].optBoolean("pin")) {
-                val r = try { withContext(Dispatchers.IO) { CloudProfiles.open(act, l[0].optInt("id"), null) } } catch (_: Exception) { null }
-                if (r != null) {
-                    CloudProfiles.save(act, r, l[0])
-                    act.reset(Screen.Servers)
-                    return@LaunchedEffect
+            if (s.auto && !s.change) {
+                // Il profilo scelto l'altra volta (se c'e' ancora), oppure l'unico senza PIN:
+                // si salta «Chi guarda?», come Netflix
+                val curId = CloudProfiles.current(act)?.optInt("id", -1) ?: -1
+                val keep = l.firstOrNull { it.optInt("id", -2) == curId }
+                    ?: l.singleOrNull()?.takeIf { !it.optBoolean("pin") }
+                if (keep != null) {
+                    val id = keep.optInt("id")
+                    val ok = when {
+                        // Con il PIN: il biglietto di prima, se vale ancora (altrimenti si richiede)
+                        keep.optBoolean("pin") ->
+                            CloudProfiles.ticket(act, id).isNotEmpty().also { if (it) CloudProfiles.update(act, keep) }
+                        else -> withContext(Dispatchers.IO) {
+                            runCatching { CloudProfiles.open(act, id, null) }.getOrNull()
+                        }?.let { CloudProfiles.save(act, it, keep); true } ?: false
+                    }
+                    if (ok) {
+                        act.reset(Screen.Servers)
+                        return@LaunchedEffect
+                    }
                 }
             }
             msg = null
