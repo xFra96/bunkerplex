@@ -1495,6 +1495,8 @@ function cTvPending() {
 }
 
 function cTvSet(code) {
+  // La TV lo dice subito: «Codice aperto sul telefono» (dal QR o scritto a mano)
+  if (code && code !== cache.cTvCode) fetch('/tv/' + code + '/seen', { method: 'POST' }).catch(function () { /* niente */ });
   cache.cTvCode = code;
   try {
     if (code === null) sessionStorage.removeItem('bpTvCode'); else sessionStorage.setItem('bpTvCode', code);
@@ -1542,6 +1544,15 @@ function smartTvName() {
   return /Tizen/i.test(ua) ? 'TV Samsung' : /Web0S|webOS|NetCast/i.test(ua) ? 'TV LG' : /VIDAA/i.test(ua) ? 'TV Hisense' : 'Smart TV';
 }
 
+// La riga di stato della TV: in attesa, codice aperto sul telefono ('ok'), rete assente ('net')
+function cTvStatus(kind) {
+  var el = document.getElementById('gstatus');
+  if (!el) return;
+  el.className = 'gstatus' + (kind === 'ok' ? ' ok' : kind === 'net' ? ' warn' : '');
+  el.lastChild.textContent = kind === 'ok' ? 'Codice aperto sul telefono: entra lì e la TV entra da sola'
+    : kind === 'net' ? 'Rete assente: riprovo…' : 'In attesa del telefono…';
+}
+
 async function cTvLoginPage() {
   var t = cache.cTvLogin;
   if (!t || Date.now() - t.at > (t.ttl - 60) * 1000) {
@@ -1552,15 +1563,22 @@ async function cTvLoginPage() {
   clearInterval(cache.cTvTimer);
   cache.cTvTimer = setInterval(function () {
     if (C.token || cache.cTvLogin !== t) { clearInterval(cache.cTvTimer); return; }
+    // Scaduto: un codice nuovo prima che la TV ne mostri uno che non vale piu'
+    if (Date.now() - t.at > (t.ttl - 60) * 1000) { clearInterval(cache.cTvTimer); cache.cTvLogin = null; render(); return; }
     cloud('POST', '/tv/poll', { poll: t.poll }).then(function (r) {
-      if (!r.done || cache.cTvLogin !== t) return;
+      if (cache.cTvLogin !== t) return;
+      if (!r.done) { cTvStatus(r.seen ? 'ok' : ''); return; }
       clearInterval(cache.cTvTimer);
       cache.cTvLogin = null;
       cEntered(r);
       toast('Entrato come ' + r.user.username);
       location.replace('#/home');
       render();
-    }, function () { clearInterval(cache.cTvTimer); cache.cTvLogin = null; render(); });   // scaduto: codice nuovo
+    }, function (e) {
+      if (cache.cTvLogin !== t) return;
+      if (!e.status) { cTvStatus('net'); return; }           // rete: il codice resta buono, si riprova
+      clearInterval(cache.cTvTimer); cache.cTvLogin = null; render();   // scaduto: codice nuovo
+    });
   }, 2500);
   var site = t.short.replace(/^https?:\/\//, '');
   return '<div class="auth"><div class="tvlink">' +
@@ -1569,7 +1587,8 @@ async function cTvLoginPage() {
     '<div class="tvcols"><div class="tvcol">' +
       '<small class="tvstep">Sul telefono apri BunkerPlex e vai in <b>Collega una TV</b>, oppure apri <span class="num">' + esc(site) + '</span>, e scrivi</small>' +
       '<div class="tvcode num">' + esc(t.code.slice(0, 4)) + '<i></i>' + esc(t.code.slice(4)) + '</div>' +
-      '<small>Il codice cambia ogni 10 minuti</small></div></div>' +
+      '<small>Il codice cambia da solo ogni 10 minuti</small></div></div>' +
+    '<div class="gstatus" id="gstatus" style="margin-top:1.6rem"><i></i><span>In attesa del telefono…</span></div>' +
     '<div class="tvmore"><button class="btn f" data-autofocus data-act="ctvpw" data-key="ctvpw">Entra qui con email o Google</button></div>' +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') +
     '</div></div>';
@@ -1584,8 +1603,6 @@ async function cGate() {
   var tvm = /^#\/tv(?:\/([A-Za-z0-9-]{1,12}))?$/.exec(location.hash);
   if (tvm) {
     cTvSet(cTvClean(tvm[1]));
-    // La TV lo dice subito: «Codice aperto sul telefono»
-    if (tvm[1]) fetch('/tv/' + cTvClean(tvm[1]) + '/seen', { method: 'POST' }).catch(function () { /* niente */ });
     cache.cTvDone = null;
     location.replace('#/home');
   }
