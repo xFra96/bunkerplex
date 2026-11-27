@@ -18,10 +18,11 @@ var PHONE_APP = APP && typeof tvApp.isTv === 'function' && !callSafe(function ()
 var TV = APP && !PHONE_APP;          // true dentro l'app su Android TV
 // Il browser di una smart TV senza Android (Samsung con Tizen, LG con webOS, Hisense con
 // VIDAA...): niente app da installare, ma aspetto da TV e accesso dal telefono come nell'app
-var SMART_TV = !APP && /Tizen|Web0S|webOS|NetCast|HbbTV|VIDAA|SmartTV|SMART-TV/i.test(navigator.userAgent);
+var SMART_TV = !APP && (/Tizen|Web0S|webOS|NetCast|HbbTV|VIDAA|SmartTV|SMART-TV/i.test(navigator.userAgent) ||
+  /[?&]app=tizen/.test(location.search));
 // Dentro l'app per le TV Samsung (tizen/): la pagina sta in una cornice dell'app, che le
 // passa i tasti arrivati a lei e si chiude quando qui si preme Indietro dalla Home
-var TV_WRAP = window.parent !== window && (SMART_TV || /[?&]app=tizen/.test(location.search));
+var TV_WRAP = window.parent !== window && SMART_TV;
 // Dentro l'app per iPhone e iPad: la pagina e' quella del browser (video in HLS), l'app
 // aggiunge solo il cambio di server e Tailscale per fuori casa
 var kb = TV;                         // l'ultimo comando e' arrivato da tasti/telecomando
@@ -415,25 +416,6 @@ async function googlePage(link) {
   var status = '<div class="gstatus" id="gstatus"><i></i><span></span></div>';
   setTimeout(function () { gStatusShow(g); }, 0);
 
-  // Sulla TV: come «Collega questa TV», il QR da una parte e il codice dall'altra
-  if (TV) {
-    return '<div class="auth"><div class="tvlink">' +
-      '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
-      '<h1>' + (link ? 'Collega Google' : 'Entra con Google') + '</h1>' +
-      '<p class="authsub">' + (link ? 'Scegli dal telefono l\'account Google da collegare' : 'Scegli il tuo account Google dal telefono: la TV entra da sola') + '</p>' +
-      status +
-      '<div class="tvcols">' +
-        '<div class="tvcol">' + (g.svg ? '<div class="qrtile big" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
-          '<b>Inquadra il QR</b><small>con la fotocamera del telefono, anche fuori casa</small></div>' +
-        '<div class="tvor"><span>oppure</span></div>' +
-        '<div class="tvcol"><small class="tvstep">Dal telefono o dal PC apri <b class="num">' + esc(addr) + '</b> e scrivi</small>' +
-          '<div class="tvcode num">' + codeHtml + '</div>' +
-          '<small>Il codice cambia da solo ogni 10 minuti</small></div>' +
-      '</div>' +
-      '<div class="tvmore"><a class="btn f" data-autofocus href="' + back + '" data-key="gback">Indietro</a>' +
-      '<button class="btn f" data-act="gnew" data-key="gnew">Codice nuovo</button></div>' +
-      '</div></div>';
-  }
   var openBtn = canOpen ? '<button class="gbtn f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">' + GOOGLE_G +
     '<span>' + (link ? 'Scegli l\'account da collegare' : 'Scegli l\'account Google') + '</span></button>' : '';
   var other = '<div class="gqr">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
@@ -634,7 +616,6 @@ function loginPage() {
     '<button class="btn primary block f" data-act="login" data-key="login">Entra</button>' +
     (auth.reset ? '<a class="authlink f" href="#/reset" data-key="forgot">Password dimenticata?</a>' : '') +
     googleWide() +
-    (TV ? '<a class="authlink f" href="#/home" data-key="who-phone">Entra con il telefono (QR o codice)</a>' : '') +
     (APP ? '<button class="authlink f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') +
     claimBox());
 }
@@ -793,6 +774,7 @@ async function serversPage() {
   }
   var req = waiting.map(function (f) {
     return '<div class="srvreq"><span><b>' + esc(f.username) + '</b> vuole essere tuo amico</span>' +
+      '<button class="btn f" data-act="srvdecline" data-arg="' + f.id + '" data-key="srvdec-' + f.id + '">Rifiuta</button>' +
       '<button class="btn primary f" data-act="srvaccept" data-arg="' + f.id + '" data-key="srvacc-' + f.id + '">Accetta</button></div>';
   }).join('');
   return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server' + (u.guest ? '' : ': il tuo e quelli dei tuoi amici') + '</p>' +
@@ -1465,8 +1447,6 @@ async function cServersPage() {
   });
   // Un profilo bambini non aggiunge, non personalizza e non toglie server
   var kids = kidsNow();
-  var addSrv = cache.cEdit || kids ? '' : '<button class="srv add f" data-act="cclaim" data-key="cclaim"><span class="srvart">' + PLUS_ICON + '</span>' +
-    '<span class="srvtxt"><b>Aggiungi un server</b><small>Con il codice che compare sul server</small></span></button>';
   // Gli amici senza server nell'elenco: si vedono lo stesso (non condividono, o sono spenti)
   var friends = C.friends || [];
   friends.forEach(function (f) {
@@ -1486,8 +1466,8 @@ async function cServersPage() {
   var sent = friends.filter(function (f) { return f.status === 'sent'; }).map(function (f) { return esc(f.username); });
   return { html: authShell('<h1>Cosa guardi oggi?</h1><p class="authsub">Scegli il server: i tuoi e quelli dei tuoi amici</p>' + reachLegend(kinds) +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') + req +
-    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC: lì compare un codice da scrivere qui in «Aggiungi un server».</p>') +
-    srvGrid([{ title: 'I tuoi server', cards: mine, extra: addSrv,
+    (list.length ? '' : '<p class="authnote">Nessun server nel tuo account. Installa BunkerPlex su un PC, entra lì con il tuo account e premi «Collega al mio account».</p>') +
+    srvGrid([{ title: 'I tuoi server', cards: mine,
       tool: !kids && (mine.length || same.length) ? '<button class="srvtool f" data-act="cedit" data-key="cedit">' + (cache.cEdit ? 'Fatto' : 'Personalizza') + '</button>' : '' }]
       .concat(same, [{ title: 'Amici', cards: cache.cEdit ? [] : theirs, extra: cache.cEdit ? '' : add }]),
       mine.length + theirs.length + same.reduce(function (n, g) { return n + g.cards.length; }, 0)) +
@@ -1911,37 +1891,6 @@ function cOffSheet(idx) {
     '<div class="actions"><button class="btn f" data-act="cpick" data-arg="' + esc(idx) + '" data-key="off-try">Prova a collegarti</button>' +
       (kidsNow() ? '' : '<button class="btn danger f" data-act="cforget" data-arg="' + esc(s.sid) + '" data-key="off-forget">Togli dall\'elenco</button>') +
       '<button class="btn f" data-act="closemodal" data-key="off-close">Chiudi</button></div></div>';
-  modal.hidden = false;
-  var first = modal.querySelector('.f');
-  if (first) first.focus();
-}
-
-// Server nuovo da aggiungere con il codice (come plex.tv/claim): codice, poi anteprima,
-// nome e (se sulla stessa macchina c'e' un tuo server spento) sostituirlo o tenerlo
-function cClaimSheet() {
-  var st = cache.cClaim || (cache.cClaim = {});
-  var info = st.info;
-  var body;
-  if (!info) {
-    body = '<p class="secretnote">Sul PC con BunkerPlex appena installato compare un codice di 8 caratteri ' +
-      '(nella pagina di accesso e in Impostazioni → Account). Scrivilo qui: il server entra nel tuo account.</p>' +
-      '<input class="field f num claimcode" id="clcode" data-key="clcode" maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="cclaimcheck" placeholder="ABCD2345" value="' + esc(st.code || '') + '">' +
-      '<div class="actions"><button class="btn primary f" data-act="cclaimcheck" data-key="clcheck">Continua</button>' +
-      '<button class="btn f" data-act="closemodal" data-key="clclose">Annulla</button></div>';
-  } else if (info.taken || info.mine) {
-    body = '<p class="secretnote">' + (info.taken ? 'Questo server è già collegato a un altro account: lo può aggiungere solo il suo proprietario.'
-      : '«' + esc(info.name || 'PC') + '» è già tra i tuoi server.') + '</p>' +
-      '<div class="actions"><button class="btn f" data-act="closemodal" data-key="clclose">Chiudi</button></div>';
-  } else {
-    body = '<p class="secretnote">Codice <b class="num">' + esc(info.code) + '</b>' + (info.version ? ' · ' + esc(srvVersion(info.version)) : '') + '</p>' +
-      '<label class="flabel" for="clname">Nome del server</label>' +
-      '<input class="field f" id="clname" data-key="clname" maxlength="40" autocomplete="off" data-enter="cclaimgo" value="' + esc(st.name) + '">' +
-      sameMachineHtml(info.same_machine || [], st.replace, 'cclaimpick') +
-      '<div class="actions"><button class="btn primary f" data-act="cclaimgo" data-key="clgo">' + (st.replace ? 'Sostituisci' : 'Aggiungi') + '</button>' +
-      '<button class="btn f" data-act="closemodal" data-key="clclose">Annulla</button></div>';
-  }
-  modalState = { options: [], onPick: function () {}, returnFocus: modalState && modalState.returnFocus || document.activeElement };
-  modal.innerHTML = '<div class="sheet srvlook claimsheet"><h3>Aggiungi un server</h3>' + body + '</div>';
   modal.hidden = false;
   var first = modal.querySelector('.f');
   if (first) first.focus();
@@ -2695,41 +2644,6 @@ function cActions() {
           } catch (e) { toast(e.message); }
         });
     },
-    cclaim: function () { cache.cClaim = {}; cClaimSheet(); },
-    cclaimcheck: async function () {
-      var code = fieldValue('clcode').toUpperCase().replace(/[^A-Z0-9]/g, '');
-      if (code.length !== 8) { toast('Il codice è di 8 caratteri'); return; }
-      try {
-        var info = await cloud('GET', '/claim/' + code);
-        // Proposta: sostituire il primo tuo server spento sulla stessa macchina (prende il suo nome)
-        var old = (info.same_machine || []).filter(function (x) { return !x.online; })[0];
-        cache.cClaim = { code: code, info: info, replace: old ? old.sid : '', name: old ? old.name : (info.name || '') };
-        cClaimSheet();
-      } catch (e) { toast(e.message); }
-    },
-    cclaimpick: function (sid) {
-      var st = cache.cClaim;
-      if (!st || !st.info) return;
-      st.name = claimPickName(st.info.same_machine || [], st.replace, sid, fieldValue('clname'), st.info.name);
-      st.replace = sid || '';
-      cClaimSheet();
-      var b = modal.querySelector('[data-key="cl-' + (sid || 'new') + '"]');
-      if (b) b.focus();
-    },
-    cclaimgo: async function () {
-      var st = cache.cClaim;
-      if (!st || !st.info) return;
-      var name = fieldValue('clname').trim();
-      if (!name) { toast('Dai un nome al server'); return; }
-      try {
-        var r = await cloud('POST', '/claim/' + st.code, st.replace ? { name: name, replace: st.replace } : { name: name });
-        cache.cClaim = null;
-        closeModal(true);
-        toast(r.replaced ? '«' + r.name + '» ora è il server nuovo: tra poco risulta acceso' : 'Server «' + r.name + '» aggiunto: tra poco risulta acceso');
-        C.list = null;
-        render();
-      } catch (e) { toast(e.message); }
-    },
     ctvgo: function () {
       var code = cTvClean(fieldValue('ctvcode'));
       if (code.length !== 8) { toast('Il codice della TV ha 8 caratteri'); return; }
@@ -2936,13 +2850,13 @@ function cActions() {
         cDrop();
         // Il consiglio sull'indirizzo pubblico solo se il server non si raggiunge
         C.error = (s.name || 'PC') + ': ' + e.message + (!e.net ? ''
-          : s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: Impostazioni → App → Da ovunque)'
+          : s.role === 'owner' ? ' (fuori casa serve l\'indirizzo pubblico acceso sul server: dal PC, Impostazioni → App per TV e telefono → Da ovunque)'
             : ' (fuori casa il server di ' + s.owner.username + ' deve avere l\'indirizzo pubblico acceso)');
         render();
       }
     },
     crefresh: function () { C.list = null; C.error = ''; render(); },
-    // Aperte dall'app fuori casa (remote.html, setup.html): si torna li'; se no all'accesso
+    // Aperte dall'app senza Internet (setup.html): si torna li'; se no all'accesso
     cappback: function () {
       if (tvCall('closeAppSettings') === true) return;
       location.hash = '#/home';
@@ -4420,6 +4334,8 @@ function showSecret(title, name, pass, label) {
 function settingsAreas() {
   var out = [];
   if (auth && auth.user) out.push(['account', 'Account', 'account']);
+  // Dal telefono o dal PC: il codice che mostra la TV (le TV dicono «Impostazioni → Collega una TV»)
+  if (auth && auth.user && !auth.user.guest && !TVLOGIN) out.push(['tvlink', 'Collega una TV', 'account']);
   out.push(['friends', 'Amici', 'account']);
   if (adminHere()) out.push(['admin', 'Amministrazione', 'account']);
   out.push(['libraries', 'Raccolte', 'server'], ['catalog', 'Schede e sottotitoli', 'server'],
@@ -5035,7 +4951,7 @@ async function settingsArea(area) {
   if (area === 'admin') return adminArea();
   // Pagine accorpate: i vecchi indirizzi (link, segnalibri) portano a quelle nuove
   if (area === 'subtitles') { location.replace('#/settings/catalog'); return ''; }
-  if (area === 'apps' && TV) { location.replace('#/settings/device'); return ''; }
+  if (area === 'tvlink') { location.replace('#/tv'); return ''; }
   var res = await settingsData();
   var i = res[0];
   var inAccount = !!(auth && auth.user && auth.user.linked);
@@ -5206,12 +5122,12 @@ function appUpdatePanel(i) {
     '<p class="kvnote">Qui si aggiorna solo l\'app installata su ' + where + ', non il server. ' +
       (selfUpdating() ? 'Le versioni nuove arrivano da sole, anche senza aggiornare il server. ' : 'La versione nuova arriva dal server sul PC. ') +
       'Le pagine di BunkerPlex invece non vanno aggiornate: arrivano sempre nuove.</p>' +
-    (i.api && serverTooOld(i) ? '<p class="nodot">Questa app è più nuova del server: aggiorna il server (Server → Aggiornamenti) per usare tutte le funzioni.</p>' : '') +
+    (i.api && serverTooOld(i) ? '<p class="nodot">Questa app è più nuova del server: aggiorna il server (Impostazioni → Aggiorna server) per usare tutte le funzioni.</p>' : '') +
     '<div class="actions">' + (can ? '<button class="btn primary f" data-act="cappupdate" data-key="cappupdate">Aggiorna l\'app</button>' : '') +
       '<button class="btn' + (old && !can ? ' primary' : '') + ' f" data-act="checkupdate" data-key="checkupdate">Controlla aggiornamenti</button></div></div>';
 }
 
-// Dall'app Android sul telefono: installa l'app TV sulle TV di casa con adb,
+// Dall'app Android sul telefono: installa l'app BunkerPlex sulle TV di casa con adb,
 // senza PC (la pagina e' nell'app, tvinstall.html)
 function phoneTvOk() {
   try { return PHONE_APP && typeof tvApp.tvInstallSupported === 'function' && tvApp.tvInstallSupported(); } catch (e) { return false; }
@@ -5303,8 +5219,8 @@ function installPanel() {
 // - Android (telefono e tablet): solo l'app. Al posto di BunkerPlex c'e' la pagina per
 //   scaricare l'APK (la copia che tiene il server, /BunkerPlex.apk, anche prima
 //   dell'accesso), sempre, anche nella web app installata da Chrome;
-// - TV Android (Google TV, Fire TV, Bravia...) col suo browser: lo stesso, con l'app
-//   per la TV (/BunkerPlexTV.apk), che e' un'altra app, fatta per il telecomando;
+// - TV Android (Google TV, Fire TV, Bravia...) col suo browser: lo stesso APK (la stessa
+//   app del telefono: sulla TV ha l'aspetto da TV e il player della TV);
 // - iPhone, iPad e computer: il browser va bene, con l'invito a installare la web app
 //   (sulla pagina d'accesso una scheda sopra il modulo, dopo l'accesso una barra in
 //   basso). «Continua nel browser» la mette da parte per la visita, «Ce l'ho gia'» per
@@ -5323,8 +5239,8 @@ var GA_TEXT = {
     file: 'BunkerPlex.apk', btn: 'Scarica l\'app' },
   tv: {
     ico: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="13" rx="2"/><path d="M8 2.5l4 3.5 4-3.5"/></svg>',
-    title: 'Installa BunkerPlex sulla TV', sub: 'Sulla TV BunkerPlex si usa con la sua app, fatta per il telecomando.',
-    file: 'BunkerPlexTV.apk', btn: 'Scarica l\'app per la TV' },
+    title: 'Installa BunkerPlex sulla TV', sub: 'Sulla TV BunkerPlex si usa con la sua app: aspetto da TV, video col player della TV, e si aggiorna da sola.',
+    file: 'BunkerPlex.apk', btn: 'Scarica l\'app per la TV' },
   ios: {
     ico: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M8 7.5l4-4 4 4"/><path d="M8.5 10.5h-2v10h11v-10h-2"/></svg>',
     title: 'Metti BunkerPlex sulla schermata Home', sub: 'Si apre a tutto schermo, come un\'app. Niente da scaricare.',
@@ -5384,7 +5300,7 @@ function getAppSteps(kind) {
   }
   if (kind === 'tv') {
     return ['Premi <b>Scarica l\'app per la TV</b>.',
-      'Apri <b>BunkerPlexTV.apk</b> dai download e scegli <b>Installa</b>. Se la TV lo blocca, nelle sue impostazioni ' +
+      'Apri <b>BunkerPlex.apk</b> dai download e scegli <b>Installa</b>. Se la TV lo blocca, nelle sue impostazioni ' +
         'consenti a questo browser di installare le <b>app sconosciute</b> e riprova.',
       'Apri <b>BunkerPlex</b> sulla TV e collegala dal telefono: la TV entra da sola.'];
   }
@@ -5415,7 +5331,7 @@ function getAppList(kind) {
 function getAppOnlyCard(kind) {
   var t = GA_TEXT[kind];
   var info = getApp.info || {};
-  var missing = kind === 'tv' ? info.tv_apk_version === 0 : info.apk === false;
+  var missing = info.apk === false;
   var note = getApp.started
     ? '<p class="ganote">Download avviato: ' + (kind === 'tv' ? 'aprilo dai download del browser.' : 'lo trovi nelle notifiche o in <b>Download</b>.') + '</p>'
     : missing ? '<p class="ganote warn">Il server sta ancora prendendo l\'app: se il download non parte, riprova tra qualche minuto.</p>' : '';
@@ -7823,7 +7739,7 @@ function checkServerUpdate() {
       (TV ? ' Si aggiorna il server sul PC; se c\'è una nuova app, subito dopo la TV propone di installarla.' : ''),
       [{ value: 'yes', label: 'Aggiorna ora' }, { value: 'no', label: 'Più tardi' }], 'yes', function (answer) {
         if (answer === 'yes') startServerUpdate();
-        else { serverUpdateLater = sig; toast('Puoi aggiornare il server quando vuoi da Impostazioni → Aggiornamenti'); }
+        else { serverUpdateLater = sig; toast('Puoi aggiornare il server quando vuoi da Impostazioni → Aggiorna server'); }
       });
   }).catch(function () {});
 }
@@ -8055,6 +7971,12 @@ var actions = {
       render();
     }, function (e) { toast(e.message); });
   },
+  srvdecline: function (id) {
+    send('DELETE', '/account-friends/' + id).then(function () {
+      cache.srvData = null;
+      render();
+    }, function (e) { toast(e.message); });
+  },
   srvaccept: function (id) {
     post('/account-friends/' + id + '/accept').then(function () {
       toast('Ora siete amici: i suoi server compaiono tra poco');
@@ -8118,7 +8040,6 @@ var actions = {
       'Sì, togli il profilo', function () { profileDelete(ed.id); });
   },
   // --- collegamento di questo server a un account (codice, o direttamente)
-  claimcode: function () { claimShowCode(); },
   claimprep: function () { claimPrepare(); },
   claimpick: function (sid) {
     var st = cache.claimPrev;
@@ -9894,10 +9815,9 @@ function watcherChanged(r) {
 }
 
 // ---------------------------------------------------------------- Collegamento all'account
-// Un server nuovo entra nell'account solo quando il proprietario lo conferma (come
-// plex.tv/claim). Chi e' entrato qui con l'account lo collega con un tocco
-// (GET/POST /api/server/claim); altrimenti il server mostra un codice da scrivere in
-// BunkerPlex sul telefono (Server → Aggiungi un server) e aspetta da solo la conferma.
+// Un server entra in un account quando lo si crea: si entra qui con l'account e lo si
+// collega con un tocco (GET/POST /api/server/claim). Dopo si puo' solo togliere
+// («Togli dall'elenco» nella scelta dei server). Nessun codice da scrivere altrove.
 function claimOpen() {
   var c = auth && auth.claim;
   return !!(c && !c.claimed);
@@ -9927,16 +9847,10 @@ function claimBox(panel) {
         '<div class="actions"><button class="btn primary f" data-act="claimgo" data-key="claimgo">' + (st.replace ? 'Sostituisci e collega' : 'Collega') + '</button>' +
         '<button class="btn f" data-act="claimcancel" data-key="claimcancel">Annulla</button></div>';
     }
-  } else if (c.code && c.exp * 1000 > Date.now()) {
-    claimPoll();
-    body = '<p>Apri BunkerPlex sul telefono → <b>Server</b> → <b>Aggiungi un server</b> e scrivi questo codice:</p>' +
-      '<div class="tvcode small num claimcode">' + esc(c.code) + '</div>' +
-      '<p class="kvnote">Vale 15 minuti. Quando lo confermi, questo server entra nel tuo account da solo.</p>';
   } else {
-    // Il servizio ha detto che serve il collegamento: il codice compare da solo
-    if (c.need && !cache.claimAsked) { cache.claimAsked = true; setTimeout(claimShowCode, 0); }
-    body = '<p>Per vederlo dal telefono e da fuori casa collegalo al tuo account con un codice.</p>' +
-      '<div class="actions"><button class="btn primary f" data-act="claimcode" data-key="claimcode">Mostra il codice</button></div>';
+    // Non si e' ancora entrati con l'account (o con uno che non puo' collegarlo)
+    if (auth.user) return '';
+    body = '<p>Entra qui sotto con il tuo account BunkerPlex: poi lo colleghi con un tocco e lo ritrovi su ogni dispositivo, anche fuori casa.</p>';
   }
   return '<div class="' + (panel ? 'panel ' : '') + 'claimbox"><h2>Questo server non è collegato a un account</h2>' + body + '</div>';
 }
@@ -9969,36 +9883,6 @@ function claimPickName(same, oldSel, newSel, typed, fresh) {
     return s ? s.name : (fresh || '');
   }
   return typed && typed !== def(oldSel) ? typed : def(newSel);
-}
-
-function claimShowCode() {
-  post('/auth/claim').then(function (c) {
-    if (auth) auth.claim = c;
-    if (c.claimed) { auth = null; }
-    render();
-  }, function (e) { toast(e.message); });
-}
-
-// Finche' il codice e' a schermo si chiede ogni 5 secondi se e' stato confermato
-function claimPoll() {
-  if (cache.claimTimer) return;
-  cache.claimTimer = setTimeout(function () {
-    cache.claimTimer = 0;
-    if (!claimOpen() || !view.querySelector('.claimbox')) return;
-    api('/auth/claim').then(function (c) {
-      if (!auth) return;
-      var was = auth.claim || {};
-      auth.claim = c;
-      if (c.claimed) {
-        toast('Server collegato all\'account' + (c.owner ? ' di ' + c.owner : ''));
-        auth = null;
-        render();
-        return;
-      }
-      if (c.code !== was.code) { render(); return; }    // scaduto: si ridisegna
-      claimPoll();
-    }, function () { claimPoll(); });
-  }, 5000);
 }
 
 function claimPrepare() {
@@ -10295,7 +10179,7 @@ function activityState() {
   if (u && u.phase === 'host') {
     notes.push({ key: 'updhost', title: 'Aggiornamento del server da completare', text: 'Rilancia «Installa BunkerPlex» sul computer', href: '#/settings/updates' });
   } else if (i.update && !(u && u.phase)) {
-    notes.push({ key: 'upd', title: 'Server BunkerPlex: aggiornamento disponibile', text: 'Server' + srv + ': installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+    notes.push({ key: 'upd', title: 'Server BunkerPlex: aggiornamento disponibile', text: 'Server' + srv + ': installalo da Impostazioni → Aggiorna server', href: '#/settings/updates' });
   }
   if (i.updated) {
     var ch = i.updated.changes || [];
@@ -10581,8 +10465,8 @@ async function newsPage() {
   var u = i.updated;
   if (!u) {
     return '<div class="page"><div class="panel"><h1>Novità</h1><p>Nessun aggiornamento negli ultimi giorni. ' +
-      'La versione del server e i suoi aggiornamenti sono in Impostazioni → Aggiornamenti.</p>' +
-      '<div class="actions"><a class="btn f" href="#/settings/updates" data-key="news-upd">Impostazioni → Aggiornamenti</a></div></div></div>';
+      'La versione del server e i suoi aggiornamenti sono in Impostazioni → Aggiorna server.</p>' +
+      '<div class="actions"><a class="btn f" href="#/settings/updates" data-key="news-upd">Impostazioni → Aggiorna server</a></div></div></div>';
   }
   var when = new Date(u.at * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' });
   var list = (u.changes || []).map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('');

@@ -3878,6 +3878,12 @@ async function route(request, env) {
       fail(400, 'Richiesta non valida');
     }
     if (await hasCredential(env, user.id, sid)) fail(409, 'Questo server si aggiorna da solo con la sua credenziale');
+    // Presenza dei server di prima (senza credenziale): solo per un server che l'account ha
+    // gia'. Un server nuovo entra nell'account solo quando lo si collega entrando su di lui
+    // con l'account (codice di collegamento): niente server aggiunti a mano da un client.
+    if (!await env.DB.prepare('SELECT 1 FROM servers WHERE user_id = ? AND sid = ?').bind(user.id, sid).first()) {
+      fail(428, 'Per aggiungere un server al tuo account entra su di lui con il tuo account e collegalo');
+    }
     await serverWriter(env, user, sid);
     await env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, friends, pin, t, token_hash) VALUES(?,?,?,?,?,?,?,?,?) ' +
       'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +

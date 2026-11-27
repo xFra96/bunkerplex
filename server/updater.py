@@ -42,10 +42,11 @@ TOOLS = PROGRAM / "strumenti"
 CFG_FILE = TOOLS / "aggiornamenti.json"
 STATE_FILE = TOOLS / "versione.json"
 TOKEN_FILE = TOOLS / "github-token.txt"
-# Copie delle app per la prima installazione (vedi refresh_apps): app Android
-# (release app-v1.0...) e app TV nativa (tv-v1.0...), ognuna con la sua linea
+# Copia dell'app Android (telefono e TV) per la prima installazione (vedi refresh_apps,
+# release app-v1.0...)
 APK_FILE = PROGRAM / "apk" / "BunkerPlex.apk"
-TV_APK_FILE = PROGRAM / "apk" / "BunkerPlexTV.apk"
+# La copia della vecchia app TV nativa (tolta): si cancella
+OLD_TV_APK_FILE = PROGRAM / "apk" / "BunkerPlexTV.apk"
 AGENT_FILE = TOOLS / "agente.json"
 REQUEST_FILE = TOOLS / "richiesta-aggiornamento.json"
 RESULT_FILE = TOOLS / "esito-aggiornamento.json"
@@ -858,12 +859,12 @@ def snapshot():
 
 
 # ---- Le app sul PC, solo per installarle la prima volta
-# Le app si aggiornano da sole dalle loro release su GitHub (app Android: app-v*,
-# app TV nativa: tv-v*), senza passare dal server. Il server ne tiene comunque
+# L'app Android (telefono e TV) si aggiorna da sola dalle sue release su GitHub
+# (app-v*), senza passare dal server. Il server ne tiene comunque
 # una copia in apk\ per la prima installazione (QR per il telefono, installazione
 # sulla TV dal PC) e per le app di prima, che si aggiornavano da qui. La copia si
 # rinnova per conto suo, ogni 6 ore: non fa parte dell'aggiornamento del server.
-APPS = (("app-v", "BunkerPlex.apk", APK_FILE), ("tv-v", "BunkerPlexTV.apk", TV_APK_FILE))
+APPS = (("app-v", "BunkerPlex.apk", APK_FILE),)
 APPS_EVERY = 6 * 3600
 _apps = {"at": 0.0}
 _apps_lock = threading.Lock()
@@ -876,7 +877,7 @@ def _line_version(tag, prefix):
 
 
 def latest_app_asset(cfg, tok, prefix, name):
-    """L'APK dell'ultima release della linea (es. tv-v1.7), o None. Si parte dai
+    """L'APK dell'ultima release della linea (es. app-v1.7), o None. Si parte dai
     tag della linea: le release del server escono a ogni modifica e
     spingerebbero quelle delle app fuori dall'elenco."""
     refs = json.loads(_api(cfg, f"git/matching-refs/tags/{prefix}", tok, timeout=20))
@@ -907,6 +908,10 @@ def refresh_apps(force=False):
         if not cfg or not PROGRAM.is_dir():
             return APK_FILE.is_file()
         tok = token()
+        try:
+            OLD_TV_APK_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
         for prefix, name, dest in APPS:
             asset = latest_app_asset(cfg, tok, prefix, name)
             if not asset and prefix == "app-v":

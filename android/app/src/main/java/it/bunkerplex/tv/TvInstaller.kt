@@ -19,21 +19,25 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
- * Installa l'app BunkerPlex TV sulle TV Android di casa direttamente dal
- * telefono, con il "debug di rete" (adb sulla porta 5555), senza PC ne' server.
+ * Installa l'app BunkerPlex (la stessa del telefono: PWA con l'aspetto da TV e player
+ * nativo) sulle TV Android di casa direttamente dal telefono, con il "debug di rete"
+ * (adb sulla porta 5555), senza PC ne' server.
  *
  * Come tvinstall.py sul server, ma dentro l'app: cerca nella rete di casa le TV
  * con il debug acceso, si collega (la TV chiede una volta «Consentire il debug?»),
- * scarica l'APK dall'ultima release tv-v su GitHub, lo installa e apre l'app.
- * Da li' in poi l'app TV si aggiorna da sola.
+ * scarica l'APK dall'ultima release app-v su GitHub, lo installa e apre l'app.
+ * Se sulla TV c'e' ancora la vecchia app TV nativa (BunkerPlex TV) la toglie.
+ * Da li' in poi l'app sulla TV si aggiorna da sola.
  *
  * La chiave adb sta nei file dell'app: dopo «Consenti sempre» la TV non lo chiede piu'.
  * Serve Android 8 o piu' recente sul telefono (la libreria adb usa java.util.Base64).
  */
 object TvInstaller {
-    const val PACKAGE = "it.bunkerplex.atv"
-    private const val RELEASES = "tv-v"
-    private const val APK = "BunkerPlexTV.apk"
+    const val PACKAGE = "it.bunkerplex.tv"
+    private const val RELEASES = "app-v"
+    private const val APK = "BunkerPlex.apk"
+    /** La vecchia app TV nativa (tolta): se c'e' ancora sulla TV si disinstalla */
+    private const val OLD_PACKAGE = "it.bunkerplex.atv"
     private const val ADB_PORT = 5555
 
     fun supported() = Build.VERSION.SDK_INT >= 26
@@ -45,7 +49,7 @@ object TvInstaller {
     private class Device(val ip: String, val port: Int) {
         var name = ""
         var state = "found"          // found, device (collegata), unauthorized
-        var installed: Long? = null  // versione dell'app TV sulla TV, se c'e'
+        var installed: Long? = null  // versione di BunkerPlex sulla TV, se c'e'
         val key get() = "$ip:$port"
     }
 
@@ -221,18 +225,18 @@ object TvInstaller {
         target = dev.key
         say("Installo su $ip", "sep")
 
-        // 1. L'APK dall'ultima release tv-v (prima, cosi' la TV non aspetta)
+        // 1. L'APK dall'ultima release app-v (prima, cosi' la TV non aspetta)
         step = "install"
-        message = "Scarico l'app TV da GitHub…"
+        message = "Scarico l'app BunkerPlex da GitHub…"
         push(ctx)
         val latest = Releases.check(ctx, RELEASES, APK, true)
-            ?: throw IOException("Su GitHub non c'è ancora una versione dell'app TV.")
+            ?: throw IOException("Su GitHub non c'è ancora una versione dell'app BunkerPlex.")
         val apk = File(ctx.cacheDir, APK)
         Net.download(latest.url, apk, auth = false) { pct ->
-            message = "Scarico l'app TV da GitHub… $pct%"
+            message = "Scarico l'app BunkerPlex da GitHub… $pct%"
             push(ctx)
         }
-        say("Scaricata BunkerPlex TV ${latest.name} (${apk.length() / 1048576} MB)", "ok")
+        say("Scaricata BunkerPlex ${latest.name} (${apk.length() / 1048576} MB)", "ok")
         if (cancelled) throw InterruptedException()
 
         // 2. Collegamento: se la TV non conosce ancora il telefono mostra «Consentire il debug?»
@@ -259,7 +263,7 @@ object TvInstaller {
         dev.state = "device"
         dev.name = name
         dev.installed = try { versionOf(adb) } catch (_: Exception) { null }
-        say("Collegata: ${name.ifEmpty { ip }}" + (dev.installed?.let { " · app TV già presente" } ?: ""), "ok")
+        say("Collegata: ${name.ifEmpty { ip }}" + (dev.installed?.let { " · BunkerPlex già presente" } ?: ""), "ok")
 
         // 3. Installazione
         step = "install"
@@ -283,6 +287,14 @@ object TvInstaller {
         apk.delete()
         dev.installed = try { versionOf(adb) } catch (_: Exception) { latest.code }
         say("App installata", "ok")
+        // La vecchia app TV nativa non serve piu': una sola BunkerPlex sulla TV
+        try {
+            if (adb.shell("pm list packages $OLD_PACKAGE").output.contains(OLD_PACKAGE)) {
+                adb.uninstall(OLD_PACKAGE)
+                say("Tolta la vecchia app BunkerPlex TV", "ok")
+            }
+        } catch (_: Exception) {
+        }
 
         // 4. Si apre sulla TV
         try {

@@ -2,10 +2,9 @@
 
 Due linee, ognuna con i suoi numeri:
   - server (tag v1.2): il programma sul PC, cioe' tutto tranne android/;
-  - app (tag app-v1.2): l'app Android per telefoni e TV (android/ tranne
-    android/tv/), giro suo (workflows/app-android.yml);
-  - tv (tag tv-v1.2): l'app nativa per la TV (android/tv/ e android/comune/),
-    con il suo giro di pubblicazione.
+  - app (tag app-v1.2): l'app Android per telefoni e TV (android/), giro suo
+    (workflows/app-android.yml).
+(La vecchia app TV nativa, tag tv-v, e' stata tolta: le TV Android usano l'app.)
 (Su iPhone e iPad si usa la PWA: l'app iOS e' stata tolta, resta nel tag pre-pwa.)
 
 Lo usa il giro "Pubblica la release" (workflows/apk.yml) a ogni push su main.
@@ -19,15 +18,15 @@ il passo piu' grande):
   - correzione (1.1.1): tutto il resto (correzioni, ritocchi, testi, README).
 Il passo si puo' sempre decidere a mano, e allora vince:
   - un'etichetta sulla pull request: "major", "minor", "patch" per il server,
-    "app-major", "app-minor", "app-patch" per l'app, "tv-major"... per la TV;
+    "app-major", "app-minor", "app-patch" per l'app;
   - oppure una riga nel messaggio del commit: "Versione: maggiore" per il
-    server, "Versione app: minore" per l'app, "Versione TV: ..." (maggiore, minore, correzione;
+    server, "Versione app: minore" per l'app (maggiore, minore, correzione;
     vanno bene anche major, minor, patch).
 
 Le versioni di prima avevano la data (v2026.11.23.6): non contano come
 precedenti, la prima versione col numero nuovo e' la 1.0.
 
-Uso: python3 .github/versione.py [server|app|tv]   (stampa il tag, es. v1.2 o app-v1.0)
+Uso: python3 .github/versione.py [server|app]   (stampa il tag, es. v1.2 o app-v1.0)
      python3 .github/versione.py --test
 """
 import json
@@ -42,12 +41,8 @@ LINES = {
     # prefisso del tag, codice che conta, percorsi dei commit (None = tutti), etichette, riga nel messaggio
     "server": {"prefix": "v", "code": ("server/", "cloud/"), "paths": None, "label": "",
                "trailer": re.compile(r"^\s*versione\s*:\s*(\w+)\s*$", re.I | re.M)},
-    "app": {"prefix": "app-v", "code": ("android/",), "skip": ("android/tv/",),
-            "paths": ["android", ":(exclude)android/tv"], "label": "app-",
+    "app": {"prefix": "app-v", "code": ("android/",), "paths": ["android"], "label": "app-",
             "trailer": re.compile(r"^\s*versione\s+app\s*:\s*(\w+)\s*$", re.I | re.M)},
-    "tv": {"prefix": "tv-v", "code": ("android/tv/", "android/comune/"),
-           "paths": ["android/tv", "android/comune"], "label": "tv-",
-           "trailer": re.compile(r"^\s*versione\s+tv\s*:\s*(\w+)\s*$", re.I | re.M)},
 }
 line = LINES["server"]
 
@@ -176,11 +171,6 @@ def test():
     assert guess([("M", 500, "server/app.py")]) == 1
     assert asked("Titolo\n\nVersione app: maggiore", ["minor"]) == 3
     assert asked("Versione: maggiore", ["app-patch"]) == 1
-    assert guess([("A", 300, "android/tv/Main.kt")]) == 1
-    line = LINES["tv"]
-    assert parse("tv-v1.0") == (1, 0, 0) and parse("app-v1.0") is None
-    assert guess([("A", 300, "android/tv/Main.kt")]) == 2
-    assert asked("Versione TV: minore", ["app-major"]) == 2
     print("ok")
 
 
