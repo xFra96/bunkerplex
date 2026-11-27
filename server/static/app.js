@@ -2366,6 +2366,15 @@ function qrSvgRows(rows) {
 }
 
 // Lo stato del pannello: dati dal servizio e il passo in corso
+// Dove stanno passkey e 2FA: il servizio account. Dalla PWA centrale ci si parla
+// direttamente; dal server di casa (anche nell'app) si passa da /api/auth/sec.
+function secDirect() { return !!(CENTRAL && C.token); }
+
+function secApi(method, path, body) {
+  if (secDirect()) return cloud(method, path, body);
+  return method === 'GET' ? api('/auth/sec' + path) : send(method, '/auth/sec' + path, body);
+}
+
 function secState() {
   if (!cache.sec) cache.sec = { mode: '', err: '' };
   return cache.sec;
@@ -2374,11 +2383,12 @@ function secState() {
 async function secLoad() {
   var st = secState();
   try {
-    var r = await Promise.all([cloud('GET', '/passkeys'), cloud('GET', '/2fa')]);
+    var r = await Promise.all([secApi('GET', '/passkeys'), secApi('GET', '/2fa')]);
     st.pk = r[0].passkeys || [];
     st.mail = !!r[0].mail;
     st.password = r[0].password !== false;
     st.tfa = r[1];
+    st.service = r[0].service || '';
     st.loadErr = '';
   } catch (e) { st.loadErr = e.message; }
   secDraw();
@@ -2395,21 +2405,20 @@ function secDraw() {
 
 // Il riquadro, per una pagina: nella PWA centrale si riempie da solo
 function secBox() {
-  if (!CENTRAL || !C.token) {
-    return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Passkey (impronta o volto) e verifica in due passaggi si gestiscono ' +
-      'dall\'app BunkerPlex sul telefono o dalla pagina del servizio account, in Impostazioni → Account.</p></div>';
-  }
+  if (!secDirect() && !(auth && auth.user && auth.user.linked && auth.cloud)) return '';
   setTimeout(secLoad, 0);
-  return '<div id="secbox"><div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Un attimo…</p></div></div>';
+  return '<div id="secbox" class="secbox">' + secWait() + '</div>';
 }
+
+function secWait() { return '<div class="secsec"><h2>Impronta e volto (passkey)</h2><p>Un attimo…</p></div>'; }
 
 function secWhen(t) { return t ? whenDate(t) : 'mai'; }
 
 function secHtml() {
   var st = secState();
   var err = st.err ? '<p class="secerr" role="alert">' + esc(st.err) + '</p>' : '';
-  if (st.loadErr) return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p class="secerr">' + esc(st.loadErr) + '</p></div>';
-  if (!st.tfa) return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Un attimo…</p></div>';
+  if (st.loadErr) return '<div class="secsec"><h2>Sicurezza dell\'accesso</h2><p class="secerr">' + esc(st.loadErr) + '</p></div>';
+  if (!st.tfa) return secWait();
   var cancel = '<button class="btn f" data-act="seccancel" data-key="seccancel">Annulla</button>';
   var code = function (id, act) {
     return '<input class="field f num" id="' + id + '" data-key="' + id + '" data-autofocus inputmode="numeric" autocomplete="one-time-code" ' +
@@ -2418,7 +2427,7 @@ function secHtml() {
 
   if (st.mode === 'verify') {
     var tfaOn = st.tfa && st.tfa.on, pks = (st.pk || []).length && pkOn();
-    return '<div class="panel"><h2>Conferma che sei tu</h2><p>Per cambiare passkey e verifica in due passaggi, prima conferma che sei tu.</p>' + err +
+    return '<div class="secsec"><h2>Conferma che sei tu</h2><p>Per cambiare passkey e verifica in due passaggi, prima conferma che sei tu.</p>' + err +
       (st.password ? '<input class="field f" id="secpw" data-key="secpw" data-autofocus type="password" autocomplete="current-password" ' +
         'data-enter="secverify" placeholder="La tua password">' : '') +
       (tfaOn ? '<p><small>Oppure il codice dell\'app di autenticazione:</small></p>' + code('seccode', 'secverify').replace(' data-autofocus', st.password ? '' : ' data-autofocus') : '') +
@@ -2429,7 +2438,7 @@ function secHtml() {
   }
   if (st.mode === 'setup' && st.setup) {
     var key = st.setup.secret.replace(/(.{4})/g, '$1 ').trim();
-    return '<div class="panel"><h2>Attiva la verifica in due passaggi</h2>' +
+    return '<div class="secsec"><h2>Attiva la verifica in due passaggi</h2>' +
       '<p>1. Apri un\'app di autenticazione (Google Authenticator, Microsoft Authenticator, 1Password…) e aggiungi BunkerPlex:</p>' +
       '<div class="secqr"><div class="qrtile" role="img" aria-label="Codice QR per l\'app di autenticazione">' + qrSvgRows(qrRows(st.setup.uri)) + '</div>' +
       '<div><p><small>Inquadra il QR, oppure scrivi questa chiave:</small></p><p class="seckey">' + esc(key) + '</p>' +
@@ -2439,7 +2448,7 @@ function secHtml() {
       '<div class="actions"><button class="btn primary f" data-act="tfaenable" data-key="tfaenable">Attiva</button>' + cancel + '</div></div>';
   }
   if (st.mode === 'codes' && st.codes) {
-    return '<div class="panel"><h2>Codici di recupero</h2>' +
+    return '<div class="secsec"><h2>Codici di recupero</h2>' +
       '<p>Servono se perdi il telefono: ognuno vale <b>una volta sola</b>. Salvali adesso in un posto sicuro (non li vedrai più).</p>' +
       '<div class="reccodes">' + st.codes.map(function (c) { return '<span>' + esc(c) + '</span>'; }).join('') + '</div>' +
       '<div class="actions"><button class="btn f" data-act="seccopy" data-key="seccopy">Copia</button>' +
@@ -2447,21 +2456,21 @@ function secHtml() {
       '<button class="btn primary f" data-autofocus data-act="secdone" data-key="secdone">Li ho salvati</button></div></div>';
   }
   if (st.mode === 'tfaoff' || st.mode === 'tfanew') {
-    return '<div class="panel"><h2>' + (st.mode === 'tfaoff' ? 'Disattiva la verifica in due passaggi' : 'Nuovi codici di recupero') + '</h2>' +
+    return '<div class="secsec"><h2>' + (st.mode === 'tfaoff' ? 'Disattiva la verifica in due passaggi' : 'Nuovi codici di recupero') + '</h2>' +
       '<p>Scrivi il codice dell\'app di autenticazione (o uno di recupero).' + (st.mode === 'tfanew' ? ' I codici di prima non varranno più.' : '') + '</p>' +
       err + code('secoff', st.mode === 'tfaoff' ? 'tfadisable' : 'tfarecovery') +
       '<div class="actions"><button class="btn ' + (st.mode === 'tfaoff' ? 'danger' : 'primary') + ' f" data-act="' + (st.mode === 'tfaoff' ? 'tfadisable' : 'tfarecovery') +
       '" data-key="secoffgo">' + (st.mode === 'tfaoff' ? 'Disattiva' : 'Crea i codici') + '</button>' + cancel + '</div></div>';
   }
   if (st.mode === 'rm' && st.rm) {
-    return '<div class="panel"><h2>Togli «' + esc(st.rm.label) + '»</h2>' +
+    return '<div class="secsec"><h2>Togli «' + esc(st.rm.label) + '»</h2>' +
       '<p>Ti abbiamo scritto a <b>' + esc(st.rm.to) + '</b>: scrivi il codice a 6 cifre dell\'email (vale 15 minuti).</p>' + err +
       code('secrmcode', 'secrmok') +
       '<div class="actions"><button class="btn danger f" data-act="secrmok" data-key="secrmok">Togli la passkey</button>' +
       '<button class="btn f" data-act="secrmagain" data-key="secrmagain">Mandalo di nuovo</button>' + cancel + '</div></div>';
   }
   if (st.mode === 'ren' && st.ren) {
-    return '<div class="panel"><h2>Rinomina la passkey</h2>' + err +
+    return '<div class="secsec"><h2>Rinomina la passkey</h2>' + err +
       '<input class="field f" id="secname" data-key="secname" data-autofocus maxlength="60" data-enter="secrenok" value="' + esc(st.ren.label) + '">' +
       '<div class="actions"><button class="btn primary f" data-act="secrenok" data-key="secrenok">Salva</button>' + cancel + '</div></div>';
   }
@@ -2474,13 +2483,15 @@ function secHtml() {
       '<button class="btn danger f" data-act="secrm" data-arg="' + i + '" data-key="secrm-' + i + '">Togli</button></div></div>';
   }).join('');
   var t = st.tfa;
-  return '<div class="panel"><h2>Impronta e volto (passkey)</h2>' +
+  return '<div class="secsec"><h2>Impronta e volto (passkey)</h2>' +
     '<p>Entri con impronta, volto o il PIN del dispositivo, senza password. Aggiungerne una chiede di confermare che sei tu; ' +
     (st.mail ? 'toglierla si conferma con un codice via email.' : 'anche toglierla.') + '</p>' + err +
     (rows ? '<div class="seclist">' + rows + '</div>' : '<p><small>Ancora nessuna passkey.</small></p>') +
     (pkOn() ? '<div class="actions"><button class="btn primary f" data-act="secadd" data-key="secadd">Aggiungi questo dispositivo</button></div>'
+      : st.service && window.PublicKeyCredential ? '<div class="actions"><button class="btn primary f" data-act="secaddthere" data-key="secadd">Aggiungi questo dispositivo</button></div>' +
+        '<p><small>Si apre la pagina del servizio account: le passkey valgono lì.</small></p>'
       : '<p><small>Questo browser non le supporta.</small></p>') + '</div>' +
-    '<div class="panel"><h2>Verifica in due passaggi</h2>' +
+    '<div class="secsec"><h2>Verifica in due passaggi</h2>' +
     (t.on ? '<p>' + dot(true) + ' Attiva: dopo la password serve il codice dell\'app di autenticazione. Codici di recupero rimasti: <b>' + t.recovery_left + '</b>' +
         (t.trusted ? '. Dispositivi ricordati: <b>' + t.trusted + '</b>' : '') + '.</p>' +
         '<div class="actions"><button class="btn f" data-act="tfanewask" data-key="tfanewask">Nuovi codici di recupero</button>' +
@@ -2521,8 +2532,8 @@ function secActions() {
       if (!pw && !code) { st.err = 'Scrivi la password' + (st.tfa && st.tfa.on ? ' o il codice' : ''); secDraw(); return; }
       return (async function () {
         try {
-          if (pw) await cloud('POST', '/passkeys/verify', { verifier: await cVerifier(C.user.username, pw) });
-          else await cloud('POST', '/passkeys/verify', { code: code });
+          if (pw) await secApi('POST', '/passkeys/verify', secDirect() ? { verifier: await cVerifier(C.user.username, pw) } : { password: pw });
+          else await secApi('POST', '/passkeys/verify', { code: code });
           await secAfterVerify();
         } catch (e) { st.err = e.message; secDraw(); }
       })();
@@ -2534,7 +2545,7 @@ function secActions() {
           var o = await cloud('POST', '/passkeys/verify/start', {});
           var a = await navigator.credentials.get({ publicKey: { challenge: b64uDec(o.challenge), rpId: o.rpId, userVerification: 'required',
             timeout: o.timeout, allowCredentials: o.allow.map(function (id) { return { type: 'public-key', id: b64uDec(id) }; }) } });
-          await cloud('POST', '/passkeys/verify', { id: a.id, clientDataJSON: b64uEnc(a.response.clientDataJSON),
+          await secApi('POST', '/passkeys/verify', { id: a.id, clientDataJSON: b64uEnc(a.response.clientDataJSON),
             authenticatorData: b64uEnc(a.response.authenticatorData), signature: b64uEnc(a.response.signature) });
           await secAfterVerify();
         } catch (e) {
@@ -2550,6 +2561,12 @@ function secActions() {
         await secLoad();
       });
     },
+    secaddthere: function () {
+      var st = secState();
+      if (!st.service) return;
+      var url = st.service.replace(/\/+$/, '') + '/#/sicurezza';
+      if (APP) location.href = url; else window.open(url, '_blank', 'noopener');
+    },
     secren: function (i) {
       var st = secState(), p = (st.pk || [])[Number(i)];
       if (!p) return;
@@ -2559,7 +2576,7 @@ function secActions() {
       var st = secState(), p = st.ren, name = fieldValue('secname').trim();
       if (!p) return;
       return secRun(async function () {
-        await cloud('PATCH', '/passkeys/' + encodeURIComponent(p.id), { label: name });
+        await secApi('PATCH', '/passkeys/' + encodeURIComponent(p.id), { label: name });
         st.mode = ''; st.ren = null;
         await secLoad();
       });
@@ -2568,7 +2585,7 @@ function secActions() {
       var st = secState(), p = (st.pk || [])[Number(i)];
       if (!p) return;
       return secRun(async function () {
-        var r = await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
+        var r = await secApi('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
         if (r.removed) { toast('Passkey tolta'); st.mode = ''; await secLoad(); return; }
         st.rm = { id: p.id, label: p.label, to: r.to }; st.mode = 'rm'; secDraw();
       });
@@ -2577,7 +2594,7 @@ function secActions() {
       var st = secState(), p = st.rm;
       if (!p) return;
       return secRun(async function () {
-        var r = await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
+        var r = await secApi('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
         p.to = r.to || p.to;
         toast('Codice mandato di nuovo');
         secDraw();
@@ -2587,7 +2604,7 @@ function secActions() {
       var st = secState(), p = st.rm, code = fieldValue('secrmcode');
       if (!p) return;
       return secRun(async function () {
-        await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove/confirm', { code: code });
+        await secApi('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove/confirm', { code: code });
         toast('Passkey tolta');
         st.mode = ''; st.rm = null;
         await secLoad();
@@ -2596,16 +2613,16 @@ function secActions() {
     tfaon: function () {
       var st = secState();
       return secRun(async function () {
-        st.setup = await cloud('POST', '/2fa/setup', {});
+        st.setup = await secApi('POST', '/2fa/setup', {});
         st.mode = 'setup'; secDraw();
       });
     },
     tfaenable: function () {
       var st = secState(), code = fieldValue('secnew');
       return secRun(async function () {
-        var r = await cloud('POST', '/2fa/enable', { code: code });
+        var r = await secApi('POST', '/2fa/enable', { code: code });
         st.setup = null; st.codes = r.recovery; st.mode = 'codes';
-        C.user.totp = true; cSave();
+        if (secDirect() && C.user) { C.user.totp = true; cSave(); }
         secDraw();
       });
     },
@@ -2614,22 +2631,22 @@ function secActions() {
     tfadisable: function () {
       var st = secState(), code = fieldValue('secoff');
       return secRun(async function () {
-        await cloud('POST', '/2fa/disable', { code: code });
+        await secApi('POST', '/2fa/disable', { code: code });
         toast('Verifica in due passaggi disattivata');
-        C.user.totp = false; cSave();
+        if (secDirect() && C.user) { C.user.totp = false; cSave(); }
         st.mode = ''; await secLoad();
       });
     },
     tfarecovery: function () {
       var st = secState(), code = fieldValue('secoff');
       return secRun(async function () {
-        var r = await cloud('POST', '/2fa/recovery', { code: code });
+        var r = await secApi('POST', '/2fa/recovery', { code: code });
         st.codes = r.recovery; st.mode = 'codes'; secDraw();
       });
     },
     tfaforget: function () {
       return secRun(async function () {
-        await cloud('DELETE', '/2fa/trust');
+        await secApi('DELETE', '/2fa/trust');
         toast('Da tutti i dispositivi servirà di nuovo il codice');
         await secLoad();
       });
@@ -2657,7 +2674,7 @@ function secPage() {
   cache.sec = null;
   return authShell('<div class="authico">' + LOCK_ICON + '</div><h1>Sicurezza dell\'accesso</h1>' +
     '<p class="authsub">Passkey e verifica in due passaggi del tuo account <b>' + esc(C.user ? C.user.username : '') + '</b></p>' +
-    '<div class="secpage">' + secBox() + '</div>' +
+    '<div class="secpage panel">' + secBox() + '</div>' +
     '<a class="authlink f" href="#/home" data-key="secback">Indietro</a>', true);
 }
 
@@ -10644,7 +10661,8 @@ function pollActivity() {
   }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });
 }
 
-if (CENTRAL) Object.assign(actions, cActions(), cPkActions(), secActions());
+if (CENTRAL) Object.assign(actions, cActions(), cPkActions());
+Object.assign(actions, secActions());
 loadAuth().then(function () {
   if (auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();
