@@ -5766,7 +5766,8 @@ def pc_name():
 
 
 # ---- Aggiornamenti da GitHub ----------------------------------------------
-# Il lavoro lo fa updater.py: controllo ogni 12 ore, installazione automatica
+# Il lavoro lo fa updater.py: controllo appena esce una release (avviso dal servizio
+# account nella presenza; senza avvisi ogni 12 ore), installazione automatica
 # quando nessuno sta guardando (si puo' spegnere) oppure a richiesta, da PC o TV.
 
 def auto_update():
@@ -10985,6 +10986,9 @@ def heartbeat(body, cred):
         domain = ""
     new = domain != secure["domain"]
     secure.update(domain=domain, names=res.get("names") if isinstance(res.get("names"), dict) else {})
+    rel = res.get("release")
+    if isinstance(rel, dict):
+        updater.notify(str(rel.get("commit") or ""), str(rel.get("version") or ""))
     if new and domain:
         secure_wake.set()           # dominio nuovo: si chiede il certificato
 

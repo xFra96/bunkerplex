@@ -173,3 +173,22 @@ jobs:
           gh release create "$TAG" out/BunkerPlex.apk out/BunkerPlex.zip \
             --title "BunkerPlex — ultima versione (${ver#v})" \
             --notes-file out/notes.md --target "$GITHUB_SHA" --latest
+
+      # I server la installano subito: il servizio account glielo dice nella
+      # risposta alla presenza (ogni 3 minuti). Senza il segreto RELEASE_KEY i
+      # server controllano da soli ogni 12 ore, come prima.
+      - name: Avvisa i server
+        env:
+          RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+          VER: ${{ steps.ver.outputs.ver }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then echo "RELEASE_KEY non impostato: niente avviso"; exit 0; fi
+          url=$(python3 -c "import json; print(json.load(open('server/cloud.json'))['url'].rstrip('/'))")
+          for i in 1 2 3; do
+            if curl -fsS -m 20 -X POST "$url/release" -H "Authorization: Bearer $RELEASE_KEY" \
+                 -H "Content-Type: application/json" -d "{\"commit\":\"$GITHUB_SHA\",\"version\":\"$VER\"}"; then
+              echo; exit 0
+            fi
+            sleep 15
+          done
+          echo "::warning::Servizio account non raggiungibile: i server la troveranno al prossimo controllo"

@@ -469,6 +469,45 @@ def _check():
     return cfg, tok, sha
 
 
+# ---- Avviso di release ----------------------------------------------------------
+# Il giro su GitHub che pubblica la release lo annuncia al servizio account
+# (POST /release); il server lo legge nella risposta alla presenza (ogni 3 minuti)
+# e chiama notify(): se il commit e' nuovo, controlla e installa subito. Finche'
+# gli avvisi arrivano non c'e' nessun controllo a intervalli; se smettono (niente
+# account collegato, niente Internet) torna il controllo ogni CHECK_HOURS.
+PUSH_FRESH = 3600             # secondi: oltre, gli avvisi non arrivano piu'
+_push = {"at": 0.0, "commit": "", "version": ""}
+_wake = threading.Event()
+
+
+def notify(commit, version=""):
+    """Il servizio account dice qual e' l'ultima release del server."""
+    if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+        return
+    _push["at"] = time.time()
+    if commit == _push["commit"]:
+        return
+    _push.update(commit=commit, version=str(version or ""))
+    if commit != current_commit() and commit != _status.get("remote"):
+        print("Nuova release annunciata:", version or commit[:7], flush=True)
+        _wake.set()
+
+
+def pushed():
+    """True se gli avvisi di release arrivano (non serve controllare a intervalli)."""
+    return time.time() - _push["at"] < PUSH_FRESH
+
+
+def _sleep(wait, always=False):
+    """Aspetta un avviso di release, o 'wait' secondi. Con gli avvisi attivi il
+    tempo conta solo se always (riprovare dopo un video in corso o un errore)."""
+    end = time.time() + wait
+    while not _wake.wait(min(60.0, max(1.0, end - time.time()))):
+        if time.time() >= end and (always or not pushed()):
+            return
+    _wake.clear()
+
+
 def check():
     """Controlla su GitHub se c'e' qualcosa di nuovo (non installa niente)."""
     if not _op.acquire(blocking=False):
@@ -801,6 +840,7 @@ def snapshot():
         "agent": agent(),
         "available": bool(out["code"] or out["docker"]),
         "check_hours": CHECK_HOURS,
+        "push": pushed(),
     })
     return out
 
@@ -884,18 +924,19 @@ def apps_loop():
 
 
 def loop(auto):
-    """Controllo periodico. 'auto' dice se installare da soli quando nessuno guarda."""
-    time.sleep(90)
+    """Controllo all'avvio, poi a ogni avviso di release (o ogni CHECK_HOURS se gli
+    avvisi non arrivano). 'auto' dice se installare da soli quando nessuno guarda."""
+    _sleep(90, always=True)
     while True:
-        wait = CHECK_HOURS * 3600
+        wait, always = CHECK_HOURS * 3600, False
         try:
             if _status["phase"] != "host":
                 check()
                 if available() and auto():
-                    if busy():
-                        wait = 15 * 60      # c'e' un film in corso: si riprova tra poco
-                    else:
+                    # c'e' un film in corso, o l'installazione non e' riuscita: si riprova tra poco
+                    wait, always = 15 * 60, True
+                    if not busy():
                         start_install()
         except Exception as ex:
             print("Controllo aggiornamenti non riuscito:", repr(ex), flush=True)
-        time.sleep(wait)
+        _sleep(wait, always)

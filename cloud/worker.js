@@ -17,6 +17,8 @@
 // GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET: «Entra con Google» (vedi /google/start).
 // ANDROID_CERT_SHA256: impronte dei certificati dell'APK del telefono, per le passkey
 // dentro l'app (vedi /.well-known/assetlinks.json e «Passkey»).
+// RELEASE_KEY: chiave con cui il giro «Pubblica la release» annuncia la release nuova
+// (POST /release, stesso valore nel segreto RELEASE_KEY del repository GitHub).
 // BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
 // con un codice via email (vedi /reset/start). Trigger cron settimanale (es.
 // «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
@@ -261,7 +263,7 @@ async function serverRoutes(request, env, path, method) {
     // Il nome nella rete di casa (per il certificato valido): dall'indirizzo lan
     const names = await syncServerDns(env, srv.sid, lan ? new URL(lan).hostname : '');
     return json({ ok: true, owner: { id: srv.owner.id, username: srv.owner.username }, online_seconds: ONLINE_SECONDS,
-      domain: certOn(env) ? env.SERVER_DOMAIN : '', names });
+      domain: certOn(env) ? env.SERVER_DOMAIN : '', names, release: await latestRelease(env) });
   }
 
   // Verifica di un gettone d'accesso, per i server che non sanno controllare la firma.
@@ -514,6 +516,18 @@ function cleanBuild(b) {
   const r = /^[0-9][0-9A-Za-z.-]{0,30}$/.test(release) ? release : '';
   const c = /^[0-9a-f]{7,40}$/.test(commit) ? commit.slice(0, 12) : '';
   return [r, c].filter(Boolean).join(' ');
+}
+
+// L'ultima release del server annunciata (POST /release): { commit, version, t } o null
+async function latestRelease(env) {
+  const v = await env.DB.prepare("SELECT v FROM kv WHERE k = 'release'").first('v');
+  if (!v) return null;
+  try {
+    const r = JSON.parse(v);
+    return /^[0-9a-f]{40}$/.test(r.commit) ? { commit: r.commit, version: String(r.version || ''), t: r.t || 0 } : null;
+  } catch {
+    return null;
+  }
 }
 
 const cleanMachine = (raw) => (/^[0-9a-f]{16,64}$/.test(String(raw || '')) ? String(raw) : '');
@@ -3191,6 +3205,27 @@ async function route(request, env) {
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
     return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env), certs: certOn(env), passkeys: true });
+  }
+
+  // Nuova release del server: la annuncia il giro «Pubblica la release» su GitHub
+  // (con RELEASE_KEY). I server la leggono nella risposta alla presenza e si
+  // aggiornano subito, senza controllare GitHub a intervalli.
+  if (path === '/release' && method === 'POST') {
+    const m = /^Bearer (.{16,200})$/.exec(request.headers.get('Authorization') || '');
+    if (!env.RELEASE_KEY || !m || !sameString(m[1], env.RELEASE_KEY)) fail(401, 'Chiave non valida');
+    const b = await body(request);
+    const commit = String(b.commit || '');
+    const version = String(b.version || '').replace(/^v/, '');
+    if (!/^[0-9a-f]{40}$/.test(commit)) fail(400, 'Commit non valido');
+    if (version && !/^[0-9][0-9A-Za-z.-]{0,30}$/.test(version)) fail(400, 'Versione non valida');
+    await ensureCreds(env);
+    await env.DB.prepare("INSERT INTO kv(k, v) VALUES('release', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
+      .bind(JSON.stringify({ commit, version, t: now() })).run();
+    return json({ ok: true });
+  }
+  if (path === '/release' && method === 'GET') {
+    await ensureCreds(env);
+    return json({ release: await latestRelease(env) });
   }
 
   // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
