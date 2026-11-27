@@ -5904,9 +5904,13 @@ def update_install():
 async def update_auto(request: Request):
     update_owner_only()
     body = await read_json(request)
+    auto = bool(body.get("auto"))
     with config_lock:
-        config["auto_update"] = bool(body.get("auto"))
+        config["auto_update"] = auto
+        config.pop("notified_update", None)      # tornando al manuale si riavvisa
         save_config()
+    if auto:
+        updater.wake()          # se c'e' gia' una versione nuova si installa adesso
     return update_json()
 
 

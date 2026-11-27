@@ -7760,10 +7760,14 @@ function updatePanel(u, title) {
               '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')
       : '') +
-    '<div class="actions" style="margin-top:0">' +
+    // Automatico (di base) o manuale: spento, arriva una notifica e si installa con «Aggiorna ora»
+    (u.can_update !== false ? swRow('Aggiornamento automatico', !!u.auto,
+      'data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto"',
+      u.auto ? 'Installa da solo le versioni nuove, quando nessuno guarda un video'
+             : 'Manuale: ti avviso con una notifica e installi tu con «Aggiorna ora»') : '') +
+    '<div class="actions">' +
       (u.available && !u.phase && u.can_update !== false ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
       '<button class="btn f" data-act="updcheck" data-key="updcheck">Controlla adesso</button>' +
-      (u.can_update !== false ? '<button class="btn f" data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto">Aggiornamento automatico: ' + (u.auto ? 'attivo' : 'spento') + '</button>' : '') +
     '</div></div>';
 }
 
@@ -8851,7 +8855,10 @@ var actions = {
     });
   },
   updauto: function (arg) {
-    post('/update/auto', { auto: arg === '1' }).then(render, function (e) { toast(e.message); });
+    post('/update/auto', { auto: arg === '1' }).then(function () {
+      toast(arg === '1' ? 'Aggiornamento automatico attivo' : 'Aggiornamento manuale: ti avviso quando ce n\'è uno');
+      render();
+    }, function (e) { toast(e.message); });
   },
   updtoken: function () {
     var input = document.getElementById('ghtoken');
