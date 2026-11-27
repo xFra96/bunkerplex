@@ -1,0 +1,115 @@
+# App per le TV Samsung (tizen/): compila e firma BunkerPlex.wgt e lo mette nella
+# release fissa «samsung-tv» (sempre la stessa: l'app e' una cornice attorno alla PWA
+# centrale, cambia di rado; i contenuti arrivano sempre nuovi dal servizio).
+#
+# Firma: certificato d'autore di BunkerPlex + distributore generico di Tizen, quello
+# che le TV in Modalita' sviluppatore accettano (fino ai modelli 2023 circa). Le TV piu'
+# nuove vogliono un certificato Samsung legato alla TV: lo si aggiunge al momento di
+# installare (vedi tizen/LEGGIMI.md e strumenti/sviluppo/Installa su TV Samsung.bat).
+#
+# Il certificato d'autore deve restare sempre lo stesso, se no la TV non accetta
+# l'aggiornamento («Author certificate not match»): sta nei segreti
+#   TIZEN_AUTHOR_P12_B64  (il file .p12 in base64)
+#   TIZEN_AUTHOR_PASSWORD (la sua password)
+# Senza i segreti se ne crea uno al volo (va bene per provare, non per aggiornare).
+
+name: Pubblica l'app per TV Samsung
+
+on:
+  push:
+    branches: [main]
+    paths: ["tizen/**", ".github/workflows/app-samsung.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-samsung
+  cancel-in-progress: false
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  TIZEN_STUDIO_VER: "5.6"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tizen Studio (solo riga di comando)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq expect zip > /dev/null
+          curl -fsSL -o tizen-installer \
+            "https://download.tizen.org/sdk/Installer/tizen-studio_${TIZEN_STUDIO_VER}/web-cli_Tizen_Studio_${TIZEN_STUDIO_VER}_ubuntu-64.bin"
+          chmod +x tizen-installer
+          ./tizen-installer --accept-license "$HOME/tizen-studio"
+          rm tizen-installer
+          echo "$HOME/tizen-studio/tools/ide/bin" >> "$GITHUB_PATH"
+
+      - name: Certificato d'autore
+        env:
+          P12_B64: ${{ secrets.TIZEN_AUTHOR_P12_B64 }}
+          P12_PW: ${{ secrets.TIZEN_AUTHOR_PASSWORD }}
+        run: |
+          mkdir -p cert
+          if [ -n "$P12_B64" ] && [ -n "$P12_PW" ]; then
+            echo "$P12_B64" | base64 -d > cert/author.p12
+            echo "PW=$P12_PW" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Mancano TIZEN_AUTHOR_P12_B64 e TIZEN_AUTHOR_PASSWORD: certificato creato al volo. Gli aggiornamenti sulla TV non passeranno (serve disinstallare prima)."
+            pw="$(openssl rand -hex 12)"
+            echo "::add-mask::$pw"
+            tizen certificate -a BunkerPlex -p "$pw" -c IT -n BunkerPlex -f bunkerplex
+            cp "$(find "$HOME/tizen-studio-data" -name 'bunkerplex.p12' | head -1)" cert/author.p12
+            echo "PW=$pw" >> "$GITHUB_ENV"
+          fi
+          tizen security-profiles add -n BunkerPlex -a "$PWD/cert/author.p12" -p "$PW"
+          # Le password nel profilo in chiaro: cosi' «tizen package» non le chiede
+          prof="$HOME/tizen-studio-data/profile/profiles.xml"
+          sed -i "s|$PWD/cert/author.pwd|$PW|g" "$prof"
+          sed -i 's|[^"]*tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|g' "$prof"
+          sed -i 's|password=""|password="tizenpkcs12passfordsigner"|g' "$prof"
+
+      - name: Compila e firma
+        run: |
+          rm -rf build && mkdir -p build out
+          cp tizen/config.xml tizen/index.html tizen/icon.png build/
+          tizen build-web -- "$PWD/build"
+          expect <<EOF
+          set timeout 300
+          spawn tizen package -t wgt -s BunkerPlex -o "$PWD/out" -- "$PWD/build/.buildResult"
+          expect {
+            "Author password:" { send -- "\$env(PW)\r"; exp_continue }
+            "Yes: (Y), No: (N) ?" { send -- "N\r"; exp_continue }
+            eof
+          }
+          EOF
+          f=$(ls out/*.wgt | head -1)
+          test -n "$f"
+          mv "$f" out/BunkerPlex.wgt
+          unzip -l out/BunkerPlex.wgt
+          rm -rf cert
+
+      - name: Pubblica
+        run: |
+          ver=$(grep -oP '<widget[^>]*\bversion="\K[0-9.]+' tizen/config.xml)
+          printf '{"version": "%s", "commit": "%s"}\n' "$ver" "${GITHUB_SHA::7}" > out/BunkerPlex-samsung.json
+          {
+            echo "**BunkerPlex per TV Samsung** ($ver, ${GITHUB_SHA::7})"
+            echo
+            echo "BunkerPlex.wgt si installa con la TV in Modalità sviluppatore: vedi tizen/LEGGIMI.md."
+            echo "Non serve per usare BunkerPlex su Samsung: basta il browser della TV (Internet)."
+          } > notes.md
+          if gh release view samsung-tv > /dev/null 2>&1; then
+            gh release upload samsung-tv out/BunkerPlex.wgt out/BunkerPlex-samsung.json --clobber
+            gh release edit samsung-tv --notes-file notes.md
+          else
+            git tag -f samsung-tv HEAD
+            git push -f origin refs/tags/samsung-tv
+            gh release create samsung-tv out/BunkerPlex.wgt out/BunkerPlex-samsung.json \
+              --title "BunkerPlex per TV Samsung" --notes-file notes.md --verify-tag --latest=false
+          fi

@@ -16,6 +16,12 @@ var APP = !!tvApp;                   // dentro l'app Android (TV o telefono): vi
 // L'app sa dire se gira su un televisore. Una versione vecchia non lo sa: allora vale come TV.
 var PHONE_APP = APP && typeof tvApp.isTv === 'function' && !callSafe(function () { return tvApp.isTv(); });
 var TV = APP && !PHONE_APP;          // true dentro l'app su Android TV
+// Il browser di una smart TV senza Android (Samsung con Tizen, LG con webOS, Hisense con
+// VIDAA...): niente app da installare, ma aspetto da TV e accesso dal telefono come nell'app
+var SMART_TV = !APP && /Tizen|Web0S|webOS|NetCast|HbbTV|VIDAA|SmartTV|SMART-TV/i.test(navigator.userAgent);
+// Dentro l'app per le TV Samsung (tizen/): la pagina sta in una cornice dell'app, che le
+// passa i tasti arrivati a lei e si chiude quando qui si preme Indietro dalla Home
+var TV_WRAP = window.parent !== window && (SMART_TV || /[?&]app=tizen/.test(location.search));
 // Dentro l'app per iPhone e iPad: la pagina e' quella del browser (video in HLS), l'app
 // aggiunge solo il cambio di server e Tailscale per fuori casa
 var kb = TV;                         // l'ultimo comando e' arrivato da tasti/telecomando
@@ -272,7 +278,7 @@ function profilesPage() {
     if (p) body = '<h2>Password di ' + esc(p.name) + '</h2><p>Questo account si apre con la sua password.</p>' + accountForm(p.name, true);
   }
   var more = '<div class="actions" style="margin-top:1.4rem">' +
-    (a.cloud ? (TV ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>'
+    (a.cloud ? (TVLOGIN ? '<a class="btn f" href="#/tvlogin" data-key="who-phone">Entra con un account dal telefono</a>'
       : '<button class="btn f" data-act="whomode" data-arg="login" data-key="who-login">Entra con un account</button>' +
       (mode === 'login' ? '' : googleButton())) : '') +
     (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>';
@@ -326,16 +332,29 @@ async function tvLoginPage() {
     '</div>' +
     '<div class="tvmore">' +
       (auth.google ? '<a class="btn f" data-autofocus href="#/google" data-key="tvgoogle">' + GOOGLE_G + ' Google</a>' : '') +
-      (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') + '</div>' +
+      (APP ? '<button class="btn f" data-act="resetserver" data-key="resetserver">Cambia server</button>' : '') +
+      // Nel browser della smart TV la password resta possibile (tastiera del telecomando)
+      (BROWSER_TV ? '<a class="btn f" href="#/pwlogin" data-key="tvpw">Usa la password</a>' : '') + '</div>' +
     '</div></div>';
+}
+
+// Le TV senza Android (Samsung, LG...): niente da installare, BunkerPlex si apre nel
+// loro browser dalla PWA centrale, con l'aspetto da TV e l'accesso dal telefono
+function smartTvHowto(central) {
+  if (!central) return '';
+  return '<div class="panel"><h2>TV Samsung, LG e altre</h2>' +
+    '<p>Non serve installare niente. Sulla TV apri il browser (<b>Internet</b> sulle Samsung), vai su ' +
+      '<b class="num">' + esc(central.replace(/^https?:\/\//, '')) + '</b> e aggiungilo ai preferiti: la prossima volta è a un clic.</p>' +
+    '<p>La TV mostra un codice: scrivilo qui sopra. Poi si usa col telecomando, come l\'app.</p>' +
+    '<p class="kvnote">A casa del server c\'è anche <b>Guarda su</b>: dal telefono mandi un film alla TV, senza aprire niente sulla TV.</p></div>';
 }
 
 // «Collega una TV» dal telefono o dal PC gia' entrati: si scrive il codice della TV
 function tvCodePage() {
   return settingsShell('account', 'Collega una TV', 'Scrivi il codice che vedi sulla TV: entra con il tuo account, senza password.',
     '<div class="panel"><label class="flabel" for="tvcode">Codice della TV</label>' +
-    '<div class="inline"><input class="field f num" id="tvcode" data-key="tvcode" data-autofocus maxlength="7" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="tvcodego" placeholder="ABC 123">' +
-    '<button class="btn primary f" data-act="tvcodego" data-key="tvcodego">Collega</button></div></div>');
+    '<div class="inline"><input class="field f num" id="tvcode" data-key="tvcode" data-autofocus maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="tvcodego" placeholder="ABC 123">' +
+    '<button class="btn primary f" data-act="tvcodego" data-key="tvcodego">Collega</button></div></div>' + smartTvHowto(auth && auth.central));
 }
 
 // «Entra con Google» (link: collega Google all'account). Google si apre nel browser
@@ -833,8 +852,13 @@ var device = devicePrefs();
 // lo scorrimento perda colpi (si possono riaccendere da Impostazioni)
 if (device.slow === undefined && ((navigator.deviceMemory && navigator.deviceMemory <= 1) ||
     (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 2))) device.slow = true;
-// Aspetto da TV: dentro l'app, oppure scelto a mano per il browser di una smart TV (o con ?tv=1)
-var TVLOOK = TV || device.tv === true || /[?&]tv=1/.test(location.search);
+// Aspetto da TV: dentro l'app, da solo nel browser di una smart TV (si spegne da
+// Impostazioni), oppure scelto a mano (o con ?tv=1)
+var TVLOOK = TV || device.tv === true || (SMART_TV && device.tv !== false) || /[?&]tv=1/.test(location.search);
+// Si entra dal telefono (QR e codice), mai con la password scritta col telecomando:
+// nell'app TV e nel browser di una smart TV con l'aspetto da TV
+var BROWSER_TV = SMART_TV && TVLOOK;
+var TVLOGIN = TV || BROWSER_TV;
 var smooth = 'smooth';               // 'auto' quando le animazioni sono ridotte
 
 // Locandine in dissolvenza: un'immagine si mostra quando e' arrivata (html.imgfade in
@@ -1240,6 +1264,7 @@ function cLoginPage() {
       '<div class="author"><span>oppure</span></div>' +
       (pkOn() ? '<button class="btn block f pkbtn" data-act="pklogin" data-key="pklogin">' + pkIcon() + '<span>Entra con impronta o volto</span></button>' : '') +
       '<button class="gbtn f" data-act="cgoogle" data-key="google"' + (pkOn() ? ' style="margin-top:.7rem"' : '') + '>' + GOOGLE_G + '<span>Continua con Google</span></button>' + note +
+      (BROWSER_TV ? '<button class="authlink f" data-act="ctvphone" data-key="ctvphone">Entra dal telefono</button>' : '') +
       cAppLink());
   }
   var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
@@ -1503,7 +1528,51 @@ async function cTvPage(code) {
   return authShell('<h1>Collega una TV</h1><p class="authsub">Scrivi il codice che vedi sulla TV</p>' +
     '<input class="field f num" id="ctvcode" data-key="ctvcode" data-autofocus maxlength="9" autocapitalize="characters" autocomplete="off" spellcheck="false" data-enter="ctvgo" placeholder="XXXX-XXXX">' +
     '<button class="btn primary block f" data-act="ctvgo" data-key="ctvgo">Continua</button>' +
-    (err ? '<p class="authnote">' + esc(err) + '</p>' : '') + cancel);
+    (err ? '<p class="authnote">' + esc(err) + '</p>' : '') +
+    // Le TV senza l'app (Samsung, LG...): BunkerPlex si apre nel loro browser, da qui
+    '<p class="authsub">TV Samsung, LG o altre? Niente da installare: sulla TV apri il browser (<b>Internet</b> sulle Samsung), ' +
+      'vai su <b class="num">' + esc(location.host) + '</b> e aggiungilo ai preferiti. Il codice compare lì.</p>' + cancel);
+}
+
+// Il browser di una smart TV (Samsung, LG...) nella PWA centrale: come l'app TV, la TV
+// chiede un codice al servizio (/tv/start) e lo si conferma dal telefono (#/tv/<codice>);
+// intanto la TV domanda se e' fatto (/tv/poll) e riceve il gettone dell'account.
+function smartTvName() {
+  var ua = navigator.userAgent;
+  return /Tizen/i.test(ua) ? 'TV Samsung' : /Web0S|webOS|NetCast/i.test(ua) ? 'TV LG' : /VIDAA/i.test(ua) ? 'TV Hisense' : 'Smart TV';
+}
+
+async function cTvLoginPage() {
+  var t = cache.cTvLogin;
+  if (!t || Date.now() - t.at > (t.ttl - 60) * 1000) {
+    t = await cloud('POST', '/tv/start', { device: smartTvName() });
+    t.at = Date.now();
+    cache.cTvLogin = t;
+  }
+  clearInterval(cache.cTvTimer);
+  cache.cTvTimer = setInterval(function () {
+    if (C.token || cache.cTvLogin !== t) { clearInterval(cache.cTvTimer); return; }
+    cloud('POST', '/tv/poll', { poll: t.poll }).then(function (r) {
+      if (!r.done || cache.cTvLogin !== t) return;
+      clearInterval(cache.cTvTimer);
+      cache.cTvLogin = null;
+      cEntered(r);
+      toast('Entrato come ' + r.user.username);
+      location.replace('#/home');
+      render();
+    }, function () { clearInterval(cache.cTvTimer); cache.cTvLogin = null; render(); });   // scaduto: codice nuovo
+  }, 2500);
+  var site = t.short.replace(/^https?:\/\//, '');
+  return '<div class="auth"><div class="tvlink">' +
+    '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
+    '<h1>Collega questa TV</h1><p class="authsub">Accedi una volta dal telefono: la TV entra da sola e la prossima volta si apre già pronta.</p>' +
+    '<div class="tvcols"><div class="tvcol">' +
+      '<small class="tvstep">Sul telefono apri BunkerPlex e vai in <b>Collega una TV</b>, oppure apri <span class="num">' + esc(site) + '</span>, e scrivi</small>' +
+      '<div class="tvcode num">' + esc(t.code.slice(0, 4)) + '<i></i>' + esc(t.code.slice(4)) + '</div>' +
+      '<small>Il codice cambia ogni 10 minuti</small></div></div>' +
+    '<div class="tvmore"><button class="btn f" data-autofocus data-act="ctvpw" data-key="ctvpw">Entra qui con email o Google</button></div>' +
+    (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') +
+    '</div></div>';
 }
 
 // Prima di ogni pagina, nella PWA centrale: account, poi server, poi come sempre
@@ -1525,7 +1594,8 @@ async function cGate() {
   if (!C.token) {
     lockScreen(true);
     if (cgLoad()) return cGooglePage(cache.cg);
-    return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
+    if (location.hash.indexOf('#/reset') === 0) return cResetPage();
+    return BROWSER_TV && !cache.cTvPw && !cache.cLogin ? cTvLoginPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
   var tv = cTvPending();
@@ -1897,7 +1967,7 @@ function b64uDec(str) {
   return b.buffer;
 }
 
-function pkOn() { return CENTRAL && !TV && !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create); }
+function pkOn() { return CENTRAL && !TV && !BROWSER_TV && !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create); }
 
 function pkLocal(k, v) {
   try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { /* niente */ }
@@ -2104,6 +2174,19 @@ function cActions() {
         C.list = null;
         render();
       } catch (e) { toast(e.message); }
+    },
+    // Smart TV: invece del codice da confermare col telefono, email o Google qui
+    ctvpw: function () {
+      cache.cTvPw = true;
+      cache.cTvLogin = null;
+      clearInterval(cache.cTvTimer);
+      render();
+    },
+    ctvphone: function () {
+      cache.cTvPw = false;
+      cache.cLogin = null;
+      C.error = '';
+      render();
     },
     ctvgo: function () {
       var code = cTvClean(fieldValue('ctvcode'));
@@ -5117,7 +5200,7 @@ function accountArea(i) {
       '<p class="kvnote">Quello che hai già qui non si perde: si unisce a quello dell\'account, e per ogni voce vince la modifica più recente.</p>' +
       (auth.offline ? '<p><span class="nodot">●</span> Ora il PC non raggiunge il servizio account: per entrare serve Internet.</p>' :
         // Sulla TV la password non si scrive: si entra dal telefono
-        (TV ? '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvlogin">Entra dal telefono</a></div>' +
+        (TVLOGIN ? '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvlogin">Entra dal telefono</a></div>' +
           (auth.google ? '<div class="actions"><a class="btn f" href="#/google" data-key="tvgoogle">Entra con Google</a></div>' : '')
           : accountForm('', false))) +
       '</div>';
@@ -5127,10 +5210,11 @@ function accountArea(i) {
   // Entrati da casa senza Internet non c'e' niente da ridare: si aspetta la rete
   var relogin = u.online || u.home ? '' : '<div class="panel"><h2>Ridai la password</h2>' +
     '<p>L\'account è stato aperto con una password diversa (cambiata su un altro PC, o nuova provvisoria). ' +
-    'Qui funziona tutto lo stesso; per riprendere la sincronizzazione ' + (TV ? 'rientra dal telefono.</p>' +
+    'Qui funziona tutto lo stesso; per riprendere la sincronizzazione ' + (TVLOGIN ? 'rientra dal telefono.</p>' +
       '<div class="actions"><a class="btn primary f" href="#/tvlogin" data-key="tvrelogin">Entra dal telefono</a></div>'
       : 'scrivi la password.</p>' + accountForm(u.name, true)) + '</div>';
-  var tvlink = TV || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account.</p>' +
+  var tvlink = TVLOGIN || u.guest ? '' : '<div class="panel"><h2>Collega una TV</h2><p>Sulla TV compare un codice: scrivilo qui e la TV entra con il tuo account. ' +
+    'Anche Samsung, LG e le altre senza Android, dal loro browser: in <b>Collega una TV</b> trovi come.</p>' +
     '<div class="actions"><a class="btn primary f" href="#/tv" data-key="totv">Collega una TV</a></div></div>';
   // Cosa segue l'account (chiavi, preferenze, visti, raccolte) lo dice la riga sotto il
   // nome; Amministrazione sta nella Panoramica: qui solo quello che si fa con l'account
@@ -5657,7 +5741,8 @@ function devicePanel() {
       ' su ogni TV, telefono e PC dove entri. Restano di questo dispositivo solo l\'aspetto da TV e il riconoscimento dei dispositivi lenti.</p>' +
     '<button class="setting f" data-act="devanim" data-key="devanim">Animazioni<small>' + labelOf(ANIMS, device.anim) + auto + '</small></button>' +
     '<button class="setting f" data-act="devposters" data-key="devposters">Locandine nelle raccolte<small>' + labelOf(POSTERS, device.posters) + '</small></button>' +
-    (TV ? '' : swRow('Aspetto da TV', !!device.tv, 'data-act="devtv" data-key="devtv"', 'Per il browser di una smart TV')) +
+    (TV ? '' : swRow('Aspetto da TV', TVLOOK, 'data-act="devtv" data-key="devtv"',
+      SMART_TV ? 'Acceso da solo su questa smart TV' : 'Per il browser di una smart TV')) +
     '</div>';
 }
 
@@ -7358,7 +7443,7 @@ var actions = {
   profile: function (id) {
     post('/auth/profile', { id: +id, device: devName() }).then(enterApp, function (e) {
       // Sulla TV la password non si scrive: si entra dal telefono
-      if (/password/.test(e.message)) { if (TV) location.hash = '#/tvlogin'; else { cache.whoMode = 'pw:' + id; render(); } return; }
+      if (/password/.test(e.message)) { if (TVLOGIN) location.hash = '#/tvlogin'; else { cache.whoMode = 'pw:' + id; render(); } return; }
       toast(e.message);
       loadAuth().then(render);
     });
@@ -7644,7 +7729,10 @@ var actions = {
   },
   tvcodego: function () {
     var code = fieldValue('tvcode').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    if (code.length !== 6) { toast('Il codice della TV ha 6 caratteri'); return; }
+    // 8 caratteri: la TV e' entrata dalla PWA centrale (browser di una Samsung, l'app TV
+    // senza il server di casa): si conferma li', con l'account
+    if (code.length === 8 && auth && auth.central) { location.href = auth.central + '/tv/' + code; return; }
+    if (code.length !== 6) { toast('Il codice della TV ha 6 caratteri (o 8)'); return; }
     location.hash = '#/pair/' + code;
   },
   pairsend: function (code) {
@@ -8158,7 +8246,7 @@ var actions = {
     });
   },
   devtv: function () {
-    device.tv = !device.tv;
+    device.tv = !TVLOOK;               // sulla smart TV anche «spento» si ricorda
     saveDevicePrefs(device);
     location.replace(location.pathname + '#/settings/device');
     location.reload();
@@ -8546,10 +8634,25 @@ document.addEventListener('contextmenu', function (e) {
   }
 });
 
-var KEYCODES = { 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 13: 'Enter', 27: 'Escape', 8: 'Backspace', 32: ' ' };
+var KEYCODES = { 37: 'ArrowLeft', 38: 'ArrowUp', 39: 'ArrowRight', 40: 'ArrowDown', 13: 'Enter', 27: 'Escape', 8: 'Backspace', 32: ' ',
+  // telecomando Samsung (Tizen): Indietro e i tasti dei video
+  10009: 'Escape', 10252: 'MediaPlayPause', 415: 'MediaPlay', 19: 'MediaPause', 413: 'MediaStop', 417: 'MediaFastForward', 412: 'MediaRewind' };
+
+// I tasti che l'app Samsung ha ricevuto lei (la cornice) arrivano qui come messaggio
+if (TV_WRAP) {
+  window.addEventListener('message', function (e) {
+    if (e.source !== window.parent || !e.data || typeof e.data.bpKey !== 'string') return;
+    var el = document.activeElement || document.body;
+    var ev;
+    try { ev = new KeyboardEvent('keydown', { key: e.data.bpKey, bubbles: true, cancelable: true }); } catch (err) { return; }
+    el.dispatchEvent(ev);
+  });
+}
 
 document.addEventListener('keydown', function (e) {
   var key = e.key;
+  // Indietro sul telecomando Samsung: per il browser e' «XF86Back» o niente
+  if (e.keyCode === 10009) key = 'Escape';
   if (!key || key === 'Unidentified') key = KEYCODES[e.keyCode] || '';
   var t = e.target;
   var typing = t.tagName === 'INPUT' && t.type !== 'range';
@@ -8618,7 +8721,9 @@ document.addEventListener('keydown', function (e) {
     if (closeModal()) return;
     if (settingsBack()) return;
     if (rail.contains(document.activeElement) || (document.activeElement && document.activeElement.closest && document.activeElement.closest('#activity'))) { focusView(); return; }
-    if (currentHash !== '#/home') history.back();
+    // Nell'app Samsung, dalla Home o dall'accesso (scelta del server compresa) l'app si chiude
+    if (TV_WRAP && (currentHash === '#/home' || currentHash === '#/login')) window.parent.postMessage({ bp: 'exit' }, '*');
+    else if (currentHash !== '#/home') history.back();
   }
 });
 
@@ -8778,7 +8883,7 @@ async function gate() {
       if (location.hash === '#/reset' && auth.reset) return resetPage();
       if (!auth.cloud || auth.setup) return profilesPage();
       // La TV entra sempre dal telefono (QR e codice): mai la password col telecomando
-      if (TV) return tvLoginPage();
+      if (TV || (BROWSER_TV && location.hash !== '#/pwlogin')) return tvLoginPage();
       return location.hash === '#/tvlogin' ? tvLoginPage() : loginPage();
     }
   }
