@@ -1,6 +1,7 @@
 package it.bunkerplex.tv
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.WebResourceResponse
@@ -17,9 +18,11 @@ import kotlin.concurrent.thread
  * via presto, cosi' a ogni riapertura si riscaricavano e si aspettava. Qui restano
  * fino a 300 MB (le meno usate escono per prime). Solo le immagini di TMDB: hanno un
  * nome che non cambia mai, quindi una copia salvata non diventa mai vecchia.
+ * Dalla PWA centrale l'indirizzo porta davanti la chiave dei video (/k/<chiave>):
+ * la copia si riconosce dal nome dell'immagine, la chiave serve solo a scaricarla.
  */
 object Posters {
-    private val NAME = Regex("^/api/image/((?:w\\d+|original)_[\\w.\\-]{1,120}\\.(jpg|jpeg|png|webp))$", RegexOption.IGNORE_CASE)
+    private val NAME = Regex("^(?:/k/[\\w.]{1,80})?/api/image/((?:w\\d+|original)_[\\w.\\-]{1,120}\\.(jpg|jpeg|png|webp))$", RegexOption.IGNORE_CASE)
     private const val MAX_BYTES = 300L * 1024 * 1024
     private val trimming = AtomicBoolean(false)
 
@@ -67,13 +70,20 @@ object Posters {
             if (Net.session.isNotEmpty()) c.setRequestProperty("X-BP-Session", Net.session)
             if (c.responseCode != 200) return false
             c.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
-            tmp.length() > 0 && tmp.renameTo(target)
+            tmp.length() > 0 && isImage(tmp) && tmp.renameTo(target)
         } catch (e: Exception) {
             false
         } finally {
             c?.disconnect()
             tmp.delete()
         }
+    }
+
+    /** Solo immagini vere: una pagina d'errore salvata come locandina restava per sempre. */
+    private fun isImage(f: File): Boolean {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        return o.outWidth > 0 && o.outHeight > 0
     }
 
     /** Oltre il limite si tolgono le immagini usate meno di recente, fino all'80%. */
