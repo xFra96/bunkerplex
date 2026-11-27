@@ -4,7 +4,7 @@
      telefono. L'app aggiunge l'icona sulla Home, i tasti del telecomando (Indietro,
      play/pausa...) e l'uscita con Indietro dalla Home. Vedi tizen/LEGGIMI.md. -->
 <widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
-        id="https://bunkerplex.it/tizen" version="1.0.1" viewmodes="maximized">
+        id="https://bunkerplex.it/tizen" version="1.0.2" viewmodes="maximized">
   <tizen:application id="BnkrPlex01.BunkerPlex" package="BnkrPlex01" required_version="3.0"/>
   <tizen:profile name="tv-samsung"/>
   <content src="index.html"/>
