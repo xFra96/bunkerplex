@@ -1246,8 +1246,14 @@ test('TV Samsung: il DUID aspetta, chi amministra entra in Samsung, GitHub fa il
   const gh = (method, b) => t.call(method, '/samsung/job', b, t.env.RELEASE_KEY);
   const DUID = 'ABCDEFGHIJKLMNOP1234';
   assert.deepEqual((await t.call('GET', '/samsung/tv/' + DUID)).body, { state: 'unknown' });
-  // Senza account non si aggiunge, con un DUID strano neanche
-  assert.equal((await t.call('POST', '/samsung/tv', { duid: DUID })).status, 401);
+  // Senza account si aggiunge lo stesso (poche al giorno per indirizzo), con un DUID strano no
+  const anon = await t.call('POST', '/samsung/tv', { duid: 'ANONIMA00001', model: 'QE50' }, undefined, '1.2.3.4');
+  assert.equal(anon.body.state, 'waiting');
+  for (let k = 2; k <= 5; k++) await t.call('POST', '/samsung/tv', { duid: 'ANONIMA0000' + k }, undefined, '1.2.3.4');
+  assert.equal((await t.call('POST', '/samsung/tv', { duid: 'ANONIMA00006' }, undefined, '1.2.3.4')).status, 429);
+  assert.equal((await t.call('POST', '/samsung/tv', { duid: 'ANONIMA00001' }, undefined, '1.2.3.4')).status, 200);
+  for (let k = 1; k <= 5; k++) t.env.DB.raw.prepare('DELETE FROM samsung_tvs WHERE duid = ?').run('ANONIMA0000' + k);
+  t.env.DB.raw.prepare("DELETE FROM notices").run();
   const bob = await t.login('bob', 'pwa');
   assert.equal((await t.call('POST', '/samsung/tv', { duid: 'x y' }, bob)).status, 400);
   const add = await t.call('POST', '/samsung/tv', { duid: DUID, model: 'QE55', name: 'Salotto' }, bob);

@@ -952,11 +952,6 @@ function cSave() {
 // lo usa per chiedere il certificato anche quando poi si guarda dal server di casa
 // (dove la pagina non ce l'ha). Subito, prima di passare al server.
 function cShareToken() {
-  // PROVA TEMPORANEA: dove si perde il gettone nell'app Android (vedi wrangler tail)
-  if (APP && !cShareToken.diag) {
-    cShareToken.diag = 1;
-    try { fetch('/samsung/diag?tok=' + (C.token ? C.token.length : 0) + '&fn=' + (typeof tvApp.ssAccount) + '&c=' + (CENTRAL ? 1 : 0), { cache: 'no-store' }).catch(function () {}); } catch (e) { /* niente */ }
-  }
   if (!APP || !C.token || typeof tvApp.ssAccount !== 'function' || cShareToken.sent === C.token) return;
   cShareToken.sent = C.token;
   callSafe(function () { tvApp.ssAccount(C.token); });
@@ -5167,8 +5162,62 @@ async function settingsArea(area) {
   // (l'app Android ha la sua area; sulla TV anche il QR per il telefono)
   return settingsShell('device', 'Collegamento e visione', '',
     connectionPanel(i) + devicePanel() +
-    (TV ? await apkPanel('App sul telefono') : '') + phoneTvPanel());
+    (TV ? await apkPanel('App sul telefono') : '') + phoneTvPanel() + await samsungCertPanel());
 }
+
+// ---- Certificato Samsung delle TV (chi amministra)
+// Le Samsung piu' nuove vogliono l'app firmata da Samsung con la TV nel certificato:
+// chi installa manda il codice della TV, GitHub rifa' il certificato da solo, ma serve
+// un accesso all'account Samsung di chi amministra. Lo fa l'app Android del telefono
+// (ascolta dove Samsung rimanda, come Tizen Studio) e lo passa a questa pagina, che lo
+// manda al servizio: dal server di casa (con la sua credenziale) o dal servizio stesso.
+function ssCanLogin() { return PHONE_APP && typeof tvApp.ssLogin === 'function'; }
+
+function ssCertCall(method, path, body) {
+  if (CENTRAL && C.token && !C.base) return cloud(method, '/samsung' + (path === '/cert' ? '/admin' : path), body);
+  return method === 'GET' ? api('/tv/samsung' + path) : send(method, '/tv/samsung' + path, body);
+}
+
+async function samsungCertPanel() {
+  var me = (auth && auth.user) || C.user;
+  if (!me || !me.admin || TV) return '';
+  var a = await ssCertCall('GET', '/cert').catch(function () { return null; });
+  if (!a) return '';
+  var when = function (t) { return new Date(t * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }); };
+  var waiting = (a.tvs || []).filter(function (x) { return !x.ready; });
+  var login = a.login ? dot(true) + ' Accesso a Samsung attivo' + (a.login.email ? ' (' + esc(a.login.email) + ')' : '') + ' fino al ' + when(a.login.exp) + '.'
+    : dot(false) + ' Serve un accesso a Samsung per mettere nel certificato le TV nuove.';
+  var cert = a.cert && a.cert.tvs ? 'Nel certificato: ' + a.cert.tvs + ' TV' + (a.cert.until ? ', vale fino al ' + when(a.cert.until) : '') + '.'
+    : 'Ancora nessuna TV nel certificato.';
+  var err = a.cert && a.cert.error && a.cert.error !== 'token' ? '<p class="nodot">Ultimo giro non riuscito: ' + esc(a.cert.detail || a.cert.error) + '</p>' : '';
+  return '<div class="panel" id="sscert"><h2>Certificato Samsung</h2>' +
+    '<p>Le TV Samsung più nuove installano BunkerPlex solo firmata da Samsung, con la TV nel certificato. Chi installa manda il codice ' +
+      'della TV e GitHub rifà il certificato da solo (qualche minuto), finché il tuo accesso a Samsung vale.</p>' +
+    '<p>' + login + '<br>' + cert + (waiting.length ? '<br>In attesa: ' + waiting.map(function (x) {
+      return esc((x.name || x.model || 'TV') + (x.who ? ' di ' + x.who : ''));
+    }).join(', ') + '.' : '') + '</p>' + err +
+    (ssCanLogin() ? '<div class="actions"><button class="btn' + (a.login ? '' : ' primary') + ' f" data-act="sslogin" data-key="sslogin">' +
+      (a.login ? 'Rifai l\'accesso a Samsung' : 'Accedi a Samsung') + '</button></div>'
+      : '<p class="kvnote">L\'accesso a Samsung si fa dall\'app BunkerPlex per Android sul telefono.</p>') + '</div>';
+}
+
+// L'app ha ricevuto l'accesso a Samsung (anche mentre si era nella pagina «Installa
+// sulla TV»): lo si manda al servizio e si avvisa
+function ssDeliver(code) {
+  if (!code) return;
+  ssCertCall('POST', '/login', { code: code }).then(function () {
+    toast('Accesso a Samsung fatto: le TV in attesa ricevono il certificato in pochi minuti');
+    if (/^#\/settings\/device/.test(location.hash)) render();
+  }, function (e) { toast('Accesso a Samsung non riuscito: ' + e.message); });
+}
+
+function ssPending() {
+  if (!APP || typeof tvApp.ssPendingCode !== 'function') return;
+  if (!((auth && auth.user) || (CENTRAL && C.token))) return;
+  var code = callSafe(function () { return tvApp.ssPendingCode(); });
+  if (typeof code === 'string' && code) ssDeliver(code);
+}
+window.ssSamsungCheck = ssPending;
 
 // Il collegamento di questo dispositivo al server aperto: quale, a che indirizzo,
 // e se e' locale (stessa rete o questo PC, senza Internet) o online (via Internet)
@@ -8835,6 +8884,7 @@ var actions = {
     tvSend('pair', { target: a.trim(), code: c.trim() });
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
+  sslogin: function () { if (ssCanLogin()) tvApp.ssLogin(); },
   phonetv: function () {
     if (!phoneTvOk()) return;
     // Il gettone dell'account all'app: con le TV Samsung che vogliono il certificato
@@ -10016,6 +10066,7 @@ function skeleton(h) {
 
 async function render() {
   var token = ++renderToken;
+  ssPending();
   var h = location.hash;
   if (!h || h === '#' || h === '#/') h = '#/home';
   closeModal(true);

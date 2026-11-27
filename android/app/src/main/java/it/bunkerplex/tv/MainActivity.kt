@@ -138,6 +138,14 @@ class MainActivity : AppCompatActivity() {
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
         Posters.init(this)
+        // Accesso a Samsung fatto: dalla pagina «Installa sulla TV» si torna alla PWA, che
+        // lo prende (ssPendingCode) e lo manda al servizio con la sua autenticazione
+        SamsungInstaller.codeListener = {
+            runOnUiThread {
+                if (onTvInstall && web.canGoBack()) web.goBack() else if (onTvInstall) showHome()
+                else js("window.ssSamsungCheck&&ssSamsungCheck()")
+            }
+        }
         web.webViewClient = object : WebViewClient() {
             // Locandine e sfondi dalla copia salvata sulla TV (vedi Posters)
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
@@ -695,6 +703,10 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun ssLogin() = SamsungInstaller.samsungLogin(this@MainActivity)
+
+        /** L'accesso a Samsung appena fatto (una volta sola): la PWA lo manda al servizio. */
+        @JavascriptInterface
+        fun ssPendingCode(): String = SamsungInstaller.takeCode()
 
         @JavascriptInterface
         fun ssAdmin() = SamsungInstaller.refreshAdmin(this@MainActivity)
