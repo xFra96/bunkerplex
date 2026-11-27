@@ -193,8 +193,8 @@ class Profili(unittest.TestCase):
             app.notice_updated()
         uid, body = q.call_args[0]
         self.assertEqual(uid, self.uid)
-        self.assertEqual([body["kind"], body["title"]], ["update", "BunkerPlex aggiornato"])
-        self.assertEqual(body["body"], "PC Anna è passato alla versione 3.42.4.")
+        self.assertEqual([body["kind"], body["title"]], ["update", "Server BunkerPlex aggiornato"])
+        self.assertEqual(body["body"], "«PC Anna» è passato alla versione 3.42.4 del server.")
 
 
 class Collegamento(unittest.TestCase):

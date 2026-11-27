@@ -10304,7 +10304,7 @@ function activityState() {
   if (u && u.phase === 'host') {
     notes.push({ key: 'updhost', title: 'Aggiornamento del server da completare', text: 'Rilancia «Installa BunkerPlex» sul computer', href: '#/settings/updates' });
   } else if (i.update && !(u && u.phase)) {
-    notes.push({ key: 'upd', title: 'Aggiornamento del server disponibile', text: 'Server' + srv + ': installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
+    notes.push({ key: 'upd', title: 'Server BunkerPlex: aggiornamento disponibile', text: 'Server' + srv + ': installalo da Impostazioni → Aggiornamenti', href: '#/settings/updates' });
   }
   if (i.updated) {
     var ch = i.updated.changes || [];
@@ -10343,7 +10343,7 @@ function activityState() {
   var s = syncState();
   if (s && s.state === 'warn') notes.push({ key: 'sync:' + s.text, title: 'Account', text: s.text, href: '#/settings/account' });
   if (appOld(i)) {
-    notes.push({ key: 'tvapp:' + appLatest(i).code, title: 'Nuova versione dell\'' + appLabel(true), text: 'Aggiornala da Impostazioni → ' + appLabel(), href: '#/settings/app' });
+    notes.push({ key: 'tvapp:' + appLatest(i).code, title: appLabel() + ' BunkerPlex: aggiornamento disponibile', text: (appLatest(i).name ? 'Versione ' + appLatest(i).name + ' per ' : 'Per ') + (TV ? 'questa TV' : 'questo dispositivo') + ': aggiornala da Impostazioni → ' + appLabel(), href: '#/settings/app' });
   }
   return { ops: ops, notes: notes, news: i.notices || [] };
 }
