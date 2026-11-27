@@ -561,9 +561,18 @@ function reachLegend(kinds) {
     (net ? '<span>' + reachTag('net') + ' via Internet</span>' : '') + '</p>';
 }
 
-// c: {act, arg, key, name, sub, icon, off, on, first, reach ('pc'|'lan'|'net'), look: {icon, image}, edit}
+// Sotto il nome della card: di chi e' il server (icona) e come ci si arriva (Locale/Online),
+// fuori dall'immagine per lasciarla pulita. Il tooltip spiega cosa vogliono dire.
+function srvMeta(icon, tip, tag) {
+  return '<span class="srvmeta">' +
+    (icon ? '<span class="srvkind" title="' + esc(tip) + '">' + icon + '</span>' : '') +
+    (tag ? '<span class="reach ' + tag.cls + '" title="' + esc(tag.note) + '">' + tag.tag + '</span>' : '') + '</span>';
+}
+
+// c: {act, arg, key, name, sub, icon, tip, off, on, first, reach ('pc'|'lan'|'net'), look: {icon, image}, edit}
 function srvCard(c) {
   var tag = REACH[c.reach];
+  var tip = c.tip || (c.icon === FRIEND_ICON ? 'Server di un amico: lo condivide con te' : 'Il tuo server, collegato al tuo account');
   var initial = (String(c.name || '?').trim()[0] || '?').toUpperCase();
   var look = c.look || {};
   var img = /^https?:\/\//.test(look.image || '') ? look.image : '';
@@ -574,10 +583,8 @@ function srvCard(c) {
     ' data-find="' + esc((c.name + ' ' + (c.find || '')).toLowerCase()) + '">' +
     '<span class="srvart' + (img ? ' img' : '') + '" style="--h:' + srvHue(c.name) + (img ? ';background-image:url(\'' + esc(img) + '\')' : '') + '">' + face +
       (c.edit ? '<span class="srvpen">Modifica</span>' : '') +
-      '<span class="srvbadge">' + c.icon + '</span>' +
-      '<i class="srvdot' + (c.off ? '' : ' live') + '" title="' + (c.off ? 'Non raggiungibile' : 'Acceso') + '"></i>' +
-      (tag ? '<span class="srvtag ' + tag.cls + '">' + tag.tag + '</span>' : '') + '</span>' +
-    '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small></span></button>';
+      '<i class="srvdot' + (c.off ? '' : ' live') + '" title="' + (c.off ? 'Non raggiungibile' : 'Acceso') + '"></i></span>' +
+    '<span class="srvtxt"><b>' + esc(c.name) + '</b><small>' + c.sub + '</small>' + srvMeta(c.icon, tip, tag) + '</span></button>';
 }
 
 // sections: [{title, cards: [html], extra: html}]; total = numero di card (per la ricerca)
@@ -748,10 +755,10 @@ async function serversPage() {
   }
   var cur = currentServer();
   var kinds = [];
-  function card(arg, ico, name, sub, on, first, find, look, reach) {
+  function card(arg, ico, name, sub, on, first, find, look, reach, tip) {
     var off = on === false;
     if (!off && reach) kinds.push(reach);
-    return srvCard({ act: off ? 'srvoff' : 'srvpick', arg: arg, key: 'srv-' + arg, name: name, sub: sub, icon: ico,
+    return srvCard({ act: off ? 'srvoff' : 'srvpick', arg: arg, key: 'srv-' + arg, name: name, sub: sub, icon: ico, tip: tip,
       off: off, on: cur === arg, first: first, find: find, look: look, reach: off ? '' : reach });
   }
   // Questo server: come ci arriva il dispositivo. Gli altri si raggiungono passando da lui
@@ -760,7 +767,8 @@ async function serversPage() {
   function how(r, other) { return REACH[r] ? REACH[r].card : other; }
   var here = hereReach();
   var mine = [card('here', SRV_ICON, auth.pc || 'Questo server',
-    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : how(here, 'Il tuo server'), true, true, '', data.hereLook, here)];
+    u.guest ? 'di ' + esc(auth.owner) + ' · sei suo ospite' : how(here, 'Il tuo server'), true, true, '', data.hereLook, here,
+    u.guest ? 'Server di ' + auth.owner + ': sei suo ospite' : '')];
   data.mine.forEach(function (m) {
     if (!m.n) return;
     // Ci si arriva passando da questo server: e' locale solo se lo sono tutti e due i tratti
@@ -775,7 +783,7 @@ async function serversPage() {
     if (f.status !== 'ok') return;
     var servers = (f.servers || []).filter(function (s) { return s.n; });
     if (!servers.length) {
-      friends.push(card('none', FRIEND_ICON, f.username, 'Nessun server acceso', false));
+      friends.push(card('none', FRIEND_ICON, f.username, 'Nessun server acceso', false, false, '', null, '', 'Un tuo amico: per ora nessun suo server condiviso è acceso'));
       return;
     }
     servers.forEach(function (s) {
@@ -1472,7 +1480,7 @@ async function cServersPage() {
   friends.forEach(function (f) {
     if (f.status !== 'ok' || list.some(function (s) { return s.role === 'friend' && s.owner.id === f.id; })) return;
     theirs.push(srvCard({ act: 'cnoshare', arg: f.username, key: 'cfr-' + f.id, name: f.username,
-      sub: 'Nessun server condiviso acceso', icon: FRIEND_ICON, off: true }));
+      sub: 'Nessun server condiviso acceso', icon: FRIEND_ICON, tip: 'Un tuo amico: per ora nessun suo server condiviso è acceso', off: true }));
   });
   var add = cache.cAdd
     ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="caddsend" placeholder="Nome dell\'account del tuo amico">' +
