@@ -15,6 +15,12 @@ liberi free-my-tv (Python) e TizenSdb.Core (C#).
 
 La porta 8001 (API della TV) dice nome, modello, se la Modalita' sviluppatore e'
 accesa e quale IP ha scritto: cosi' si spiega cosa manca prima di provare sdb.
+
+Le TV piu' nuove rifiutano il certificato generico: allora si legge il codice della
+TV («0 getduid»), lo si manda al servizio account con la credenziale del server e si
+aspetta che GitHub prepari l'app firmata Samsung con quella TV
+(BunkerPlex-samsung-cert.wgt, vedi tizen/certificato_samsung.py). Serve un accesso
+all'account Samsung di chi amministra BunkerPlex, dal suo telefono.
 """
 
 import ipaddress
@@ -31,16 +37,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException, Request
 
+import accounts
+
 SDB_PORT = 26101
 API_PORT = 8001
 PACKAGE = "BnkrPlex01"                 # tizen/config.xml: <tizen:application package=...>
 APP_ID = PACKAGE + ".BunkerPlex"       # ...e id=...
 WGT_URL = "https://github.com/xFra96/bunkerplex/releases/download/samsung-tv/BunkerPlex.wgt"
+SIGNED_URL = "https://github.com/xFra96/bunkerplex/releases/download/samsung-tv/BunkerPlex-samsung-cert.wgt"
+CERT_WAIT = 30 * 60                     # quanto si aspetta il certificato Samsung
 TOOLPATH = "/home/owner/share/tmp/sdk_tools"
 
 router = APIRouter(prefix="/api/tv/samsung")
 
-_hooks = {"lan_ip": lambda host="": ""}
+_hooks = {"lan_ip": lambda host="": "", "cloud_token": lambda: ""}
 _lock = threading.Lock()
 _cancel = threading.Event()
 _state = {"phase": "", "step": "", "message": "", "error": "", "target": "", "pc": "",
@@ -48,8 +58,11 @@ _state = {"phase": "", "step": "", "message": "", "error": "", "target": "", "pc
 _log = deque(maxlen=200)
 
 
-def setup(lan_ip):
+def setup(lan_ip, cloud_token=None):
+    """cloud_token: il gettone con cui il server parla al servizio account (la sua credenziale)."""
     _hooks["lan_ip"] = lan_ip
+    if cloud_token:
+        _hooks["cloud_token"] = cloud_token
 
 
 def log(text, kind="info"):
@@ -243,6 +256,12 @@ def connect(ip, tries=3):
                    "come IP del PC host deve esserci quello di questo PC; poi la TV va spenta e riaccesa.")
 
 
+def cert_refused(out):
+    """La TV rifiuta il certificato (non l'autore diverso): vuole quello Samsung."""
+    return (not re.search(r"118\s*,\s*-11|Author certificate not match", out, re.I)
+            and bool(re.search(r"118\s*,\s*-12|118012|certificate", out, re.I)))
+
+
 def install_result(out):
     """(riuscita, spiegazione) dalla risposta di «0 vd_appinstall»."""
     if re.search(r"install completed|installing\[100\]", out):
@@ -250,9 +269,9 @@ def install_result(out):
     if re.search(r"118\s*,\s*-11|Author certificate not match", out, re.I):
         return False, ("Sulla TV c'è già BunkerPlex firmata in un altro modo: disinstallala dalla TV "
                        "(App → BunkerPlex → Elimina) e riprova.")
-    if re.search(r"118\s*,\s*-12|118012|certificate", out, re.I):
-        return False, ("La TV non accetta il certificato dell'app: le TV più nuove (dal 2024 circa) vogliono un "
-                       "certificato Samsung fatto per loro (vedi tizen/LEGGIMI.md). Intanto si usa BunkerPlex dal browser della TV.")
+    if cert_refused(out):
+        return False, ("La TV non accetta il certificato dell'app: vuole un certificato Samsung fatto per lei. "
+                       "Intanto si usa BunkerPlex dal browser della TV.")
     if re.search(r"\[116\]", out):
         return False, "Sulla TV non c'è spazio: togli qualche app e riprova."
     if re.search(r"118\s*,\s*-4\b", out):
@@ -332,31 +351,80 @@ def _scan(host_header):
 
 # ---------------------------------------------------------------- installazione
 
-def _download():
+def _download(signed=False):
     _say("Scarico l'app per Samsung da GitHub…", step="install")
-    req = urllib.request.Request(WGT_URL, headers={"User-Agent": "BunkerPlex"})
+    req = urllib.request.Request(SIGNED_URL if signed else WGT_URL, headers={"User-Agent": "BunkerPlex"})
     with urllib.request.urlopen(req, timeout=60) as r:
         data = r.read()
     if data[:2] != b"PK":
         raise RuntimeError("Il file dell'app scaricato da GitHub non è valido")
-    log(f"Scaricata BunkerPlex.wgt ({len(data) // 1024} kB)", "ok")
+    log(f"Scaricata {'l’app firmata Samsung' if signed else 'BunkerPlex.wgt'} ({len(data) // 1024} kB)", "ok")
     return data
 
 
-def _install(ip, host_header):
-    pc = _hooks["lan_ip"](host_header)
-    tv = _state["tvs"].get(ip) or {"ip": ip, "name": "", "model": ""}
-    info = tv_info(ip)
-    if info:
-        tv.update(info)
-        _state["tvs"][ip] = tv
-        if not info["dev"]:
-            raise RuntimeError("Sulla TV la Modalità sviluppatore è spenta: App → 1 2 3 4 5 → accendila, "
-                               f"scrivi {pc or 'l’IP di questo PC'} come IP del PC host, poi spegni e riaccendi la TV.")
-        if pc and info["dev_ip"] and info["dev_ip"] != pc:
-            log(f"Sulla TV come IP del PC host c'è {info['dev_ip']}, il PC è {pc}", "dbg")
-    data = _download()
-    _check_cancel()
+def read_duid(sdb):
+    """Il codice della TV («0 getduid»): a volte la prima risposta arriva vuota."""
+    for _ in range(3):
+        try:
+            out = sdb.shell("0 getduid", done=lambda b: len(b.strip()) >= 10, timeout=8)
+        except (OSError, SdbError):
+            continue
+        m = re.search(r"[A-Za-z0-9]{10,64}", out)
+        if m:
+            return m.group(0)
+    return ""
+
+
+def cert_state(duid):
+    """Com'e' messa la TV nel certificato Samsung: ready, waiting o unknown."""
+    try:
+        return accounts.call("GET", f"/samsung/tv/{duid}")
+    except (accounts.CloudError, accounts.CloudOffline):
+        return {}
+
+
+def _certificate_for(tv):
+    """Chiede il certificato Samsung per la TV e aspetta che GitHub lo prepari."""
+    token = _hooks["cloud_token"]()
+    if not token:
+        raise RuntimeError("Questa TV vuole un certificato Samsung fatto per lei: collega prima il server "
+                           "al tuo account BunkerPlex, poi riprova.")
+    _say("Chiedo il certificato Samsung per questa TV…", step="cert")
+    try:
+        st = accounts.call("POST", "/samsung/tv", {"duid": tv["duid"], "model": tv.get("model", ""),
+                                                    "name": tv.get("name", "")}, token)
+    except accounts.CloudError as ex:
+        raise RuntimeError(ex.detail)
+    except accounts.CloudOffline as ex:
+        raise RuntimeError(str(ex))
+    log(f"Chiesto il certificato Samsung per la TV {tv['duid']}", "ok")
+    end = time.time() + CERT_WAIT
+    last = ""
+    while st.get("state") != "ready":
+        _check_cancel()
+        if time.time() > end:
+            raise RuntimeError("Il certificato Samsung non è ancora pronto. Riprova più tardi con «Installa»: "
+                               "la TV resta in elenco.")
+        if st.get("error"):
+            now = f"Il certificato Samsung non è riuscito ({st['error']}): si riprova da solo."
+        elif st.get("login"):
+            now = ("Aspetto chi amministra BunkerPlex: deve entrare in Samsung dal telefono (gli è arrivato un avviso). "
+                   "Poi faccio tutto da solo.")
+        else:
+            now = "Samsung prepara il certificato per questa TV (qualche minuto)…"
+        if now != last:
+            _say(now, step="cert")
+            last = now
+        for _ in range(15):
+            _check_cancel()
+            time.sleep(1)
+        st = cert_state(tv["duid"]) or st
+    _say("Certificato Samsung pronto: installo l'app firmata Samsung…", "ok", step="install")
+
+
+def _install_once(ip, tv, signed):
+    """Un giro: collegamento, DUID, l'app giusta, copia e installazione. Torna la
+    risposta della TV se vuole il certificato Samsung; gli altri errori li lancia."""
     _say("Mi collego alla TV…", step="install")
     with connect(ip) as sdb:
         name = sdb.banner.split("::")[1] if "::" in sdb.banner else ""
@@ -370,6 +438,14 @@ def _install(ip, host_header):
             log(f"Tizen {ver}", "dbg")
         base = (caps.get("sdk_toolpath") or TOOLPATH).rstrip("/")
         path = f"{base}/BunkerPlex.wgt"
+        if not tv.get("duid"):
+            tv["duid"] = read_duid(sdb)
+            if tv["duid"]:
+                log(f"Codice della TV (DUID): {tv['duid']}", "dbg")
+        _check_cancel()
+        if signed is None:
+            signed = bool(tv.get("duid")) and cert_state(tv["duid"]).get("state") == "ready"
+        data = _download(signed)
         _check_cancel()
         _say("Copio l'app sulla TV…")
         sdb.push(data, path)
@@ -382,6 +458,13 @@ def _install(ip, host_header):
         log("vd_appinstall: " + (out.strip()[-1500:] or "(nessuna risposta)"), "dbg")
         ok, why = install_result(out)
         if not ok:
+            try:
+                sdb.shell("0 rmfile", timeout=5)
+            except (OSError, SdbError):
+                pass
+            if not signed and tv.get("duid") and cert_refused(out):
+                log("La TV vuole il certificato Samsung", "err")
+                return why
             raise RuntimeError(why)
         log("App installata", "ok")
         try:
@@ -393,6 +476,27 @@ def _install(ip, host_header):
             log("was_execute: " + (out.strip() or "(nessuna risposta)"), "dbg")
         except (OSError, SdbError):
             pass
+    return None
+
+
+def _install(ip, host_header):
+    pc = _hooks["lan_ip"](host_header)
+    tv = _state["tvs"].get(ip) or {"ip": ip, "name": "", "model": ""}
+    _state["tvs"][ip] = tv
+    info = tv_info(ip)
+    if info:
+        tv.update(info)
+        if not info["dev"]:
+            raise RuntimeError("Sulla TV la Modalità sviluppatore è spenta: App → 1 2 3 4 5 → accendila, "
+                               f"scrivi {pc or 'l’IP di questo PC'} come IP del PC host, poi spegni e riaccendi la TV.")
+        if pc and info["dev_ip"] and info["dev_ip"] != pc:
+            log(f"Sulla TV come IP del PC host c'è {info['dev_ip']}, il PC è {pc}", "dbg")
+    if _install_once(ip, tv, None) is not None:
+        # La TV vuole il certificato Samsung: si chiede col suo DUID, poi l'app firmata
+        _certificate_for(tv)
+        why = _install_once(ip, tv, True)
+        if why:
+            raise RuntimeError(why)
     tv["installed"] = True
     _say("Fatto: BunkerPlex è tra le App della TV e si è aperta. Collegala dal telefono con il codice.", "ok", step="done")
 

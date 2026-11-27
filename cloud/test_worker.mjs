@@ -1231,3 +1231,61 @@ test('la release annunciata da GitHub arriva ai server nella presenza', async ()
   assert.deepEqual([hb.body.release.commit, hb.body.release.version], [C, '3.43']);
   assert.equal((await t.call('GET', '/release')).body.release.commit, C);
 });
+
+test('TV Samsung: il DUID aspetta, chi amministra entra in Samsung, GitHub fa il certificato', async () => {
+  const t = setup();
+  t.env.RELEASE_KEY = 'r'.repeat(32);
+  const anna = t.addUser('anna');
+  t.addUser('bob');
+  t.env.DB.raw.prepare('UPDATE users SET admin = 1 WHERE id = ?').run(anna);
+  const gh = (method, b) => t.call(method, '/samsung/job', b, t.env.RELEASE_KEY);
+  const DUID = 'ABCDEFGHIJKLMNOP1234';
+  assert.deepEqual((await t.call('GET', '/samsung/tv/' + DUID)).body, { state: 'unknown' });
+  // Senza account non si aggiunge, con un DUID strano neanche
+  assert.equal((await t.call('POST', '/samsung/tv', { duid: DUID })).status, 401);
+  const bob = await t.login('bob', 'pwa');
+  assert.equal((await t.call('POST', '/samsung/tv', { duid: 'x y' }, bob)).status, 400);
+  const add = await t.call('POST', '/samsung/tv', { duid: DUID, model: 'QE55', name: 'Salotto' }, bob);
+  assert.equal(add.body.state, 'waiting');
+  assert.equal(add.body.login, true);
+  // Chi amministra lo sa (avviso), gli altri non vedono il pannello
+  const n = t.env.DB.raw.prepare("SELECT COUNT(*) n FROM notices WHERE user_id = ? AND kind = 'samsung'").get(anna).n;
+  assert.equal(Number(n), 1);
+  assert.equal((await t.call('GET', '/samsung/admin', undefined, bob)).status, 403);
+  // GitHub: c'e' da fare ma niente gettone
+  assert.equal((await t.call('GET', '/samsung/job')).status, 401);
+  let job = (await gh('GET')).body;
+  assert.equal(job.need, true);
+  assert.equal(job.token, null);
+  // Chi amministra entra in Samsung dal telefono
+  const admin = await t.login('anna', 'pwa');
+  assert.equal((await t.call('POST', '/samsung/login', { code: '{"nope":1}' }, admin)).status, 400);
+  const code = JSON.stringify({ access_token: 'tok', userId: 'u1', inputEmailID: 'a%40b.it', access_token_expires_in: '86400' });
+  assert.equal((await t.call('POST', '/samsung/login', { code }, admin)).body.ok, true);
+  assert.equal((await t.call('POST', '/samsung/login', { code }, bob)).status, 403);
+  job = (await gh('GET')).body;
+  assert.deepEqual(job.duids, [DUID]);
+  assert.deepEqual(job.token, { access_token: 'tok', user_id: 'u1', email: 'a@b.it' });
+  // Gettone scaduto per Samsung: si butta e chi amministra viene avvisato
+  await gh('POST', { error: 'token', detail: 'expired' });
+  assert.equal((await gh('GET')).body.token, null);
+  assert.equal((await t.call('GET', '/samsung/admin', undefined, admin)).body.login, null);
+  await t.call('POST', '/samsung/login', { code }, admin);
+  // Fatto: la TV e' nel certificato, i .p12 restano al servizio
+  await gh('POST', { listed: [DUID, 'bad!'], keys: { author: 'QQ==', distributor: 'Qg==' }, version: '1.0.2',
+    author_until: 2e9, distributor_until: 1.9e9 });
+  assert.deepEqual((await t.call('GET', '/samsung/tv/' + DUID)).body, { state: 'ready', version: '1.0.2' });
+  job = (await gh('GET')).body;
+  assert.equal(job.need, false);
+  assert.equal(job.token, null);
+  assert.deepEqual(job.keys, { author: 'QQ==', distributor: 'Qg==' });
+  const st = (await t.call('GET', '/samsung/admin', undefined, admin)).body;
+  assert.equal(st.cert.tvs, 1);
+  assert.equal(st.tvs[0].who, 'bob');
+  assert.equal(st.tvs[0].ready, true);
+  // Una TV nuova: di nuovo da fare, la prima resta
+  await t.call('POST', '/samsung/tv', { duid: 'ZZZZZZZZZZ1111' }, bob);
+  job = (await gh('GET')).body;
+  assert.equal(job.need, true);
+  assert.deepEqual(job.duids, [DUID, 'ZZZZZZZZZZ1111']);
+});

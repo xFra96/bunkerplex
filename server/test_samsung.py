@@ -17,15 +17,18 @@ CNXN, OPEN, OKAY, CLSE, WRTE = si.CNXN, si.OPEN, si.OKAY, si.CLSE, si.WRTE
 
 
 class FakeTv:
-    """Un sdbd finto su 127.0.0.1. install: risposta di vd_appinstall."""
+    """Un sdbd finto su 127.0.0.1. install: risposta di vd_appinstall (o una lista,
+    una per installazione); accetta piu' collegamenti uno dopo l'altro."""
 
-    def __init__(self, install=b"app_id[BnkrPlex01] installing[100]\ninstall completed\nspend time for wascmd is [900]ms\n",
-                 max_data=4096):
+    OK = b"app_id[BnkrPlex01] installing[100]\ninstall completed\nspend time for wascmd is [900]ms\n"
+
+    def __init__(self, install=OK, max_data=4096, duid="UFKKHHLLKKJJGG12"):
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen(1)
         self.port = self.srv.getsockname()[1]
-        self.install = install
+        self.install = install if isinstance(install, list) else [install]
+        self.duid = duid
         self.max = max_data
         self.files = {}
         self.shells = []
@@ -66,7 +69,12 @@ class FakeTv:
             self.errors.append("manca OKAY dal client")
 
     def serve(self):
-        c, _ = self.srv.accept()
+        while True:
+            c, _ = self.srv.accept()
+            self.session(c)
+            c.close()
+
+    def session(self, c):
         p = self.read(c)
         if not p or p[0] != CNXN or not p[3].startswith(b"host::"):
             self.errors.append("CNXN")
@@ -97,7 +105,9 @@ class FakeTv:
                     cmdline = name[6:]
                     self.shells.append(cmdline)
                     if "vd_appinstall" in cmdline:
-                        self.reply(c, next_id, a0, self.install)
+                        self.reply(c, next_id, a0, self.install.pop(0) if len(self.install) > 1 else self.install[0])
+                    elif "getduid" in cmdline:
+                        self.reply(c, next_id, a0, self.duid.encode() + b"\n")
                     elif "was_execute" in cmdline:
                         self.reply(c, next_id, a0, b"app_id[BnkrPlex01.BunkerPlex] launch start\n")
                     self.send(c, CLSE, next_id, a0)
@@ -140,12 +150,31 @@ WGT = b"PK" + bytes(range(256)) * 120          # ~30 kB: piu' blocchi DATA
 
 
 class SamsungInstall(unittest.TestCase):
-    def run_install(self, tv):
+    def run_install(self, tv, cert=None, signed_seen=None):
+        """cert: risposte del servizio a GET /samsung/tv/<duid> (una per chiamata)."""
+        answers = list(cert or [{"state": "unknown"}])
+        calls = []
+
+        def fake_call(method, path, body=None, token=None, timeout=12):
+            calls.append((method, path, body, token))
+            if method == "POST":
+                return {"state": "waiting", "login": True}
+            return answers.pop(0) if len(answers) > 1 else answers[0]
+
+        def fake_download(signed=False):
+            if signed_seen is not None:
+                signed_seen.append(signed)
+            return WGT
+
         with mock.patch.object(si, "SDB_PORT", tv.port), \
-             mock.patch.object(si, "_download", return_value=WGT), \
-             mock.patch.object(si, "tv_info", return_value=None):
+             mock.patch.object(si, "_download", side_effect=fake_download), \
+             mock.patch.object(si, "tv_info", return_value=None), \
+             mock.patch.object(si.accounts, "call", side_effect=fake_call), \
+             mock.patch.object(si.time, "sleep", lambda s: None), \
+             mock.patch.dict(si._hooks, {"cloud_token": lambda: "s_1234abcd_" + "0" * 64}):
             si._state["tvs"] = {}
             si._install("127.0.0.1", "")
+        return calls
 
     def test_installa_e_apre(self):
         tv = FakeTv()
@@ -162,13 +191,47 @@ class SamsungInstall(unittest.TestCase):
         self.assertEqual(tv.errors, [])
         self.assertEqual(tv.files.get("/home/owner/share/tmp/sdk_tools/BunkerPlex.wgt"), WGT)
 
-    def test_certificato_rifiutato(self):
-        tv = FakeTv(install=b"app_id[BnkrPlex01] install failed[118, -12], reason: Check certificate error\n"
-                            b"spend time for wascmd is [300]ms\n")
-        with self.assertRaises(RuntimeError) as e:
-            self.run_install(tv)
+    REFUSED = (b"app_id[BnkrPlex01] install failed[118, -12], reason: Check certificate error\n"
+               b"spend time for wascmd is [300]ms\n")
+
+    def test_certificato_chiesto_poi_app_firmata(self):
+        # La TV rifiuta il certificato generico: si manda il DUID, si aspetta, poi l'app firmata
+        tv = FakeTv(install=[self.REFUSED, FakeTv.OK])
+        signed = []
+        calls = self.run_install(tv, cert=[{"state": "unknown"}, {"state": "waiting", "login": False},
+                                           {"state": "ready", "version": "1.0.2"}], signed_seen=signed)
+        self.assertEqual(tv.errors, [])
+        self.assertEqual(signed, [False, True])
+        post = [c for c in calls if c[0] == "POST"]
+        self.assertEqual(post[0][1], "/samsung/tv")
+        self.assertEqual(post[0][2]["duid"], "UFKKHHLLKKJJGG12")
+        self.assertTrue(post[0][3].startswith("s_"))
+        self.assertIn("0 getduid", tv.shells)
+        self.assertIn("0 was_execute BnkrPlex01.BunkerPlex", tv.shells)
+        self.assertEqual(si._state["tvs"]["127.0.0.1"]["duid"], "UFKKHHLLKKJJGG12")
+        self.assertEqual(si._state["step"], "done")
+
+    def test_tv_gia_nel_certificato(self):
+        tv = FakeTv()
+        signed = []
+        self.run_install(tv, cert=[{"state": "ready"}], signed_seen=signed)
+        self.assertEqual(signed, [True])
+
+    def test_certificato_senza_credenziale(self):
+        tv = FakeTv(install=self.REFUSED)
+        with mock.patch.dict(si._hooks, {"cloud_token": lambda: ""}):
+            with self.assertRaises(RuntimeError) as e:
+                self.run_install_plain(tv)
         self.assertIn("certificato Samsung", str(e.exception))
         self.assertNotIn("0 was_execute BnkrPlex01.BunkerPlex", tv.shells)
+
+    def run_install_plain(self, tv):
+        with mock.patch.object(si, "SDB_PORT", tv.port), \
+             mock.patch.object(si, "_download", return_value=WGT), \
+             mock.patch.object(si, "tv_info", return_value=None), \
+             mock.patch.object(si.accounts, "call", return_value={"state": "unknown"}):
+            si._state["tvs"] = {}
+            si._install("127.0.0.1", "")
 
     def test_risposte(self):
         self.assertEqual(si.install_result("installing[100]")[0], True)

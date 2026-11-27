@@ -11548,7 +11548,7 @@ def apk_link(request: Request):
 tvinstall.setup(private_ip, apk_version, APK_PATH, VERSION)
 app.include_router(tvinstall.router)
 # ...e sulle TV Samsung (Tizen), con sdb e la Modalita' sviluppatore (server/samsunginstall.py)
-samsunginstall.setup(private_ip)
+samsunginstall.setup(private_ip, lambda: (server_cred() or {}).get("secret", ""))
 app.include_router(samsunginstall.router)
 
 
