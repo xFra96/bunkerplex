@@ -493,6 +493,11 @@ def notify(commit, version=""):
         _wake.set()
 
 
+def wake():
+    """Ricontrolla subito (es. aggiornamento automatico appena riacceso)."""
+    _wake.set()
+
+
 def pushed():
     """True se gli avvisi di release arrivano (non serve controllare a intervalli)."""
     return time.time() - _push["at"] < PUSH_FRESH

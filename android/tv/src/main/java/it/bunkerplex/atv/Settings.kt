@@ -266,7 +266,7 @@ private fun ServerUpdate(act: MainActivity) {
             post("/api/update/check") { working = null; round++ }
         }
         val auto = x.optBoolean("auto")
-        if (mine) Btn("Automatico: " + if (auto) "attivo" else "spento") {
+        if (mine) Btn("Aggiornamento automatico: " + if (auto) "attivo" else "spento (manuale)") {
             post("/api/update/auto", JSONObject().put("auto", !auto)) { round++ }
         }
     }
