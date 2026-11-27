@@ -19,8 +19,9 @@ un film alla TV, senza aprire niente sulla TV.
 
 ## 2. L'app (icona tra le App della TV)
 
-L'app (`config.xml`, `index.html`) è una cornice a tutto schermo attorno alla stessa
-pagina del punto 1, più:
+L'app (`config.xml`, `index.html`, `main.js`, `main.css`) è una cornice a tutto schermo
+attorno alla stessa pagina del punto 1. Niente script o stili dentro `index.html`: la CSP di
+Tizen li blocca (sulla TV si vedeva solo un riquadro vuoto in alto a sinistra). In più:
 - l'icona tra le App;
 - **Indietro** dalla Home chiude l'app;
 - i tasti play/pausa, avanti e indietro del telecomando arrivano al player.

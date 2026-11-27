@@ -4,7 +4,7 @@
      telefono. L'app aggiunge l'icona sulla Home, i tasti del telecomando (Indietro,
      play/pausa...) e l'uscita con Indietro dalla Home. Vedi tizen/LEGGIMI.md. -->
 <widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
-        id="https://bunkerplex.it/tizen" version="1.0.0" viewmodes="maximized">
+        id="https://bunkerplex.it/tizen" version="1.0.1" viewmodes="maximized">
   <tizen:application id="BnkrPlex01.BunkerPlex" package="BnkrPlex01" required_version="3.0"/>
   <tizen:profile name="tv-samsung"/>
   <content src="index.html"/>
@@ -13,6 +13,9 @@
   <feature name="http://tizen.org/feature/screen.size.normal.1080.1920"/>
   <access origin="*" subdomains="true"/>
   <tizen:allow-navigation>*</tizen:allow-navigation>
+  <!-- Senza questa riga Tizen usa script-src 'self'; style-src 'self': niente script o
+       stili dentro index.html (stanno in main.js e main.css). La PWA sta nella cornice. -->
+  <tizen:content-security-policy>default-src * data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-src *; object-src 'none'</tizen:content-security-policy>
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
   <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
   <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable"
