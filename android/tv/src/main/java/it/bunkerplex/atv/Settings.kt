@@ -179,7 +179,7 @@ fun NewVersionScreen(act: MainActivity) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(Modifier.width(620.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Logo(64.dp)
-            Title("Nuova versione dell'app", Modifier.padding(top = 22.dp), size = 30.sp, lines = 1)
+            Title("Nuova versione dell'app TV", Modifier.padding(top = 22.dp), size = 30.sp, lines = 1)
             Txt("È uscita BunkerPlex TV ${up.latestName.ifEmpty { "nuova" }} (questa è la ${up.myName})." +
                 if (up.needsServer) " Richiede di aggiornare anche il server." else "",
                 Modifier.padding(top = 10.dp), color = C.ink2, lines = 2)
@@ -240,7 +240,7 @@ private fun ServerUpdate(act: MainActivity) {
         phase == "pc" -> "Aggiornamento in corso sul PC…"
         phase == "host" -> "Aggiornamento scaricato: per completarlo rilancia «Installa BunkerPlex» sul computer."
         !x.optBoolean("can_update", true) -> "Solo il proprietario di questo server può aggiornarlo."
-        x.optBoolean("available") -> "È disponibile un aggiornamento del server."
+        x.optBoolean("available") -> "È disponibile un aggiornamento del server BunkerPlex (sul PC, non dell'app TV)."
         x.optLong("checked_at") > 0 -> "Il server è aggiornato."
         else -> "Il primo controllo parte un paio di minuti dopo l'avvio."
     }

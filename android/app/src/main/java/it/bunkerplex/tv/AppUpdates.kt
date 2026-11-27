@@ -107,11 +107,11 @@ object AppUpdates {
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
         )
         val name = if (version.isNotEmpty()) " $version" else ""
-        val body = "È uscita la versione$name dell'app BunkerPlex. Tocca per aggiornarla."
+        val body = "È uscita la versione$name dell'app per telefono e tablet. Tocca per aggiornarla."
         val note = NotificationCompat.Builder(c, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_bp)
             .setColor(0xFF1A7F45.toInt())
-            .setContentTitle("Aggiornamento di BunkerPlex disponibile")
+            .setContentTitle("App Android BunkerPlex: aggiornamento disponibile")
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)

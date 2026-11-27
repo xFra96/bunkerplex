@@ -5376,14 +5376,15 @@ def notice_update_available():
         config["notified_update"] = remote
         save_config()
     ver = updater.announced_version(remote)
-    what = f"La versione {ver}" if ver else "Una versione nuova"
+    what = f"la versione {ver} del server" if ver else "una versione nuova del server"
+    # Il soggetto sempre in testa: sul telefono arrivano anche le notifiche delle app
     if auto_update():
-        queue_notice(owner, {"kind": "update", "title": "Nuova versione di BunkerPlex",
-                             "body": f"{what} si sta installando su {pc_name()} (se c'è un video in corso, appena finisce). "
+        queue_notice(owner, {"kind": "update", "title": "Server BunkerPlex: aggiornamento in corso",
+                             "body": f"«{pc_name()}» sta installando {what} (se c'è un video in corso, appena finisce). "
                                      "Ti avviso quando ha finito."})
     else:
-        queue_notice(owner, {"kind": "update", "title": "Aggiornamento di BunkerPlex disponibile",
-                             "body": f"{what} è pronta per {pc_name()}: installala da Impostazioni → Aggiornamenti."})
+        queue_notice(owner, {"kind": "update", "title": "Server BunkerPlex: aggiornamento disponibile",
+                             "body": f"Per «{pc_name()}» c'è {what}: installala da Impostazioni → Aggiornamenti."})
 
 
 def sync_notices(uid, token):
@@ -5837,9 +5838,9 @@ def notice_updated():
         if ver:
             break
         time.sleep(3)
-    what = f"alla versione {ver}" if ver else "all'ultima versione"
-    queue_notice(owner, {"kind": "update", "title": "BunkerPlex aggiornato",
-                         "body": f"{pc_name()} è passato {what}."})
+    what = f"alla versione {ver} del server" if ver else "all'ultima versione del server"
+    queue_notice(owner, {"kind": "update", "title": "Server BunkerPlex aggiornato",
+                         "body": f"«{pc_name()}» è passato {what}."})
 
 
 def update_notice():

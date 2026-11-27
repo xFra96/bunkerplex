@@ -4288,8 +4288,8 @@ async function announceApp(env) {
   if (!claim.meta.changes) return { sent: false, version: latest.name, code: latest.code };
   const status = await sendFcmTopic(env, sa, APP_TOPIC, {
     kind: 'app_update', code: latest.code, name: latest.name,
-    title: 'Aggiornamento di BunkerPlex disponibile',
-    body: `È uscita la versione ${latest.name} dell'app BunkerPlex. Tocca per aggiornarla.`
+    title: 'App Android BunkerPlex: aggiornamento disponibile',
+    body: `È uscita la versione ${latest.name} dell'app per telefono e tablet. Tocca per aggiornarla.`
   }).catch(() => 502);
   if (status !== 200) {
     // Si riprova alla prossima chiamata (o al prossimo giro del cron)
