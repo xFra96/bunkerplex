@@ -327,7 +327,7 @@ async function tvLoginPage() {
       '<div class="tvcol">' + (p.svg ? '<div class="qrtile big" role="img" aria-label="Codice QR per collegare la TV">' + p.svg + '</div>' : '') +
         '<b>Inquadra il QR</b><small>con la fotocamera del telefono, sulla rete di casa</small></div>' +
       '<div class="tvor"><span>oppure</span></div>' +
-      '<div class="tvcol"><small class="tvstep">Apri BunkerPlex sul telefono o sul PC, vai in <b>Collega una TV</b>' + (site ? ' (o su <span class="num">' + esc(site) + '</span>)' : '') + ' e scrivi</small>' +
+      '<div class="tvcol"><small class="tvstep">Apri BunkerPlex sul telefono o sul PC, vai in <b>Impostazioni → Collega una TV</b>' + (site ? ' (o su <span class="num">' + esc(site) + '</span>)' : '') + ' e scrivi</small>' +
         '<div class="tvcode num">' + esc(p.code.slice(0, 3)) + '<i></i>' + esc(p.code.slice(3)) + '</div>' +
         '<small>Il codice cambia ogni 10 minuti</small></div>' +
     '</div>' +
@@ -1628,14 +1628,19 @@ async function cTvLoginPage() {
     });
   }, 2500);
   var site = t.short.replace(/^https?:\/\//, '');
+  if (!t.svg) { try { t.svg = qrSvgRows(qrRows(t.url)); } catch (e) { t.svg = ''; } }
   return '<div class="auth"><div class="tvlink">' +
     '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
     '<h1>Collega questa TV</h1><p class="authsub">Accedi una volta dal telefono: la TV entra da sola e la prossima volta si apre già pronta.</p>' +
-    '<div class="tvcols"><div class="tvcol">' +
-      '<small class="tvstep">Sul telefono apri BunkerPlex e vai in <b>Collega una TV</b>, oppure apri <span class="num">' + esc(site) + '</span>, e scrivi</small>' +
+    '<div class="gstatus" id="gstatus"><i></i><span>In attesa del telefono…</span></div>' +
+    '<div class="tvcols">' +
+      (t.svg ? '<div class="tvcol"><div class="qrtile big" role="img" aria-label="Codice QR per collegare la TV">' + t.svg + '</div>' +
+        '<b>Inquadra il QR</b><small>con la fotocamera del telefono: si apre BunkerPlex, entri e la TV è collegata</small></div>' +
+        '<div class="tvor"><span>oppure</span></div>' : '') +
+      '<div class="tvcol"><small class="tvstep">Sul telefono apri <span class="num">' + esc(site) + '</span><br>' +
+        '(o nell\'app BunkerPlex: <b>Impostazioni → Collega una TV</b>) e scrivi</small>' +
       '<div class="tvcode num">' + esc(t.code.slice(0, 4)) + '<i></i>' + esc(t.code.slice(4)) + '</div>' +
       '<small>Il codice cambia da solo ogni 10 minuti</small></div></div>' +
-    '<div class="gstatus" id="gstatus" style="margin-top:1.6rem"><i></i><span>In attesa del telefono…</span></div>' +
     '<div class="tvmore"><button class="btn f" data-autofocus data-act="ctvpw" data-key="ctvpw">Entra qui con email o Google</button></div>' +
     (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '') +
     '</div></div>';
@@ -4515,6 +4520,7 @@ var SICON = {
   news: '<path d="M12 3.5l2.4 5 5.4.6-4 3.7 1.1 5.3L12 15.4 7.1 18.1l1.1-5.3-4-3.7 5.4-.6z"/>',
   active: '<path d="M3 12h4l2.5-6 5 12 2.5-6h4"/>',
   logout: '<path d="M14 4.5h4.5v15H14M10 8l-4 4 4 4M6 12h10"/>',
+  tvlink: '<rect x="3" y="4.5" width="18" height="12" rx="1.6"/><path d="M8.5 20h7M9 10.5h6M12.5 8l2.5 2.5-2.5 2.5"/>',
   apps: '<rect x="2.5" y="5" width="13" height="9" rx="1.4"/><path d="M6 17.5h6"/><rect x="16.5" y="9" width="5" height="10.5" rx="1.2"/><path d="M18.5 17.5h1"/>',
   app: '<rect x="6.5" y="2.5" width="11" height="19" rx="2"/><path d="M12 7v7M9 11l3 3 3-3M10.5 18h3"/>'
 };
@@ -4525,7 +4531,7 @@ function sicon(area) {
 // Il colore della piastrella di ogni area (tonalita'): come nelle impostazioni dei
 // telefoni, l'area si riconosce dal colore prima ancora di leggerla
 var STINT = { home: 150, account: 150, admin: 4, people: 200, libraries: 210, catalog: 32, subtitles: 32, friends: 280,
-  notices: 350, updates: 150, device: 190, apps: 255, app: 120, pcs: 170, news: 45, logout: 0, active: 150 };
+  notices: 350, updates: 150, device: 190, apps: 255, app: 120, pcs: 170, news: 45, logout: 0, active: 150, tvlink: 190 };
 // Una riga con interruttore (acceso/spento): il nome a sinistra, l'interruttore a destra
 // note: una riga piccola sotto il nome (com'e' adesso)
 function swRow(label, on, attrs, note) {
@@ -4616,6 +4622,10 @@ function settingsRows(i, u, sh) {
   } else if (auth && auth.user) {
     rows.push({ area: 'account', face: auth.user.name, label: auth.user.name,
       desc: 'Su questo PC, senza account', value: auth.cloud ? 'Entra con un account' : s.text, state: '' });
+  }
+  // Dal telefono o dal PC: la TV mostra un codice, qui si scrive (anche Samsung e LG)
+  if (auth && auth.user && !auth.user.guest && !TVLOGIN) {
+    rows.push({ area: 'tvlink', href: '#/tv', label: 'Collega una TV', desc: 'Scrivi il codice che vedi sulla TV, anche Samsung e LG', value: '', state: '' });
   }
   var off = 0, films = 0, series = 0, away = 0;
   libs.forEach(function (l) {
@@ -4962,7 +4972,7 @@ function networkPanel(n) {
 // gruppo, ognuna con piastrella colorata, nome, una riga di spiegazione e lo stato.
 // Gruppi che non si mescolano (vedi settingsAreas): l'account (con amici e
 // amministrazione), il server aperto (con locale / online), questo dispositivo e gli altri.
-var SGROUPS = [['account', ['account', 'friends', 'admin']],
+var SGROUPS = [['account', ['account', 'tvlink', 'friends', 'admin']],
   ['server', ['libraries', 'catalog', 'pcs', 'updates', 'news']],
   ['device', ['device', 'app', 'notices']], ['others', ['apps']], ['', ['logout']]];
 

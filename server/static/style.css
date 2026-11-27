@@ -1550,6 +1550,16 @@ html.tv .srvgrid { grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
 }
 html.tv .tvlink .authbrand { margin-bottom: 1.2rem; }
 html.tv .tvlink .authsub { margin-bottom: 1.6rem; }
+/* Sulla TV tutto in una schermata (1920x1080 nel browser delle Samsung): QR, codice e pulsanti */
+html.tv .auth { padding-top: 1.2rem; padding-bottom: 1.2rem; }
+html.tv .tvlink .authbrand { margin-bottom: .6rem; }
+html.tv .tvlink .authsub { margin-bottom: 1rem; }
+html.tv .tvlink .gstatus { margin-bottom: 1rem; }
+html.tv .tvcol { padding: 1.2rem 1.6rem; }
+html.tv .tvcol b { margin-top: .7rem; }
+html.tv .qrtile.big { width: 10rem; height: 10rem; padding: .5rem; }
+html.tv .tvcode { font-size: 3rem; padding: .8rem 1.3rem; }
+html.tv .tvmore { margin-top: 1.2rem; }
 body.guest #rail .add { display: none; }
 .whopick { justify-content: center; gap: 1.2rem; margin-bottom: .6rem; }
 .whopick .profile { background: transparent; width: 9rem; }
