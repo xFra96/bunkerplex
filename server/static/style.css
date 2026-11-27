@@ -1936,3 +1936,19 @@ html.tv .gstatus { font-size: 1.15rem; margin-bottom: 1.8rem; }
 .pklist .pkrow { display: flex; align-items: center; gap: .8rem; padding: .7rem .9rem; border-radius: .6rem; background: var(--surface); }
 .pklist .pkrow span { flex: 1; min-width: 0; }
 .pklist .pkrow small { display: block; color: var(--ink3); }
+/* Verifica in due passaggi e sicurezza dell'accesso: «Ricorda questo dispositivo», QR dell'app, codici di recupero */
+.tfarem { display: flex; align-items: center; justify-content: center; gap: .55rem; margin: .2rem 0 1rem; color: var(--ink2); font-size: .92rem; cursor: pointer; }
+.tfarem input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
+.secpage { width: 100%; text-align: left; }
+.secqr { display: flex; gap: 1.4rem; align-items: center; flex-wrap: wrap; margin: .6rem 0 1rem; }
+.secqr .qrtile { width: 11rem; height: 11rem; }
+.seckey { font: 600 .95rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; word-break: break-all; color: var(--ink); }
+.reccodes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem .9rem; margin: .6rem 0 1rem; padding: 1rem 1.1rem; border-radius: .6rem; background: var(--bg); font: 600 1rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em; color: var(--ink); }
+.secline { display: flex; align-items: center; gap: .8rem; padding: .7rem 0; border-top: 1px solid var(--surface2); }
+.secline:first-child { border-top: 0; }
+.secline > svg { width: 1.3rem; height: 1.3rem; flex: none; fill: none; stroke: var(--accent-text); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.secline span { flex: 1; min-width: 0; }
+.secline small { display: block; color: var(--ink3); }
+.secline .actions { margin: 0; flex-wrap: nowrap; }
+.secerr { color: #ff8f80; margin: .2rem 0 .8rem; }
+@media (max-width: 520px) { .secline { flex-wrap: wrap; } .secline .actions { width: 100%; } }

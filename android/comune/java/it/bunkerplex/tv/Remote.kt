@@ -85,12 +85,31 @@ object Remote {
     fun login(ctx: Context, username: String, password: String,
               device: String = "Telefono " + (Build.MODEL ?: "Android"), kind: String = "app"): JSONObject {
         val name = username.trim()
+        // trust: «Ricorda questo dispositivo» della verifica in due passaggi, per account
         val body = JSONObject().put("username", name).put("verifier", verifier(name, password))
             .put("device", device).put("kind", kind)
+            .put("trust", prefs(ctx).getString("cloud_trust_" + name.lowercase(), "") ?: "")
         prefs(ctx).edit().remove("cloud_token").apply()
         val res = JSONObject(call(ctx, "POST", "/login", body.toString()))
+        // Verifica in due passaggi: niente gettone finche' non arriva il codice (login2fa)
+        if (res.optBoolean("need_2fa")) return res.put("typed", name)
         prefs(ctx).edit().putString("cloud_token", res.getString("token"))
             .putString("cloud_user", res.optJSONObject("user")?.optString("username") ?: name).apply()
+        return res
+    }
+
+    /** Il codice dell'app di autenticazione (o uno di recupero) dopo la password. */
+    fun login2fa(ctx: Context, ticket: String, code: String, remember: Boolean, typed: String,
+                 device: String = "Telefono " + (Build.MODEL ?: "Android")): JSONObject {
+        val body = JSONObject().put("ticket", ticket).put("code", code).put("remember", remember)
+            .put("device", device).put("kind", "app")
+        val res = JSONObject(call(ctx, "POST", "/login/2fa", body.toString()))
+        val user = res.optJSONObject("user")?.optString("username") ?: typed
+        val ed = prefs(ctx).edit().putString("cloud_token", res.getString("token")).putString("cloud_user", user)
+        res.optString("trust").takeIf { it.isNotEmpty() }?.let { t ->
+            for (n in listOf(user, typed)) if (n.isNotBlank()) ed.putString("cloud_trust_" + n.trim().lowercase(), t)
+        }
+        ed.apply()
         return res
     }
 

@@ -54,6 +54,13 @@ Niente più «server principale». Il **servizio centrale** (Cloudflare Worker +
 - **App Android del telefono**: passkey anche dentro l'app (WebView con `androidx.webkit`, `WEB_AUTHENTICATION_SUPPORT_FOR_APP`); il Worker dichiara l'app in `/.well-known/assetlinks.json` solo col segreto `ANDROID_CERT_SHA256` (impronta SHA-256 della chiave di firma: `keytool -list -v -keystore bunkerplex.jks -alias bunkerplex`). Senza il segreto le passkey vanno nel browser ma non nell'app. Dopo Google nel browser, «Torna all'app» riapre l'app.
 - **Moduli**: errori scritti sotto i campi, pulsante che gira mentre si entra, occhio per vedere la password, avviso del Bloc Maiusc.
 
+**Sicurezza dell'accesso** (Impostazioni → Account nella PWA del servizio, o `#/sicurezza`)
+- **Conferma che sei tu** prima di ogni modifica (password, passkey dell'account o codice 2FA; vale 10 minuti per la sessione, colonna `sessions.reauth`; una sessione aperta da meno di 10 minuti vale già). La impone il Worker (`{reauth: true}`).
+- **Passkey**: elenco con data di aggiunta e ultimo uso, rinomina, «Aggiungi questo dispositivo». **Togliere** si conferma con un **codice via email** (`/passkeys/<id>/remove` e `/remove/confirm`, 15 minuti, 5 tentativi); senza email o senza Brevo basta la conferma. Aggiunte e tolte arrivano anche via email. Il vecchio `DELETE /passkeys/<id>` risponde 409.
+- **Verifica in due passaggi (TOTP)**, l'alternativa alle passkey per chi entra con la password: QR (generatore QR in `app.js`, provato contro segno) o chiave da scrivere, poi un codice per attivarla; 10 codici di recupero a uso singolo (copia/scarica). Dopo la password (anche link via email e password nuova) il Worker risponde `{need_2fa, ticket}` e il gettone arriva da `/login/2fa`. Google e passkey non la chiedono.
+- **Ricorda questo dispositivo** (30 giorni, `totp_trust`): il gettone resta nel browser/app per account; si dimenticano tutti cambiando password, rifacendo i codici, spegnendo la 2FA o con «Dimentica i dispositivi ricordati».
+- Il codice si chiede ovunque si scriva la password: PWA del servizio, server di casa (`/api/auth/login/2fa`), telefono che fa entrare la TV (`/api/auth/pair`), app Android (`remote.html`, `Remote.login2fa`). Offline il server di casa accetta ancora l'ultima password usata lì (senza codice), come prima.
+
 ## Prove
 
 - `node --test cloud/test_worker.mjs`: 13 passate (D1 finto, Cloudflare e Let's Encrypt finti).

@@ -68,6 +68,8 @@
           background: #fff; color: #1f1f1f; font-weight: 600; font-size: 1.05rem; }
   .gbtn svg { width: 1.3rem; height: 1.3rem; flex: none; }
   .gbtn:focus { box-shadow: 0 0 0 3px var(--accent-text); }
+  .tfarem { display: flex; align-items: center; justify-content: center; gap: .55rem; margin: .4rem 0 .8rem; color: var(--ink2); font-size: .92rem; }
+  .tfarem input { width: 1.1rem; height: 1.1rem; accent-color: var(--accent); }
   .gcode { font-size: 2.4rem; font-weight: 800; letter-spacing: .15em; text-align: center; margin: .2rem 0 1rem; }
   .gstatus { display: flex; align-items: center; gap: .6rem; margin: 0 0 1.2rem; color: var(--ink2); font-size: .95rem; line-height: 1.4; }
   .gstatus i { width: .6rem; height: .6rem; border-radius: 50%; flex: none; background: var(--ink3); animation: gpulse 1.6s ease-in-out infinite; }
@@ -655,6 +657,19 @@ function askPage() {
     '<button class="authlink f" data-act="setup" data-key="setup">Scrivi l\'indirizzo del server</button></div>');
 }
 
+// Verifica in due passaggi dopo la password (vedi acts.tfago)
+var tfa = null;
+function tfaPage() {
+  return authShell('<h1>Verifica in due passaggi</h1>' +
+    '<p class="authsub">Per <b>' + esc(tfa.user) + '</b>: scrivi il codice a 6 cifre dell\'app di autenticazione</p>' +
+    '<input id="tfac" class="field f" data-key="tfac" data-autofocus inputmode="numeric" autocomplete="one-time-code" maxlength="11" placeholder="123 456">' +
+    (TV ? '' : '<label class="tfarem"><input type="checkbox" id="tfarem" checked> Ricorda questo dispositivo per 30 giorni</label>') +
+    '<p class="err" id="tfaerr"></p>' +
+    '<button class="btn primary block f" data-act="tfago" data-key="tfago">Entra</button>' +
+    '<p class="authnote">Niente telefono? Scrivi uno dei codici di recupero (es. ABCDE-FGHIJ).</p>' +
+    '<button class="authlink f" data-act="tfaback" data-key="tfaback">Indietro</button>');
+}
+
 function loginPage() {
   return authShell('<h1>Accedi</h1><p class="authsub">con il tuo account BunkerPlex</p>' +
     '<input id="u" class="field f" data-key="u" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Nome utente">' +
@@ -1185,6 +1200,8 @@ var acts = {
     err.textContent = 'Entro…';
     bridge('remoteLogin', [u, p]).then(function (t) {
       var res = JSON.parse(t);
+      // Verifica in due passaggi: prima il codice dell'app di autenticazione
+      if (res.need_2fa) { tfa = { ticket: res.ticket, typed: res.typed || u, user: (res.user && res.user.username) || u }; show(tfaPage()); return; }
       if (res.user && res.user.must_change) {
         err.textContent = 'La password è provvisoria: cambiala prima da BunkerPlex sul PC.';
         return;
@@ -1193,6 +1210,24 @@ var acts = {
       go('friends');
     }, function (m) { err.textContent = m; });
   },
+  tfago: function () {
+    var c = (document.getElementById('tfac') || {}).value || '';
+    var err = document.getElementById('tfaerr');
+    if (!tfa) { go('login'); return; }
+    if (!c.trim()) { err.textContent = 'Scrivi il codice dell\'app.'; return; }
+    err.textContent = 'Controllo…';
+    var rem = !!(document.getElementById('tfarem') || {}).checked;
+    bridge('remoteLogin2fa', [tfa.ticket, c.trim(), rem, tfa.typed]).then(function () {
+      tfa = null;
+      listedAt = 0;
+      go('friends');
+    }, function (m) {
+      err.textContent = m;
+      // Scaduto o troppi tentativi: si ricomincia dalla password
+      if (!/sbagliato/i.test(m)) { tfa = null; setTimeout(function () { go('login'); }, 1800); }
+    });
+  },
+  tfaback: function () { tfa = null; go('login'); },
   google: function () {
     var err = document.getElementById('lerr');
     if (err) err.textContent = 'Un attimo…';

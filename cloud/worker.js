@@ -129,6 +129,8 @@ async function ensureSessionCols(env) {
   if (sessionCols) return;
   const cols = (await env.DB.prepare('PRAGMA table_info(sessions)').all()).results.map((c) => c.name);
   if (!cols.includes('kind')) await env.DB.prepare('ALTER TABLE sessions ADD COLUMN kind TEXT').run();
+  // reauth: fino a quando questa sessione ha confermato che e' lei (password, passkey, codice)
+  if (!cols.includes('reauth')) await env.DB.prepare('ALTER TABLE sessions ADD COLUMN reauth REAL').run();
   sessionCols = true;
 }
 
@@ -1118,7 +1120,7 @@ async function body(request) {
 function userJson(u) {
   return { id: u.id, username: u.username, admin: !!u.admin, must_change: !!u.must_change,
     google: u.google_sub ? (u.google_email || 'collegato') : '', no_password: !!u.no_password,
-    email: u.email || '', needs_name: pendingName(u.username) };
+    email: u.email || '', needs_name: pendingName(u.username), totp: !!u.totp_on };
 }
 
 // kind: che cosa e' entrato (server, pwa, tv, app, browser; vedi SESSION_KINDS)
@@ -1267,6 +1269,9 @@ async function ensurePasskeys(env) {
     'alg INTEGER NOT NULL, counter INTEGER NOT NULL DEFAULT 0, label TEXT, created REAL NOT NULL, used REAL)').run();
   await env.DB.prepare('CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys(user_id)').run();
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS passkey_challenges(hash TEXT PRIMARY KEY, user_id INTEGER, exp REAL NOT NULL)').run();
+  // Togliere una passkey: codice via email (15 minuti, 5 tentativi)
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS passkey_removals(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, ' +
+    'code_hash TEXT NOT NULL, exp REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent REAL NOT NULL)').run();
   passkeyTables = true;
 }
 
@@ -1403,23 +1408,7 @@ async function passkeyRoutes(request, env, url, path, method) {
   }
   if (path === '/passkeys/login/finish' && method === 'POST') {
     const b = await body(request);
-    const row = await env.DB.prepare('SELECT * FROM passkeys WHERE id = ?').bind(String(b.id || '').slice(0, 400)).first();
-    await checkClient(env, url, b.clientDataJSON, 'webauthn.get', null);
-    if (!row) fail(401, 'Questa passkey non è più valida: entra con la password e aggiungila di nuovo');
-    let ad;
-    try { ad = authData(b64urlBytes(b.authenticatorData)); } catch (e) { fail(400, 'Passkey non valida'); }
-    const rpHash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rpId)));
-    if (b64url(ad.rpHash) !== b64url(rpHash) || !ad.up || !ad.uv) fail(401, 'Il dispositivo non ha confermato che sei tu');
-    const cdHash = new Uint8Array(await crypto.subtle.digest('SHA-256', b64urlBytes(b.clientDataJSON)));
-    // Firmati: i dati dell'autenticatore seguiti dall'impronta di clientDataJSON
-    const adBytes = b64urlBytes(b.authenticatorData);
-    const data = new Uint8Array(adBytes.length + 32);
-    data.set(adBytes, 0);
-    data.set(cdHash, adBytes.length);
-    if (!(await passkeyVerify(row, data, b64urlBytes(b.signature)))) fail(401, 'Passkey non valida');
-    // Contatore: se il dispositivo lo usa, deve crescere (una copia clonata resta indietro)
-    if (row.counter && ad.counter <= row.counter) fail(401, 'Passkey non valida: toglila e aggiungila di nuovo');
-    await env.DB.prepare('UPDATE passkeys SET counter = ?, used = ? WHERE id = ?').bind(ad.counter, now(), row.id).run();
+    const row = await passkeyAssert(env, url, b, null);
     const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(row.user_id).first();
     if (!user) fail(401, 'Account non trovato');
     if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
@@ -1433,11 +1422,42 @@ async function passkeyRoutes(request, env, url, path, method) {
 
   if (path === '/passkeys' && method === 'GET') {
     const rows = (await env.DB.prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created').bind(u.id).all()).results;
-    return json({ passkeys: rows.map(passkeyJson) });
+    const st = await reauthState(env, u);
+    return json({ passkeys: rows.map(passkeyJson), verified_until: st.until, mail: !!(resetOn(env) && accountMail(u)),
+      password: !u.no_password });
   }
 
-  // Aggiungere: la sfida, con l'account e le passkey che ha gia' (per non farne due sullo stesso dispositivo)
+  // La sfida per confermare con una passkey dell'account (solo le sue)
+  if (path === '/passkeys/verify/start' && method === 'POST') {
+    const rows = (await env.DB.prepare('SELECT id FROM passkeys WHERE user_id = ?').bind(u.id).all()).results;
+    if (!rows.length) fail(404, 'Su questo account non ci sono passkey');
+    return json({ challenge: await newChallenge(env, u.id), rpId, allow: rows.map((r) => r.id), timeout: PASSKEY_TTL * 1000 });
+  }
+
+  // Conferma che sei tu: con la password o con una passkey dell'account. Vale per
+  // questa sessione per REAUTH_TTL (aggiungere una passkey, toglierla senza email).
+  if (path === '/passkeys/verify' && method === 'POST') {
+    const b = await body(request);
+    if (b.verifier) {
+      if (u.no_password) fail(400, 'Questo account entra con Google: conferma con impronta o volto, oppure esci e rientra');
+      await checkPassword(env, u, cleanVerifier(b.verifier));
+    } else if (b.code) {
+      await ensureTotp(env);
+      if (!u.totp_on || !(await secondFactor(env, u, b.code))) fail(401, 'Codice sbagliato: riprova');
+    } else {
+      const row = await passkeyAssert(env, url, b, u.id);
+      if (row.user_id !== u.id) fail(401, 'Questa passkey è di un altro account');
+    }
+    await ensureSessionCols(env);
+    const until = now() + REAUTH_TTL;
+    await env.DB.prepare('UPDATE sessions SET reauth = ? WHERE token_hash = ?').bind(until, u.token_hash).run();
+    return json({ ok: true, verified_until: until });
+  }
+
+  // Aggiungere: solo dopo aver confermato che sei tu (o appena entrato). La sfida porta
+  // le passkey che l'account ha gia' (per non farne due sullo stesso dispositivo).
   if (path === '/passkeys/register/start' && method === 'POST') {
+    await needReauth(env, u);
     const rows = (await env.DB.prepare('SELECT id FROM passkeys WHERE user_id = ?').bind(u.id).all()).results;
     if (rows.length >= PASSKEY_MAX) fail(409, 'Hai già ' + PASSKEY_MAX + ' passkey: togline una prima');
     return json({
@@ -1449,6 +1469,7 @@ async function passkeyRoutes(request, env, url, path, method) {
   if (path === '/passkeys/register/finish' && method === 'POST') {
     const b = await body(request);
     await checkClient(env, url, b.clientDataJSON, 'webauthn.create', u.id);
+    await needReauth(env, u);
     let att;
     try { att = cbor(b64urlBytes(b.attestationObject)).value; } catch (e) { att = null; }
     if (!(att instanceof Map) || !(att.get('authData') instanceof Uint8Array)) fail(400, 'Passkey non valida');
@@ -1463,16 +1484,384 @@ async function passkeyRoutes(request, env, url, path, method) {
     if (id.length > 400) fail(400, 'Passkey non valida');
     const taken = await env.DB.prepare('SELECT user_id FROM passkeys WHERE id = ?').bind(id).first();
     if (taken) fail(409, 'Questa passkey c\'è già');
-    const label = String(b.label || '').trim().slice(0, 60) || 'Passkey';
+    const label = cleanLabel(b.label);
     await env.DB.prepare('INSERT INTO passkeys(id, user_id, jwk, alg, counter, label, created) VALUES(?,?,?,?,?,?,?)')
       .bind(id, u.id, JSON.stringify(key.jwk), key.alg, ad.counter, label, now()).run();
+    await passkeyNotice(env, u, url.origin, 'added', label);
     return json({ ok: true, passkey: passkeyJson({ id, label, created: now() }) });
   }
 
-  const del = /^\/passkeys\/([A-Za-z0-9_-]{1,400})$/.exec(path);
-  if (del && method === 'DELETE') {
-    await env.DB.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').bind(del[1], u.id).run();
+  const one = /^\/passkeys\/([A-Za-z0-9_-]{1,400})(\/remove|\/remove\/confirm)?$/.exec(path);
+  if (!one) return null;
+  const pk = await env.DB.prepare('SELECT * FROM passkeys WHERE id = ? AND user_id = ?').bind(one[1], u.id).first();
+  if (!pk) fail(404, 'Passkey non trovata');
+
+  // Rinominare: basta l'account
+  if (!one[2] && method === 'PATCH') {
+    const label = cleanLabel((await body(request)).label);
+    await env.DB.prepare('UPDATE passkeys SET label = ? WHERE id = ?').bind(label, pk.id).run();
+    return json({ ok: true, passkey: passkeyJson({ ...pk, label }) });
+  }
+
+  // Togliere: si conferma con un codice via email (all'email dell'account). Senza email
+  // o senza il servizio di posta, serve aver confermato che sei tu (password o passkey).
+  if (one[2] === '/remove' && method === 'POST') {
+    const to = resetOn(env) ? accountMail(u) : '';
+    if (!to) {
+      await needReauth(env, u);
+      await removePasskey(env, u, pk, url.origin);
+      return json({ ok: true, removed: true });
+    }
+    const old = await env.DB.prepare('SELECT sent FROM passkey_removals WHERE id = ?').bind(pk.id).first();
+    if (old && now() - old.sent < RESET_GAP) fail(429, 'Ti abbiamo appena scritto: aspetta un minuto prima di chiedere un altro codice');
+    const a = new Uint32Array(1);
+    crypto.getRandomValues(a);
+    const code = String(a[0] % 1000000).padStart(6, '0');
+    await env.DB.prepare('INSERT OR REPLACE INTO passkey_removals(id, user_id, code_hash, exp, tries, sent) VALUES(?,?,?,?,0,?)')
+      .bind(pk.id, u.id, await sha256(pk.id + ':' + code), now() + RESET_TTL, now()).run();
+    const shown = code.slice(0, 3) + ' ' + code.slice(3);
+    await sendMail(env, to, 'Togli la passkey «' + pk.label + '»: codice ' + shown,
+      'Ciao ' + u.username + ',\n\nper togliere la passkey «' + pk.label + '» dal tuo account BunkerPlex scrivi questo codice:\n\n    ' + shown +
+      '\n\nVale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: la passkey resta, ma cambia la password.\n\n--\nBunkerPlex · Only for bunkers',
+      mailPage('Codice per togliere una passkey: ' + shown,
+        '<p style="margin:0 0 16px">Ciao <b>' + esc(u.username) + '</b>,</p>' +
+        '<p style="margin:0 0 24px">per togliere la passkey <b>' + esc(pk.label) + '</b> dal tuo account scrivi questo codice in BunkerPlex:</p>' +
+        '<div style="background:#f1f6f2;border:1px solid #dce7df;border-radius:10px;padding:18px 0;text-align:center;' +
+        'font:700 34px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:8px;color:#0f1a13">' + shown + '</div>' +
+        '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Vale 15 minuti. Se non l\'hai chiesto tu, ignora questa email: ' +
+        'la passkey resta, ma cambia la password.</p>'));
+    return json({ ok: true, mailed: true, to: maskMail(to) });
+  }
+  if (one[2] === '/remove/confirm' && method === 'POST') {
+    const code = String((await body(request)).code || '').replace(/\D/g, '');
+    const bad = () => fail(400, 'Codice sbagliato o scaduto: chiedine uno nuovo');
+    const row = await env.DB.prepare('SELECT * FROM passkey_removals WHERE id = ? AND user_id = ?').bind(pk.id, u.id).first();
+    if (!row || row.exp < now() || row.tries >= RESET_TRIES || code.length !== 6) bad();
+    if (!sameString(await sha256(pk.id + ':' + code), row.code_hash)) {
+      await env.DB.prepare('UPDATE passkey_removals SET tries = tries + 1 WHERE id = ?').bind(pk.id).run();
+      bad();
+    }
+    await removePasskey(env, u, pk, url.origin);
+    return json({ ok: true, removed: true });
+  }
+  // La via di prima (DELETE) non c'e' piu': si toglie solo con la conferma
+  if (!one[2] && method === 'DELETE') fail(409, 'Per togliere una passkey serve la conferma: usa «Togli» nelle impostazioni');
+  return null;
+}
+
+// ---- Passkey: verifiche e avvisi
+
+const REAUTH_TTL = 600;          // dopo «Conferma che sei tu»: 10 minuti per aggiungere o togliere
+const FRESH_LOGIN = 600;         // appena entrati (password, Google, link): vale come conferma
+
+function cleanLabel(raw) {
+  return String(raw || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 60) || 'Passkey';
+}
+
+function accountMail(u) {
+  return u.email || u.google_email || '';
+}
+
+function maskMail(e) {
+  const [n, d] = String(e).split('@');
+  return (n.length <= 2 ? n[0] + '*' : n.slice(0, 2) + '***') + '@' + d;
+}
+
+// Questa sessione ha confermato da poco che e' lei (o e' appena entrata)?
+async function reauthState(env, u) {
+  await ensureSessionCols(env);
+  const s = await env.DB.prepare('SELECT created, reauth FROM sessions WHERE token_hash = ?').bind(u.token_hash).first();
+  const until = Math.max((s && s.reauth) || 0, s ? s.created + FRESH_LOGIN : 0);
+  return { until: until > now() ? until : 0 };
+}
+
+async function needReauth(env, u) {
+  if ((await reauthState(env, u)).until) return;
+  throw new Reply(json({ detail: 'Prima conferma che sei tu', reauth: true }, 403));
+}
+
+// Una firma di passkey valida (sfida di questo servizio, utente verificato, contatore):
+// la riga della passkey. userId: la sfida deve essere stata chiesta da quell'account.
+async function passkeyAssert(env, url, b, userId) {
+  const rpId = url.hostname;
+  const row = await env.DB.prepare('SELECT * FROM passkeys WHERE id = ?').bind(String(b.id || '').slice(0, 400)).first();
+  await checkClient(env, url, b.clientDataJSON, 'webauthn.get', userId);
+  if (!row) fail(401, 'Questa passkey non è più valida: entra con la password e aggiungila di nuovo');
+  let ad;
+  try { ad = authData(b64urlBytes(b.authenticatorData)); } catch (e) { fail(400, 'Passkey non valida'); }
+  const rpHash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rpId)));
+  if (b64url(ad.rpHash) !== b64url(rpHash) || !ad.up || !ad.uv) fail(401, 'Il dispositivo non ha confermato che sei tu');
+  const cdHash = new Uint8Array(await crypto.subtle.digest('SHA-256', b64urlBytes(b.clientDataJSON)));
+  // Firmati: i dati dell'autenticatore seguiti dall'impronta di clientDataJSON
+  const adBytes = b64urlBytes(b.authenticatorData);
+  const data = new Uint8Array(adBytes.length + 32);
+  data.set(adBytes, 0);
+  data.set(cdHash, adBytes.length);
+  if (!(await passkeyVerify(row, data, b64urlBytes(b.signature)))) fail(401, 'Passkey non valida');
+  // Contatore: se il dispositivo lo usa, deve crescere (una copia clonata resta indietro)
+  if (row.counter && ad.counter <= row.counter) fail(401, 'Passkey non valida: toglila e aggiungila di nuovo');
+  await env.DB.prepare('UPDATE passkeys SET counter = ?, used = ? WHERE id = ?').bind(ad.counter, now(), row.id).run();
+  return row;
+}
+
+async function removePasskey(env, u, pk, origin) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').bind(pk.id, u.id),
+    env.DB.prepare('DELETE FROM passkey_removals WHERE id = ?').bind(pk.id)
+  ]);
+  await passkeyNotice(env, u, origin, 'removed', pk.label);
+}
+
+// Avviso via email quando una passkey si aggiunge o si toglie (se l'account ha un'email).
+// Non blocca: senza posta l'operazione resta fatta.
+async function passkeyNotice(env, u, origin, what, label) {
+  const to = resetOn(env) ? accountMail(u) : '';
+  if (!to) return;
+  const added = what === 'added';
+  const head = added ? 'Nuova passkey sul tuo account' : 'Passkey tolta dal tuo account';
+  const line = added ? 'è stata aggiunta la passkey «' + label + '»: da quel dispositivo si entra con impronta, volto o PIN.'
+    : 'è stata tolta la passkey «' + label + '»: da quel dispositivo serve di nuovo la password.';
+  try {
+    await sendMail(env, to, head + ' BunkerPlex',
+      'Ciao ' + u.username + ',\n\n' + line + '\n\nNon sei stato tu? Cambia subito la password e controlla le passkey in Impostazioni → Account:\n' +
+      origin + '/#/settings/account\n\n--\nBunkerPlex · Only for bunkers',
+      mailPage(head, '<p style="margin:0 0 16px">Ciao <b>' + esc(u.username) + '</b>,</p><p style="margin:0">' + esc(line) + '</p>' +
+        mailButton(origin + '/#/settings/account', 'Controlla le passkey') +
+        '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Non sei stato tu? Cambia subito la password.</p>'));
+  } catch (e) { /* l'avviso e' in piu': l'operazione resta fatta */ }
+}
+
+// ---- Verifica in due passaggi (2FA): codice a 6 cifre da un'app (TOTP, RFC 6238)
+//
+// L'alternativa alle passkey per chi entra con la password: dopo la password (o il
+// link via email, o la password nuova) serve anche il codice dell'app di autenticazione
+// (Google Authenticator, Microsoft Authenticator, 1Password...) o uno dei 10 codici
+// di recupero (una volta sola ciascuno). Google e passkey non lo chiedono: sono gia'
+// due fattori. Attivare, disattivare e rifare i codici di recupero chiedono prima di
+// confermare chi sei; ogni cambio arriva anche via email.
+//
+// /login (e /magic/finish, /reset/finish) con la 2FA accesa non danno il gettone ma
+// {need_2fa, ticket}: il gettone arriva da /login/2fa {ticket, code} (5 minuti, 5 tentativi).
+
+const TOTP_STEP = 30;
+const TOTP_TICKET_TTL = 300;
+const TOTP_TRIES = 5;
+const RECOVERY_CODES = 10;
+const TRUST_TTL = 30 * 86400;    // «Ricorda questo dispositivo»: niente codice per 30 giorni
+const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+let totpCols = false;
+async function ensureTotp(env) {
+  if (totpCols) return;
+  await ensureGoogle(env);
+  const cols = (await env.DB.prepare('PRAGMA table_info(users)').all()).results.map((c) => c.name);
+  if (!cols.includes('totp_secret')) await env.DB.prepare('ALTER TABLE users ADD COLUMN totp_secret TEXT').run();
+  if (!cols.includes('totp_on')) await env.DB.prepare('ALTER TABLE users ADD COLUMN totp_on INTEGER NOT NULL DEFAULT 0').run();
+  if (!cols.includes('totp_step')) await env.DB.prepare('ALTER TABLE users ADD COLUMN totp_step INTEGER NOT NULL DEFAULT 0').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS totp_recovery(user_id INTEGER NOT NULL, code_hash TEXT NOT NULL, PRIMARY KEY(user_id, code_hash))').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS login_2fa(ticket_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, device TEXT, kind TEXT, ' +
+    'exp REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS totp_trust(hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, label TEXT, ' +
+    'created REAL NOT NULL, exp REAL NOT NULL)').run();
+  totpCols = true;
+}
+
+function b32encode(bytes) {
+  let bits = 0, val = 0, out = '';
+  for (const b of bytes) {
+    val = (val << 8) | b;
+    bits += 8;
+    while (bits >= 5) { out += B32[(val >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += B32[(val << (5 - bits)) & 31];
+  return out;
+}
+
+function b32decode(s) {
+  let bits = 0, val = 0;
+  const out = [];
+  for (const c of String(s).toUpperCase().replace(/[^A-Z2-7]/g, '')) {
+    val = (val << 5) | B32.indexOf(c);
+    bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return new Uint8Array(out);
+}
+
+// Il codice di un passo di 30 secondi (HMAC-SHA1, 6 cifre)
+async function totpAt(secret, step) {
+  const key = await crypto.subtle.importKey('raw', b32decode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const msg = new Uint8Array(8);
+  let x = step;
+  for (let i = 7; i >= 0; i--) { msg[i] = x & 255; x = Math.floor(x / 256); }
+  const h = new Uint8Array(await crypto.subtle.sign('HMAC', key, msg));
+  const o = h[19] & 15;
+  const n = ((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1000000).padStart(6, '0');
+}
+
+// Il passo giusto (anche quello prima e quello dopo, per gli orologi un po' sfasati), o 0.
+// after: l'ultimo passo gia' usato (lo stesso codice non vale due volte).
+async function totpMatch(secret, code, after) {
+  const c = String(code || '').replace(/\D/g, '');
+  if (c.length !== 6 || !secret) return 0;
+  const t = Math.floor(now() / TOTP_STEP);
+  for (const step of [t - 1, t, t + 1]) {
+    if (step > (after || 0) && sameString(await totpAt(secret, step), c)) return step;
+  }
+  return 0;
+}
+
+const cleanRecovery = (c) => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+async function newRecovery(env, userId) {
+  const codes = [];
+  const stmts = [env.DB.prepare('DELETE FROM totp_recovery WHERE user_id = ?').bind(userId)];
+  for (let i = 0; i < RECOVERY_CODES; i++) {
+    const a = new Uint8Array(10);
+    crypto.getRandomValues(a);
+    const c = [...a].map((x) => CODE_CHARS[x % CODE_CHARS.length]).join('');
+    codes.push(c.slice(0, 5) + '-' + c.slice(5));
+    stmts.push(env.DB.prepare('INSERT INTO totp_recovery(user_id, code_hash) VALUES(?,?)').bind(userId, await sha256(userId + ':' + c)));
+  }
+  await env.DB.batch(stmts);
+  return codes;
+}
+
+// Il codice dell'app o uno di recupero (che si consuma). true se va bene.
+async function secondFactor(env, u, raw) {
+  const step = await totpMatch(u.totp_secret, raw, u.totp_step);
+  if (step) {
+    // Il passo usato: solo se nessun'altra richiesta l'ha appena preso
+    const r = await env.DB.prepare('UPDATE users SET totp_step = ? WHERE id = ? AND totp_step < ?').bind(step, u.id, step).run();
+    return !r.meta || typeof r.meta.changes !== 'number' || r.meta.changes === 1;
+  }
+  const rc = cleanRecovery(raw);
+  if (rc.length !== 10) return false;
+  const del = await env.DB.prepare('DELETE FROM totp_recovery WHERE user_id = ? AND code_hash = ?')
+    .bind(u.id, await sha256(u.id + ':' + rc)).run();
+  return !!(del.meta && del.meta.changes === 1);
+}
+
+// Dopo la password (o il link, o la password nuova): il gettone, o la richiesta del codice.
+// trust: il gettone di «Ricorda questo dispositivo» (se e' di questo account e vale ancora, niente codice)
+async function loginReply(env, user, device, kind, trust) {
+  await ensureTotp(env);
+  const fresh = await env.DB.prepare('SELECT totp_on FROM users WHERE id = ?').bind(user.id).first();
+  if (!fresh || !fresh.totp_on) return json({ token: await newSession(env, user, device, kind), user: userJson(user) });
+  if (trust && /^[0-9a-f]{64}$/.test(String(trust))) {
+    const tr = await env.DB.prepare('SELECT exp FROM totp_trust WHERE hash = ? AND user_id = ?').bind(await sha256(String(trust)), user.id).first();
+    if (tr && tr.exp > now()) return json({ token: await newSession(env, user, device, kind), user: userJson(user) });
+  }
+  if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+  await env.DB.prepare('DELETE FROM login_2fa WHERE exp < ?').bind(now()).run();
+  const ticket = randomHex(32);
+  await env.DB.prepare('INSERT INTO login_2fa(ticket_hash, user_id, device, kind, exp) VALUES(?,?,?,?,?)')
+    .bind(await sha256(ticket), user.id, String(device || '').slice(0, 80), String(kind || ''), now() + TOTP_TICKET_TTL).run();
+  return json({ need_2fa: true, ticket, user: { username: user.username } });
+}
+
+async function totpNotice(env, u, origin, line) {
+  const to = resetOn(env) ? accountMail(u) : '';
+  if (!to) return;
+  try {
+    await sendMail(env, to, 'Verifica in due passaggi BunkerPlex',
+      'Ciao ' + u.username + ',\n\n' + line + '\n\nNon sei stato tu? Cambia subito la password:\n' + origin + '/#/settings/account\n\n--\nBunkerPlex · Only for bunkers',
+      mailPage('Verifica in due passaggi', '<p style="margin:0 0 16px">Ciao <b>' + esc(u.username) + '</b>,</p><p style="margin:0">' + esc(line) + '</p>' +
+        mailButton(origin + '/#/settings/account', 'Controlla l\'account') +
+        '<p style="margin:24px 0 0;color:#5b6660;font-size:14px">Non sei stato tu? Cambia subito la password.</p>'));
+  } catch (e) { /* l'avviso e' in piu' */ }
+}
+
+async function totpRoutes(request, env, url, path, method) {
+  if (!/^\/(2fa|login\/2fa)(\/|$)/.test(path)) return null;
+  await ensureTotp(env);
+
+  // Il secondo passo dell'accesso
+  if (path === '/login/2fa' && method === 'POST') {
+    const b = await body(request);
+    const th = await sha256(String(b.ticket || ''));
+    const t = await env.DB.prepare('SELECT * FROM login_2fa WHERE ticket_hash = ?').bind(th).first();
+    if (!t || t.exp < now() || t.tries >= TOTP_TRIES) fail(401, 'Tempo scaduto: rientra con la password');
+    const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(t.user_id).first();
+    if (!u || !u.totp_on) fail(401, 'Tempo scaduto: rientra con la password');
+    if (!(await secondFactor(env, u, b.code))) {
+      await env.DB.prepare('UPDATE login_2fa SET tries = tries + 1 WHERE ticket_hash = ?').bind(th).run();
+      fail(401, t.tries + 1 >= TOTP_TRIES ? 'Troppi codici sbagliati: rientra con la password' : 'Codice sbagliato: riprova');
+    }
+    await env.DB.prepare('DELETE FROM login_2fa WHERE ticket_hash = ?').bind(th).run();
+    const out = { token: await newSession(env, u, b.device || t.device, b.kind || t.kind), user: userJson(u) };
+    if (b.remember) {
+      // Ricorda questo dispositivo: un gettone suo (si salva l'impronta), al piu' 20 per account
+      out.trust = randomHex(32);
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM totp_trust WHERE user_id = ? AND (exp < ? OR hash IN (SELECT hash FROM totp_trust WHERE user_id = ? ORDER BY created DESC LIMIT -1 OFFSET 19))')
+          .bind(u.id, now(), u.id),
+        env.DB.prepare('INSERT INTO totp_trust(hash, user_id, label, created, exp) VALUES(?,?,?,?,?)')
+          .bind(await sha256(out.trust), u.id, String(b.device || t.device || '').slice(0, 80), now(), now() + TRUST_TTL)
+      ]);
+    }
+    return json(out);
+  }
+
+  const u = await auth(request, env);
+  const me = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(u.id).first();
+
+  if (path === '/2fa' && method === 'GET') {
+    const left = await env.DB.prepare('SELECT COUNT(*) n FROM totp_recovery WHERE user_id = ?').bind(u.id).first('n');
+    const trusted = await env.DB.prepare('SELECT COUNT(*) n FROM totp_trust WHERE user_id = ? AND exp > ?').bind(u.id, now()).first('n');
+    const st = await reauthState(env, u);
+    return json({ on: !!me.totp_on, recovery_left: me.totp_on ? left : 0, trusted: me.totp_on ? trusted : 0,
+      verified_until: st.until, password: !me.no_password });
+  }
+
+  // Dimentica i dispositivi ricordati: da tutti servira' di nuovo il codice
+  if (path === '/2fa/trust' && method === 'DELETE') {
+    await needReauth(env, u);
+    await env.DB.prepare('DELETE FROM totp_trust WHERE user_id = ?').bind(u.id).run();
     return json({ ok: true });
+  }
+
+  // Attivare (1): un segreto nuovo, da inquadrare o scrivere nell'app. Resta in sospeso
+  // finche' non torna un codice giusto (2). Con la 2FA gia' accesa non si cambia qui.
+  if (path === '/2fa/setup' && method === 'POST') {
+    await needReauth(env, u);
+    if (me.totp_on) fail(409, 'La verifica in due passaggi è già attiva: disattivala prima per cambiare app');
+    const a = new Uint8Array(20);
+    crypto.getRandomValues(a);
+    const secret = b32encode(a);
+    await env.DB.prepare('UPDATE users SET totp_secret = ?, totp_step = 0 WHERE id = ?').bind(secret, u.id).run();
+    const label = encodeURIComponent('BunkerPlex:' + (accountMail(me) || me.username));
+    return json({ secret, uri: 'otpauth://totp/' + label + '?secret=' + secret + '&issuer=BunkerPlex&algorithm=SHA1&digits=6&period=30' });
+  }
+  if (path === '/2fa/enable' && method === 'POST') {
+    await needReauth(env, u);
+    if (me.totp_on) fail(409, 'La verifica in due passaggi è già attiva');
+    const step = await totpMatch(me.totp_secret, (await body(request)).code, 0);
+    if (!step) fail(400, 'Codice sbagliato: controlla che l\'orologio del telefono sia giusto e riprova');
+    await env.DB.prepare('UPDATE users SET totp_on = 1, totp_step = ? WHERE id = ?').bind(step, u.id).run();
+    const codes = await newRecovery(env, u.id);
+    await totpNotice(env, me, url.origin, 'hai attivato la verifica in due passaggi: dopo la password BunkerPlex chiede anche il codice dell\'app.');
+    return json({ ok: true, on: true, recovery: codes });
+  }
+  // Disattivare o rifare i codici di recupero: conferma chi sei e un codice (dell'app o di recupero)
+  if ((path === '/2fa/disable' || path === '/2fa/recovery') && method === 'POST') {
+    await needReauth(env, u);
+    if (!me.totp_on) fail(409, 'La verifica in due passaggi non è attiva');
+    if (!(await secondFactor(env, me, (await body(request)).code))) fail(400, 'Codice sbagliato: riprova');
+    // Codici nuovi o 2FA spenta: i dispositivi ricordati non valgono piu'
+    await env.DB.prepare('DELETE FROM totp_trust WHERE user_id = ?').bind(u.id).run();
+    if (path === '/2fa/recovery') {
+      const codes = await newRecovery(env, u.id);
+      await totpNotice(env, me, url.origin, 'hai creato nuovi codici di recupero: quelli di prima non valgono più.');
+      return json({ ok: true, recovery: codes });
+    }
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET totp_on = 0, totp_secret = NULL, totp_step = 0 WHERE id = ?').bind(u.id),
+      env.DB.prepare('DELETE FROM totp_recovery WHERE user_id = ?').bind(u.id)
+    ]);
+    await totpNotice(env, me, url.origin, 'hai disattivato la verifica in due passaggi: per entrare basta di nuovo la password.');
+    return json({ ok: true, on: false });
   }
   return null;
 }
@@ -2840,7 +3229,7 @@ async function route(request, env) {
     await ensureGoogle(env);
     const b = await body(request);
     const user = await magicFinish(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'), b.token);
-    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
+    return loginReply(env, user, b.device, b.kind, b.trust);
   }
 
   // Attivazione dal link dell'invito: email + gettone, poi nome (se serve) e password
@@ -2878,7 +3267,7 @@ async function route(request, env) {
     const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(String(b.username || '').trim()).first();
     if (!user) fail(401, 'Nome utente o password sbagliati');
     await checkPassword(env, user, verifier);
-    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
+    return loginReply(env, user, b.device, b.kind, b.trust);
   }
 
   // Password dimenticata (vedi resetStart)
@@ -2891,13 +3280,15 @@ async function route(request, env) {
     if (!resetOn(env)) fail(404, 'Il recupero della password non è attivo nel servizio account');
     const b = await body(request);
     const user = await resetFinish(env, cleanEmail(b.email) || fail(400, 'Scrivi l\'email'), b.code, cleanVerifier(b.verifier));
-    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
+    return loginReply(env, user, b.device, b.kind, b.trust);
   }
 
   const g = await googleRoutes(request, env, url, path, method);
   if (g) return g;
   const pk = await passkeyRoutes(request, env, url, path, method);
   if (pk) return pk;
+  const tf = await totpRoutes(request, env, url, path, method);
+  if (tf) return tf;
   const tp = await tvPublicRoutes(request, env, url, path, method);
   if (tp) return tp;
   const nr = await noticeRoutes(request, env, url, path, method);
@@ -2954,6 +3345,9 @@ async function route(request, env) {
       // Gli altri server collegati devono rientrare con la password nuova
       env.DB.prepare('DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?').bind(user.id, user.token_hash)
     ]);
+    // Password nuova: i dispositivi ricordati per la verifica in due passaggi chiedono di nuovo il codice
+    await ensureTotp(env);
+    await env.DB.prepare('DELETE FROM totp_trust WHERE user_id = ?').bind(user.id).run();
     return json({ ok: true, user: userJson({ ...user, username, must_change: 0 }) });
   }
 
