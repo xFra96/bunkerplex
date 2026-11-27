@@ -42,6 +42,18 @@ abstract class RemoteBridge(private val act: Activity, private val web: WebView,
         }
     }
 
+    /** Verifica in due passaggi: il codice dopo la password (remember: ricorda il dispositivo). */
+    @JavascriptInterface
+    fun remoteLogin2fa(ticket: String, code: String, remember: Boolean, typed: String, cb: Int) {
+        thread {
+            try {
+                done(cb, true, Remote.login2fa(act, ticket, code, remember, typed).toString())
+            } catch (e: Exception) {
+                done(cb, false, e.message ?: "Codice non accettato")
+            }
+        }
+    }
+
     @JavascriptInterface
     fun remoteLogout() = Remote.logout(act)
 

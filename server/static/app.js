@@ -219,6 +219,7 @@ function devName() { return TV ? 'tv' : PHONE_APP ? 'phone' : 'browser'; }
 
 // Il modulo per entrare con un account (o per creare l'amministratore, la prima volta)
 function accountForm(name, fixed) {
+  if (cache.s2fa) return twoFaForm(cache.s2fa.user, 's2fago', 's2facancel');
   if (auth.setup) {
     return '<p>Sul servizio account non c\'è ancora nessuno: crea l\'account <b>amministratore</b>, è il tuo. ' +
       'Con questo poi crei quelli degli altri, con una password provvisoria da cambiare al primo accesso.</p>' +
@@ -627,6 +628,7 @@ function googleWide() {
 
 // Passo 1: email (o nome) e password, sotto Google. Niente altro.
 function loginPage() {
+  if (cache.s2fa) return authShell(twoFaForm(cache.s2fa.user, 's2fago', 's2facancel'));
   var where = auth.pc || '';
   return authShell(getAppSlot() + '<h1>Accedi</h1>' +
     '<p class="authsub">' + (where ? 'al server <b>' + esc(where) + '</b>' : 'con il tuo account BunkerPlex') + '</p>' +
@@ -676,7 +678,44 @@ function askPoll() {
 
 function loginFailed(e) {
   if (e && e.data && e.data.ask) { cache.ask = e.data.ask; render(); return true; }
+  if (e && e.data && e.data.need_2fa) { cache.s2fa = { t: e.data.need_2fa, user: e.data.user || '' }; render(); return true; }
   return false;
+}
+
+// ---- Verifica in due passaggi all'accesso: il codice dell'app di autenticazione
+// (o uno dei codici di recupero). act: l'azione che lo manda; cancel: quella per tornare.
+function twoFaForm(user, act, cancel) {
+  return '<div class="authico">' + LOCK_ICON + '</div><h1>Verifica in due passaggi</h1>' +
+    '<p class="authsub">' + (user ? 'Per <b>' + esc(user) + '</b>: s' : 'S') + 'crivi il codice a 6 cifre dell\'app di autenticazione</p>' +
+    '<input class="field f num" id="tfacode" data-key="tfacode" data-autofocus inputmode="numeric" autocomplete="one-time-code" ' +
+    'autocapitalize="characters" spellcheck="false" maxlength="11" data-enter="' + act + '" placeholder="123 456">' +
+    '<label class="tfarem"><input type="checkbox" id="tfarem" class="f" data-key="tfarem"' + (TV || BROWSER_TV ? '' : ' checked') + '> ' +
+      'Ricorda questo dispositivo per 30 giorni</label>' +
+    '<button class="btn primary block f" data-act="' + act + '" data-key="' + act + '">Entra</button>' +
+    '<p class="authnote">Niente telefono? Scrivi uno dei codici di recupero (es. ABCDE-FGHIJ).</p>' +
+    '<button class="authlink f" data-act="' + cancel + '" data-key="' + cancel + '">Annulla</button>';
+}
+
+// «Ricorda questo dispositivo»: il gettone del servizio, per account (nome o email scritti)
+function trustFor(name) {
+  try { return localStorage.getItem('bp-trust:' + String(name || '').trim().toLowerCase()) || ''; } catch (e) { return ''; }
+}
+
+function trustSave(names, token) {
+  if (!token) return;
+  names.forEach(function (n) {
+    if (!n) return;
+    try { localStorage.setItem('bp-trust:' + String(n).trim().toLowerCase(), token); } catch (e) { /* niente */ }
+  });
+}
+
+function rememberChecked() {
+  var el = document.getElementById('tfarem');
+  return !!(el && el.checked);
+}
+
+function c2faPage() {
+  return authShell(twoFaForm(cache.c2fa.user, 'c2fago', 'c2facancel') + (C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : ''));
 }
 
 // Passo 2: quale server. Si chiede a ogni apertura (sessionStorage), per account.
@@ -795,6 +834,8 @@ async function phonePairPage(code) {
     (needNew ? '<p class="authsub">La password è provvisoria: scegline una tua, varrà su tutti i PC e le TV.</p>' +
       '<input class="field f" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
       '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="pairsend" placeholder="Ripeti la password nuova">' : '') +
+    (cache.pair2fa === code ? '<p class="authsub">Verifica in due passaggi: scrivi anche il codice dell\'app di autenticazione (o uno di recupero).</p>' +
+      '<input class="field f num" id="pcode" data-key="pcode" data-autofocus inputmode="numeric" autocomplete="one-time-code" maxlength="11" data-enter="pairsend" placeholder="Codice dell\'app">' : '') +
     '<button class="btn primary block f" data-act="pairsend" data-arg="' + esc(code) + '" data-key="pairsend">Entra sulla TV</button>' +
     (auth && auth.google && !CENTRAL ? '<div class="author"><span>oppure</span></div>' +
       '<button class="gbtn f" data-act="pairgoogle" data-arg="' + esc(code) + '" data-key="pairgoogle">' + GOOGLE_G + '<span>Continua con Google</span></button>' : '') +
@@ -977,6 +1018,12 @@ async function cUsername(name) {
 
 // offer: dopo password, Google o link si propone una passkey (non dopo una passkey)
 function cEntered(r, offer) {
+  // Verifica in due passaggi: la password andava bene, ora il codice (vedi c2faPage)
+  if (r && r.need_2fa) {
+    cache.c2fa = { ticket: r.ticket, user: (r.user && r.user.username) || '', offer: offer };
+    C.error = '';
+    return;
+  }
   if (offer !== false) cache.pkOffer = true;
   C.token = r.token;
   C.user = r.user;
@@ -1452,7 +1499,7 @@ async function cServersPage() {
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
     '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     (C.profiles && C.profiles.length > 1 ? '<a class="authlink f" href="#/chi" data-key="cwho">Cambia profilo</a>' : '') + cAppLink() +
-    (pkOn() ? '<a class="authlink f" href="#/passkey" data-key="cpasskey">Impronta e volto</a>' : '') +
+    '<a class="authlink f" href="#/sicurezza" data-key="csec">Sicurezza dell\'accesso</a>' +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
@@ -1611,13 +1658,14 @@ async function cGate() {
   if (!C.token) {
     lockScreen(true);
     if (cgLoad()) return cGooglePage(cache.cg);
+    if (cache.c2fa) return c2faPage();
     if (location.hash.indexOf('#/reset') === 0) return cResetPage();
     return BROWSER_TV && !cache.cTvPw && !cache.cLogin ? cTvLoginPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
   var tv = cTvPending();
   if (tv !== null) { lockScreen(true); return cTvPage(tv); }
-  if (location.hash === '#/passkey') { lockScreen(true); return pkManagePage(); }
+  if (location.hash === '#/passkey' || location.hash === '#/sicurezza') { lockScreen(true); return secPage(); }
   if (await pkShouldOffer()) { lockScreen(true); return pkOfferPage(); }
   // «Chi guarda?» subito dopo l'accesso, con i profili dell'account (come Netflix), poi il server
   await cProfiles(false);
@@ -2069,24 +2117,6 @@ function pkOfferPage() {
     '<button class="authlink f" data-act="pkskip" data-key="pkskip">Non ora</button>');
 }
 
-// Impronta e volto: le passkey dell'account, da togliere o aggiungere
-async function pkManagePage() {
-  var list = [];
-  try { list = (await cloud('GET', '/passkeys')).passkeys || []; } catch (e) { authErr(e.message); }
-  cache.pkList = list;
-  var rows = list.map(function (p, i) {
-    return '<div class="pkrow">' + pkIcon() + '<span><b>' + esc(p.label) + '</b><small>Aggiunta il ' + esc(whenDate(p.created)) +
-      (p.used ? ' · usata il ' + esc(whenDate(p.used)) : '') + '</small></span>' +
-      '<button class="btn f" data-act="pkdel" data-arg="' + i + '" data-key="pkdel-' + i + '">Togli</button></div>';
-  }).join('');
-  return authShell('<div class="authico">' + pkIcon() + '</div><h1>Impronta e volto</h1>' +
-    '<p class="authsub">Entri con impronta, volto o il PIN del dispositivo, senza password. Funziona da questo indirizzo, sul telefono e sul computer.</p>' +
-    (rows ? '<div class="pklist">' + rows + '</div>' : '<p class="authnote">Ancora nessuna passkey.</p>') +
-    (pkOn() ? '<button class="btn primary block f" data-autofocus data-act="pkadd" data-key="pkadd">Aggiungi questo dispositivo</button>'
-      : '<p class="authnote">Questo browser non le supporta.</p>') +
-    '<a class="authlink f" href="#/home" data-key="pkback">Indietro</a>', true);
-}
-
 function cPkActions() {
   return {
     pklogin: function () {
@@ -2118,27 +2148,517 @@ function cPkActions() {
       cache.pkOffer = false;
       render();
     },
-    pkdel: function (arg) {
-      var p = (cache.pkList || [])[Number(arg)];
-      if (!p) return;
-      confirmBox('Togliere la passkey «' + p.label + '»? Su quel dispositivo servirà di nuovo la password.', 'Sì, togli', function () {
-        cloud('DELETE', '/passkeys/' + encodeURIComponent(p.id)).then(function () {
-          toast('Passkey tolta');
-          render();
-        }, function (e) { toast(e.message); });
-      });
-    },
     cgreopen: function () {
       var g = cache.cg;
       if (!g) return;
       var w = window.open(g.url, '_blank');
       if (!w) location.href = g.url;
     },
+    c2fago: async function () {
+      var f = cache.c2fa, code = fieldValue('tfacode').trim();
+      if (!f) return;
+      if (!code) { authErr('Scrivi il codice dell\'app'); return; }
+      try {
+        var r = await cloud('POST', '/login/2fa', { ticket: f.ticket, code: code, device: pkLabel(), kind: 'pwa', remember: rememberChecked() });
+        cache.c2fa = null;
+        trustSave([f.user].concat(f.names || []), r.trust);
+        cEntered(r, f.offer);
+        cache.cLogin = null;
+        location.replace('#/home');
+        render();
+      } catch (e) {
+        if (!/sbagliato/i.test(e.message)) { cache.c2fa = null; C.error = e.message; render(); return; }
+        authErr(e.message);
+        var el = byKey('tfacode');
+        if (el) { el.value = ''; el.focus(); }
+      }
+    },
+    c2facancel: function () { cache.c2fa = null; C.error = ''; render(); },
     cgcancel: function () {
       cgSet(null);
       render();
     }
   };
+}
+
+// ---- Sicurezza dell'accesso (Impostazioni → Account): passkey e verifica in due passaggi
+//
+// Vale nella PWA del servizio account (le passkey sono di quell'indirizzo). Ogni modifica
+// passa da «Conferma che sei tu» (password, passkey o codice dell'app) se la sessione non
+// l'ha fatto da poco: lo decide il servizio (risposta {reauth}). Togliere una passkey si
+// conferma con un codice via email; aggiunte e tolte arrivano anche via email.
+
+// QR (ISO 18004) per l'app di autenticazione: byte, correzione M, versioni 1-10.
+// Le righe di 0 e 1 (senza bordo), come il campo "qr" del server.
+function qrRows(text, forceVersion, forceMask) {
+  var data = Array.prototype.slice.call(new TextEncoder().encode(text));
+  // [data codewords per blocco...] e codewords di correzione per blocco, livello M
+  var BLOCKS = [null, [[16], 10], [[28], 16], [[44], 26], [[32, 32], 18], [[43, 43], 24], [[27, 27, 27, 27], 16],
+    [[31, 31, 31, 31], 18], [[38, 38, 39, 39], 22], [[36, 36, 36, 37, 37], 22], [[43, 43, 43, 43, 44], 26]];
+  var ALIGN = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+  var ver = 0;
+  for (var v = 1; v <= 10; v++) {
+    var cap = BLOCKS[v][0].reduce(function (a, b) { return a + b; }, 0);
+    if (4 + (v < 10 ? 8 : 16) + data.length * 8 <= cap * 8) { ver = v; break; }
+  }
+  if (forceVersion) ver = forceVersion;
+  if (!ver) return [];
+  var blocks = BLOCKS[ver][0], ecLen = BLOCKS[ver][1];
+  var capBytes = blocks.reduce(function (a, b) { return a + b; }, 0);
+  // Bit dei dati: modo byte, lunghezza, dati, terminatore, riempitivo
+  var bits = [];
+  var put = function (val, n) { for (var i = n - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+  put(4, 4);
+  put(data.length, ver < 10 ? 8 : 16);
+  data.forEach(function (b) { put(b, 8); });
+  put(0, Math.min(4, capBytes * 8 - bits.length));
+  while (bits.length % 8) bits.push(0);
+  var words = [];
+  for (var i = 0; i < bits.length; i += 8) words.push(parseInt(bits.slice(i, i + 8).join(''), 2));
+  for (var pad = 0; words.length < capBytes; pad++) words.push(pad % 2 ? 0x11 : 0xEC);
+  // Reed-Solomon su GF(256) (polinomio 0x11D)
+  var EXP = [], LOG = [];
+  for (var e = 0, x = 1; e < 255; e++) { EXP[e] = x; LOG[x] = e; x <<= 1; if (x & 256) x ^= 0x11D; }
+  var mul = function (a, b) { return a && b ? EXP[(LOG[a] + LOG[b]) % 255] : 0; };
+  var gen = [1];
+  for (var d = 0; d < ecLen; d++) {
+    var next = new Array(gen.length + 1).fill(0);
+    for (var j = 0; j < gen.length; j++) { next[j] ^= gen[j]; next[j + 1] ^= mul(gen[j], EXP[d]); }
+    gen = next;
+  }
+  var dataBlocks = [], ecBlocks = [], off = 0;
+  blocks.forEach(function (n) {
+    var blk = words.slice(off, off + n);
+    off += n;
+    var rem = new Array(ecLen).fill(0);
+    blk.forEach(function (w) {
+      var f = w ^ rem[0];
+      rem.shift(); rem.push(0);
+      for (var k = 0; k < ecLen; k++) rem[k] ^= mul(gen[k + 1], f);
+    });
+    dataBlocks.push(blk);
+    ecBlocks.push(rem);
+  });
+  // Intreccio dei blocchi
+  var all = [], maxLen = Math.max.apply(null, blocks);
+  for (var c = 0; c < maxLen; c++) dataBlocks.forEach(function (b) { if (c < b.length) all.push(b[c]); });
+  for (c = 0; c < ecLen; c++) ecBlocks.forEach(function (b) { all.push(b[c]); });
+
+  var size = ver * 4 + 17;
+  var m = [], fixed = [];
+  for (var r = 0; r < size; r++) { m.push(new Array(size).fill(0)); fixed.push(new Array(size).fill(false)); }
+  var set = function (r, c, on) { m[r][c] = on ? 1 : 0; fixed[r][c] = true; };
+  // Riconoscimento (tre angoli) con il margine chiaro
+  [[0, 0], [0, size - 7], [size - 7, 0]].forEach(function (p) {
+    for (var dr = -1; dr <= 7; dr++) for (var dc = -1; dc <= 7; dc++) {
+      var rr = p[0] + dr, cc = p[1] + dc;
+      if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+      var on = dr >= 0 && dr <= 6 && dc >= 0 && dc <= 6 &&
+        (dr === 0 || dr === 6 || dc === 0 || dc === 6 || (dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4));
+      set(rr, cc, on);
+    }
+  });
+  // Allineamento
+  var al = ALIGN[ver];
+  al.forEach(function (ar) {
+    al.forEach(function (ac) {
+      if (fixed[ar][ac]) return;
+      for (var dr = -2; dr <= 2; dr++) for (var dc = -2; dc <= 2; dc++) {
+        set(ar + dr, ac + dc, Math.max(Math.abs(dr), Math.abs(dc)) !== 1);
+      }
+    });
+  });
+  // Righe di temporizzazione
+  for (i = 8; i < size - 8; i++) { if (!fixed[6][i]) set(6, i, i % 2 === 0); if (!fixed[i][6]) set(i, 6, i % 2 === 0); }
+  // Spazi per formato e versione (si riempiono dopo), poi il modulo scuro
+  for (i = 0; i < 9; i++) { if (!fixed[8][i]) set(8, i, false); if (!fixed[i][8]) set(i, 8, false); }
+  for (i = 0; i < 8; i++) { set(8, size - 1 - i, false); set(size - 1 - i, 8, false); }
+  set(size - 8, 8, true);
+  if (ver >= 7) for (i = 0; i < 6; i++) for (j = 0; j < 3; j++) { set(i, size - 11 + j, false); set(size - 11 + j, i, false); }
+  // Dati a zig-zag
+  var bitAt = 0, total = all.length * 8;
+  for (var col = size - 1; col > 0; col -= 2) {
+    if (col === 6) col--;
+    for (var cnt = 0; cnt < size; cnt++) {
+      var row = ((col + 1) & 2) ? cnt : size - 1 - cnt;
+      for (var t = 0; t < 2; t++) {
+        var cc2 = col - t;
+        if (fixed[row][cc2]) continue;
+        m[row][cc2] = bitAt < total ? (all[bitAt >> 3] >>> (7 - (bitAt & 7))) & 1 : 0;
+        bitAt++;
+      }
+    }
+  }
+  var MASKS = [function (r, c) { return (r + c) % 2 === 0; }, function (r) { return r % 2 === 0; }, function (r, c) { return c % 3 === 0; },
+    function (r, c) { return (r + c) % 3 === 0; }, function (r, c) { return (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0; },
+    function (r, c) { return (r * c) % 2 + (r * c) % 3 === 0; }, function (r, c) { return ((r * c) % 2 + (r * c) % 3) % 2 === 0; },
+    function (r, c) { return ((r + c) % 2 + (r * c) % 3) % 2 === 0; }];
+  // Codice BCH: il valore seguito dal resto della divisione per poly (grado deg)
+  var bch = function (val, poly, deg) {
+    var r = val << deg;
+    for (var i2 = 31 - Math.clz32(r); i2 >= deg; i2--) if ((r >>> i2) & 1) r ^= poly << (i2 - deg);
+    return (val << deg) | r;
+  };
+  var withMask = function (mask) {
+    var g = m.map(function (rr, r) { return rr.map(function (val, c) { return !fixed[r][c] && MASKS[mask](r, c) ? val ^ 1 : val; }); });
+    var fmt = bch((0 << 3) | mask, 0x537, 10) ^ 0x5412;      // livello M = 00
+    for (var k = 0; k < 15; k++) {
+      var on = (fmt >>> k) & 1;
+      // Prima copia, attorno all'angolo in alto a sinistra
+      if (k <= 5) g[k][8] = on; else if (k === 6) g[7][8] = on; else if (k === 7) g[8][8] = on;
+      else if (k === 8) g[8][7] = on; else g[8][14 - k] = on;
+      // Seconda copia: in alto a destra (0-7) e in basso a sinistra (8-14)
+      if (k < 8) g[8][size - 1 - k] = on; else g[size - 15 + k][8] = on;
+    }
+    if (ver >= 7) {
+      var vi = bch(ver, 0x1F25, 12);
+      for (k = 0; k < 18; k++) {
+        var b = (vi >>> k) & 1, a = Math.floor(k / 3), bb = size - 11 + (k % 3);
+        g[a][bb] = b; g[bb][a] = b;
+      }
+    }
+    return g;
+  };
+  // Penalita' (per scegliere la maschera migliore)
+  var penalty = function (g) {
+    var p = 0, n = g.length, dark = 0;
+    var lines = function (get) {
+      for (var a = 0; a < n; a++) {
+        var run = 1, line = [];
+        for (var b = 0; b < n; b++) line.push(get(a, b));
+        for (b = 1; b <= n; b++) {
+          if (b < n && line[b] === line[b - 1]) run++;
+          else { if (run >= 5) p += run - 2; run = 1; }
+        }
+        var s = '0000' + line.join('') + '0000';
+        for (var idx = s.indexOf('1011101'); idx >= 0; idx = s.indexOf('1011101', idx + 1)) {
+          if (s.substr(idx - 4, 4) === '0000' || s.substr(idx + 7, 4) === '0000') p += 40;
+        }
+      }
+    };
+    lines(function (a, b) { return g[a][b]; });
+    lines(function (a, b) { return g[b][a]; });
+    for (var r = 0; r < n - 1; r++) for (var c = 0; c < n - 1; c++) {
+      var v = g[r][c];
+      if (v === g[r][c + 1] && v === g[r + 1][c] && v === g[r + 1][c + 1]) p += 3;
+    }
+    g.forEach(function (rr) { rr.forEach(function (v) { dark += v; }); });
+    p += Math.floor(Math.abs(dark * 20 - n * n * 10) / (n * n)) * 10;
+    return p;
+  };
+  var best = null, bestP = Infinity;
+  for (var mk = 0; mk < 8; mk++) {
+    if (forceMask !== undefined && mk !== forceMask) continue;
+    var g = withMask(mk), pp = penalty(g);
+    if (pp < bestP) { bestP = pp; best = g; }
+  }
+  return best.map(function (rr) { return rr.join(''); });
+}
+
+function qrSvgRows(rows) {
+  if (!rows || !rows.length) return '';
+  var n = rows.length + 4, d = '';
+  rows.forEach(function (row, y) {
+    for (var x = 0; x < row.length; x++) if (row.charAt(x) === '1') d += 'M' + (x + 2) + ' ' + (y + 2) + 'h1v1h-1z';
+  });
+  return '<svg viewBox="0 0 ' + n + ' ' + n + '" shape-rendering="crispEdges" aria-hidden="true"><rect width="' + n + '" height="' + n +
+    '" fill="#f2f5f2"/><path d="' + d + '" fill="#060a07"/></svg>';
+}
+
+// Lo stato del pannello: dati dal servizio e il passo in corso
+function secState() {
+  if (!cache.sec) cache.sec = { mode: '', err: '' };
+  return cache.sec;
+}
+
+async function secLoad() {
+  var st = secState();
+  try {
+    var r = await Promise.all([cloud('GET', '/passkeys'), cloud('GET', '/2fa')]);
+    st.pk = r[0].passkeys || [];
+    st.mail = !!r[0].mail;
+    st.password = r[0].password !== false;
+    st.tfa = r[1];
+    st.loadErr = '';
+  } catch (e) { st.loadErr = e.message; }
+  secDraw();
+}
+
+function secDraw() {
+  var box = document.getElementById('secbox');
+  if (!box) return;
+  box.innerHTML = secHtml();
+  enhancePasswords(box);
+  var f = box.querySelector('[data-autofocus]');
+  if (f && secState().mode) f.focus();
+}
+
+// Il riquadro, per una pagina: nella PWA centrale si riempie da solo
+function secBox() {
+  if (!CENTRAL || !C.token) {
+    return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Passkey (impronta o volto) e verifica in due passaggi si gestiscono ' +
+      'dall\'app BunkerPlex sul telefono o dalla pagina del servizio account, in Impostazioni → Account.</p></div>';
+  }
+  setTimeout(secLoad, 0);
+  return '<div id="secbox"><div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Un attimo…</p></div></div>';
+}
+
+function secWhen(t) { return t ? whenDate(t) : 'mai'; }
+
+function secHtml() {
+  var st = secState();
+  var err = st.err ? '<p class="secerr" role="alert">' + esc(st.err) + '</p>' : '';
+  if (st.loadErr) return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p class="secerr">' + esc(st.loadErr) + '</p></div>';
+  if (!st.tfa) return '<div class="panel"><h2>Sicurezza dell\'accesso</h2><p>Un attimo…</p></div>';
+  var cancel = '<button class="btn f" data-act="seccancel" data-key="seccancel">Annulla</button>';
+  var code = function (id, act) {
+    return '<input class="field f num" id="' + id + '" data-key="' + id + '" data-autofocus inputmode="numeric" autocomplete="one-time-code" ' +
+      'maxlength="11" data-enter="' + act + '" placeholder="Codice">';
+  };
+
+  if (st.mode === 'verify') {
+    var tfaOn = st.tfa && st.tfa.on, pks = (st.pk || []).length && pkOn();
+    return '<div class="panel"><h2>Conferma che sei tu</h2><p>Per cambiare passkey e verifica in due passaggi, prima conferma che sei tu.</p>' + err +
+      (st.password ? '<input class="field f" id="secpw" data-key="secpw" data-autofocus type="password" autocomplete="current-password" ' +
+        'data-enter="secverify" placeholder="La tua password">' : '') +
+      (tfaOn ? '<p><small>Oppure il codice dell\'app di autenticazione:</small></p>' + code('seccode', 'secverify').replace(' data-autofocus', st.password ? '' : ' data-autofocus') : '') +
+      '<div class="actions">' + (st.password || tfaOn ? '<button class="btn primary f" data-act="secverify" data-key="secverify">Conferma</button>' : '') +
+      (pks ? '<button class="btn f pkbtn" data-act="secverifypk" data-key="secverifypk">' + pkIcon() + '<span>Con impronta o volto</span></button>' : '') + cancel + '</div>' +
+      (!st.password && !tfaOn && !pks ? '<p><small>Il tuo account entra con Google: esci e rientra con Google, poi hai 10 minuti per le modifiche.</small></p>' : '') +
+      '</div>';
+  }
+  if (st.mode === 'setup' && st.setup) {
+    var key = st.setup.secret.replace(/(.{4})/g, '$1 ').trim();
+    return '<div class="panel"><h2>Attiva la verifica in due passaggi</h2>' +
+      '<p>1. Apri un\'app di autenticazione (Google Authenticator, Microsoft Authenticator, 1Password…) e aggiungi BunkerPlex:</p>' +
+      '<div class="secqr"><div class="qrtile" role="img" aria-label="Codice QR per l\'app di autenticazione">' + qrSvgRows(qrRows(st.setup.uri)) + '</div>' +
+      '<div><p><small>Inquadra il QR, oppure scrivi questa chiave:</small></p><p class="seckey">' + esc(key) + '</p>' +
+      (PHONE_APP || /Android|iPhone|iPad/.test(navigator.userAgent) ? '<p><a class="btn f" href="' + esc(st.setup.uri) + '" data-key="secotp">Apri nell\'app di autenticazione</a></p>' : '') +
+      '</div></div>' +
+      '<p>2. Scrivi il codice a 6 cifre che mostra l\'app:</p>' + err + code('secnew', 'tfaenable') +
+      '<div class="actions"><button class="btn primary f" data-act="tfaenable" data-key="tfaenable">Attiva</button>' + cancel + '</div></div>';
+  }
+  if (st.mode === 'codes' && st.codes) {
+    return '<div class="panel"><h2>Codici di recupero</h2>' +
+      '<p>Servono se perdi il telefono: ognuno vale <b>una volta sola</b>. Salvali adesso in un posto sicuro (non li vedrai più).</p>' +
+      '<div class="reccodes">' + st.codes.map(function (c) { return '<span>' + esc(c) + '</span>'; }).join('') + '</div>' +
+      '<div class="actions"><button class="btn f" data-act="seccopy" data-key="seccopy">Copia</button>' +
+      '<button class="btn f" data-act="secsave" data-key="secsave">Scarica</button>' +
+      '<button class="btn primary f" data-autofocus data-act="secdone" data-key="secdone">Li ho salvati</button></div></div>';
+  }
+  if (st.mode === 'tfaoff' || st.mode === 'tfanew') {
+    return '<div class="panel"><h2>' + (st.mode === 'tfaoff' ? 'Disattiva la verifica in due passaggi' : 'Nuovi codici di recupero') + '</h2>' +
+      '<p>Scrivi il codice dell\'app di autenticazione (o uno di recupero).' + (st.mode === 'tfanew' ? ' I codici di prima non varranno più.' : '') + '</p>' +
+      err + code('secoff', st.mode === 'tfaoff' ? 'tfadisable' : 'tfarecovery') +
+      '<div class="actions"><button class="btn ' + (st.mode === 'tfaoff' ? 'danger' : 'primary') + ' f" data-act="' + (st.mode === 'tfaoff' ? 'tfadisable' : 'tfarecovery') +
+      '" data-key="secoffgo">' + (st.mode === 'tfaoff' ? 'Disattiva' : 'Crea i codici') + '</button>' + cancel + '</div></div>';
+  }
+  if (st.mode === 'rm' && st.rm) {
+    return '<div class="panel"><h2>Togli «' + esc(st.rm.label) + '»</h2>' +
+      '<p>Ti abbiamo scritto a <b>' + esc(st.rm.to) + '</b>: scrivi il codice a 6 cifre dell\'email (vale 15 minuti).</p>' + err +
+      code('secrmcode', 'secrmok') +
+      '<div class="actions"><button class="btn danger f" data-act="secrmok" data-key="secrmok">Togli la passkey</button>' +
+      '<button class="btn f" data-act="secrmagain" data-key="secrmagain">Mandalo di nuovo</button>' + cancel + '</div></div>';
+  }
+  if (st.mode === 'ren' && st.ren) {
+    return '<div class="panel"><h2>Rinomina la passkey</h2>' + err +
+      '<input class="field f" id="secname" data-key="secname" data-autofocus maxlength="60" data-enter="secrenok" value="' + esc(st.ren.label) + '">' +
+      '<div class="actions"><button class="btn primary f" data-act="secrenok" data-key="secrenok">Salva</button>' + cancel + '</div></div>';
+  }
+
+  // Il riepilogo
+  var rows = (st.pk || []).map(function (p, i) {
+    return '<div class="secline">' + pkIcon() + '<span><b>' + esc(p.label) + '</b><small>Aggiunta il ' + esc(secWhen(p.created)) +
+      ' · usata ' + (p.used ? 'il ' + esc(secWhen(p.used)) : 'mai') + '</small></span>' +
+      '<div class="actions"><button class="btn f" data-act="secren" data-arg="' + i + '" data-key="secren-' + i + '">Rinomina</button>' +
+      '<button class="btn danger f" data-act="secrm" data-arg="' + i + '" data-key="secrm-' + i + '">Togli</button></div></div>';
+  }).join('');
+  var t = st.tfa;
+  return '<div class="panel"><h2>Impronta e volto (passkey)</h2>' +
+    '<p>Entri con impronta, volto o il PIN del dispositivo, senza password. Aggiungerne una chiede di confermare che sei tu; ' +
+    (st.mail ? 'toglierla si conferma con un codice via email.' : 'anche toglierla.') + '</p>' + err +
+    (rows ? '<div class="seclist">' + rows + '</div>' : '<p><small>Ancora nessuna passkey.</small></p>') +
+    (pkOn() ? '<div class="actions"><button class="btn primary f" data-act="secadd" data-key="secadd">Aggiungi questo dispositivo</button></div>'
+      : '<p><small>Questo browser non le supporta.</small></p>') + '</div>' +
+    '<div class="panel"><h2>Verifica in due passaggi</h2>' +
+    (t.on ? '<p>' + dot(true) + ' Attiva: dopo la password serve il codice dell\'app di autenticazione. Codici di recupero rimasti: <b>' + t.recovery_left + '</b>' +
+        (t.trusted ? '. Dispositivi ricordati: <b>' + t.trusted + '</b>' : '') + '.</p>' +
+        '<div class="actions"><button class="btn f" data-act="tfanewask" data-key="tfanewask">Nuovi codici di recupero</button>' +
+        (t.trusted ? '<button class="btn f" data-act="tfaforget" data-key="tfaforget">Dimentica i dispositivi ricordati</button>' : '') +
+        '<button class="btn danger f" data-act="tfaoffask" data-key="tfaoffask">Disattiva</button></div>'
+      : st.password ? '<p>L\'alternativa alle passkey: dopo la password serve anche un codice a 6 cifre da un\'app sul telefono. ' +
+        'Chi scopre la tua password non entra lo stesso.</p><div class="actions"><button class="btn primary f" data-act="tfaon" data-key="tfaon">Attiva</button></div>'
+      : '<p>Il tuo account entra con Google, che ha già la sua verifica: qui non serve.</p>') +
+    (st.mail ? '<p><small>Ogni modifica ti arriva anche via email.</small></p>' : '') + '</div>';
+}
+
+// Un'operazione che puo' chiedere «Conferma che sei tu»: dopo la conferma riparte da sola
+async function secRun(fn) {
+  var st = secState();
+  st.err = '';
+  try {
+    await fn();
+  } catch (e) {
+    if (e && e.data && e.data.reauth) { st.pending = fn; st.mode = 'verify'; st.err = ''; secDraw(); return; }
+    if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) { secDraw(); return; }   // annullato sul dispositivo
+    st.err = (e && e.message) || 'Non riuscito';
+    secDraw();
+  }
+}
+
+async function secAfterVerify() {
+  var st = secState(), fn = st.pending;
+  st.pending = null;
+  st.mode = '';
+  if (fn) await secRun(fn); else { await secLoad(); }
+}
+
+function secActions() {
+  return {
+    seccancel: function () { var st = secState(); st.mode = ''; st.err = ''; st.pending = null; secDraw(); },
+    secverify: function () {
+      var st = secState(), pw = fieldValue('secpw'), code = fieldValue('seccode').trim();
+      if (!pw && !code) { st.err = 'Scrivi la password' + (st.tfa && st.tfa.on ? ' o il codice' : ''); secDraw(); return; }
+      return (async function () {
+        try {
+          if (pw) await cloud('POST', '/passkeys/verify', { verifier: await cVerifier(C.user.username, pw) });
+          else await cloud('POST', '/passkeys/verify', { code: code });
+          await secAfterVerify();
+        } catch (e) { st.err = e.message; secDraw(); }
+      })();
+    },
+    secverifypk: function () {
+      var st = secState();
+      return (async function () {
+        try {
+          var o = await cloud('POST', '/passkeys/verify/start', {});
+          var a = await navigator.credentials.get({ publicKey: { challenge: b64uDec(o.challenge), rpId: o.rpId, userVerification: 'required',
+            timeout: o.timeout, allowCredentials: o.allow.map(function (id) { return { type: 'public-key', id: b64uDec(id) }; }) } });
+          await cloud('POST', '/passkeys/verify', { id: a.id, clientDataJSON: b64uEnc(a.response.clientDataJSON),
+            authenticatorData: b64uEnc(a.response.authenticatorData), signature: b64uEnc(a.response.signature) });
+          await secAfterVerify();
+        } catch (e) {
+          if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) return;
+          st.err = e.message; secDraw();
+        }
+      })();
+    },
+    secadd: function () {
+      return secRun(async function () {
+        await pkCreate();
+        toast('Passkey aggiunta: la prossima volta entri con impronta o volto');
+        await secLoad();
+      });
+    },
+    secren: function (i) {
+      var st = secState(), p = (st.pk || [])[Number(i)];
+      if (!p) return;
+      st.ren = p; st.mode = 'ren'; st.err = ''; secDraw();
+    },
+    secrenok: function () {
+      var st = secState(), p = st.ren, name = fieldValue('secname').trim();
+      if (!p) return;
+      return secRun(async function () {
+        await cloud('PATCH', '/passkeys/' + encodeURIComponent(p.id), { label: name });
+        st.mode = ''; st.ren = null;
+        await secLoad();
+      });
+    },
+    secrm: function (i) {
+      var st = secState(), p = (st.pk || [])[Number(i)];
+      if (!p) return;
+      return secRun(async function () {
+        var r = await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
+        if (r.removed) { toast('Passkey tolta'); st.mode = ''; await secLoad(); return; }
+        st.rm = { id: p.id, label: p.label, to: r.to }; st.mode = 'rm'; secDraw();
+      });
+    },
+    secrmagain: function () {
+      var st = secState(), p = st.rm;
+      if (!p) return;
+      return secRun(async function () {
+        var r = await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove', {});
+        p.to = r.to || p.to;
+        toast('Codice mandato di nuovo');
+        secDraw();
+      });
+    },
+    secrmok: function () {
+      var st = secState(), p = st.rm, code = fieldValue('secrmcode');
+      if (!p) return;
+      return secRun(async function () {
+        await cloud('POST', '/passkeys/' + encodeURIComponent(p.id) + '/remove/confirm', { code: code });
+        toast('Passkey tolta');
+        st.mode = ''; st.rm = null;
+        await secLoad();
+      });
+    },
+    tfaon: function () {
+      var st = secState();
+      return secRun(async function () {
+        st.setup = await cloud('POST', '/2fa/setup', {});
+        st.mode = 'setup'; secDraw();
+      });
+    },
+    tfaenable: function () {
+      var st = secState(), code = fieldValue('secnew');
+      return secRun(async function () {
+        var r = await cloud('POST', '/2fa/enable', { code: code });
+        st.setup = null; st.codes = r.recovery; st.mode = 'codes';
+        C.user.totp = true; cSave();
+        secDraw();
+      });
+    },
+    tfaoffask: function () { var st = secState(); st.mode = 'tfaoff'; st.err = ''; secDraw(); },
+    tfanewask: function () { var st = secState(); st.mode = 'tfanew'; st.err = ''; secDraw(); },
+    tfadisable: function () {
+      var st = secState(), code = fieldValue('secoff');
+      return secRun(async function () {
+        await cloud('POST', '/2fa/disable', { code: code });
+        toast('Verifica in due passaggi disattivata');
+        C.user.totp = false; cSave();
+        st.mode = ''; await secLoad();
+      });
+    },
+    tfarecovery: function () {
+      var st = secState(), code = fieldValue('secoff');
+      return secRun(async function () {
+        var r = await cloud('POST', '/2fa/recovery', { code: code });
+        st.codes = r.recovery; st.mode = 'codes'; secDraw();
+      });
+    },
+    tfaforget: function () {
+      return secRun(async function () {
+        await cloud('DELETE', '/2fa/trust');
+        toast('Da tutti i dispositivi servirà di nuovo il codice');
+        await secLoad();
+      });
+    },
+    seccopy: function () {
+      var st = secState(), text = (st.codes || []).join('\n');
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { toast('Codici copiati'); }, function () { toast('Copia non riuscita: scrivili a mano'); });
+    },
+    secsave: function () {
+      var st = secState();
+      var blob = new Blob(['Codici di recupero BunkerPlex (' + (C.user ? C.user.username : '') + ')\nOgnuno vale una volta sola.\n\n' + (st.codes || []).join('\n') + '\n'], { type: 'text/plain' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'bunkerplex-codici-di-recupero.txt';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    },
+    secdone: function () { var st = secState(); st.codes = null; st.mode = ''; secLoad(); }
+  };
+}
+
+// La pagina a se' (#/sicurezza, anche prima di scegliere un server)
+function secPage() {
+  cache.sec = null;
+  return authShell('<div class="authico">' + LOCK_ICON + '</div><h1>Sicurezza dell\'accesso</h1>' +
+    '<p class="authsub">Passkey e verifica in due passaggi del tuo account <b>' + esc(C.user ? C.user.username : '') + '</b></p>' +
+    '<div class="secpage">' + secBox() + '</div>' +
+    '<a class="authlink f" href="#/home" data-key="secback">Indietro</a>', true);
 }
 
 function cActions() {
@@ -2303,7 +2823,9 @@ function cActions() {
       if (!L) return;
       if (!pass) { authErr('Scrivi la password'); return; }
       try {
-        cEntered(await cloud('POST', '/login', { username: L.username, verifier: await cVerifier(L.username, pass), device: devName(), kind: 'pwa' }));
+        cEntered(await cloud('POST', '/login', { username: L.username, verifier: await cVerifier(L.username, pass), device: devName(), kind: 'pwa',
+          trust: trustFor(L.username) }));
+        if (cache.c2fa) cache.c2fa.names = [L.username, L.email];
         cache.cLogin = null;
         location.replace('#/home');
         render();
@@ -5312,7 +5834,7 @@ function accountArea(i) {
       '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Chiavi, preferenze, visti, La mia lista e raccolte ti seguono su ogni PC.</p>' +
       '<div class="actions">' +
         (TV || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div>' + emailPanel(u) + googlePanel(u) +
+      '</div>' + emailPanel(u) + googlePanel(u) + (u.linked ? secBox() : '') +
       (u.manager && !u.home ? '<h2 style="margin-top:1.2rem">Senza Internet</h2>' +
         swRow('Chi è in casa entra senza password', auth.home_offline !== false,
           'data-act="homeoff" data-arg="' + (auth.home_offline !== false ? 0 : 1) + '" data-key="homeoff"',
@@ -7471,7 +7993,8 @@ var actions = {
       if (miss) miss.focus();
       return;
     }
-    return post('/auth/login', { username: name, password: pass, device: devName() }).then(enterApp, function (e) {
+    cache.loginName = name;
+    return post('/auth/login', { username: name, password: pass, device: devName(), trust: trustFor(name) }).then(enterApp, function (e) {
       if (loginFailed(e)) return;
       authErr(e.message);
       return loadAuth().then(render);
@@ -7781,6 +8304,24 @@ var actions = {
     cache.reset = { email: cache.reset && cache.reset.email };
     actions.resetsend();
   },
+  // Il codice della verifica in due passaggi (server di casa)
+  s2fago: function () {
+    var f = cache.s2fa, code = fieldValue('tfacode').trim();
+    if (!f) return;
+    if (!code) { authErr('Scrivi il codice dell\'app'); return; }
+    return post('/auth/login/2fa', { t: f.t, code: code, remember: rememberChecked() }).then(function (r) {
+      cache.s2fa = null;
+      trustSave([f.user, cache.loginName], r.trust);
+      return enterApp(r);
+    }, function (e) {
+      if (!/sbagliato/i.test(e.message)) cache.s2fa = null;   // scaduto: si ricomincia dalla password
+      authErr(e.message);
+      if (!cache.s2fa) render();
+      var el = byKey('tfacode');
+      if (el) { el.value = ''; el.focus(); }
+    });
+  },
+  s2facancel: function () { cache.s2fa = null; cache.authErr = null; render(); },
   resetdone: function () {
     var r = cache.reset || {}, code = fieldValue('rcode').replace(/\D/g, ''), pw = fieldValue('pnew');
     if (code.length !== 6) { toast('Il codice ha 6 cifre: lo trovi nell\'email'); return; }
@@ -7791,7 +8332,10 @@ var actions = {
       cache.reset = null;
       toast('Password cambiata: sei entrato');
       return enterApp(res);
-    }, function (e) { toast(e.message); });
+    }, function (e) {
+      if (loginFailed(e)) { cache.reset = null; location.replace('#/home'); return; }
+      toast(e.message);
+    });
   },
   gunlink: function () {
     confirmBox('Scollegare Google dal tuo account? Per entrare servirà di nuovo la password.', 'Sì, scollega', function () {
@@ -7831,11 +8375,12 @@ var actions = {
       if (!pw) { authErr('Scegli la password nuova'); return; }
       if (pw !== fieldValue('pnew2')) { authErr('Le due password nuove non sono uguali'); return; }
     }
-    return post('/auth/pair/' + code, { username: name, password: pass, new: pw }).then(function (r) {
+    return post('/auth/pair/' + code, { username: name, password: pass, new: pw, code: fieldValue('pcode').trim() }).then(function (r) {
       cache.pairDone = { code: code, name: r.name };
       render();
     }, function (e) {
       authErr(e.message);
+      if (e.data && e.data.need_2fa === 'pair' && cache.pair2fa !== code) { cache.pair2fa = code; render(); return; }
       if (/provvisoria/.test(e.message) && cache.pairNeedNew !== code) { cache.pairNeedNew = code; render(); }
     });
   },
@@ -8916,7 +9461,7 @@ var routes = [
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
   // Impronta e volto (passkey): la mostra gate() nella PWA centrale; altrove alla Home
-  [/^#\/passkey$/, function () { location.replace('#/home'); return ''; }],
+  [/^#\/(passkey|sicurezza)$/, function () { location.replace('#/home'); return ''; }],
   // Impostazioni dell'app: le mostra gate() nella PWA centrale dell'app; altrove alla Home
   [/^#\/app$/, function () { location.replace('#/home'); return ''; }],
   // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
@@ -10099,7 +10644,7 @@ function pollActivity() {
   }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });
 }
 
-if (CENTRAL) Object.assign(actions, cActions(), cPkActions());
+if (CENTRAL) Object.assign(actions, cActions(), cPkActions(), secActions());
 loadAuth().then(function () {
   if (auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();

@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS users(
   google_email TEXT,                 -- la sua email (o quella indicata dall'amministratore)
   no_password INTEGER NOT NULL DEFAULT 0, -- 1 = entra solo con Google
   email TEXT,                        -- per entrare con email e password (al posto del nome utente)
-  disabled INTEGER NOT NULL DEFAULT 0 -- 1 = disattivato dall'amministratore: non entra da nessuna parte
+  disabled INTEGER NOT NULL DEFAULT 0, -- 1 = disattivato dall'amministratore: non entra da nessuna parte
+  totp_secret TEXT,                  -- verifica in due passaggi: segreto dell'app (base32)
+  totp_on INTEGER NOT NULL DEFAULT 0, -- 1 = dopo la password serve il codice dell'app
+  totp_step INTEGER NOT NULL DEFAULT 0 -- ultimo passo di 30 secondi usato (lo stesso codice non vale due volte)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_sub);
 
@@ -27,7 +30,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   device TEXT,
   created REAL NOT NULL,
   last_seen REAL NOT NULL,           -- dopo 180 giorni senza usarla scade
-  kind TEXT                          -- server / pwa / tv / app / browser (NULL = di prima)
+  kind TEXT,                         -- server / pwa / tv / app / browser (NULL = di prima)
+  reauth REAL                        -- fino a quando ha confermato che e' lei (passkey, 2FA)
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 
@@ -292,3 +296,13 @@ CREATE TABLE IF NOT EXISTS passkeys(
 CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys(user_id);
 -- Sfide a uso singolo (5 minuti)
 CREATE TABLE IF NOT EXISTS passkey_challenges(hash TEXT PRIMARY KEY, user_id INTEGER, exp REAL NOT NULL);
+-- Togliere una passkey: codice a 6 cifre via email (15 minuti, 5 tentativi)
+CREATE TABLE IF NOT EXISTS passkey_removals(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, code_hash TEXT NOT NULL,
+  exp REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0, sent REAL NOT NULL);
+
+-- Verifica in due passaggi: codici di recupero (impronta, una volta sola) e accessi a meta' (5 minuti)
+CREATE TABLE IF NOT EXISTS totp_recovery(user_id INTEGER NOT NULL, code_hash TEXT NOT NULL, PRIMARY KEY(user_id, code_hash));
+CREATE TABLE IF NOT EXISTS login_2fa(ticket_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, device TEXT, kind TEXT,
+  exp REAL NOT NULL, tries INTEGER NOT NULL DEFAULT 0);
+-- «Ricorda questo dispositivo» dopo il codice: 30 giorni senza codice (si salva l'impronta)
+CREATE TABLE IF NOT EXISTS totp_trust(hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, label TEXT, created REAL NOT NULL, exp REAL NOT NULL);

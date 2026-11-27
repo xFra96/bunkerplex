@@ -3560,8 +3560,59 @@ def drop_cloud_token(uid):
 
 
 async def finish_login(res, ver, device):
+    if res.get("need_2fa"):
+        return need_code(res, ver, device)
     u, token, conflicts = await complete_login(res, ver, device)
-    return with_session({"ok": True, "user": user_json(u), "conflicts": conflicts}, token)
+    out = {"ok": True, "user": user_json(u), "conflicts": conflicts}
+    if res.get("trust"):
+        out["trust"] = res["trust"]          # il browser lo ricorda per i prossimi accessi
+    return with_session(out, token)
+
+
+# Verifica in due passaggi: la password era giusta, manca il codice dell'app di
+# autenticazione (o uno di recupero). Il biglietto del servizio resta qui, con la
+# verifica della password (serve per entrare anche offline la volta dopo); il browser
+# ha solo il suo id e manda il codice a /api/auth/login/2fa.
+twofa = {}                       # id -> {"at", "ticket", "ver", "device"}
+twofa_lock = threading.Lock()
+TWOFA_TTL = 290
+
+
+def need_code(res, ver, device):
+    fid = secrets.token_urlsafe(16)
+    with twofa_lock:
+        for k in [k for k, f in twofa.items() if time.time() - f["at"] > TWOFA_TTL]:
+            twofa.pop(k, None)
+        if len(twofa) > 50:
+            twofa.pop(min(twofa, key=lambda k: twofa[k]["at"]), None)
+        twofa[fid] = {"at": time.time(), "ticket": res["ticket"], "ver": ver, "device": device}
+    return JSONResponse({"detail": "Scrivi il codice dell'app di autenticazione", "need_2fa": fid,
+                         "user": (res.get("user") or {}).get("username", "")}, status_code=401)
+
+
+@app.post("/api/auth/login/2fa")
+async def auth_login_2fa(request: Request):
+    """Il secondo passo dell'accesso: il codice dell'app (o uno di recupero)."""
+    body = await read_json(request)
+    fid = str(body.get("t") or "")
+    with twofa_lock:
+        f = twofa.get(fid)
+    if not f or time.time() - f["at"] > TWOFA_TTL:
+        raise HTTPException(401, "Tempo scaduto: rientra con la password")
+    try:
+        res = await asyncio.to_thread(accounts.call, "POST", "/login/2fa",
+                                      {"ticket": f["ticket"], "code": str(body.get("code") or "")[:20],
+                                       "remember": bool(body.get("remember")), "device": SERVER_NAME})
+    except accounts.CloudError as ex:
+        if "Codice sbagliato" not in str(ex.detail):     # scaduto o troppi tentativi: si ricomincia
+            with twofa_lock:
+                twofa.pop(fid, None)
+        raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Il servizio account non risponde: riprova tra poco")
+    with twofa_lock:
+        twofa.pop(fid, None)
+    return await finish_login(res, f["ver"], f["device"])
 
 
 class NeedFriend(Exception):
@@ -4216,8 +4267,10 @@ async def auth_login(request: Request):
     name = await login_name(name)
     ver = await asyncio.to_thread(accounts.verifier, name, password)
     try:
+        # trust: «Ricorda questo dispositivo» della verifica in due passaggi (lo tiene il browser)
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
-                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
+                                      {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server",
+                                       "trust": str(body.get("trust") or "")[:64]})
     except accounts.CloudError as ex:
         raise HTTPException(ex.status if ex.status in (400, 401, 403, 429) else 502, ex.detail)
     except accounts.CloudOffline:
@@ -4605,6 +4658,12 @@ async def auth_pair_finish(code: str, request: Request):
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/login",
                                       {"username": name, "verifier": ver, "device": SERVER_NAME, "kind": "server"})
+        if res.get("need_2fa"):
+            code = str(body.get("code") or "")[:20]
+            if not code:
+                return JSONResponse({"detail": "Scrivi il codice dell'app di autenticazione", "need_2fa": "pair"},
+                                    status_code=401)
+            res = await asyncio.to_thread(accounts.call, "POST", "/login/2fa", {"ticket": res["ticket"], "code": code})
         if res["user"].get("must_change"):
             if not new:
                 raise HTTPException(409, "La password è provvisoria: scegline una tua")

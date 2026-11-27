@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createHash, createPublicKey, createSign, generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, createHmac, createPublicKey, createSign, generateKeyPairSync, verify } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Il Worker e' un modulo ES in un file .js: se ne fa una copia .mjs da importare
@@ -908,7 +908,10 @@ test('passkey: si aggiunge con l\'account, poi si entra con impronta o volto', a
   bad.signature = fakeAuthenticator().get(ls4.challenge).signature;
   assert.equal((await t.call('POST', '/passkeys/login/finish', bad)).status, 401);
   // Tolta: non entra piu'
-  assert.equal((await t.call('DELETE', '/passkeys/' + dev.id, undefined, tok)).status, 200);
+  // La via di prima (DELETE) non toglie piu' niente
+  assert.equal((await t.call('DELETE', '/passkeys/' + dev.id, undefined, tok)).status, 409);
+  // Senza email: sessione appena aperta = gia' verificata, si toglie subito
+  assert.equal((await t.call('POST', '/passkeys/' + dev.id + '/remove', {}, tok)).body.removed, true);
   const ls5 = (await t.call('POST', '/passkeys/login/start', {})).body;
   assert.equal((await t.call('POST', '/passkeys/login/finish', dev.get(ls5.challenge))).status, 401);
 });
@@ -936,4 +939,153 @@ test('google: «back» solo verso questo servizio; sfide passkey tante: via le v
   assert.deepEqual(backs, [null, 'https://acc.test/#/home']);
   for (let i = 0; i < 505; i++) assert.equal((await t.call('POST', '/passkeys/login/start', {})).status, 200);
   assert.ok(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM passkey_challenges').get().n <= 500);
+});
+
+test('passkey: aggiungere chiede di confermare chi sei; togliere si conferma con un codice via email', async () => {
+  const t = setup();
+  const anna = t.addUser('anna');
+  t.env.DB.raw.prepare('UPDATE users SET email = ? WHERE id = ?').run('anna@example.com', anna);
+  t.env.BREVO_API_KEY = 'brevo';
+  const mails = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    if (String(input.url || input) === 'https://api.brevo.com/v3/smtp/email') { mails.push(JSON.parse(init.body)); return new Response('{}'); }
+    return new Response('{}', { status: 404 });
+  };
+  try {
+    const tok = await t.login('anna', 'pwa');
+    // Una sessione vecchia: prima va confermato chi sei
+    t.env.DB.raw.prepare('UPDATE sessions SET created = 0').run();
+    const no = await t.call('POST', '/passkeys/register/start', {}, tok);
+    assert.equal(no.status, 403);
+    assert.equal(no.body.reauth, true);
+    assert.equal((await t.call('POST', '/passkeys/verify', { verifier: 'b'.repeat(64) }, tok)).status, 401);
+    const ok = await t.call('POST', '/passkeys/verify', { verifier: VER }, tok);
+    assert.equal(ok.status, 200);
+    assert.ok((await t.call('GET', '/passkeys', undefined, tok)).body.verified_until > 0);
+    const dev = fakeAuthenticator();
+    const rs = (await t.call('POST', '/passkeys/register/start', {}, tok)).body;
+    assert.equal((await t.call('POST', '/passkeys/register/finish', { ...dev.create(rs.challenge), label: 'Pixel' }, tok)).status, 200);
+    assert.match(mails.at(-1).subject, /Nuova passkey/);
+    // Rinominare
+    assert.equal((await t.call('PATCH', '/passkeys/' + dev.id, { label: 'Pixel 9' }, tok)).body.passkey.label, 'Pixel 9');
+    // Togliere: codice via email
+    const rm = await t.call('POST', '/passkeys/' + dev.id + '/remove', {}, tok);
+    assert.equal(rm.body.mailed, true);
+    assert.equal(rm.body.to, 'an***@example.com');
+    const code = /([0-9]{3}) ([0-9]{3})/.exec(mails.at(-1).subject).slice(1).join('');
+    // Subito un altro: troppo presto
+    assert.equal((await t.call('POST', '/passkeys/' + dev.id + '/remove', {}, tok)).status, 429);
+    const wrong = code === '000000' ? '111111' : '000000';
+    assert.equal((await t.call('POST', '/passkeys/' + dev.id + '/remove/confirm', { code: wrong }, tok)).status, 400);
+    // Un altro account non la tocca
+    t.addUser('bob');
+    assert.equal((await t.call('POST', '/passkeys/' + dev.id + '/remove/confirm', { code }, await t.login('bob', 'pwa'))).status, 404);
+    assert.equal((await t.call('POST', '/passkeys/' + dev.id + '/remove/confirm', { code }, tok)).body.removed, true);
+    assert.match(mails.at(-1).subject, /Passkey tolta/);
+    assert.equal((await t.call('GET', '/passkeys', undefined, tok)).body.passkeys.length, 0);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+// ---- Verifica in due passaggi (TOTP)
+
+function totpCode(secret, offset = 0) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = 0, val = 0;
+  const key = [];
+  for (const c of secret) { val = (val << 5) | A.indexOf(c); bits += 5; if (bits >= 8) { key.push((val >>> (bits - 8)) & 255); bits -= 8; } }
+  const step = Math.floor(Date.now() / 1000 / 30) + offset;
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(step));
+  const h = createHmac('sha1', Buffer.from(key)).update(msg).digest();
+  const o = h[19] & 15;
+  return String((((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1000000).padStart(6, '0');
+}
+
+test('2FA: si attiva con un codice giusto, poi dopo la password serve il codice (o uno di recupero)', async () => {
+  const t = setup();
+  t.addUser('anna');
+  const tok = await t.login('anna', 'pwa');
+  assert.equal((await t.call('GET', '/2fa', undefined, tok)).body.on, false);
+  // Sessione vecchia: prima conferma chi sei
+  t.env.DB.raw.prepare('UPDATE sessions SET created = 0').run();
+  assert.equal((await t.call('POST', '/2fa/setup', {}, tok)).body.reauth, true);
+  await t.call('POST', '/passkeys/verify', { verifier: VER }, tok);
+  const st = (await t.call('POST', '/2fa/setup', {}, tok)).body;
+  assert.match(st.uri, /^otpauth:\/\/totp\/BunkerPlex%3Aanna\?secret=[A-Z2-7]{32}&issuer=BunkerPlex/);
+  assert.equal((await t.call('POST', '/2fa/enable', { code: '000000' === totpCode(st.secret) ? '111111' : '000000' }, tok)).status, 400);
+  const en = (await t.call('POST', '/2fa/enable', { code: totpCode(st.secret) }, tok)).body;
+  assert.equal(en.on, true);
+  assert.equal(en.recovery.length, 10);
+  assert.match(en.recovery[0], /^[A-Z2-9]{5}-[A-Z2-9]{5}$/);
+
+  // Password giusta: niente gettone, serve il codice
+  const first = (await t.call('POST', '/login', { username: 'anna', verifier: VER, device: 'PC', kind: 'pwa' })).body;
+  assert.equal(first.need_2fa, true);
+  assert.equal(first.token, undefined);
+  // Lo stesso codice usato per attivare non vale di nuovo; uno sbagliato conta un tentativo
+  assert.equal((await t.call('POST', '/login/2fa', { ticket: first.ticket, code: totpCode(st.secret) })).status, 401);
+  const ok = await t.call('POST', '/login/2fa', { ticket: first.ticket, code: totpCode(st.secret, 1) });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.user.totp, true);
+  // Il biglietto vale una volta
+  assert.equal((await t.call('POST', '/login/2fa', { ticket: first.ticket, code: en.recovery[0] })).status, 401);
+
+  // Codice di recupero: una volta sola
+  const second = (await t.call('POST', '/login', { username: 'anna', verifier: VER })).body;
+  assert.equal((await t.call('POST', '/login/2fa', { ticket: second.ticket, code: en.recovery[0].toLowerCase() })).status, 200);
+  const third = (await t.call('POST', '/login', { username: 'anna', verifier: VER })).body;
+  assert.equal((await t.call('POST', '/login/2fa', { ticket: third.ticket, code: en.recovery[0] })).status, 401);
+  assert.equal((await t.call('GET', '/2fa', undefined, ok.body.token)).body.recovery_left, 9);
+
+  // Troppi tentativi: il biglietto non vale piu'
+  for (let i = 0; i < 5; i++) await t.call('POST', '/login/2fa', { ticket: third.ticket, code: '999999' });
+  assert.equal((await t.call('POST', '/login/2fa', { ticket: third.ticket, code: en.recovery[1] })).status, 401);
+
+  // Disattivare: conferma + codice
+  const tok2 = ok.body.token;
+  assert.equal((await t.call('POST', '/2fa/disable', { code: '123' }, tok2)).status, 400);
+  assert.equal((await t.call('POST', '/2fa/disable', { code: en.recovery[2] }, tok2)).body.on, false);
+  assert.ok((await t.call('POST', '/login', { username: 'anna', verifier: VER })).body.token);
+});
+
+test('passkey: conferma chi sei con una passkey del tuo account (non con quella di un altro)', async () => {
+  const t = setup();
+  t.addUser('anna');
+  t.addUser('bob');
+  const tok = await t.login('anna', 'pwa');
+  const dev = fakeAuthenticator();
+  const rs = (await t.call('POST', '/passkeys/register/start', {}, tok)).body;
+  await t.call('POST', '/passkeys/register/finish', dev.create(rs.challenge), tok);
+  t.env.DB.raw.prepare('UPDATE sessions SET created = 0').run();
+  const vs = (await t.call('POST', '/passkeys/verify/start', {}, tok)).body;
+  assert.deepEqual(vs.allow, [dev.id]);
+  // Una sfida di login (senza account) non vale per confermare
+  const ls = (await t.call('POST', '/passkeys/login/start', {})).body;
+  assert.equal((await t.call('POST', '/passkeys/verify', dev.get(ls.challenge), tok)).status, 400);
+  assert.equal((await t.call('POST', '/passkeys/verify', dev.get(vs.challenge), tok)).status, 200);
+  // Bob non ha passkey
+  assert.equal((await t.call('POST', '/passkeys/verify/start', {}, await t.login('bob', 'pwa'))).status, 404);
+});
+
+test('2FA: «Ricorda questo dispositivo» salta il codice per quell’account, finche’ non si cambia la password', async () => {
+  const t = setup();
+  t.addUser('anna');
+  t.addUser('bob');
+  const tok = await t.login('anna', 'pwa');
+  const st = (await t.call('POST', '/2fa/setup', {}, tok)).body;
+  await t.call('POST', '/2fa/enable', { code: totpCode(st.secret) }, tok);
+  const first = (await t.call('POST', '/login', { username: 'anna', verifier: VER })).body;
+  const ok = (await t.call('POST', '/login/2fa', { ticket: first.ticket, code: totpCode(st.secret, 1), remember: true, device: 'Pixel' })).body;
+  assert.match(ok.trust, /^[0-9a-f]{64}$/);
+  // Con il gettone: niente codice
+  assert.ok((await t.call('POST', '/login', { username: 'anna', verifier: VER, trust: ok.trust })).body.token);
+  assert.equal((await t.call('GET', '/2fa', undefined, ok.token)).body.trusted, 1);
+  // Gettone inventato: serve il codice
+  assert.equal((await t.call('POST', '/login', { username: 'anna', verifier: VER, trust: 'f'.repeat(64) })).body.need_2fa, true);
+  // Password nuova: il dispositivo non e' piu' ricordato
+  assert.equal((await t.call('POST', '/password', { verifier: VER, new_verifier: 'c'.repeat(64) }, ok.token)).status, 200);
+  assert.equal((await t.call('POST', '/login', { username: 'anna', verifier: 'c'.repeat(64), trust: ok.trust })).body.need_2fa, true);
 });
