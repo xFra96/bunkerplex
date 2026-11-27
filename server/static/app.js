@@ -952,6 +952,11 @@ function cSave() {
 // lo usa per chiedere il certificato anche quando poi si guarda dal server di casa
 // (dove la pagina non ce l'ha). Subito, prima di passare al server.
 function cShareToken() {
+  // PROVA TEMPORANEA: dove si perde il gettone nell'app Android (vedi wrangler tail)
+  if (APP && !cShareToken.diag) {
+    cShareToken.diag = 1;
+    try { fetch('/samsung/diag?tok=' + (C.token ? C.token.length : 0) + '&fn=' + (typeof tvApp.ssAccount) + '&c=' + (CENTRAL ? 1 : 0), { cache: 'no-store' }).catch(function () {}); } catch (e) { /* niente */ }
+  }
   if (!APP || !C.token || typeof tvApp.ssAccount !== 'function' || cShareToken.sent === C.token) return;
   cShareToken.sent = C.token;
   callSafe(function () { tvApp.ssAccount(C.token); });
