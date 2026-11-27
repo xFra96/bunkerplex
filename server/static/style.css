@@ -34,7 +34,9 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 /* Sulla TV si guarda da lontano: tutto un po' piu' grande */
-html.tv { font-size: 14px; font-size: clamp(14px, 1.5vw, 40px); }
+/* 1.5vw da solo per i browser senza clamp() (Chromium < 79: Samsung fino al 2021),
+   che se no restavano a 14px: a 1920 punti tutto a meta' */
+html.tv { font-size: 14px; font-size: 1.5vw; font-size: clamp(14px, 1.5vw, 40px); }
 html.bigposters { --poster: 13.5rem; }
 /* Sulla TV sei locandine per riga e due righe intere a schermo */
 html.tv { --poster: 7.6rem; }
