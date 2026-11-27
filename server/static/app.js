@@ -1152,29 +1152,51 @@ async function cMediaKey(force) {
   if (r.ok && j.key) { C.mkey = j.key; C.mexp = Date.now() / 1000 + (j.ttl || 6 * 3600); }
 }
 
-// Locandine che non arrivano dal server scelto: di solito la chiave non vale piu'
-// (TV rimasta in standby, server riavviato). Si chiede una chiave nuova e si
-// ridisegna, al massimo una volta ogni due minuti (se l'immagine manca davvero,
-// nessun giro infinito).
-var mkeyHeal = { at: 0, busy: false };
-function cHealMedia() {
-  if (!CENTRAL || !C.session || mkeyHeal.busy || Date.now() - mkeyHeal.at < 120000) return;
+// Locandine che non arrivano dal server scelto. A passi, tre al massimo per ogni
+// apertura (se un'immagine manca davvero, nessun giro infinito):
+// 1. chiave nuova e si ridisegna (chiave scaduta: TV in standby, server riavviato);
+// 2. ci si ricollega da capo, buttando la sessione salvata (come «svuota i dati»);
+// 3. si dice cosa risponde il server, per capire il perche'.
+var mkeyHeal = { busy: false, step: 0 };
+function imgStatus(src) {
+  return fetch(src, { cache: 'no-store' }).then(function (r) {
+    var ct = r.headers.get('Content-Type') || '';
+    return r.ok ? (ct.indexOf('image/') === 0 ? 'ok' : 'tipo ' + (ct || '?')) : 'errore ' + r.status;
+  }, function (e) { return 'rete: ' + (e && e.message || 'non raggiungibile'); });
+}
+function cHealMedia(src) {
+  if (!CENTRAL || !C.session || mkeyHeal.busy || mkeyHeal.step >= 3) return;
   mkeyHeal.busy = true;
-  mkeyHeal.at = Date.now();
+  var step = ++mkeyHeal.step;
   var old = C.mkey;
-  cMediaKey(true).then(function () {
-    if (C.mkey && C.mkey !== old) { dropCached(); if (modal.hidden && !player) render(); }
-  }).catch(function () {}).then(function () { mkeyHeal.busy = false; });
+  var done = function () { mkeyHeal.busy = false; };
+  if (step === 1) {
+    cMediaKey(true).then(function () {
+      if (C.mkey && C.mkey !== old) { dropCached(); if (modal.hidden && !player) render(); }
+    }).catch(function () {}).then(done);
+    return;
+  }
+  imgStatus(src).then(function (st) {
+    if (st === 'ok') return;           // ora arriva: era un intoppo passeggero
+    console.warn('Locandine dal server:', st, src);
+    if (step === 2) {
+      toast('Locandine non arrivate (' + st + '): mi ricollego al server…');
+      cSessSet(C.sid, null);
+      cDrop();
+      return cResume().then(function () { render(); });
+    }
+    toast('Le locandine non arrivano dal server (' + st + ')');
+  }).catch(function () {}).then(done);
 }
 document.addEventListener('error', function (e) {
   var t = e.target;
   if (!t || t.tagName !== 'IMG' || !C.base) return;
   var src = t.currentSrc || t.src || '';
-  if (src.indexOf(C.base + '/k/') === 0 || src.indexOf(C.base + '/api/') === 0) cHealMedia();
+  if (src.indexOf(C.base + '/k/') === 0 || src.indexOf(C.base + '/api/') === 0) cHealMedia(src);
 }, true);
 // Tornando all'app dopo un po' (standby della TV): chiave rinnovata se sta per scadere
 document.addEventListener('visibilitychange', function () {
-  if (!document.hidden && CENTRAL && C.session && C.mexp - Date.now() / 1000 <= 1800) cHealMedia();
+  if (!document.hidden && CENTRAL && C.session && C.mexp - Date.now() / 1000 <= 1800) cMediaKey(true).catch(function () {});
 });
 
 // Collegamento al server scelto: indirizzo, sessione, chiave dei video.
