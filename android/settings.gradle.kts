@@ -14,5 +14,3 @@ dependencyResolutionManagement {
 }
 rootProject.name = "BunkerPlex"
 include(":app")
-// App per TV con interfaccia nativa (release e versione sue)
-include(":tv")

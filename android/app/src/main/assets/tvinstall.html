@@ -99,7 +99,7 @@ function nowBox(t) {
     cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…');
   } else if (t.error === 'INCOMPATIBILE') {
     cls = 'err';
-    msg = 'Sulla TV c\'è una BunkerPlex TV con una firma diversa: va tolta prima di mettere questa.' +
+    msg = 'Sulla TV c\'è una BunkerPlex con una firma diversa: va tolta prima di mettere questa.' +
       '<div class="row"><button class="primary" data-act="replace" data-arg="' + esc(t.target) + '">Togli quella e installa</button></div>';
   } else if (t.error) {
     cls = 'err'; msg = esc(t.error);

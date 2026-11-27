@@ -30,8 +30,6 @@ __pycache__/
 .idea/
 *.iml
 .claude/
-# Libreria Tailscale dell'app: la compila android/tsnet/build.sh
-/android/app/libs/
 # Configurazione Firebase dell'app (notifiche): la mette GitHub dal segreto GOOGLE_SERVICES_JSON
 /android/app/google-services.json
 

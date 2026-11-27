@@ -60,9 +60,8 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    // Player e rete in comune con l'app nativa (android/tv): stanno in android/comune
+    // Player e rete (android/comune)
     sourceSets["main"].java.srcDir("../comune/java")
-    sourceSets["main"].assets.srcDir("../comune/assets")
 
     lint {
         checkReleaseBuilds = false
@@ -72,8 +71,6 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
-    // Tailscale dentro l'app, per vedere gli amici da fuori casa: la compila tsnet/build.sh
-    implementation(files("libs/bpnet.aar"))
     implementation("androidx.media3:media3-exoplayer:1.8.0")
     implementation("androidx.media3:media3-ui:1.8.0")
     // Decodificatore audio interno (AC3, E-AC3, DTS, TrueHD...): la TV legge da sola
@@ -83,8 +80,6 @@ dependencies {
     implementation("dev.mobile:dadb:2.0.0")
     // Notifiche push (vedi NoticePush). 24.1.x: l'ultima che va ancora da Android 5 (minSdk 21)
     implementation("com.google.firebase:firebase-messaging:24.1.2")
-    // QR di «Entra con Google» sulla TV (Remote.googleStart, in comune con l'app nativa)
-    implementation("com.google.zxing:core:3.5.3")
     // Passkey (impronta, volto) dentro la WebView: WebSettingsCompat.setWebAuthenticationSupport
     implementation("androidx.webkit:webkit:1.12.1")
 }

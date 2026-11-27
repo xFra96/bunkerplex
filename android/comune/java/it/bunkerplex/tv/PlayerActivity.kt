@@ -300,7 +300,6 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         server = base
-        remote = intent.getBooleanExtra("remote", false)
         JSONObject(intent.getStringExtra("data") ?: "{}").optString("session").let { if (it.isNotEmpty()) Net.session = it }
         audioCompat = prefs.getBoolean("p_audio_compat", false)
         if (touch) {
@@ -316,8 +315,7 @@ class PlayerActivity : AppCompatActivity() {
         })
 
         val first = JSONObject(intent.getStringExtra("data") ?: "{}")
-        // Da un amico, fuori casa: il video arriva gia' convertito (la sua linea in caricamento e' poca)
-        open(first, null, remote && first.optInt("remote_height") > 0)
+        open(first, null, false)
         showControls(Zone.BAR)        // all'avvio titolo ed episodio, poi si nascondono da soli
         castId = first.optString("cast_id")
         castName = first.optString("cast_name").ifBlank { "TV" }
@@ -357,7 +355,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun startCastLink() {
-        if (castId.isEmpty() || remote || castOn) return
+        if (castId.isEmpty() || castOn) return
         castOn = true
         castSnap = castState().toString()
         handler.post(castTick)
@@ -723,10 +721,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun abs(path: String) = if (path.startsWith("http")) path else api(path)
 
-    /** Fuori casa (remote.html) il video arriva da un PC raggiunto con Tailscale: le
-     *  sue richieste passano da /api/share/..., le sole che quel PC apre agli altri. */
-    private var remote = false
-    private fun api(path: String) = if (remote) server + "/api/share" + path.removePrefix("/api") else server + path
+    private fun api(path: String) = server + path
 
     /** Avvia un video. startMs = null usa il punto salvato sul server. */
     private fun open(d: JSONObject, startMs: Long?, useTranscode: Boolean) {
@@ -773,7 +768,7 @@ class PlayerActivity : AppCompatActivity() {
             offsetMs = start
             uri = abs(d.optString("transcode")) + "?start=" + String.format(Locale.US, "%.1f", start / 1000.0) +
                 (if (videoCopy) "&vcopy=1" else "") + (if (serverAudio > 0) "&audio=$serverAudio" else "") +
-                "&aout=$audioOut" + (if (remote && d.optInt("remote_height") > 0) "&height=${d.optInt("remote_height")}" else "")
+                "&aout=$audioOut"
             if (serverAudios.isEmpty()) loadServerAudios(d.optInt("id"))
         } else {
             offsetMs = 0
@@ -958,7 +953,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun report(ended: Boolean) {
-        if (player == null || finished || remote) return     // da un PC raggiunto da fuori: niente punto di ripresa (per ora)
+        if (player == null || finished) return
         val position = realPosition()
         if (!ended && position < 5000) return
         val body = JSONObject()
@@ -1360,7 +1355,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun fetchMarks(id: Int) {
-        if (marksTries >= 8 || id <= 0 || remote) return
+        if (marksTries >= 8 || id <= 0) return
         marksTries++
         handler.postDelayed({
             if (data.optInt("id") == id && !isFinishing) {

@@ -40,11 +40,11 @@ import kotlin.concurrent.thread
 
 /**
  * Mostra l'interfaccia di BunkerPlex e passa i video al player nativo.
- * Sul telefono e sul tablet e' sempre BunkerPlex con l'account (la PWA centrale del
- * servizio account): accesso, server, amici, impostazioni dell'app, a casa e fuori.
- * Il collegamento diretto al server serve solo senza Internet (ricerca sulla rete di
- * casa, setup.html). Sulle TV con questa app resta il server scelto a mano e, fuori
- * casa, remote.html (amici e tuoi PC con Tailscale).
+ * Su telefono, tablet e TV e' sempre BunkerPlex con l'account (la PWA centrale del
+ * servizio account): accesso, server, amici, impostazioni, a casa e fuori; sulla TV
+ * con l'aspetto da TV. Dell'app ci sono solo il player, le notifiche, l'installazione
+ * sulla TV e l'aggiornamento dell'APK. Il collegamento diretto al server di casa serve
+ * solo senza Internet (ricerca sulla rete di casa o indirizzo, setup.html).
  */
 class MainActivity : AppCompatActivity() {
 
@@ -113,7 +113,6 @@ class MainActivity : AppCompatActivity() {
     /** L'indirizzo che si sta usando adesso: quello di casa o, fuori casa, uno degli altri. */
     @Volatile
     private var active: String? = null
-    private var lastOpen = 0L
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -217,7 +216,7 @@ class MainActivity : AppCompatActivity() {
         ContextCompat.registerReceiver(this, installResult, IntentFilter(ACTION_INSTALL_RESULT),
             ContextCompat.RECEIVER_NOT_EXPORTED)
         // Il server scritto a mano (app di prima) resta come primo da provare senza Internet
-        if (!isTelevision && lastServer == null) server?.let { lastServer = it }
+        if (lastServer == null) server?.let { lastServer = it }
         showHome()
         // Gettone FCM arrivato al servizio account: la pagina mostra subito «istantanee»
         Notices.changed = { js("window.fpNoticePerm&&fpNoticePerm()") }
@@ -249,18 +248,15 @@ class MainActivity : AppCompatActivity() {
             packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
     }
 
-    /** La pagina di partenza: sul telefono sempre BunkerPlex con l'account; sulla TV il
-     *  server scelto a mano, se c'e'. */
-    private fun showHome() {
-        if (isTelevision && server != null) openServer() else showCentral()
-    }
+    /** La pagina di partenza: sempre BunkerPlex con l'account (la PWA centrale), sul
+     *  telefono come sulla TV. Il server di casa diretto serve solo senza Internet. */
+    private fun showHome() = showCentral()
 
-    /** Apre BunkerPlex dal primo indirizzo che risponde: prima quello di casa, poi
-     *  (fuori casa) gli altri del PC, per esempio quello di Tailscale. */
+    /** Senza Internet: apre il server di casa trovato (o scritto) in setup.html, dal primo
+     *  indirizzo che risponde: prima quello di casa, poi gli altri del PC. */
     private fun openServer() {
         val home = server ?: return showSetup(false)
         onSetup = false
-        lastOpen = System.currentTimeMillis()
         thread {
             var api = 1
             val found = (listOf(home) + others).distinct().firstOrNull { url ->
@@ -272,10 +268,8 @@ class MainActivity : AppCompatActivity() {
                 true
             }
             runOnUiThread {
-                if (found == null && isTelevision) {
-                    showRemote("ask")       // niente server in casa: si propongono amici e tuoi PC
-                } else if (found == null) {
-                    // Telefono senza Internet (solo da setup.html): l'indirizzo da scrivere
+                if (found == null) {
+                    // Niente Internet e il server non risponde: l'indirizzo da scrivere
                     onSetup = true
                     web.loadUrl("file:///android_asset/setup.html#manual")
                     Toast.makeText(this, "Il server non risponde: controlla che il PC sia acceso", Toast.LENGTH_LONG).show()
@@ -287,33 +281,18 @@ class MainActivity : AppCompatActivity() {
                     web.loadUrl("$found/#/home")
                     // App piu' nuova del server: qualcosa potrebbe non andare finche' non si aggiorna il server
                     if (api < Releases.MIN_SERVER_API) Toast.makeText(this,
-                        "Il server sul PC è più vecchio di questa app: aggiornalo da Impostazioni → Aggiornamenti",
+                        "Il server sul PC è più vecchio di questa app: aggiornalo da Impostazioni → Aggiorna server",
                         Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
-    /** La pagina non si carica. Sul telefono: dal server diretto (es. si e' usciti di casa
-     *  con l'app aperta) si torna a BunkerPlex con l'account; se non si carica neanche
-     *  quello (niente Internet) si cerca il server sulla rete di casa. Sulla TV si riprova
-     *  con tutti gli indirizzi, ma una volta sola, poi amici e tuoi PC. */
+    /** La pagina non si carica. Dal server diretto (es. si e' usciti di casa con l'app
+     *  aperta) si torna a BunkerPlex con l'account; se non si carica neanche quello
+     *  (niente Internet) si cerca il server sulla rete di casa. Uguale su telefono e TV. */
     private fun lost() {
-        if (!isTelevision) {
-            if (active != null) showCentral() else showSetup(false)
-            return
-        }
-        if (System.currentTimeMillis() - lastOpen > 15000) openServer() else showRemote("ask")
-    }
-
-    /** La pagina dell'app senza server di casa: amici e tuoi PC, raggiunti con Tailscale.
-     *  Solo sulla TV: sul telefono la scelta del server e' sempre quella della PWA
-     *  (si apre il server per intero, con Home, ripresa e il resto), mai la vista ridotta. */
-    private fun showRemote(hash: String) {
-        if (!isTelevision) return showCentral()
-        onSetup = true
-        clearHistoryOnLoad = true
-        web.loadUrl("file:///android_asset/remote.html#$hash")
+        if (active != null) showCentral() else showSetup(false)
     }
 
     /** BunkerPlex con l'account: la pagina del servizio account (accesso, scelta del
@@ -323,7 +302,6 @@ class MainActivity : AppCompatActivity() {
         onSetup = false
         active = null
         clearHistoryOnLoad = true
-        lastOpen = System.currentTimeMillis()
         web.loadUrl(Remote.cloud(this) + "/")
     }
 
@@ -511,27 +489,23 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         try { unregisterReceiver(installResult) } catch (_: Exception) {}
         Notices.changed = null
-        Remote.stopNet()     // il telefono esce dalla rete di BunkerPlex (e, temporaneo, sparisce)
         web.destroy()
         super.onDestroy()
     }
 
     /** Funzioni che la pagina puo' chiamare: window.BunkerPlexTV.xxx() */
-    inner class Bridge : RemoteBridge(this@MainActivity, web, isTelevision) {
+    inner class Bridge {
 
-        override fun playerStarting() {
-            cameFromPlayer = true
-        }
-
-        /** Fuori casa (remote.html, sulla TV), un server che risponde sulla rete in cui si trova
-         *  il dispositivo: si apre come quello di casa, ma il server di casa scelto resta quello. */
-        override fun openLocal(url: String) {
-            active = url
-            lastServer = url
-            onSetup = false
-            clearHistoryOnLoad = true
-            lastOpen = System.currentTimeMillis()
-            web.loadUrl("$url/#/home")
+        /** Apre un indirizzo nel browser del dispositivo (Google non accetta l'accesso
+         *  dentro le finestre delle app). */
+        @JavascriptInterface
+        fun openUrl(url: String) = runOnUiThread {
+            if (!url.startsWith("https://")) return@runOnUiThread
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (_: Exception) {
+                js("window.toastFromApp&&toastFromApp('Nessun browser per aprire Google: usa il QR')")
+            }
         }
 
         @JavascriptInterface
@@ -749,22 +723,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /** Dalla pagina degli amici: riprova il server di casa, o la sua configurazione. */
-        @JavascriptInterface
-        fun retryHome() = runOnUiThread { if (server == null) showSetup(false) else openServer() }
-
         @JavascriptInterface
         fun openSetup() = runOnUiThread {
             onSetup = true
             web.loadUrl("file:///android_asset/setup.html#manual")
         }
-
-        @JavascriptInterface
-        fun openRemote() = runOnUiThread { showRemote("friends") }
-
-        /** Amici e tuoi PC con Tailscale (remote.html): solo sulle TV, sul telefono c'e' la PWA. */
-        @JavascriptInterface
-        fun remoteAllowed(): Boolean = isTelevision
 
         /** Da setup.html: le impostazioni dell'app, con qualunque server (o nessuno). */
         @JavascriptInterface
