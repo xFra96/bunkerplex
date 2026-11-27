@@ -766,7 +766,8 @@ async function serversPage() {
     });
   });
   var add = '';
-  if (u.linked && !u.guest) {
+  // Sulla TV non si scrive: gli amici si aggiungono dal telefono o dal PC
+  if (u.linked && !u.guest && !TVLOGIN) {
     add = cache.srvAdd
       ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="srvaddsend" placeholder="Nome dell\'account del tuo amico">' +
         '<button class="btn primary f" data-act="srvaddsend" data-key="srvaddsend">Invia</button></div>'
@@ -1174,7 +1175,7 @@ async function cOpen(s) {
       var se = new Error(j.detail || 'Il server non ha accettato l\'accesso');
       // Un server di prima della 3.26 non conosce il gettone degli amici
       if (s.role === 'friend' && r.status === 403 && /Gettone/.test(se.message)) {
-        se.message = 'il server di ' + s.owner.username + ' va aggiornato per far entrare gli amici (Impostazioni → Aggiornamenti)';
+        se.message = 'il server di ' + s.owner.username + ' va aggiornato per far entrare gli amici (Impostazioni → Aggiorna server)';
       }
       throw se;
     }
@@ -1454,7 +1455,8 @@ async function cServersPage() {
     theirs.push(srvCard({ act: 'cnoshare', arg: f.username, key: 'cfr-' + f.id, name: f.username,
       sub: 'Nessun server condiviso acceso', icon: FRIEND_ICON, off: true }));
   });
-  var add = cache.cAdd
+  // Sulla TV non si scrive: gli amici si aggiungono dal telefono o dal PC
+  var add = TVLOGIN ? '' : cache.cAdd
     ? '<div class="srvadd"><input class="field f" id="afname" data-key="afname" data-autofocus maxlength="32" autocapitalize="none" spellcheck="false" data-enter="caddsend" placeholder="Nome dell\'account del tuo amico">' +
       '<button class="btn primary f" data-act="caddsend" data-key="caddsend">Invia</button></div>'
     : '<button class="srv add f" data-act="cadd" data-key="cadd"><span class="srvart">' + PLUS_ICON + '</span><span class="srvtxt"><b>Aggiungi un amico</b><small>Con il nome del suo account</small></span></button>';
@@ -1474,7 +1476,7 @@ async function cServersPage() {
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
     '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     (C.profiles && C.profiles.length > 1 ? '<a class="authlink f" href="#/chi" data-key="cwho">Cambia profilo</a>' : '') + cAppLink() +
-    '<a class="authlink f" href="#/sicurezza" data-key="csec">Sicurezza dell\'accesso</a>' +
+    (TVLOGIN ? '' : '<a class="authlink f" href="#/sicurezza" data-key="csec">Sicurezza dell\'accesso</a>') +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
@@ -1646,7 +1648,7 @@ async function cGate() {
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
   var tv = cTvPending();
   if (tv !== null) { lockScreen(true); return cTvPage(tv); }
-  if (location.hash === '#/passkey' || location.hash === '#/sicurezza') { lockScreen(true); return secPage(); }
+  if ((location.hash === '#/passkey' || location.hash === '#/sicurezza') && !TVLOGIN) { lockScreen(true); return secPage(); }
   if (await pkShouldOffer()) { lockScreen(true); return pkOfferPage(); }
   // «Chi guarda?» subito dopo l'accesso, con i profili dell'account (come Netflix), poi il server
   await cProfiles(false);
@@ -5457,7 +5459,8 @@ var NOTICE_INTRO = '<p>Ricevi un avviso appena arrivano film ed episodi nuovi, d
 
 function noticeHereHtml() {
   if (PHONE_APP && typeof tvApp.noticesState === 'function') return noticeAppHtml();
-  if (APP) return '<p>Questa versione dell\'app non mostra ancora le notifiche: aggiornala da Impostazioni → Aggiornamenti.</p>';
+  // Sulla TV (o con un'app di prima) le notifiche non si mostrano: arrivano sul telefono
+  if (APP) return '<p>Su questo dispositivo le notifiche non si mostrano: arrivano sul telefono e sul PC.</p>';
   return noticePwaHtml();
 }
 
@@ -5763,7 +5766,7 @@ function accountArea(i) {
       '<p class="kvnote">Ogni dispositivo (browser, telefono, TV) entra con la sua password. Chiavi, preferenze, visti, La mia lista e raccolte ti seguono su ogni PC.</p>' +
       '<div class="actions">' +
         (TVLOGIN || !u.online ? '' : '<a class="btn f" href="#/password" data-key="pwchange">Cambia password</a>') +
-      '</div>' + emailPanel(u) + googlePanel(u) + (u.linked ? secBox() : '') +
+      '</div>' + emailPanel(u) + googlePanel(u) + (u.linked && !TVLOGIN ? secBox() : '') +
       (u.manager && !u.home ? '<h2 style="margin-top:1.2rem">Senza Internet</h2>' +
         swRow('Chi è in casa entra senza password', auth.home_offline !== false,
           'data-act="homeoff" data-arg="' + (auth.home_offline !== false ? 0 : 1) + '" data-key="homeoff"',
@@ -6179,9 +6182,10 @@ function accountFriendsPanel(af, sh) {
     (received ? '<div class="lib"><div class="head"><div class="name"><b>Richieste da accettare</b></div></div>' + received + '</div>' : '') +
     (friends ? '<div class="lib">' + friends + '</div>' : '<p>Ancora nessun amico.</p>') +
     (sent ? '<div class="lib"><div class="head"><div class="name"><b>In attesa</b></div></div>' + sent + '</div>' : '') +
-    '<label class="flabel" for="afname">Aggiungi un amico: il nome del suo account BunkerPlex</label>' +
-    '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
-    '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>' +
+    (TVLOGIN ? '<p class="kvnote">Gli amici si aggiungono dal telefono o dal PC: qui li accetti.</p>'
+      : '<label class="flabel" for="afname">Aggiungi un amico: il nome del suo account BunkerPlex</label>' +
+        '<div class="inline"><input class="field f" id="afname" data-key="afname" data-enter="afadd" autocomplete="off" maxlength="32" placeholder="Nome dell\'account">' +
+        '<button class="btn primary f" data-act="afadd" data-key="afadd">Manda la richiesta</button></div>') +
     swRow('Condividi le tue raccolte con i tuoi amici', !!af.sharing, 'data-act="afshare" data-arg="' + (af.sharing ? 0 : 1) + '" data-key="afshare"', sharing) +
     (af.sharing && sh ? '<p>' + reachState(sh) + '</p>' : '') +
     (af.sharing ? '<label class="flabel" for="pcname">Nome di questo PC (gli amici lo vedono se condividi da più PC)</label>' +
@@ -7667,7 +7671,7 @@ function updatePanel(u, title) {
                       : ' L\'aiutante sul PC è spento: le novità che toccano Docker si completano rilanciando «Installa BunkerPlex».')) + '</p>' +
     (u.can_update === false ? '<p>' + dot(false) + ' Solo il proprietario di questo server può aggiornarlo.</p>' : '') +
     (u.access === false && u.can_update !== false
-      ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiornamenti, e incolla il token di GitHub.</p>'
+      ? (TV ? '<p>Per dare l\'accesso apri <b>http://' + esc(location.host) + '</b> dal PC, Impostazioni → Aggiorna server, e incolla il token di GitHub.</p>'
             : '<p>Incolla qui un token di GitHub di sola lettura per quel repository (su GitHub: Settings → Developer settings → Fine-grained tokens, permesso Contents: Read-only). Resta salvato sul disco di BunkerPlex.</p>' +
               '<div class="inline" style="margin-bottom:.8rem"><input class="field f" id="ghtoken" data-key="ghtoken" data-enter="updtoken" autocomplete="off" placeholder="Token di GitHub">' +
               '<button class="btn f" data-act="updtoken" data-key="updtoken">Salva</button></div>')

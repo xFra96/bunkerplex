@@ -46,6 +46,7 @@ sezione E (note).
 | A5 | **Indirizzo del server scritto a mano**: «Scrivi l'indirizzo» / «Collega» | `setup.html:43-56`, `remote.html:657`, app nativa `MainActivity.kt:376-393` | Resta solo in `setup.html`, cioè senza Internet (ricerca in casa, poi indirizzo) |
 | A6 | «**Cambia server**» in 7 punti dell'app nativa e nella PWA dentro l'app: ricerca nativa del server invece della scelta della PWA | `app.js:5188-5189, 285, 335, 638`, nativa (vari) | Ovunque la scelta dei server della PWA (`#/server`) |
 | A7 | Scelta dei server **dal server di casa** diversa da quella centrale: niente «Rifiuta» sulle richieste, niente «Togli dall'elenco», server spento = solo un avviso | `app.js:734-803` | Stesse azioni della centrale |
+| A8 | Sulla TV (anche Samsung) «Aggiungi un amico» (nome da scrivere col telecomando) e «Sicurezza dell'accesso» (passkey e 2FA, che sulla TV non si usano) | `app.js` scelta dei server, Amici, Account | Tolti dalla TV: si fanno dal telefono o dal PC, come password, email e Google |
 
 ### B. App e vie doppie
 
