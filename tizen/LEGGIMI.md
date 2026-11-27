@@ -30,17 +30,30 @@ e la mette nella release `samsung-tv` (`BunkerPlex.wgt`).
 
 ### Installare
 
-Serve un PC con **Docker Desktop**, sulla stessa rete della TV.
+Sulla TV, una volta: **App** → scrivi `1 2 3 4 5` col telecomando (o premi il tasto 123) →
+accendi **Modalità sviluppatore** → come **IP del PC host** scrivi l'indirizzo di chi
+installa (telefono o PC) → spegni e riaccendi la TV. La TV accetta l'installazione solo da
+quell'indirizzo.
 
-1. Sulla TV: **App** → scrivi `1 2 3 4 5` col telecomando (o premi il tasto 123) →
-   accendi **Modalità sviluppatore** → come **IP del PC host** scrivi l'indirizzo del PC →
-   spegni e riaccendi la TV.
-2. Sul PC: `strumenti/sviluppo/Installa su TV Samsung.bat` e scrivi l'IP della TV
-   (Impostazioni → Generali → Rete → Stato della rete).
+Tre modi, tutti con lo stesso `BunkerPlex.wgt` della release `samsung-tv`:
 
-Lo script usa l'immagine Docker di
-[install-jellyfin-tizen](https://github.com/Georift/install-jellyfin-tizen) solo per i suoi
-strumenti Tizen (`sdb`, `tizen`). L'app installata è la nostra (`installa.sh`).
+1. **Dal telefono** (anche a casa di un amico, niente PC): app BunkerPlex per Android →
+   Impostazioni → «Installa sulla TV» → scheda **TV Samsung**. Mostra l'IP del telefono da
+   scrivere sulla TV, cerca le Samsung nel Wi-Fi e installa
+   (`android/app/.../SamsungInstaller.kt`).
+2. **Dal server di casa** (PWA o browser): Impostazioni → App per TV e telefono →
+   **Installa sulla TV Samsung dal PC**. Sulla TV va scritto l'IP del PC del server
+   (`server/samsunginstall.py`).
+3. **Da un PC con Docker Desktop**: `strumenti/sviluppo/Installa su TV Samsung.bat`. Usa gli
+   strumenti Tizen dell'immagine Docker di
+   [install-jellyfin-tizen](https://github.com/Georift/install-jellyfin-tizen) e può
+   rifirmare l'app con un certificato Samsung (vedi sotto). L'app installata è la nostra
+   (`installa.sh`).
+
+Telefono e server parlano da soli il protocollo `sdb` della TV (porta 26101: quello di adb,
+senza chiavi): copiano il file (`sync:`), lo installano (`0 vd_appinstall`) e aprono l'app
+(`0 was_execute`). Le prove contro una TV finta sono in `server/test_samsung.py`. Prima di
+installare chiedono alla TV (porta 8001) se la Modalità sviluppatore è accesa e con quale IP.
 
 ### TV dal 2024 circa: il certificato Samsung
 

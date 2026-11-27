@@ -149,6 +149,7 @@ class MainActivity : AppCompatActivity() {
                     onTvInstall = false
                     onSetup = false
                     TvInstaller.listener = null
+                    SamsungInstaller.listener = null
                 }
                 // Uscito dalle impostazioni dell'app (per esempio verso la ricerca del server)
                 if (onAppSettings && !url.startsWith(Remote.cloud(this@MainActivity)) && !url.startsWith(APP_SETTINGS)) {
@@ -352,6 +353,7 @@ class MainActivity : AppCompatActivity() {
         onSetup = true
         onTvInstall = true
         TvInstaller.listener = { json -> js("window.tvUpdate&&tvUpdate($json)") }
+        SamsungInstaller.listener = { json -> js("window.ssUpdate&&ssUpdate($json)") }
         web.loadUrl("file:///android_asset/tvinstall.html")
     }
 
@@ -691,6 +693,20 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun tvCancel() = TvInstaller.cancel(this@MainActivity)
+
+        // ---- ...e sulle TV Samsung, con la Modalita' sviluppatore (vedi SamsungInstaller)
+
+        @JavascriptInterface
+        fun ssState(): String = SamsungInstaller.state(this@MainActivity)
+
+        @JavascriptInterface
+        fun ssScan() = SamsungInstaller.scan(this@MainActivity)
+
+        @JavascriptInterface
+        fun ssInstall(ip: String) = SamsungInstaller.install(this@MainActivity, ip)
+
+        @JavascriptInterface
+        fun ssCancel() = SamsungInstaller.cancel(this@MainActivity)
 
         @JavascriptInterface
         fun tvClose() = runOnUiThread { if (web.canGoBack()) web.goBack() else showHome() }

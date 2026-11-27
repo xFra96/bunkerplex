@@ -40,6 +40,11 @@
   .log .ok { color: #4cbf7f; } .log .sep { margin-top: .4rem; font-weight: 700; color: #f2f5f2; }
   .log time { color: #6f7d73; margin-right: .5rem; }
   details summary { cursor: pointer; font-weight: 700; padding: .6rem 0; }
+  .tabs { display: flex; gap: .4rem; margin: 1rem 0 .2rem; }
+  .tabs button { flex: 1; padding: .6rem; background: #0e1510; color: #9fada3; }
+  .tabs button.on { background: #17211a; color: #f2f5f2; box-shadow: inset 0 -3px 0 #4cbf7f; }
+  .ip { font-size: 1.5rem; font-weight: 800; color: #f2f5f2; letter-spacing: .02em; }
+  .warn { color: #e0a030; }
   .spin { display: inline-block; width: 1rem; height: 1rem; margin-right: .5rem; vertical-align: -.15rem; border: .18rem solid #17211a;
           border-top-color: #4cbf7f; border-radius: 50%; animation: s 1s linear infinite; }
   @keyframes s { to { transform: rotate(360deg); } }
@@ -49,7 +54,8 @@
 <div class="wrap">
   <div class="top"><div class="logo"><b>Bunker</b>Plex</div><button class="link" id="back">‹ Indietro</button></div>
   <h1>Installa BunkerPlex sulla TV</h1>
-  <p>Dal telefono, nella rete di casa: niente PC, Downloader o chiavette. Dopo la prima volta l'app sulla TV si aggiorna da sola.</p>
+  <div class="tabs"><button data-tab="android">TV Android</button><button data-tab="samsung">TV Samsung</button></div>
+  <p id="intro"></p>
   <div id="main"></div>
   <details id="guide">
     <summary>Come si accende il debug sulla TV (una volta sola)</summary>
@@ -132,8 +138,9 @@ function logBox(t) {
   }).join('') + '</div>';
 }
 
-function render(t) {
+function renderAndroid(t) {
   state = t;
+  if (tab !== 'android') return;
   var addr = $('addr') ? $('addr').value : '';
   var devs = t.devices || [];
   $('main').innerHTML = steps(t) + nowBox(t) +
@@ -148,11 +155,103 @@ function render(t) {
   if (!t.scanned && !devs.length && !t.phase) $('guide').open = true;
 }
 
-// Lo stato arriva dall'app a ogni cambio (TvInstaller.listener)
-window.tvUpdate = function (t) { render(t); };
+// ---- TV Samsung (SamsungInstaller): Modalita' sviluppatore con l'IP del telefono
+var ss = null;
+
+function ssSteps(t) {
+  var ready = (t.tvs || []).some(function (x) { return x.dev; });
+  var names = [['dev', 'Modalità sviluppatore'], ['scan', 'Cerco'], ['install', 'Installo'], ['done', 'Fatto']];
+  var step = t.step === 'done' ? 'done' : t.phase === 'install' ? 'install' : t.phase === 'scan' ? 'scan' : ready ? 'install' : 'dev';
+  var now = names.map(function (x) { return x[0]; }).indexOf(step);
+  var failed = !!t.error && !t.phase;
+  return '<ol class="steps">' + names.map(function (x, n) {
+    var done = n < now || step === 'done';
+    return '<li class="' + (done ? 'done' : n === now ? 'now' + (failed ? ' fail' : '') : '') + '">' + (done ? '✓ ' : '') + esc(x[1]) + '</li>';
+  }).join('') + '</ol>';
+}
+
+function ssNow(t) {
+  var cls = '', msg;
+  var tvs = t.tvs || [];
+  if (t.phase) {
+    cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…') + '<div class="row"><button data-act="sscancel">Interrompi</button></div>';
+  } else if (t.error) {
+    cls = 'err'; msg = esc(t.error);
+  } else if (t.step === 'done') {
+    cls = 'ok'; msg = 'Fatto: BunkerPlex è tra le App della TV e si è aperta. Collegala con il codice che mostra (BunkerPlex → Collega una TV).';
+  } else if (t.scanned && !tvs.length) {
+    cls = 'err'; msg = 'Nessuna TV Samsung trovata: telefono e TV devono essere sullo stesso Wi-Fi, con la TV accesa. Oppure scrivi l\'indirizzo della TV.';
+  } else if (tvs.some(function (x) { return x.dev; })) {
+    cls = 'ok'; msg = 'TV pronta: premi <b>Installa</b> qui sotto.';
+  } else if (tvs.length) {
+    msg = 'Ho trovato la TV, ma la <b>Modalità sviluppatore</b> è spenta: segui i passi qui sotto, poi premi <b>Cerca di nuovo</b>.';
+  } else {
+    msg = 'Accendi la <b>Modalità sviluppatore</b> sulla TV (passi qui sotto), poi premi <b>Cerca le TV</b>.';
+  }
+  return '<div class="now ' + cls + '">' + msg + '</div>';
+}
+
+function ssRow(tv, t) {
+  var st;
+  if (!tv.dev) st = '<span class="warn">Modalità sviluppatore spenta</span>';
+  else if (t.pc && tv.dev_ip && tv.dev_ip !== t.pc) st = '<span class="warn">IP del PC host: ' + esc(tv.dev_ip) + ' (deve essere ' + esc(t.pc) + ')</span>';
+  else st = tv.installed ? 'App installata' : 'Pronta';
+  return '<div class="dev"><div><b>' + esc(tv.name || 'TV Samsung') + '</b><small>' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip) + ' · ' + st + '</small></div>' +
+    (t.phase || !tv.dev ? '' : '<button class="' + (tv.installed ? '' : 'primary') + '" data-act="ssinstall" data-arg="' + esc(tv.ip) + '">' + (tv.installed ? 'Reinstalla' : 'Installa') + '</button>') + '</div>';
+}
+
+function renderSamsung(t) {
+  ss = t;
+  if (tab !== 'samsung') return;
+  var addr = $('addr') ? $('addr').value : '';
+  var tvs = t.tvs || [];
+  $('main').innerHTML = ssSteps(t) + ssNow(t) +
+    (tvs.length ? '<div>' + tvs.map(function (x) { return ssRow(x, t); }).join('') + '</div>' : '') +
+    '<div class="row" style="margin-top:1rem"><button class="' + (tvs.length ? '' : 'primary') + '" data-act="ssscan"' + (t.phase ? ' disabled' : '') + '>' +
+      (t.scanned ? 'Cerca di nuovo' : 'Cerca le TV') + '</button></div>' +
+    '<h2>Sulla TV (una volta sola)</h2><ol>' +
+      '<li>Apri <b>App</b> e col telecomando scrivi <b>1 2 3 4 5</b> (sui telecomandi senza numeri: tieni premuto il tasto 123 o Home).</li>' +
+      '<li>Metti <b>Modalità sviluppatore</b> su <b>On</b> e come <b>IP del PC host</b> scrivi l\'indirizzo di questo telefono:<div class="ip">' + esc(t.pc || '— (collega il telefono al Wi-Fi)') + '</div></li>' +
+      '<li>Spegni e riaccendi la TV, poi premi <b>Cerca le TV</b>.</li></ol>' +
+    '<p><small>Le TV più nuove (dal 2024 circa) possono rifiutare l\'app: vogliono un certificato Samsung fatto per loro. ' +
+      'BunkerPlex funziona comunque dal <b>browser della TV</b> (Internet), senza installare niente.</small></p>' +
+    '<h2>Oppure scrivi l\'indirizzo della TV</h2><div class="row"><input id="addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.180">' +
+      '<button data-act="ssmanual"' + (t.phase ? ' disabled' : '') + '>Installa</button></div>' +
+    logBox(t);
+  if ($('addr')) $('addr').value = addr;
+  var lg = $('log'); if (lg) lg.scrollTop = lg.scrollHeight;
+}
+
+// ---- Schede: TV Android (adb) o TV Samsung (sdb)
+var tab = location.hash === '#samsung' ? 'samsung' : 'android';
+var INTRO = {
+  android: 'Dal telefono, nella rete di casa: niente PC, Downloader o chiavette. Dopo la prima volta l\'app sulla TV si aggiorna da sola.',
+  samsung: 'Le Samsung non hanno Android: il telefono installa l\'app per Samsung con la Modalità sviluppatore della TV. Niente PC.'
+};
+
+function showTab(name) {
+  tab = name;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-tab]'), function (b) { b.className = b.getAttribute('data-tab') === name ? 'on' : ''; });
+  $('intro').textContent = INTRO[name];
+  $('guide').style.display = name === 'android' ? '' : 'none';
+  if (!app) { $('main').innerHTML = ''; return; }
+  if (name === 'android' && app.tvState) {
+    renderAndroid(JSON.parse(app.tvState()));
+    if (!state.scanned && !state.phase && state.supported) app.tvScan();
+  } else if (name === 'samsung' && app.ssState) {
+    renderSamsung(JSON.parse(app.ssState()));
+    if (!ss.scanned && !ss.phase) app.ssScan();
+  }
+}
+
+// Lo stato arriva dall'app a ogni cambio (TvInstaller.listener, SamsungInstaller.listener)
+window.tvUpdate = function (t) { renderAndroid(t); };
+window.ssUpdate = function (t) { renderSamsung(t); };
 window.fpBack = function () { return false; };
 
 document.addEventListener('click', function (e) {
+  var tb = e.target.closest('[data-tab]');
+  if (tb) { showTab(tb.getAttribute('data-tab')); return; }
   var b = e.target.closest('[data-act]');
   if (!b || !app) return;
   var act = b.getAttribute('data-act'), arg = b.getAttribute('data-arg') || '';
@@ -160,6 +259,13 @@ document.addEventListener('click', function (e) {
   else if (act === 'install') app.tvInstall(arg, false);
   else if (act === 'replace') app.tvInstall(arg, true);
   else if (act === 'cancel') app.tvCancel();
+  else if (act === 'ssscan') app.ssScan();
+  else if (act === 'ssinstall') app.ssInstall(arg);
+  else if (act === 'sscancel') app.ssCancel();
+  else if (act === 'ssmanual') {
+    var ip = ($('addr').value || '').trim();
+    if (ip) app.ssInstall(ip); else $('addr').focus();
+  }
   else if (act === 'manual') {
     var v = ($('addr').value || '').trim();
     if (v) app.tvInstall(v, false); else $('addr').focus();
@@ -167,12 +273,13 @@ document.addEventListener('click', function (e) {
 });
 $('back').addEventListener('click', function () { if (app && app.tvClose) app.tvClose(); else history.back(); });
 
+// La prima volta si cerca subito (nella scheda aperta)
 if (app && app.tvState) {
-  render(JSON.parse(app.tvState()));
-  // La prima volta si cerca subito
-  if (!state.scanned && !state.phase && state.supported) app.tvScan();
+  if (!app.ssState) document.querySelector('.tabs').style.display = 'none';   // app di prima
+  showTab(tab);
 } else {
-  render({ supported: false, step: 'debug', devices: [], log: [] });
+  showTab('android');
+  renderAndroid({ supported: false, step: 'debug', devices: [], log: [] });
 }
 </script>
 </body>
