@@ -404,12 +404,23 @@ object SamsungInstaller {
      * fa da solo, se chi amministra e' entrato in Samsung: se no gli arriva un avviso).
      */
     private fun certificateFor(ctx: Context, tv: Tv) {
+        loadAccount(ctx)
         if (account.isEmpty()) throw IOException(
-            "Questa TV vuole un certificato Samsung fatto per lei. Apri «Installa sulla TV» da BunkerPlex con il tuo account e riprova.")
+            "Questa TV vuole un certificato Samsung fatto per lei, ma su questo telefono non trovo il tuo account BunkerPlex: " +
+                "chiudi e riapri l'app BunkerPlex, poi riprova.")
         step = "cert"
         message = "Chiedo il certificato Samsung per questa TV…"
         push(ctx)
-        var st = cloudCall(ctx, "POST", "/samsung/tv", JSONObject().put("duid", tv.duid).put("model", tv.model).put("name", tv.name))
+        var st = try {
+            cloudCall(ctx, "POST", "/samsung/tv", JSONObject().put("duid", tv.duid).put("model", tv.model).put("name", tv.name))
+        } catch (e: CloudFail) {
+            if (e.status == 401) {
+                account = ""
+                ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE).edit().remove("ss_account").apply()
+                throw IOException("L'accesso al tuo account BunkerPlex è scaduto su questo telefono: chiudi e riapri l'app, poi riprova.")
+            }
+            throw e
+        }
         say("Chiesto il certificato Samsung per la TV ${tv.duid}", "ok")
         val until = System.currentTimeMillis() + WAIT_MS
         var last = ""
@@ -446,14 +457,23 @@ object SamsungInstaller {
     @Volatile private var loginMsg = ""
 
     fun setAccount(ctx: Context, token: String) {
-        if (token == account) return
-        account = token.trim()
+        val t = token.trim()
+        if (t.isEmpty() || t == account) return
+        account = t
+        // Resta anche dopo la chiusura dell'app (come il gettone di remote.html)
+        ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE).edit().putString("ss_account", t).apply()
         admin = null
         refreshAdmin(ctx)
     }
 
+    /** Il gettone salvato, se in memoria non c'e' (app riaperta direttamente sul server). */
+    private fun loadAccount(ctx: Context) {
+        if (account.isEmpty()) account = ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE).getString("ss_account", "") ?: ""
+    }
+
     /** Il pannello del certificato Samsung, solo per chi amministra (se no 403 e niente). */
     fun refreshAdmin(ctx: Context) {
+        loadAccount(ctx)
         if (account.isEmpty()) return
         thread(name = "samsung-admin") {
             admin = try { cloudCall(ctx, "GET", "/samsung/admin") } catch (_: Exception) { null }
@@ -468,6 +488,7 @@ object SamsungInstaller {
      * servizio account, che lo usa per i certificati finche' vale.
      */
     fun samsungLogin(ctx: Context) {
+        loadAccount(ctx)
         if (loginBusy || account.isEmpty()) return
         loginBusy = true
         loginMsg = "Entra con il tuo account Samsung nella pagina che si è aperta, poi torna qui."

@@ -159,6 +159,14 @@ class MainActivity : AppCompatActivity() {
                     clearHistoryOnLoad = false
                     view.clearHistory()
                 }
+                // Il gettone dell'account dalla PWA centrale (bpCentral): l'installazione sulle
+                // TV Samsung lo usa anche quando poi si guarda dal server di casa, dove non c'e'
+                if (!isTelevision && url.startsWith(Remote.cloud(this@MainActivity))) {
+                    view.evaluateJavascript("(function(){try{return (JSON.parse(localStorage.getItem('bpCentral'))||{}).token||''}catch(e){return ''}})()") { v ->
+                        val token = v?.trim()?.removeSurrounding("\"") ?: ""
+                        if (Regex("^[A-Za-z0-9._~+/=-]{16,512}$").matches(token)) SamsungInstaller.setAccount(this@MainActivity, token)
+                    }
+                }
                 view.requestFocus()
             }
 
