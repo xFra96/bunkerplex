@@ -67,7 +67,7 @@ modo: disinstallala dalla TV e riprova.
 - Il certificato d'autore va tenuto sempre lo stesso, se no la TV non accetta gli
   aggiornamenti. Sta nei segreti di GitHub `TIZEN_AUTHOR_P12_B64` e
   `TIZEN_AUTHOR_PASSWORD`. Senza i segreti il workflow ne crea uno al volo (solo per provare).
-- Il certificato d'autore attuale (copia in `Documents\BunkerPlex/tizen-autore` sul PC di
+- Il certificato d'autore attuale (copia in `Documents/BunkerPlex/tizen-autore` sul PC di
   casa) scade il **2027-01-01**, come la «Tizen Developers CA» che lo firma. Poi va rifatto
   con gli strumenti Tizen che avranno la CA nuova, e aggiornati i due segreti. Non è
   chiaro se l'app già installata continui ad aprirsi dopo quella data.
