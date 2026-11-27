@@ -37,7 +37,7 @@
   <div id="searching">
     <div class="spin"></div>
     <h1 id="stitle">Cerco il server sulla rete di casa…</h1>
-    <p>Il PC con BunkerPlex deve essere acceso e collegato alla stessa rete della TV.</p>
+    <p>BunkerPlex con l'account non si apre (niente Internet?): cerco il PC con BunkerPlex sulla rete di casa.</p>
   </div>
 
   <div id="manual" hidden>
@@ -50,8 +50,7 @@
       <button class="f primary" id="connect">Collega</button>
       <button class="f" id="retry">Cerca di nuovo</button>
     </div>
-    <div class="row"><button class="f" id="remote">Amici e tuoi PC fuori casa</button></div>
-    <div class="row"><button class="f" id="central">Entra con l'account</button></div>
+    <div class="row"><button class="f" id="central">Riprova con l'account</button></div>
     <div class="row"><button class="f" id="appset">Impostazioni dell'app</button></div>
   </div>
 </div>
@@ -84,24 +83,16 @@ function connect() {
   if (app) app.saveServer(v);
 }
 
-// Amici e tuoi PC con Tailscale (remote.html): solo l'app sulle TV; sul telefono c'e'
-// BunkerPlex con l'account (questa pagina serve solo senza Internet)
-var remoteOk = !!(app && app.openRemote && (!app.remoteAllowed || app.remoteAllowed()));
-if (!remoteOk) $('remote').parentNode.hidden = true;
-
+// Questa pagina serve solo senza Internet: di solito l'app apre BunkerPlex con l'account
 // Chiamate dall'app
 window.setupFound = function (url) { showSearching('Trovato! ' + url.replace('http://', '')); };
-// Niente server in casa: sulla TV l'app propone gli amici e i tuoi PC (remote.html)
-window.setupNotFound = function () {
-  if (remoteOk) location.replace('remote.html#ask'); else showManual('Server non trovato', '');
-};
+window.setupNotFound = function () { showManual('Server non trovato', ''); };
 window.setupError = function (url) {
   showManual('Collegamento non riuscito', 'Nessun BunkerPlex risponde a ' + url.replace('http://', '') + '. Il PC è acceso?');
 };
 
 $('connect').addEventListener('click', connect);
 $('retry').addEventListener('click', search);
-$('remote').addEventListener('click', function () { if (app && app.openRemote) app.openRemote(); });
 $('central').addEventListener('click', function () { if (app && app.openCentral) app.openCentral(); });
 // Versione, aggiornamento e notifiche dell'app: con qualunque server, o nessuno
 $('appset').addEventListener('click', function () { if (app && app.openAppSettings) app.openAppSettings(); });
@@ -129,8 +120,7 @@ if (location.hash === '#manual') {
   $('addr').focus();
 } else if (offline) {
   window.setupNotFound = function () {
-    if (remoteOk) { location.replace('remote.html#ask'); return; }
-    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo. Fuori casa accendi Tailscale su questo dispositivo.');
+    showManual('Il server non risponde', 'Controlla che il PC sia acceso e che BunkerPlex sia avviato, oppure scrivi l\'indirizzo.');
   };
   showSearching('Il server salvato non risponde, lo cerco sulla rete…');
   if (app) app.discover(); else setupNotFound();

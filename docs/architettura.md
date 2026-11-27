@@ -3,7 +3,11 @@
 Stato: **fatte le fasi 0-3 e la fase 4 (TV e telefono)** (vedi §5, §7-§10).
 Decisioni già prese:
 - il servizio centrale diventa una **PWA universale** (telefono, tablet, PC, iPhone/iPad);
-- l'**app TV nativa resta**;
+- ~~l'app TV nativa resta~~: **tolta il 27/11/2026**. Un'interfaccia sola, la PWA: sulle TV Android
+  l'app BunkerPlex (la stessa del telefono, aspetto da TV e player nativo), sulle Samsung la cornice
+  Tizen. Tolte anche `remote.html` e Tailscale dentro l'app (vedi [allineamento-app.md](allineamento-app.md));
+- un server entra in un account solo quando lo si crea (si entra su di lui con l'account e si collega),
+  poi si può solo togliere: niente «Aggiungi un server» da altri dispositivi;
 - l'**app Android per telefono resta per ora** (si decide dopo);
 - l'**app iOS è stata tolta** (fase 0): su iPhone e iPad si usa la PWA. Il codice resta nel tag `pre-pwa`.
 
@@ -145,7 +149,8 @@ Cambia:
 
 ### 2.4 App TV (`android/tv`)
 
-Resta nativa. Cambia:
+**Tolta il 27/11/2026** (vedi [allineamento-app.md](allineamento-app.md)): sulle TV Android c'è l'app
+BunkerPlex con la PWA. Quello che segue è il piano di allora. Cambia:
 - Login direttamente sul cloud: codice/QR da confermare sulla PWA del telefono (il flusso `/google/start` con `kind: tv` e la pagina `/g/<codice>` esistono già; si estende al login con password confermato dal telefono).
 - Lista server da `GET /servers`; schermata di scelta attuale (`Access.kt` `ServersScreen`) mantenuta, cambia solo la fonte.
 - `Api.base` diventa il server scelto, con lo stesso ordine di collegamento della PWA. Niente più id virtuali degli amici.
@@ -322,7 +327,8 @@ Spento finché non si configura il dominio: senza, tutto funziona come prima.
 
 ## 10. Fase 4: app TV e app Android (ramo `fase-4`)
 
-**App TV** (`android/tv`, `Access.kt` sezione «Con l'account»):
+**App TV** (`android/tv`, `Access.kt` sezione «Con l'account»; **tolta il 27/11/2026**, oggi le TV Android
+usano l'app BunkerPlex con la PWA centrale e lo stesso accesso `/tv/start`):
 - All'apertura: con l'account → elenco dei server del servizio (e si torna da soli sul server di prima);
   senza → «Entra dal telefono»: QR e codice. **Sulla TV non si scrive mai la password.** La TV chiede
   `POST /tv/start` (codice di 8 caratteri + segreto `poll`, 10 minuti), mostra il QR di

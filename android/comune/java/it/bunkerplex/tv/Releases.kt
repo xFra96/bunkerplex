@@ -6,8 +6,8 @@ import org.json.JSONObject
 
 /**
  * Aggiornamenti delle app direttamente dalle loro release su GitHub, senza
- * passare dal server: ogni app ha la sua linea di versioni (app-v1.0 per
- * l'app Android, tv-v1.0 per l'app TV nativa) e allega l'APK e un piccolo
+ * passare dal server: l'app Android ha la sua linea di versioni (app-v1.0)
+ * e la release allega l'APK e un piccolo
  * JSON con il numero di versione (code) e il server minimo che le serve.
  */
 object Releases {
@@ -42,7 +42,7 @@ object Releases {
         return false
     }
 
-    /** Chiede a GitHub l'ultima release della linea (es. "tv-v", "BunkerPlexTV.apk"). Fuori dal thread principale.
+    /** Chiede a GitHub l'ultima release della linea (es. "app-v", "BunkerPlex.apk"). Fuori dal thread principale.
      *  Si parte dai tag della linea, non dall'elenco delle release: quelle del server
      *  escono a ogni modifica e spingerebbero indietro quelle delle app. */
     fun fetch(prefix: String, apk: String): Latest? {

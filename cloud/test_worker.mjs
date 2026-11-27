@@ -160,6 +160,10 @@ test('con la credenziale, i dati del server non si scrivono piu con il gettone d
   const pc = await t.login('anna', 'server');
   const put = { sid: SID, name: 'x', url: 'https://evil.example', pin: PIN, friends: true };
   assert.equal((await t.call('PUT', '/servers', put, pc)).status, 200);      // server di prima: va ancora
+  // Un server che l'account non ha non si aggiunge cosi' (ne' poi con /servers/:sid/claim)
+  const bobPc = await t.login('bob', 'server');
+  assert.equal((await t.call('PUT', '/servers', { ...put, sid: 'dddddddd' }, bobPc)).status, 428);
+  assert.equal((await t.call('POST', '/servers/dddddddd/claim', {}, bobPc)).status, 428);
   await t.call('POST', `/servers/${SID}/claim`, {}, pc);
   assert.equal((await t.call('PUT', '/servers', put, await t.login('anna', 'app'))).status, 409);
   assert.equal((await t.call('DELETE', `/servers/${SID}`, undefined, pc)).status, 409);
@@ -238,6 +242,7 @@ test('fase 0: Tailscale senza nome rifiutato, GET /friends con piu amici', async
   const carla = t.addUser('carla');
   t.env.DB.raw.prepare("INSERT INTO friends(a, b, status, t) VALUES(?, ?, 'ok', 0)").run(carla, t.anna);
   for (const [who, sid] of [['bob', 'bbbbbbbb'], ['carla', 'cccccccc']]) {
+    t.known(who === 'bob' ? t.bob : carla, sid);   // server di prima, gia' nell'account
     await t.call('PUT', '/servers', { sid, name: who, url: 'https://' + who + '.example', pin: PIN, friends: true }, await t.login(who, 'server'));
   }
   const fr = (await t.call('GET', '/friends', undefined, await t.login('anna', 'app'))).body.friends;

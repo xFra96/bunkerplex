@@ -121,8 +121,6 @@ DATA_PROBLEM = data_problem()
 CONFIG_PATH = DATA / "config.json"
 SUBS_DIR = DATA / "subs"            # sottotitoli scaricati da internet, uno per lingua e video
 APK_PATH = Path(os.environ.get("APK_PATH", "/apk/BunkerPlex.apk"))
-# L'app TV nativa (release tv-v*): accanto all'altra, si aggiorna da sola dal server
-TV_APK_PATH = APK_PATH.with_name("BunkerPlexTV.apk")
 
 VIDEO_EXT = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv",
              ".flv", ".mpg", ".mpeg", ".m2ts"}
@@ -2622,7 +2620,7 @@ class SmallAndFast:
     """Comprime elenchi e pagine (l'elenco di una raccolta pesa centinaia di KB:
     compresso arriva alla TV in un quinto del tempo). Video e immagini passano
     cosi' come sono: sono gia' compressi e devono restare 'saltabili'."""
-    RAW = ("/api/stream", "/api/transcode", "/api/hls/", "/api/image", "/api/thumb", "/BunkerPlex.apk", "/BunkerPlexTV.apk",
+    RAW = ("/api/stream", "/api/transcode", "/api/hls/", "/api/image", "/api/thumb", "/BunkerPlex.apk",
            "/api/share/stream", "/api/share/transcode", "/api/share/hls/",
            "/api/share/image", "/api/share/thumb", "/api/friend/")
     PLAYING = ("/api/stream", "/api/transcode", "/api/hls/", "/api/progress", "/api/share/stream",
@@ -4580,15 +4578,6 @@ def qr_svg(url):
         return ""
 
 
-def qr_rows(url):
-    """Lo stesso QR come righe di 0 e 1: l'app TV nativa lo disegna da se'."""
-    try:
-        import segno
-        return ["".join("1" if c else "0" for c in row) for row in segno.make(url, error="m").matrix]
-    except Exception:
-        return []
-
-
 @app.post("/api/auth/pair")
 def auth_pair_start(request: Request):
     """La TV chiede un codice da mostrare."""
@@ -4608,7 +4597,7 @@ def auth_pair_start(request: Request):
     base = f"https://{name}" if name.endswith(".ts.net") else (f"http://{ip}:{port}" if ip else "")
     url = f"{base}/#/pair/{code}" if base else ""
     return {"code": code, "url": url, "base": base,
-            "svg": qr_svg(url) if url else "", "qr": qr_rows(url) if url else [], "ttl": PAIR_TTL}
+            "svg": qr_svg(url) if url else "", "ttl": PAIR_TTL}
 
 
 @app.get("/api/auth/pair/{code}")
@@ -4751,7 +4740,7 @@ async def auth_google_start(request: Request):
                        "kind": kind}
     code = res["code"]
     return {"id": fid, "url": res["url"], "short": res["short"], "code": code[:4] + "-" + code[4:],
-            "svg": qr_svg(res["url"]), "qr": qr_rows(res["url"]), "ttl": res.get("ttl", 600)}
+            "svg": qr_svg(res["url"]), "ttl": res.get("ttl", 600)}
 
 
 @app.get("/api/auth/google/{fid}")
@@ -6022,14 +6011,12 @@ def other_addresses():
 @app.get("/api/info")
 def info():
     apk_code, apk_name = apk_version()
-    tv_code, tv_name = apk_version(TV_APK_PATH)
-    tv = {"tv_apk_version": tv_code, "tv_apk_version_name": tv_name}
     if CURRENT.get() is None:
-        # Prima dell'accesso: quanto basta all'app della TV per riconoscere il server e aggiornarsi
+        # Prima dell'accesso: quanto basta all'app per riconoscere il server (setup.html)
         return {"app": "bunkerplex", "name": SERVER_NAME, "version": VERSION, "api": API_LEVEL, "login": True,
                 "release": updater.release(), "commit": updater.current_commit()[:7],
                 "apk": APK_PATH.is_file(), "apk_version": apk_code, "apk_version_name": apk_name,
-                "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id(), **tv}
+                "addresses": other_addresses(), "cloud": accounts.cloud_url(), "sid": pc_id()}
     con = db()
     try:
         key = tmdb_key()
@@ -6050,7 +6037,7 @@ def info():
             "tmdb": bool(key), "tmdb_hint": ("…" + key[-4:]) if key else "",
             "subs_online": bool(os_conf()["key"]), "subs_user": os_conf()["user"],
             "libraries": len(get_libraries()), "apk": APK_PATH.is_file(),
-            "apk_version": apk_code, "apk_version_name": apk_name, **tv,
+            "apk_version": apk_code, "apk_version_name": apk_name,
             "update": updater.available(),
             # Richieste di amicizia arrivate all'account di chi guarda
             "friend_requests": sum(1 for f in (friends_cloud.get((CURRENT.get() or {}).get("id")) or {})
@@ -10764,12 +10751,11 @@ def heartbeat_body(uid):
             "public": public["url"] if public["on"] and public["url"].startswith("https://") else ""}
 
 
-# ---- Collegamento all'account (codice, come plex.tv/claim) ----------------------------
-# Un server nuovo non diventa del primo account che ci entra: chiede al servizio un
-# codice (8 caratteri, 15 minuti), lo mostra (pagina di accesso, Impostazioni) e il
-# proprietario lo conferma da un suo dispositivo dandogli un nome. Intanto qui si
-# chiede ogni pochi secondi se e' stato confermato: arriva la credenziale del server.
-# Chi e' gia' entrato qui con l'account lo collega direttamente (POST /api/server/claim).
+# ---- Collegamento all'account --------------------------------------------------------
+# Un server entra in un account quando lo si crea: chi entra qui con il suo account lo
+# collega con un tocco (POST /api/server/claim, dandogli un nome). Dentro si usa il
+# codice del servizio (/claim/start, confermato subito con il gettone di chi e' entrato,
+# poi /claim/poll per la credenziale del server). Nessun codice da scrivere altrove.
 # machine_id: impronta della macchina. Reinstallando BunkerPlex sullo stesso PC il
 # servizio propone di sostituire il server di prima (spento): questo ne prende il sid,
 # e con lui nome, aspetto, amici e nome DNS.
@@ -10909,37 +10895,6 @@ def claim_info():
             "need": not cred and bool(claim_state["need"]),
             "code": "" if cred else claim_state["code"], "exp": claim_state["exp"], "name": pc_name(),
             "sid": pc_id(), "machine": bool(machine_id())}
-
-
-def claim_here(request):
-    """Il codice si da' solo a chi e' nella rete di casa (non da Internet, non agli amici)."""
-    port = (request.scope.get("server") or ("", 0))[1]
-    host = (request.scope.get("client") or ("",))[0]
-    if port in (PUBLIC_PORT, SHARE_PORT) or is_public(host):
-        raise HTTPException(403, "Il codice si vede solo dalla rete di casa")
-
-
-@app.get("/api/auth/claim")
-def claim_get(request: Request):
-    claim_here(request)
-    return claim_info()
-
-
-@app.post("/api/auth/claim")
-async def claim_new(request: Request):
-    """Mostra un codice per collegare questo server a un account."""
-    claim_here(request)
-    if not auth_on():
-        raise HTTPException(400, "Su questo server il servizio account è spento")
-    if server_cred():
-        return claim_info()
-    try:
-        await asyncio.to_thread(claim_start)
-    except accounts.CloudOffline:
-        raise HTTPException(503, "Serve Internet per collegare il server")
-    except accounts.CloudError as ex:
-        raise HTTPException(502, ex.detail)
-    return claim_info()
 
 
 def claim_user_token():
@@ -11461,17 +11416,6 @@ def apk():
         raise HTTPException(404, "App non ancora sul PC: riprova tra qualche minuto")
     return FileResponse(APK_PATH, media_type="application/vnd.android.package-archive",
                         filename="BunkerPlex.apk")
-
-
-@app.get("/BunkerPlexTV.apk")
-def tv_apk():
-    """L'app TV nativa, per installarla la prima volta (poi si aggiorna da sola da GitHub)."""
-    if not TV_APK_PATH.is_file():
-        updater.refresh_apps(force=True)
-    if not TV_APK_PATH.is_file():
-        raise HTTPException(404, "App TV nativa non ancora sul PC")
-    return FileResponse(TV_APK_PATH, media_type="application/vnd.android.package-archive",
-                        filename="BunkerPlexTV.apk")
 
 
 # ---- Indirizzi del PC e QR per scaricare l'app --------------------------------

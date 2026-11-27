@@ -1,9 +1,9 @@
-# Su ogni pull request che tocca l'app per la TV: controlla che compili, prima
+# Su ogni pull request che tocca l'app Android: controlla che compili, prima
 # di unirla in main (dove la compilazione vera pubblica la release).
 # Compila la versione di prova (debug), firmata con una chiave usa e getta: non
 # serve la chiave vera e non si pubblica niente.
 
-name: Verifica app TV
+name: Verifica app Android
 
 on:
   pull_request:
@@ -26,16 +26,6 @@ jobs:
         with:
           gradle-version: "8.11.1"
           cache-provider: basic
-      # Tailscale dentro l'app (android/tsnet): Go e gomobile, con l'NDK gia' sul server di GitHub
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: android/tsnet/go.mod
-          cache-dependency-path: android/tsnet/go.sum
-
-      - name: Libreria Tailscale
-        working-directory: android
-        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh tsnet/build.sh
-
       - name: Compila
         working-directory: android
         run: gradle --no-daemon assembleDebug
@@ -60,12 +50,3 @@ jobs:
           gradle --no-daemon :app:assembleDebug
           grep -rq google_app_id app/build/generated/res/
           rm app/google-services.json
-
-      # App TV nativa: anche la versione ottimizzata (R8), con una chiave usa e getta
-      - name: Compila l'app TV nativa ottimizzata
-        working-directory: android
-        run: |
-          mkdir -p keystore
-          keytool -genkeypair -keystore keystore/bunkerplex.jks -alias bunkerplex -keyalg RSA -keysize 2048 \
-            -validity 1 -storepass bunkerplex -keypass bunkerplex -dname "CN=Prova"
-          gradle --no-daemon :tv:assembleRelease

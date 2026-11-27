@@ -4,7 +4,7 @@ Riepilogo da passare a chi continua. Il progetto completo è in `docs/architettu
 
 ## Obiettivo
 
-Niente più «server principale». Il **servizio centrale** (Cloudflare Worker + D1, `cloud/worker.js`) gestisce identità, account, dispositivi, registro dei server, presenza, amici e permessi. I **server** (`server/app.py`) sono risorse dell'account: gestiscono raccolte e video. Le **app** (TV nativa, Android, PWA) entrano con l'account, prendono l'elenco dei server dal servizio e si collegano **direttamente** al server scelto, preferendo la rete di casa. La scelta del server ha la stessa grafica di prima.
+Niente più «server principale». Il **servizio centrale** (Cloudflare Worker + D1, `cloud/worker.js`) gestisce identità, account, dispositivi, registro dei server, presenza, amici e permessi. I **server** (`server/app.py`) sono risorse dell'account: gestiscono raccolte e video. Le **app** (PWA; app Android per telefono e TV; cornice Samsung) entrano con l'account, prendono l'elenco dei server dal servizio e si collegano **direttamente** al server scelto, preferendo la rete di casa. La scelta del server ha la stessa grafica di prima.
 
 ## Dove sta il codice
 

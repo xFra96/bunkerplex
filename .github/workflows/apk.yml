@@ -8,8 +8,7 @@
 # (cosi' la copia scaricata sa di essere aggiornata).
 #
 # Le app hanno giri e release loro e si aggiornano da sole da li', senza il server:
-#   - app Android (telefoni e TV): workflows/app-android.yml, release app-v1.0...;
-#   - app TV nativa: workflows/app-tv-nativa.yml, release tv-v1.0...
+#   - app Android (telefoni e TV): workflows/app-android.yml, release app-v1.0...
 # Su iPhone e iPad si usa la PWA (l'app iOS e' stata tolta: resta nel tag pre-pwa).
 # In app-tv resta anche BunkerPlex.apk, l'ultima app Android, per i server e le
 # app di prima che la prendevano da qui.
@@ -142,8 +141,8 @@ jobs:
               tags = [name for pre, name in areas if any(f.startswith(pre) for f in files if f)]
               tag = f" — _{', '.join(tags)}_" if tags else ""
               lines.append(f"- {subj}{tag} ([{sha[:7]}](https://github.com/{repo}/commit/{sha}))")
-          apk = ("**App:** si aggiornano da sole dalle loro release (app-v per telefoni e TV, "
-                 "tv-v per l'app TV nativa); su iPhone e iPad si usa la PWA.")
+          apk = ("**App:** l'app Android (telefoni e TV) si aggiorna da sola dalle sue release app-v; "
+                 "su iPhone, iPad e TV Samsung si usa la PWA.")
           compare = f"\n\nTutte le modifiche: [{prev}...{ver}](https://github.com/{repo}/compare/{prev}...{ver})" if prev else ""
           news = "**Novità**\n" + "\n".join(lines) + "\n\n" + apk + compare
           install = ("Prima installazione: scarica **BunkerPlex.zip** (non «Source code»), estrailo dove vuoi e, "

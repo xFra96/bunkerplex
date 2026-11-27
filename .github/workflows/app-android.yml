@@ -1,5 +1,5 @@
-# App Android per telefoni, tablet e TV (android/ tranne android/tv): ha release e
-# versione sue, indipendenti dal server e dall'app TV nativa. A ogni push su main
+# App Android per telefoni, tablet e TV (android/): ha release e
+# versione sue, indipendenti dal server. A ogni push su main
 # che la tocca pubblica la release app-vX.Y con:
 #   - BunkerPlex.apk: l'app;
 #   - BunkerPlex.json: numero di versione (code) e livello minimo delle API del
@@ -18,7 +18,7 @@ name: Pubblica l'app Android
 on:
   push:
     branches: [main]
-    paths: ["android/**", "!android/tv/**"]
+    paths: ["android/**"]
   workflow_dispatch:
 
 permissions:
@@ -75,16 +75,6 @@ jobs:
           gradle-version: "8.11.1"
           cache-provider: basic
 
-      # Tailscale dentro l'app (android/tsnet): Go e gomobile, con l'NDK gia' sul server di GitHub
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: android/tsnet/go.mod
-          cache-dependency-path: android/tsnet/go.sum
-
-      - name: Libreria Tailscale
-        working-directory: android
-        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh tsnet/build.sh
-
       - name: Configurazione Firebase (notifiche)
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -126,7 +116,7 @@ jobs:
           {
             echo "**Novità**"
             git log --no-merges --format='- %s ([%h](https://github.com/${{ github.repository }}/commit/%H))' \
-              ${prev:+$prev..}HEAD -- android ':(exclude)android/tv' | head -50
+              ${prev:+$prev..}HEAD -- android | head -50
             echo
             echo "---"
             echo "BunkerPlex.apk: l'app per telefoni e tablet Android, Android TV, Google TV e Fire TV."
