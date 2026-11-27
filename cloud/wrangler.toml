@@ -31,6 +31,7 @@ binding = "DB"
 database_name = "bunkerplex"
 database_id = "fa7bbd79-1744-4fb1-a8b7-2bd91032ad4a"
 
-# Una volta a settimana: tiene viva la chiave di Brevo (vedi scheduled in worker.js).
+# Una volta a settimana: tiene viva la chiave di Brevo (BREVO_CRON in worker.js).
+# Ogni ora: avviso ai telefoni se e' uscita un'app Android nuova (announceApp).
 [triggers]
-crons = ["0 6 * * 1"]
+crons = ["0 6 * * 1", "17 * * * *"]

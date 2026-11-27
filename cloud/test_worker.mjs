@@ -1094,3 +1094,101 @@ test('2FA: «Ricorda questo dispositivo» salta il codice per quell’account, f
   assert.equal((await t.call('POST', '/password', { verifier: VER, new_verifier: 'c'.repeat(64) }, ok.token)).status, 200);
   assert.equal((await t.call('POST', '/login', { username: 'anna', verifier: 'c'.repeat(64), trust: ok.trust })).body.need_2fa, true);
 });
+
+// ---- Aggiornamento dell'app Android: notifica a tutti i telefoni (topic FCM)
+
+function fakeAppReleases(net) {
+  const gh = { tags: ['app-v3.9', 'app-v3.14', 'app-v3.14.1', 'tv-v1.15', 'v3.42'], codes: { 'app-v3.14.1': 29900000, 'app-v3.14': 29890000 },
+    noAssets: new Set(), calls: 0 };
+  const api = 'https://api.github.com/repos/xFra96/bunkerplex/';
+  const fetch = async (input, init = {}) => {
+    const url = String(input.url || input);
+    if (url.startsWith(api)) {
+      gh.calls++;
+      const path = url.slice(api.length);
+      if (path === 'git/matching-refs/tags/app-v') {
+        return new Response(JSON.stringify(gh.tags.filter((t) => t.startsWith('app-v')).map((t) => ({ ref: 'refs/tags/' + t }))));
+      }
+      let m = path.match(/^releases\/tags\/(.+)$/);
+      if (m) {
+        const tag = m[1];
+        if (!gh.codes[tag]) return new Response('{}', { status: 404 });
+        const id = gh.codes[tag];
+        const assets = gh.noAssets.has(tag) ? [] : [{ id: id, name: 'BunkerPlex.json' }, { id: id + 1, name: 'BunkerPlex.apk' }];
+        return new Response(JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets }));
+      }
+      m = path.match(/^releases\/assets\/(\d+)$/);
+      if (m) {
+        assert.equal(init.headers.Accept, 'application/octet-stream');
+        return new Response(null, { status: 302, headers: { Location: 'https://objects.test/asset/' + m[1] } });
+      }
+      return new Response('{}', { status: 404 });
+    }
+    let m = url.match(/^https:\/\/objects\.test\/asset\/(\d+)$/);
+    if (m) {
+      const tag = Object.keys(gh.codes).find((t) => gh.codes[t] === Number(m[1]));
+      return new Response(JSON.stringify({ version: tag.slice(5), code: gh.codes[tag], min_server_api: 1 }));
+    }
+    return net.fetch(input, init);
+  };
+  return { gh, fetch };
+}
+
+test("aggiornamento dell'app: un avviso FCM al topic, una volta per versione", async () => {
+  const t = setup();
+  const net = fakeFcm();
+  const fake = fakeAppReleases(net);
+  const again = () => t.env.DB.raw.prepare("UPDATE kv SET v = '0' WHERE k = 'app_update_at'").run();
+
+  // Senza FCM configurato non si chiede niente a GitHub
+  const off = await withNet(fake, () => t.call('POST', '/app-update'));
+  assert.deepEqual([off.status, off.body.sent, fake.gh.calls], [200, false, 0]);
+
+  t.env.FCM_SERVICE_ACCOUNT = JSON.stringify(net.sa);
+  const r = await withNet(fake, () => t.call('POST', '/app-update'));
+  assert.deepEqual(r.body, { sent: true, version: '3.14.1', code: 29900000 });
+  assert.equal(net.st.sent.length, 1);
+  const m = net.st.sent[0];
+  assert.equal(m.topic, 'app-update');
+  assert.equal(m.token, undefined);
+  assert.equal(m.android.priority, 'high');
+  assert.equal(m.notification, undefined, "messaggio data: la notifica la fa l'app");
+  assert.deepEqual([m.data.kind, m.data.code, m.data.name], ['app_update', '29900000', '3.14.1']);
+
+  // Subito dopo: si aspetta (niente giri su GitHub a raffica)
+  const calls = fake.gh.calls;
+  const busy = await withNet(fake, () => t.call('POST', '/app-update'));
+  assert.equal(busy.body.sent, false);
+  assert.equal(fake.gh.calls, calls);
+
+  // Stessa versione: nessun secondo avviso
+  again();
+  const same = await withNet(fake, () => t.call('POST', '/app-update'));
+  assert.deepEqual([same.body.sent, net.st.sent.length], [false, 1]);
+
+  // Release nuova ma senza allegati ancora: resta la precedente, niente avviso
+  fake.gh.tags.push('app-v3.15');
+  fake.gh.codes['app-v3.15'] = 29950000;
+  fake.gh.noAssets.add('app-v3.15');
+  again();
+  assert.equal((await withNet(fake, () => t.call('POST', '/app-update'))).body.sent, false);
+
+  // FCM non risponde: la versione non si segna, al giro dopo si riprova
+  fake.gh.noAssets.delete('app-v3.15');
+  net.st.reply = () => new Response('{}', { status: 503 });
+  again();
+  assert.equal((await withNet(fake, () => t.call('POST', '/app-update'))).body.sent, false);
+  net.st.reply = () => new Response(JSON.stringify({ name: 'projects/bp-test/messages/2' }));
+  again();
+  // Il cron orario (non quello di Brevo) fa lo stesso controllo
+  await withNet(fake, () => worker.scheduled({ cron: '17 * * * *' }, t.env));
+  const last = net.st.sent[net.st.sent.length - 1];
+  assert.deepEqual([last.topic, last.data.code, last.data.name], ['app-update', '29950000', '3.15']);
+  assert.equal(t.env.DB.raw.prepare("SELECT v FROM kv WHERE k = 'app_update'").get().v, '29950000');
+
+  // Il cron settimanale di Brevo non manda avvisi
+  const before = net.st.sent.length;
+  again();
+  await withNet(fake, () => worker.scheduled({ cron: '0 6 * * 1' }, t.env));
+  assert.equal(net.st.sent.length, before);
+});

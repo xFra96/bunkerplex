@@ -217,9 +217,9 @@ class MainActivity : AppCompatActivity() {
         // L'app si aggiorna da sola dalle sue release su GitHub (app-v*), senza il server:
         // a ogni apertura si chiede subito, e la pagina propone la versione nuova (checkUpdate)
         thread { try { Releases.check(this, RELEASES, "BunkerPlex.apk", true) } catch (_: Exception) {} }
-        // Con l'app chiusa: ogni 6 ore circa una notifica se e' uscita una versione nuova (AppUpdates)
+        // Con l'app chiusa: notifica appena esce una versione nuova (topic FCM, di riserva ogni 6 ore; AppUpdates)
         if (!isTelevision) {
-            AppUpdates.schedule(this)
+            AppUpdates.start(this)
             // Da Android 13 senza permesso la notifica non si vede: lo si chiede una volta sola
             // (chi dice di no lo puo' dare dopo con «Attiva le notifiche» o dalle impostazioni di Android)
             if (Build.VERSION.SDK_INT >= 33 && !Notices.allowed(this) && !prefs.getBoolean("notify_asked", false)) {
@@ -476,7 +476,6 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         web.onResume()
-        AppUpdates.foreground = true
         AppUpdates.cancel(this)      // aperta l'app, l'aggiornamento lo propone la pagina
         if (waitingPermission) {
             waitingPermission = false
@@ -497,7 +496,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
-        AppUpdates.foreground = false
         web.onPause()
         super.onPause()
     }
