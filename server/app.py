@@ -4556,10 +4556,19 @@ def auth_pair_poll(code: str):
     """La TV chiede se il telefono ha finito. Quando si', entra (una volta sola)."""
     code, p = pair_get(code)
     if not p["token"]:
-        return {"done": False}
+        return {"done": False, "seen": bool(p.get("seen"))}   # seen: aperto sul telefono
     with pairs_lock:
         pairs.pop(code, None)
     return with_session({"done": True, "ok": True, "user": p["user"], "conflicts": p["conflicts"]}, p["token"])
+
+
+@app.post("/api/auth/pair/{code}/seen")
+def auth_pair_seen(code: str):
+    """Il telefono ha aperto il QR o il codice: la TV lo dice («Continua sul telefono»)."""
+    code, p = pair_get(code)
+    with pairs_lock:
+        p["seen"] = True
+    return {"ok": True}
 
 
 @app.post("/api/auth/pair/{code}")
@@ -4660,7 +4669,12 @@ async def auth_google_start(request: Request):
         if u is None or not u["linked"]:
             raise HTTPException(400, "Prima entra con un account")
         token = user_cloud_token(u["id"])
-    res = await cloud("POST", "/google/start", {"link": link, "device": SERVER_NAME, "kind": kind}, token)
+    # hint: l'email gia' scritta (Google propone quell'account); back: la pagina da cui
+    # si e' partiti, per tornarci dopo Google (stesso dispositivo)
+    hint = str(body.get("hint") or "").strip()[:120]
+    back = str(body.get("back") or "")[:300]
+    res = await cloud("POST", "/google/start", {"link": link, "device": SERVER_NAME, "kind": kind,
+                                                "hint": hint, "back": back}, token)
     fid = secrets.token_urlsafe(16)
     with gflows_lock:
         for k in [k for k, f in gflows.items() if time.time() - f["at"] > 900]:
@@ -4683,13 +4697,14 @@ async def auth_google_poll(fid: str):
     try:
         res = await asyncio.to_thread(accounts.call, "POST", "/google/poll", {"poll": f["poll"]}, None, 10)
     except accounts.CloudOffline:
-        return {"done": False}               # si riprova al giro dopo
+        return {"done": False, "offline": True}   # si riprova al giro dopo
     except accounts.CloudError as ex:
         with gflows_lock:
             gflows.pop(fid, None)
         raise HTTPException(ex.status if ex.status in (400, 403, 404, 409, 429) else 502, ex.detail)
     if not res.get("done"):
-        return {"done": False}
+        # seen: il codice e' stato aperto sul telefono; note: l'ultimo tentativo non riuscito
+        return {"done": False, "seen": bool(res.get("seen")), "note": res.get("note") or ""}
     with gflows_lock:
         gflows.pop(fid, None)
     if f["link"]:

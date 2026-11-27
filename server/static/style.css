@@ -1905,3 +1905,34 @@ body.kb .snav.on:focus { background: var(--ink); }
   body.gaon:not(.locked) #view { padding-bottom: calc(11rem + env(safe-area-inset-bottom)); }
   .getapp { margin-bottom: 1.6rem; }
 }
+
+/* ================= Accesso (rifiniture, novembre 2026) =================
+   Stato in diretta di «Entra con Google» / TV, occhio per vedere la password,
+   pulsante occupato mentre si entra, avviso del Bloc Maiusc, passkey. */
+.gstatus { display: flex; align-items: center; justify-content: center; gap: .6rem; margin: 0 0 1.2rem; color: var(--ink2); font-size: .95rem; line-height: 1.4; text-align: left; }
+.gstatus i { width: .6rem; height: .6rem; border-radius: 50%; flex: none; background: var(--ink3); animation: gpulse 1.6s ease-in-out infinite; }
+.gstatus.ok { color: var(--accent-text); }
+.gstatus.ok i { background: var(--accent-text); }
+.gstatus.warn { color: #e0a030; }
+.gstatus.warn i { background: #e0a030; animation: none; }
+.panel .gstatus { justify-content: flex-start; }
+html.tv .gstatus { font-size: 1.15rem; margin-bottom: 1.8rem; }
+@keyframes gpulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .gstatus i { animation: none; } }
+.pwwrap { position: relative; display: block; }
+.pwwrap .field { padding-right: 3rem; }
+.pweye { position: absolute; right: .35rem; top: 50%; transform: translateY(-50%); width: 2.4rem; height: 2.4rem; border-radius: .5rem; display: flex; align-items: center; justify-content: center; color: var(--ink3); background: transparent; }
+.pweye:hover, .pweye:focus { color: var(--ink); background: var(--surface2); }
+.pweye svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.capsnote { color: #e0a030; font-size: .85rem; margin: -.2rem 0 .6rem; }
+.btn.busy { pointer-events: none; opacity: .75; }
+.btn.busy::after { content: ""; display: inline-block; width: .9rem; height: .9rem; margin-left: .6rem; vertical-align: -.1rem; border-radius: 50%; border: .15rem solid currentColor; border-top-color: transparent; animation: authspin .8s linear infinite; }
+.autherr, .authcard > p.autherr, .panel p.autherr { display: block; color: #ff8f80; font-size: .95rem; line-height: 1.4; margin: .1rem 0 .9rem; }
+.authcard > p.autherr { text-align: center; }
+.autherr::before { content: "●"; margin-right: .45rem; font-size: .7em; vertical-align: .15em; }
+.pkbtn { display: flex; align-items: center; justify-content: center; gap: .7rem; width: 100%; }
+.pkbtn svg { width: 1.3rem; height: 1.3rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pklist { display: flex; flex-direction: column; gap: .5rem; margin: .4rem 0 1rem; }
+.pklist .pkrow { display: flex; align-items: center; gap: .8rem; padding: .7rem .9rem; border-radius: .6rem; background: var(--surface); }
+.pklist .pkrow span { flex: 1; min-width: 0; }
+.pklist .pkrow small { display: block; color: var(--ink3); }

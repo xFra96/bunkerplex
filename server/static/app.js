@@ -253,7 +253,7 @@ function resetPage() {
 
 // «Entra con Google» (se il servizio account lo offre)
 function googleButton() {
-  return auth && auth.google ? '<a class="btn f" href="#/google" data-key="google">Entra con Google</a>' : '';
+  return auth && auth.google ? '<button class="btn f" data-act="ggo" data-key="google">' + GOOGLE_G + ' Entra con Google</button>' : '';
 }
 
 // «Chi guarda?»: gli account gia' entrati su questo PC. Si entra senza password
@@ -294,8 +294,17 @@ async function tvLoginPage() {
   clearInterval(cache.pairTimer);
   cache.pairTimer = setInterval(function () {
     if (location.hash !== here || (auth && auth.user)) { clearInterval(cache.pairTimer); return; }
+    // Scaduto: un codice nuovo prima che la TV mostri un codice che non vale piu'
+    if (Date.now() - p.at > (p.ttl - 60) * 1000) { clearInterval(cache.pairTimer); cache.pair = null; render(); return; }
     api('/auth/pair/' + p.code).then(function (r) {
-      if (!r.done) return;
+      if (!r.done) {
+        var st = document.getElementById('gstatus');
+        if (st && !!r.seen !== st.classList.contains('ok')) {
+          st.className = 'gstatus' + (r.seen ? ' ok' : '');
+          st.lastChild.textContent = r.seen ? 'Codice aperto sul telefono: accedi lì e la TV entra da sola' : 'In attesa del telefono…';
+        }
+        return;
+      }
       clearInterval(cache.pairTimer);
       cache.pair = null;
       toast('Entrato come ' + r.user.name);
@@ -306,6 +315,7 @@ async function tvLoginPage() {
   return '<div class="auth"><div class="tvlink">' +
     '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
     '<h1>Collega questa TV</h1><p class="authsub">Accedi una volta dal telefono: la TV entra da sola' + (auth.pc ? ' su <b>' + esc(auth.pc) + '</b>' : '') + '.</p>' +
+    '<div class="gstatus" id="gstatus"><i></i><span>In attesa del telefono…</span></div>' +
     '<div class="tvcols">' +
       '<div class="tvcol">' + (p.svg ? '<div class="qrtile big" role="img" aria-label="Codice QR per collegare la TV">' + p.svg + '</div>' : '') +
         '<b>Inquadra il QR</b><small>con la fotocamera del telefono, sulla rete di casa</small></div>' +
@@ -334,7 +344,9 @@ function tvCodePage() {
 async function googlePage(link) {
   var g = cache.gflow;
   if (!g || g.link !== link || Date.now() - g.at > (g.ttl - 60) * 1000) {
-    g = await post('/auth/google', { link: link, device: devName() });
+    // hint: l'email gia' scritta (Google propone quell'account); back: dove tornare dopo
+    g = await post('/auth/google', { link: link, device: devName(), hint: cache.gHint || '',
+      back: location.origin + location.pathname + '#/home' });
     g.at = Date.now();
     g.link = link;
     cache.gflow = g;
@@ -343,10 +355,22 @@ async function googlePage(link) {
   clearInterval(cache.gTimer);
   cache.gTimer = setInterval(function () {
     if (location.hash !== here) { clearInterval(cache.gTimer); return; }
+    // Scaduto: un codice nuovo, da solo
+    if (Date.now() - g.at > (g.ttl - 60) * 1000) { clearInterval(cache.gTimer); cache.gflow = null; render(); return; }
     api('/auth/google/' + g.id).then(function (r) {
-      if (!r.done) return;
+      if (!r.done) {
+        if (r.seen !== g.seen || r.note !== g.note || !!r.offline !== !!g.offline) {
+          // L'errore di prima resta finche' il telefono non riapre il codice
+          if (r.seen && !g.seen) g.hard = false;
+          g.seen = r.seen; g.offline = r.offline;
+          if (!g.hard || r.note) g.note = r.note;
+          gStatusShow(g);
+        }
+        return;
+      }
       clearInterval(cache.gTimer);
       cache.gflow = null;
+      cache.gHint = '';
       if (r.linked) {
         toast('Google collegato: d\'ora in poi puoi entrare con ' + (r.google || 'Google'));
         auth = null;
@@ -360,33 +384,69 @@ async function googlePage(link) {
       cache.gflow = null;
       if (e.data && e.data.ask) { cache.ask = e.data.ask; location.replace('#/home'); render(); return; }
       if (location.hash !== here) return;
-      cache.gError = e.message;
+      if (e.status !== 404) cache.gError = e.message;   // 404: scaduto, solo un codice nuovo
       render();
     });
   }, 2000);
   var err = cache.gError;
   cache.gError = '';
+  if (err) { g.note = err; g.hard = true; }
   var canOpen = !APP || (tvApp && typeof tvApp.openUrl === 'function');
   var back = link || (auth && auth.user) ? '#/settings/account' : '#/home';
+  var addr = g.short.replace(/^https:\/\//, '');
+  var codeHtml = esc(g.code.slice(0, 4)) + '<i></i>' + esc(g.code.slice(5));
+  var status = '<div class="gstatus" id="gstatus"><i></i><span></span></div>';
+  setTimeout(function () { gStatusShow(g); }, 0);
+
+  // Sulla TV: come «Collega questa TV», il QR da una parte e il codice dall'altra
+  if (TV) {
+    return '<div class="auth"><div class="tvlink">' +
+      '<div class="authbrand">' + LOGO + '<span><b>Bunker</b>Plex</span></div>' +
+      '<h1>' + (link ? 'Collega Google' : 'Entra con Google') + '</h1>' +
+      '<p class="authsub">' + (link ? 'Scegli dal telefono l\'account Google da collegare' : 'Scegli il tuo account Google dal telefono: la TV entra da sola') + '</p>' +
+      status +
+      '<div class="tvcols">' +
+        '<div class="tvcol">' + (g.svg ? '<div class="qrtile big" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
+          '<b>Inquadra il QR</b><small>con la fotocamera del telefono, anche fuori casa</small></div>' +
+        '<div class="tvor"><span>oppure</span></div>' +
+        '<div class="tvcol"><small class="tvstep">Dal telefono o dal PC apri <b class="num">' + esc(addr) + '</b> e scrivi</small>' +
+          '<div class="tvcode num">' + codeHtml + '</div>' +
+          '<small>Il codice cambia da solo ogni 10 minuti</small></div>' +
+      '</div>' +
+      '<div class="tvmore"><a class="btn f" data-autofocus href="' + back + '" data-key="gback">Indietro</a>' +
+      '<button class="btn f" data-act="gnew" data-key="gnew">Codice nuovo</button></div>' +
+      '</div></div>';
+  }
+  var openBtn = canOpen ? '<button class="gbtn f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">' + GOOGLE_G +
+    '<span>' + (link ? 'Scegli l\'account da collegare' : 'Scegli l\'account Google') + '</span></button>' : '';
+  var other = '<div class="gqr">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
+    '<p>' + (canOpen ? 'Oppure inquadra il QR col telefono, o apri ' : 'Inquadra il QR col telefono, oppure apri ') +
+    '<b class="num">' + esc(addr) + '</b> e scrivi</p><div class="tvcode small num">' + codeHtml + '</div></div>';
   if (!link && !(auth && auth.user)) {
-    return authShell('<h1>Continua con Google</h1>' + (err ? '<p class="authsub"><span class="nodot">●</span> ' + esc(err) + '</p>' : '<p class="authsub">Con l\'account Google collegato al tuo BunkerPlex</p>') +
-      (TV || !canOpen ? '' : '<button class="gbtn f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">' + GOOGLE_G + '<span>Scegli l\'account Google</span></button>' +
-        '<div class="author"><span>oppure dal telefono</span></div>') +
-      '<div class="gqr">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
-      '<p>Inquadra il QR, oppure apri <b class="num">' + esc(g.short.replace(/^https:\/\//, '')) + '</b> e scrivi</p><div class="tvcode small num">' + esc(g.code) + '</div></div>' +
-      '<a class="authlink f"' + (TV ? ' data-autofocus' : '') + ' href="#/home" data-key="gback">Torna all\'accesso</a>', false);
+    return authShell('<h1>Continua con Google</h1>' +
+      '<p class="authsub">Con l\'account Google collegato al tuo BunkerPlex (da Impostazioni → Account) o indicato dall\'amministratore</p>' +
+      status + openBtn + (canOpen ? '<div class="author"><span>oppure dal telefono</span></div>' : '') + other +
+      '<a class="authlink f"' + (canOpen ? '' : ' data-autofocus') + ' href="#/home" data-key="gback">Torna all\'accesso</a>', false);
   }
   return '<div class="page"><div class="panel login wide"><h1>' + (link ? 'Collega Google' : 'Entra con Google') + '</h1>' +
-    (err ? '<p><span class="nodot">●</span> ' + esc(err) + '</p>' : '') +
-    (TV || !canOpen ? '' : '<p>' + (link ? 'Scegli l\'account Google da collegare: poi potrai entrare con quello, senza password.'
-        : 'Scegli il tuo account Google: deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account) o indicato dall\'amministratore.') + '</p>' +
-      '<div class="actions"><button class="btn primary f" data-autofocus data-act="gopen" data-arg="' + esc(g.url) + '" data-key="gopen">Continua con Google</button></div>') +
-    '<div class="apkqr" style="margin-top:1rem">' + (g.svg ? '<div class="qrtile" role="img" aria-label="Codice QR per entrare con Google">' + g.svg + '</div>' : '') +
-    '<div class="apktext"><p>' + (TV || !canOpen ? 'Inquadra il QR con la fotocamera del telefono e scegli lì il tuo account Google: ' + (TV ? 'la TV' : 'questa pagina') + ' entra da sola.'
-        : 'Oppure inquadra il QR con il telefono.') + '</p>' +
-    '<p>Senza fotocamera apri <span class="num">' + esc(g.short.replace(/^https:\/\//, '')) + '</span> e scrivi il codice:</p>' +
-    '<p class="paircode num">' + esc(g.code) + '</p>' +
-    '<div class="actions"><a class="btn f"' + (TV ? ' data-autofocus' : '') + ' href="' + back + '" data-key="gback">Indietro</a></div></div></div></div></div>';
+    '<p>' + (link ? 'Scegli l\'account Google da collegare: poi entri con quello, senza password, su ogni PC, TV e telefono.'
+      : 'Scegli il tuo account Google: deve essere già collegato al tuo account BunkerPlex (da Impostazioni → Account) o indicato dall\'amministratore.') + '</p>' +
+    status + openBtn + other +
+    '<div class="actions"><a class="btn f"' + (canOpen ? '' : ' data-autofocus') + ' href="' + back + '" data-key="gback">Indietro</a></div></div></div>';
+}
+
+// La riga di stato di «Entra con Google»: in attesa, aperto, non riuscito (si riprova lì)
+function gStatusShow(g) {
+  var el = document.getElementById('gstatus');
+  if (!el) return;
+  var away = TV || !(!APP || (tvApp && typeof tvApp.openUrl === 'function'));
+  var text, kind = '';
+  if (g.note) { text = (g.hard ? '' : away ? 'Sul telefono: ' : 'Non riuscito: ') + g.note; kind = 'warn'; }
+  else if (g.offline) { text = 'Il server non raggiunge il servizio account: riprovo…'; kind = 'warn'; }
+  else if (g.seen) { text = away ? 'Codice aperto sul telefono: scegli lì l\'account Google' : 'Scegli l\'account Google nella finestra di Google'; kind = 'ok'; }
+  else text = away ? 'In attesa del telefono…' : 'In attesa di Google…';
+  el.className = 'gstatus' + (kind ? ' ' + kind : '');
+  el.lastChild.textContent = text;
 }
 
 // ---------------------------------------------------------------- Accesso
@@ -543,7 +603,7 @@ function srvMount() {
 function googleWide() {
   if (!auth || !auth.google) return '';
   return '<div class="author"><span>oppure</span></div>' +
-    '<a class="gbtn f" href="#/google" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></a>';
+    '<button class="gbtn f" data-act="ggo" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>';
 }
 
 // Passo 1: email (o nome) e password, sotto Google. Niente altro.
@@ -690,10 +750,16 @@ async function serversPage() {
 // Sul telefono (o sul PC): la pagina che apre il QR o il codice della TV
 async function phonePairPage(code) {
   if (!auth) { try { await loadAuth(); } catch (e) { /* si chiede la password */ } }
+  // La TV lo dice subito: «Codice aperto sul telefono»
+  if (cache.pairSeen !== code) {
+    cache.pairSeen = code;
+    post('/auth/pair/' + code + '/seen').catch(function () { /* scaduto: lo dice il passo dopo */ });
+  }
   var done = cache.pairDone && cache.pairDone.code === code ? cache.pairDone.name : '';
   if (done) {
-    return '<div class="page"><div class="panel login"><h1>Fatto</h1><p>La TV sta entrando come <b>' + esc(done) + '</b>. Puoi chiudere questa pagina.</p>' +
-      '<div class="actions"><a class="btn f" href="#/home" data-key="pairhome">Apri BunkerPlex qui</a></div></div></div>';
+    return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Fatto</h1>' +
+      '<p class="authsub">La TV sta entrando come <b>' + esc(done) + '</b>. Puoi chiudere questa pagina.</p>' +
+      '<a class="btn block f" data-autofocus href="#/home" data-key="pairhome">Apri BunkerPlex qui</a>');
   }
   if (auth && auth.user && cache.pairPw !== code) {
     return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Collega la TV</h1>' +
@@ -703,15 +769,17 @@ async function phonePairPage(code) {
       '<button class="authlink f" data-act="pairother" data-arg="' + esc(code) + '" data-key="pairother">Usa un altro account</button>');
   }
   var needNew = cache.pairNeedNew === code;
-  return '<div class="page"><div class="panel login"><h1>Entra sulla TV</h1>' +
-    '<p>Scrivi nome e password del tuo account: la TV entra da sola. Codice della TV: <b class="num">' + esc(code) + '</b></p>' +
-    '<input class="field f" style="margin-bottom:.6rem" id="lname" data-key="lname" data-autofocus autocomplete="username" autocapitalize="none" maxlength="120" placeholder="Nome utente o email" value="' + esc(fieldValue('lname')) + '">' +
-    '<input class="field f" style="margin-bottom:.6rem" id="lpass" data-key="lpass" type="password" autocomplete="current-password"' + (needNew ? '' : ' data-enter="pairsend"') + ' placeholder="' + (needNew ? 'Password provvisoria' : 'Password') + '" value="' + esc(fieldValue('lpass')) + '">' +
-    (needNew ? '<p>La password è provvisoria: scegline una tua, varrà su tutti i PC e le TV.</p>' +
-      '<input class="field f" style="margin-bottom:.6rem" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
+  return authShell('<div class="authico">' + SRV_ICON + '</div><h1>Entra sulla TV</h1>' +
+    '<p class="authsub">Codice <b class="num">' + esc(code.slice(0, 3) + ' ' + code.slice(3)) + '</b> · accedi qui e la TV entra da sola</p>' +
+    '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" placeholder="Email o nome utente" value="' + esc(fieldValue('lname')) + '">' +
+    '<input class="field f" id="lpass" data-key="lpass" type="password" autocomplete="current-password"' + (needNew ? '' : ' data-enter="pairsend"') + ' placeholder="' + (needNew ? 'Password provvisoria' : 'Password') + '" value="' + esc(fieldValue('lpass')) + '">' +
+    (needNew ? '<p class="authsub">La password è provvisoria: scegline una tua, varrà su tutti i PC e le TV.</p>' +
+      '<input class="field f" id="pnew" data-key="pnew" type="password" autocomplete="new-password" placeholder="Password nuova (almeno 8 caratteri)">' +
       '<input class="field f" id="pnew2" data-key="pnew2" type="password" autocomplete="new-password" data-enter="pairsend" placeholder="Ripeti la password nuova">' : '') +
-    '<div class="actions"><button class="btn primary f" data-act="pairsend" data-arg="' + esc(code) + '" data-key="pairsend">Entra sulla TV</button></div>' +
-    '<p style="margin-top:1rem"><small>Il tuo account è già su questo PC? Allora sulla TV basta sceglierlo in «Chi guarda?».</small></p></div></div>';
+    '<button class="btn primary block f" data-act="pairsend" data-arg="' + esc(code) + '" data-key="pairsend">Entra sulla TV</button>' +
+    (auth && auth.google && !CENTRAL ? '<div class="author"><span>oppure</span></div>' +
+      '<button class="gbtn f" data-act="pairgoogle" data-arg="' + esc(code) + '" data-key="pairgoogle">' + GOOGLE_G + '<span>Continua con Google</span></button>' : '') +
+    '<p class="authnote">Il tuo account è già su questo PC? Allora sulla TV basta sceglierlo in «Chi guarda?».</p>');
 }
 
 // Account invitato da Amministrazione: ha ancora il nome provvisorio, al primo accesso sceglie il suo
@@ -883,7 +951,9 @@ async function cUsername(name) {
   return name.indexOf('@') > 0 ? (await cloud('POST', '/resolve', { email: name })).username : name;
 }
 
-function cEntered(r) {
+// offer: dopo password, Google o link si propone una passkey (non dopo una passkey)
+function cEntered(r, offer) {
+  if (offer !== false) cache.pkOffer = true;
   C.token = r.token;
   C.user = r.user;
   C.error = '';
@@ -1163,11 +1233,13 @@ function cLoginPage() {
   var L = cache.cLogin;
   var note = C.error ? '<p class="authnote">' + esc(C.error) + '</p>' : '';
   if (!L) {
+    setTimeout(pkConditional, 0);        // passkey proposte dal campo email
     return authShell('<h1>Accedi</h1><p class="authsub">' + (cTvPending() !== null ? 'con il tuo account BunkerPlex, poi colleghi la TV' : 'con il tuo account BunkerPlex') + '</p>' +
-      '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
+      '<input class="field f" id="lname" data-key="lname" data-autofocus type="email" inputmode="email" autocomplete="username webauthn" autocapitalize="none" spellcheck="false" maxlength="120" data-enter="cnext" placeholder="Email" value="' + esc(fieldValue('lname')) + '">' +
       '<button class="btn primary block f" data-act="cnext" data-key="cnext">Continua</button>' +
       '<div class="author"><span>oppure</span></div>' +
-      '<button class="gbtn f" data-act="cgoogle" data-key="google">' + GOOGLE_G + '<span>Continua con Google</span></button>' + note +
+      (pkOn() ? '<button class="btn block f pkbtn" data-act="pklogin" data-key="pklogin">' + pkIcon() + '<span>Entra con impronta o volto</span></button>' : '') +
+      '<button class="gbtn f" data-act="cgoogle" data-key="google"' + (pkOn() ? ' style="margin-top:.7rem"' : '') + '>' + GOOGLE_G + '<span>Continua con Google</span></button>' + note +
       cAppLink());
   }
   var who = '<p class="authsub"><b>' + esc(L.email) + '</b></p>';
@@ -1355,6 +1427,7 @@ async function cServersPage() {
     (sent.length ? '<p class="authnote">In attesa di risposta: ' + sent.join(', ') + '</p>' : '') +
     '<div class="srvfoot"><button class="authlink f" data-act="crefresh" data-key="crefresh">Aggiorna l\'elenco</button>' +
     (C.profiles && C.profiles.length > 1 ? '<a class="authlink f" href="#/chi" data-key="cwho">Cambia profilo</a>' : '') + cAppLink() +
+    (pkOn() ? '<a class="authlink f" href="#/passkey" data-key="cpasskey">Impronta e volto</a>' : '') +
     '<button class="authlink f" data-act="logout" data-key="clogout">Esci da ' + esc(C.user ? C.user.username : '') + '</button></div>', 'grid'), mount: srvMount };
 }
 
@@ -1442,6 +1515,8 @@ async function cGate() {
   var tvm = /^#\/tv(?:\/([A-Za-z0-9-]{1,12}))?$/.exec(location.hash);
   if (tvm) {
     cTvSet(cTvClean(tvm[1]));
+    // La TV lo dice subito: «Codice aperto sul telefono»
+    if (tvm[1]) fetch('/tv/' + cTvClean(tvm[1]) + '/seen', { method: 'POST' }).catch(function () { /* niente */ });
     cache.cTvDone = null;
     location.replace('#/home');
   }
@@ -1449,11 +1524,14 @@ async function cGate() {
   if (APP && location.hash === '#/app') { lockScreen(true); return cAppPage(); }
   if (!C.token) {
     lockScreen(true);
+    if (cgLoad()) return cGooglePage(cache.cg);
     return location.hash.indexOf('#/reset') === 0 ? cResetPage() : cLoginPage();
   }
   if (C.user && C.user.must_change) { lockScreen(true); return C.user.google && C.user.needs_name ? cNamePage() : cPasswordPage(); }
   var tv = cTvPending();
   if (tv !== null) { lockScreen(true); return cTvPage(tv); }
+  if (location.hash === '#/passkey') { lockScreen(true); return pkManagePage(); }
+  if (await pkShouldOffer()) { lockScreen(true); return pkOfferPage(); }
   // «Chi guarda?» subito dopo l'accesso, con i profili dell'account (come Netflix), poi il server
   await cProfiles(false);
   if (C.profiles) {
@@ -1733,6 +1811,249 @@ function cClaimSheet() {
   if (first) first.focus();
 }
 
+// ---- PWA centrale: «Continua con Google» e passkey (impronta, volto, PIN del dispositivo)
+
+// «Continua con Google» qui: Google in una finestra nuova (o in questa, se il browser
+// blocca le finestre: al ritorno si riprende da sessionStorage). Intanto una pagina
+// d'attesa dice cosa succede, con «Riapri Google» e «Annulla».
+function cgLoad() {
+  if (cache.cg !== undefined) return cache.cg;
+  cache.cg = null;
+  try {
+    var s = JSON.parse(sessionStorage.getItem('bp-cg') || 'null');
+    if (s && Date.now() - s.at < (s.ttl - 30) * 1000) { cache.cg = s; setTimeout(cgPoll, 500); }
+  } catch (e) { /* niente */ }
+  return cache.cg;
+}
+
+function cgSet(g) {
+  cache.cg = g;
+  try { if (g) sessionStorage.setItem('bp-cg', JSON.stringify(g)); else sessionStorage.removeItem('bp-cg'); } catch (e) { /* niente */ }
+}
+
+function cgPoll() {
+  var g = cache.cg;
+  if (!g || g.polling) return;
+  g.polling = true;
+  var step = function () {
+    if (cache.cg !== g) return;
+    if (Date.now() - g.at > (g.ttl - 30) * 1000) { cgSet(null); C.error = 'Tempo scaduto: riprova «Continua con Google»'; render(); return; }
+    cloud('POST', '/google/poll', { poll: g.poll }).then(function (p) {
+      if (cache.cg !== g) return;
+      if (p.done && p.token) {
+        cgSet(null);
+        cEntered(p, true);
+        cache.cLogin = null;
+        location.replace('#/home');
+        render();
+        return;
+      }
+      if (p.seen !== g.seen || (p.note || '') !== (g.note || '')) {
+        g.seen = p.seen; g.note = p.note || '';
+        cgStatus(g);
+      }
+      setTimeout(step, 2000);
+    }, function (e) {
+      if (cache.cg !== g) return;
+      if (!e.status) { setTimeout(step, 4000); return; }   // rete: si riprova
+      cgSet(null);
+      C.error = e.message;
+      render();
+    });
+  };
+  setTimeout(step, 1500);
+}
+
+function cgStatus(g) {
+  var el = document.getElementById('gstatus');
+  if (!el) return;
+  var kind = g.note ? 'warn' : g.seen ? 'ok' : '';
+  el.className = 'gstatus' + (kind ? ' ' + kind : '');
+  el.lastChild.textContent = g.note ? 'Non riuscito: ' + g.note
+    : g.seen ? 'Scegli il tuo account nella finestra di Google' : 'Apro Google…';
+}
+
+function cGooglePage(g) {
+  setTimeout(function () { cgStatus(g); }, 0);
+  return authShell('<h1>Continua con Google</h1>' +
+    '<p class="authsub">Scegli il tuo account nella finestra di Google: qui entri da solo</p>' +
+    '<div class="gstatus" id="gstatus"><i></i><span></span></div>' +
+    '<button class="gbtn f" data-autofocus data-act="cgreopen" data-key="cgreopen">' + GOOGLE_G + '<span>Riapri Google</span></button>' +
+    '<button class="authlink f" data-act="cgcancel" data-key="cgcancel">Annulla</button>');
+}
+
+// ---- Passkey (WebAuthn). Valgono solo qui (l'indirizzo del servizio account).
+
+function b64uEnc(buf) {
+  var s = '', b = new Uint8Array(buf);
+  for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64uDec(str) {
+  var s = atob(String(str).replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((String(str).length + 3) % 4));
+  var b = new Uint8Array(s.length);
+  for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return b.buffer;
+}
+
+function pkOn() { return CENTRAL && !TV && !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create); }
+
+function pkLocal(k, v) {
+  try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { /* niente */ }
+  return null;
+}
+
+// Il nome della passkey nell'elenco: il dispositivo e il browser, in breve
+function pkLabel() {
+  var ua = navigator.userAgent || '';
+  var dev = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'iPad'
+    : /Android/.test(ua) ? 'Android' : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /CrOS/.test(ua) ? 'Chromebook' : /Linux/.test(ua) ? 'Linux' : 'Dispositivo';
+  var br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+  return dev + (br ? ' · ' + br : '');
+}
+
+function pkIcon() {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 11v3a8 8 0 0 1-1.2 4.2M8.2 6.9A6 6 0 0 1 18 11v1.5M6 11a6 6 0 0 1 .4-2.2M6 14.5c0 1.6-.4 3-1 4.3M15 15.5a12 12 0 0 1-1 4.5M9 11a3 3 0 0 1 6 0v1.5"/></svg>';
+}
+
+// Una passkey nuova per l'account entrato (il dispositivo chiede impronta, volto o PIN)
+async function pkCreate() {
+  var o = await cloud('POST', '/passkeys/register/start', {});
+  var cred = await navigator.credentials.create({ publicKey: {
+    challenge: b64uDec(o.challenge), rp: o.rp,
+    user: { id: b64uDec(o.user.id), name: o.user.name, displayName: o.user.displayName },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
+    excludeCredentials: (o.exclude || []).map(function (id) { return { type: 'public-key', id: b64uDec(id) }; }),
+    timeout: o.timeout, attestation: 'none'
+  } });
+  await cloud('POST', '/passkeys/register/finish', { id: cred.id, label: pkLabel(),
+    clientDataJSON: b64uEnc(cred.response.clientDataJSON), attestationObject: b64uEnc(cred.response.attestationObject) });
+  pkLocal('bp-pk', '1');
+}
+
+// Entrare con una passkey. conditional: proposta dal campo email (riempimento automatico)
+async function pkLogin(conditional) {
+  if (cache.pkAbort) { try { cache.pkAbort.abort(); } catch (e) { /* niente */ } }
+  var o = await cloud('POST', '/passkeys/login/start', {});
+  var opts = { publicKey: { challenge: b64uDec(o.challenge), rpId: o.rpId, userVerification: 'required', timeout: o.timeout } };
+  if (window.AbortController) { cache.pkAbort = new AbortController(); opts.signal = cache.pkAbort.signal; }
+  if (conditional) opts.mediation = 'conditional';
+  var a = await navigator.credentials.get(opts);
+  cache.pkAbort = null;
+  if (!a) return;
+  var r = await cloud('POST', '/passkeys/login/finish', { id: a.id, device: pkLabel(), kind: 'pwa',
+    clientDataJSON: b64uEnc(a.response.clientDataJSON), authenticatorData: b64uEnc(a.response.authenticatorData),
+    signature: b64uEnc(a.response.signature) });
+  pkLocal('bp-pk', '1');
+  cEntered(r, false);
+  cache.cLogin = null;
+  location.replace('#/home');
+  render();
+}
+
+// La passkey proposta dal campo email, quando il browser lo sa fare (una sola richiesta per volta)
+function pkConditional() {
+  if (!pkOn() || cache.pkCond || !PublicKeyCredential.isConditionalMediationAvailable) return;
+  cache.pkCond = true;
+  PublicKeyCredential.isConditionalMediationAvailable().then(function (ok) {
+    if (!ok || C.token) { cache.pkCond = false; return; }
+    pkLogin(true).catch(function (e) {
+      if (e && e.name !== 'AbortError' && e.name !== 'NotAllowedError' && e.message) authErr(e.message);
+    }).then(function () { cache.pkCond = false; });
+  }, function () { cache.pkCond = false; });
+}
+
+// Dopo l'accesso con password, Google o link: «La prossima volta entra con impronta o volto?»
+// (una volta, se il dispositivo ha impronta, volto o PIN e qui non c'e' gia' una passkey)
+async function pkShouldOffer() {
+  if (!cache.pkOffer || !pkOn() || pkLocal('bp-pk') || pkLocal('bp-pk-no')) return false;
+  try {
+    return !!(PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable &&
+      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+  } catch (e) { return false; }
+}
+
+function pkOfferPage() {
+  return authShell('<div class="authico">' + pkIcon() + '</div><h1>Entra più in fretta</h1>' +
+    '<p class="authsub">La prossima volta su questo dispositivo entri con impronta, volto o PIN, senza password.</p>' +
+    '<button class="btn primary block f" data-autofocus data-act="pkadd" data-arg="offer" data-key="pkadd">Attiva</button>' +
+    '<button class="authlink f" data-act="pkskip" data-key="pkskip">Non ora</button>');
+}
+
+// Impronta e volto: le passkey dell'account, da togliere o aggiungere
+async function pkManagePage() {
+  var list = [];
+  try { list = (await cloud('GET', '/passkeys')).passkeys || []; } catch (e) { authErr(e.message); }
+  cache.pkList = list;
+  var rows = list.map(function (p, i) {
+    return '<div class="pkrow">' + pkIcon() + '<span><b>' + esc(p.label) + '</b><small>Aggiunta il ' + esc(whenDate(p.created)) +
+      (p.used ? ' · usata il ' + esc(whenDate(p.used)) : '') + '</small></span>' +
+      '<button class="btn f" data-act="pkdel" data-arg="' + i + '" data-key="pkdel-' + i + '">Togli</button></div>';
+  }).join('');
+  return authShell('<div class="authico">' + pkIcon() + '</div><h1>Impronta e volto</h1>' +
+    '<p class="authsub">Entri con impronta, volto o il PIN del dispositivo, senza password. Funziona da questo indirizzo, sul telefono e sul computer.</p>' +
+    (rows ? '<div class="pklist">' + rows + '</div>' : '<p class="authnote">Ancora nessuna passkey.</p>') +
+    (pkOn() ? '<button class="btn primary block f" data-autofocus data-act="pkadd" data-key="pkadd">Aggiungi questo dispositivo</button>'
+      : '<p class="authnote">Questo browser non le supporta.</p>') +
+    '<a class="authlink f" href="#/home" data-key="pkback">Indietro</a>', true);
+}
+
+function cPkActions() {
+  return {
+    pklogin: function () {
+      return pkLogin(false).catch(function (e) {
+        if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) {
+          authErr('Nessuna passkey scelta. Entra con email e password: poi puoi attivare impronta o volto.');
+        } else authErr((e && e.message) || 'Accesso non riuscito');
+      });
+    },
+    pkadd: function (arg) {
+      return pkCreate().then(function () {
+        toast('Fatto: la prossima volta entri con impronta o volto');
+        cache.pkOffer = false;
+        render();
+      }, function (e) {
+        if (e && e.name === 'InvalidStateError') {     // gia' una passkey di questo account qui
+          pkLocal('bp-pk', '1');
+          cache.pkOffer = false;
+          toast('Su questo dispositivo c\'è già');
+          render();
+          return;
+        }
+        if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) return;   // annullato
+        authErr((e && e.message) || 'Non riuscito');
+      });
+    },
+    pkskip: function () {
+      pkLocal('bp-pk-no', String(Date.now()));
+      cache.pkOffer = false;
+      render();
+    },
+    pkdel: function (arg) {
+      var p = (cache.pkList || [])[Number(arg)];
+      if (!p) return;
+      confirmBox('Togliere la passkey «' + p.label + '»? Su quel dispositivo servirà di nuovo la password.', 'Sì, togli', function () {
+        cloud('DELETE', '/passkeys/' + encodeURIComponent(p.id)).then(function () {
+          toast('Passkey tolta');
+          render();
+        }, function (e) { toast(e.message); });
+      });
+    },
+    cgreopen: function () {
+      var g = cache.cg;
+      if (!g) return;
+      var w = window.open(g.url, '_blank');
+      if (!w) location.href = g.url;
+    },
+    cgcancel: function () {
+      cgSet(null);
+      render();
+    }
+  };
+}
+
 function cActions() {
   return {
     csrvoff: function (idx) { cOffSheet(idx); },
@@ -1834,7 +2155,7 @@ function cActions() {
     // Primo passo: l'email. Un nome utente (senza @) va dritto alla password.
     cnext: async function () {
       var name = fieldValue('lname').trim();
-      if (!name) { toast('Scrivi l\'email'); return; }
+      if (!name) { authErr('Scrivi l\'email'); return; }
       C.error = '';
       try {
         if (name.indexOf('@') < 0) {
@@ -1844,7 +2165,7 @@ function cActions() {
           cache.cLogin = { email: name, username: r.username, activate: r.activate, needs_name: r.needs_name, token: '' };
         }
         render();
-      } catch (e) { toast(e.message); }
+      } catch (e) { authErr(e.message); }
     },
     cback: function () {
       cache.cLogin = null;
@@ -1880,14 +2201,17 @@ function cActions() {
     clogin: async function () {
       var L = cache.cLogin, pass = fieldValue('lpass');
       if (!L) return;
-      if (!pass) { toast('Scrivi la password'); return; }
-      toast('Entro…');
+      if (!pass) { authErr('Scrivi la password'); return; }
       try {
         cEntered(await cloud('POST', '/login', { username: L.username, verifier: await cVerifier(L.username, pass), device: devName(), kind: 'pwa' }));
         cache.cLogin = null;
         location.replace('#/home');
         render();
-      } catch (e) { toast(e.message); }
+      } catch (e) {
+        authErr(e.message);
+        var pw = byKey('lpass');
+        if (pw) { pw.value = ''; pw.focus(); }
+      }
     },
     // Attivazione: con il gettone del link basta nome e password; senza, prima la
     // password provvisoria (entra) e poi quella nuova, come prima
@@ -1923,18 +2247,19 @@ function cActions() {
     cgoogle: async function () {
       var win = window.open('about:blank', '_blank');
       try {
-        var r = await cloud('POST', '/google/start', { device: devName(), kind: 'browser' });
-        if (win) win.location.href = r.url; else location.href = r.url;
-        toast('Continua nella finestra di Google…');
-        for (var i = 0; i < 150; i++) {
-          await new Promise(function (ok) { setTimeout(ok, 2000); });
-          var p = await cloud('POST', '/google/poll', { poll: r.poll });
-          if (p.done && p.token) { cEntered(p); render(); return; }
-        }
-        toast('Tempo scaduto: riprova');
+        var L = cache.cLogin, typed = fieldValue('lname').trim();
+        var hint = L && L.email.indexOf('@') > 0 ? L.email : typed.indexOf('@') > 0 ? typed : '';
+        var r = await cloud('POST', '/google/start', { device: pkLabel(), kind: 'browser', hint: hint,
+          back: location.origin + location.pathname + '#/home' });
+        cgSet({ poll: r.poll, url: r.url, at: Date.now(), ttl: r.ttl || 600, seen: false, note: '' });
+        C.error = '';
+        if (win) win.location.href = r.url;
+        else { location.href = r.url; return; }        // finestre bloccate: Google qui, poi si torna
+        render();
+        cgPoll();
       } catch (e) {
         if (win) win.close();
-        toast(e.message);
+        authErr(e.message);
       }
     },
     cresetgo: async function () {
@@ -6855,6 +7180,92 @@ function addFolder(path) {
 
 function fieldValue(id) { var el = document.getElementById(id); return el ? el.value : ''; }
 
+// ---- Accesso: errori scritti sotto i campi (non un avviso che sparisce), il pulsante
+// che gira mentre si entra, l'occhio per vedere la password e l'avviso del Bloc Maiusc.
+
+// L'errore resta sulla pagina dov'e' nato, anche se la pagina si ridisegna
+function authErr(msg) {
+  cache.authErr = { msg: msg, hash: location.hash };
+  showAuthErr();
+}
+
+function showAuthErr() {
+  var a = cache.authErr;
+  if (!a) return;
+  if (a.hash !== location.hash) { cache.authErr = null; return; }
+  var box = view.querySelector('.authcard, .panel.login, .panel');
+  if (!box) return;
+  var el = box.querySelector('.autherr');
+  if (!el) {
+    el = document.createElement('p');
+    el.className = 'autherr';
+    el.setAttribute('role', 'alert');
+    var at = box.querySelector('.btn.primary');
+    if (at && at.parentNode.classList.contains('actions')) at = at.parentNode;
+    if (at) at.parentNode.insertBefore(el, at); else box.appendChild(el);
+  }
+  el.textContent = a.msg;
+}
+
+var EYE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+var EYE_OFF = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.8 8.5 2 12 2 12s3.6 7 10 7c1.9 0 3.6-.6 5-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+
+// L'occhio accanto ai campi password (non ai PIN), dopo ogni disegno della pagina
+function enhancePasswords(root) {
+  if (TV) return;                      // sulla TV la password non si scrive
+  root.querySelectorAll('input.field[type="password"]').forEach(function (inp) {
+    if (inp.closest('.pwwrap') || inp.inputMode === 'numeric' || inp.hasAttribute('data-noeye')) return;
+    var wrap = document.createElement('span');
+    wrap.className = 'pwwrap';
+    wrap.style.marginBottom = inp.style.marginBottom;
+    inp.style.marginBottom = '';
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pweye';
+    b.tabIndex = -1;
+    b.setAttribute('data-act', 'pweye');
+    b.setAttribute('aria-label', 'Mostra la password');
+    b.innerHTML = EYE;
+    wrap.appendChild(b);
+  });
+}
+
+// Bloc Maiusc acceso mentre si scrive una password: lo si dice sotto il campo
+function capsCheck(e) {
+  var t = e.target;
+  if (!t || t.tagName !== 'INPUT' || !(t.type === 'password' || t.getAttribute('data-pw') === '1') || !e.getModifierState) return;
+  var on = e.getModifierState('CapsLock');
+  var host = t.closest('.pwwrap') || t;
+  var note = host.nextElementSibling && host.nextElementSibling.classList.contains('capsnote') ? host.nextElementSibling : null;
+  if (on && !note) {
+    note = document.createElement('p');
+    note.className = 'capsnote';
+    note.textContent = 'Bloc Maiusc attivo';
+    host.parentNode.insertBefore(note, host.nextSibling);
+  } else if (!on && note) note.remove();
+}
+document.addEventListener('keyup', capsCheck);
+document.addEventListener('keydown', capsCheck);
+
+// Un'azione che torna una promessa: il pulsante gira finche' non ha finito
+function runAction(name, arg, el) {
+  var fn = actions[name];
+  if (!fn) return false;
+  if (name !== 'pweye') cache.authErr = null;
+  var r = fn(arg, el);
+  var btn = el && el.classList && el.classList.contains('btn') ? el
+    : document.querySelector('.btn[data-act="' + name + '"]');
+  if (r && typeof r.then === 'function' && btn) {
+    btn.classList.add('busy');
+    btn.setAttribute('aria-busy', 'true');
+    var done = function () { btn.classList.remove('busy'); btn.removeAttribute('aria-busy'); };
+    r.then(done, done);
+  }
+  return true;
+}
+
 function enterApp(r) {
   try { sessionStorage.removeItem('fpNoAuto'); sessionStorage.removeItem('fpPwLater'); } catch (e) { /* niente */ }
   var wasLocal = !!(auth && auth.user && !auth.user.linked);
@@ -6866,8 +7277,12 @@ function enterApp(r) {
   }).then(function () {
     if (r && r.offline) toast('Entrato senza Internet: si sincronizza appena torna la rete');
     else if (wasLocal && auth.user && auth.user.linked) toast('Fatto: sei entrato con il tuo account, sto sincronizzando');
-    // Dalle impostazioni si resta li'; da «Chi guarda?» si va alla Home
-    if (!/^#\/settings/.test(location.hash) || !auth.user) location.replace('#/home');
+    // Dalle impostazioni si resta li'; da «Chi guarda?» si va alla Home. afterLogin: la
+    // pagina da cui si e' partiti (es. il QR della TV aperto sul telefono, poi Google)
+    var next = cache.afterLogin;
+    cache.afterLogin = '';
+    if (next && auth.user) location.replace(next);
+    else if (!/^#\/settings/.test(location.hash) || !auth.user) location.replace('#/home');
     render();
   });
 }
@@ -6876,12 +7291,16 @@ var actions = {
   // --- account
   login: function () {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass');
-    if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
-    toast('Entro…');
-    post('/auth/login', { username: name, password: pass, device: devName() }).then(enterApp, function (e) {
+    if (!name || !pass) {
+      authErr(!name ? 'Scrivi il nome utente o l\'email' : 'Scrivi la password');
+      var miss = byKey(!name ? 'lname' : 'lpass');
+      if (miss) miss.focus();
+      return;
+    }
+    return post('/auth/login', { username: name, password: pass, device: devName() }).then(enterApp, function (e) {
       if (loginFailed(e)) return;
-      toast(e.message);
-      loadAuth().then(render);
+      authErr(e.message);
+      return loadAuth().then(render);
     });
   },
   asksend: function () {
@@ -7143,6 +7562,24 @@ var actions = {
     try { sessionStorage.setItem('fpPwLater', '1'); } catch (e) { /* niente */ }
     render();
   },
+  // L'occhio del campo password: mostra o nasconde quello che si e' scritto
+  pweye: function (arg, el) {
+    var inp = el && el.parentNode.querySelector('input');
+    if (!inp) return;
+    var show = inp.type === 'password';
+    inp.type = show ? 'text' : 'password';
+    inp.setAttribute('data-pw', '1');
+    el.innerHTML = show ? EYE_OFF : EYE;
+    el.setAttribute('aria-label', show ? 'Nascondi la password' : 'Mostra la password');
+    inp.focus();
+  },
+  // «Entra con Google» dalla pagina di accesso: l'email gia' scritta va a Google
+  ggo: function () {
+    var v = fieldValue('lname').trim();
+    cache.gHint = v.indexOf('@') > 0 ? v : '';
+    location.hash = '#/google';
+  },
+  gnew: function () { cache.gflow = null; render(); },
   gopen: function (url) {
     if (APP && tvApp.openUrl) tvApp.openUrl(url);
     else window.open(url, '_blank', 'noopener');
@@ -7212,19 +7649,23 @@ var actions = {
   },
   pairsend: function (code) {
     var name = fieldValue('lname').trim(), pass = fieldValue('lpass'), pw = fieldValue('pnew');
-    if (!name || !pass) { toast('Scrivi nome utente (o email) e password'); return; }
+    if (!name || !pass) { authErr(!name ? 'Scrivi l\'email o il nome utente' : 'Scrivi la password'); return; }
     if (cache.pairNeedNew === code) {
-      if (!pw) { toast('Scegli la password nuova'); return; }
-      if (pw !== fieldValue('pnew2')) { toast('Le due password nuove non sono uguali'); return; }
+      if (!pw) { authErr('Scegli la password nuova'); return; }
+      if (pw !== fieldValue('pnew2')) { authErr('Le due password nuove non sono uguali'); return; }
     }
-    toast('Entro…');
-    post('/auth/pair/' + code, { username: name, password: pass, new: pw }).then(function (r) {
+    return post('/auth/pair/' + code, { username: name, password: pass, new: pw }).then(function (r) {
       cache.pairDone = { code: code, name: r.name };
       render();
     }, function (e) {
+      authErr(e.message);
       if (/provvisoria/.test(e.message) && cache.pairNeedNew !== code) { cache.pairNeedNew = code; render(); }
-      toast(e.message);
     });
+  },
+  // Dal QR della TV, senza account qui: si entra con Google e si torna a collegare la TV
+  pairgoogle: function (code) {
+    cache.afterLogin = '#/pair/' + code;
+    location.hash = '#/google';
   },
   changepw: function (forced) {
     var old = fieldValue('pold'), pw = fieldValue('pnew');
@@ -7809,8 +8250,7 @@ document.addEventListener('click', function (e) {
   }
   var el = e.target.closest ? e.target.closest('[data-act]') : null;
   if (!el) return;
-  var fn = actions[el.getAttribute('data-act')];
-  if (fn) { e.preventDefault(); fn(el.getAttribute('data-arg')); }
+  if (actions[el.getAttribute('data-act')]) { e.preventDefault(); runAction(el.getAttribute('data-act'), el.getAttribute('data-arg'), el); }
 });
 
 // ---------------------------------------------------------------- Navigazione con le frecce
@@ -8138,8 +8578,12 @@ document.addEventListener('keydown', function (e) {
     // OK ancora tenuto dopo l'apertura del menu: i tasti ripetuti non devono scegliere niente
     if (press) { e.preventDefault(); return; }
     if (typing) {
-      var fn = actions[t.getAttribute('data-enter')];
-      if (fn) fn();
+      // Invio in un campo: come il pulsante con la stessa azione (anche il suo data-arg)
+      var en = t.getAttribute('data-enter');
+      if (en) {
+        var eb = document.querySelector('[data-act="' + en + '"][data-arg]');
+        runAction(en, eb ? eb.getAttribute('data-arg') : null, null);
+      }
       return;
     }
     var a = document.activeElement;
@@ -8269,6 +8713,8 @@ var routes = [
   [/^#\/(chi|profili)$/, function () { location.replace('#/home'); return ''; }],
   // Accesso e scelta del server: le mostra gate(); qui si arriva solo gia' fatto
   [/^#\/(login|server)$/, function () { location.replace('#/home'); return ''; }],
+  // Impronta e volto (passkey): la mostra gate() nella PWA centrale; altrove alla Home
+  [/^#\/passkey$/, function () { location.replace('#/home'); return ''; }],
   // Impostazioni dell'app: le mostra gate() nella PWA centrale dell'app; altrove alla Home
   [/^#\/app$/, function () { location.replace('#/home'); return ''; }],
   // I link delle email: li legge gate() (vedi cMailLink); qui si arriva solo gia' fatto
@@ -8913,6 +9359,8 @@ async function render() {
     enterTimer = setTimeout(function () { view.classList.remove('enter'); }, 500);
   }
   if (out.mount) out.mount();
+  enhancePasswords(view);
+  showAuthErr();
   markRail(h);
   markGetApp();
   showActiveTab();
@@ -9449,7 +9897,7 @@ function pollActivity() {
   }).then(renderActivity, function () { /* server spento un attimo: si riprova */ });
 }
 
-if (CENTRAL) Object.assign(actions, cActions());
+if (CENTRAL) Object.assign(actions, cActions(), cPkActions());
 loadAuth().then(function () {
   if (auth.user && !auth.user.must_change) return afterLogin([]).then(render);
   render();

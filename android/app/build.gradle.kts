@@ -83,4 +83,8 @@ dependencies {
     implementation("dev.mobile:dadb:2.0.0")
     // Notifiche push (vedi NoticePush). 24.1.x: l'ultima che va ancora da Android 5 (minSdk 21)
     implementation("com.google.firebase:firebase-messaging:24.1.2")
+    // QR di «Entra con Google» sulla TV (Remote.googleStart, in comune con l'app nativa)
+    implementation("com.google.zxing:core:3.5.3")
+    // Passkey (impronta, volto) dentro la WebView: WebSettingsCompat.setWebAuthenticationSupport
+    implementation("androidx.webkit:webkit:1.12.1")
 }

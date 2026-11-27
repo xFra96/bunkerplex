@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -105,32 +104,21 @@ private fun spaced(code: String) = if (code.length == 6) code.take(3) + " " + co
 fun PairScreen(act: MainActivity) {
     var pair by remember { mutableStateOf<JSONObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var seen by remember { mutableStateOf(false) }
     var round by remember { mutableIntStateOf(0) }
-    LaunchedEffect(round) {
-        try {
-            val p = withContext(Dispatchers.IO) { JSONObject(Api.post("/api/auth/pair", JSONObject()).first) }
-            pair = p
-            msg = null
-            val until = System.currentTimeMillis() + (p.optLong("ttl", 600) - 60) * 1000
-            while (System.currentTimeMillis() < until) {
-                delay(2000)
-                val (body, token) = withContext(Dispatchers.IO) { Api.call("GET", "/api/auth/pair/${p.optString("code")}") }
-                if (JSONObject(body).optBoolean("done")) {
-                    act.entered(body, token)
-                    return@LaunchedEffect
-                }
-            }
-            round++                           // scaduto: codice nuovo
-        } catch (e: ApiError) {
-            if (e.status == 404) round++ else msg = e.message
-        } catch (e: Exception) {
-            msg = "Non riesco a raggiungere BunkerPlex."
-        }
-    }
+    LaunchedEffect(round) { pairLoop(act, { pair = it; seen = false }, { seen = it }, { msg = it }, { round++ }) }
     val back = remember { FocusRequester() }
     Center(900.dp) {
         Title("Entra dal telefono", size = 32.sp, lines = 1)
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
+        LiveStatus(
+            when {
+                msg != null -> msg!!
+                seen -> "Codice aperto sul telefono: entra lì e la TV entra da sola"
+                else -> "In attesa del telefono…"
+            },
+            if (msg != null) Live.Warn else if (seen) Live.Ok else Live.Wait,
+            Modifier.padding(top = 12.dp),
+        )
         val p = pair
         Row(Modifier.padding(top = 26.dp)) {
             if (p != null) Qr(p.optJSONArray("qr").rows(), 260.dp)
@@ -143,63 +131,6 @@ fun PairScreen(act: MainActivity) {
                 }
                 Txt("Codice della TV, lo ritrovi sul telefono:", Modifier.padding(top = 16.dp), size = 14.sp, color = C.ink3)
                 Txt(spaced(p?.optString("code") ?: "…"), Modifier.padding(top = 4.dp), size = 40.sp, weight = FontWeight.Bold)
-                Row(Modifier.padding(top = 22.dp)) { Btn("Indietro", Modifier.focusRequester(back)) { act.back() } }
-            }
-        }
-    }
-    AutoFocus(back)
-}
-
-// ---------------------------------------------------------------- Con Google
-
-@Composable
-fun GoogleScreen(act: MainActivity, s: Screen.Google) {
-    var flow by remember { mutableStateOf<JSONObject?>(null) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    var round by remember { mutableIntStateOf(0) }
-    LaunchedEffect(round) {
-        try {
-            val g = withContext(Dispatchers.IO) {
-                JSONObject(Api.post("/api/auth/google", JSONObject().put("link", s.link).put("device", "tv")).first)
-            }
-            flow = g
-            val until = System.currentTimeMillis() + (g.optLong("ttl", 600) - 60) * 1000
-            while (System.currentTimeMillis() < until) {
-                delay(2000)
-                val (body, token) = withContext(Dispatchers.IO) { Api.call("GET", "/api/auth/google/${g.optString("id")}") }
-                val r = JSONObject(body)
-                if (!r.optBoolean("done")) continue
-                if (r.optBoolean("linked")) {
-                    act.toast("Google collegato: d'ora in poi puoi entrare con ${r.optString("google").ifEmpty { "Google" }}")
-                    act.back()
-                } else act.entered(body, token)
-                return@LaunchedEffect
-            }
-            round++
-        } catch (e: ApiError) {
-            msg = e.message
-        } catch (e: Exception) {
-            msg = "Non riesco a raggiungere BunkerPlex."
-        }
-    }
-    val back = remember { FocusRequester() }
-    Center(900.dp) {
-        Title(if (s.link) "Collega Google" else "Entra con Google", size = 32.sp, lines = 1)
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 3) }
-        val g = flow
-        Row(Modifier.padding(top = 26.dp)) {
-            if (g != null) Qr(g.optJSONArray("qr").rows(), 260.dp)
-            Column(Modifier.padding(start = 34.dp)) {
-                Txt(
-                    if (s.link) "Inquadra il QR con la fotocamera del telefono e scegli l'account Google da collegare: poi potrai entrare con quello, senza password."
-                    else "Inquadra il QR con la fotocamera del telefono e scegli lì il tuo account Google: la TV entra da sola.",
-                    color = C.ink2, lines = 4, lineHeight = 24.sp,
-                )
-                g?.let {
-                    Txt("Senza fotocamera apri ${it.optString("short").removePrefix("https://")} e scrivi il codice:",
-                        Modifier.padding(top = 16.dp), color = C.ink2, lines = 2)
-                    Txt(it.optString("code"), Modifier.padding(top = 4.dp), size = 40.sp, weight = FontWeight.Bold)
-                }
                 Row(Modifier.padding(top = 22.dp)) { Btn("Indietro", Modifier.focusRequester(back)) { act.back() } }
             }
         }

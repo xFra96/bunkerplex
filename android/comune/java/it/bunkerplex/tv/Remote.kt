@@ -99,7 +99,20 @@ object Remote {
         val body = JSONObject().put("device", (if (tv) "TV " else "Telefono ") + (Build.MODEL ?: "Android"))
             .put("kind", if (tv) "tv" else "phone")
         prefs(ctx).edit().remove("cloud_token").apply()
-        return call(ctx, "POST", "/google/start", body.toString())
+        val res = JSONObject(call(ctx, "POST", "/google/start", body.toString()))
+        // Sulla TV il QR da inquadrare col telefono: righe di 0 e 1 (la pagina lo disegna)
+        if (tv) res.put("qr", org.json.JSONArray(qrRows(res.optString("url"))))
+        return res.toString()
+    }
+
+    /** Le righe di 0 e 1 del QR di un indirizzo (zxing), senza bordo. */
+    private fun qrRows(text: String): List<String> = try {
+        val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, 0, 0,
+            mapOf(com.google.zxing.EncodeHintType.MARGIN to 0,
+                com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M))
+        (0 until m.height).map { y -> buildString { for (x in 0 until m.width) append(if (m[x, y]) '1' else '0') } }
+    } catch (_: Exception) {
+        emptyList()
     }
 
     /** Google ha risposto? Quando si', il gettone dell'account resta all'app. */
@@ -121,14 +134,18 @@ object Remote {
             JSONObject().put("device", "TV " + (Build.MODEL ?: "Android")).toString()))
     }
 
-    /** Confermato dal telefono? Allora il gettone dell'account resta alla TV (true). */
-    fun tvPoll(ctx: Context, poll: String): Boolean {
+    /**
+     * Confermato dal telefono? Allora il gettone dell'account resta alla TV ("done").
+     * Intanto "seen": il telefono ha aperto il QR o il codice.
+     */
+    fun tvPoll(ctx: Context, poll: String): JSONObject {
         val res = JSONObject(call(ctx, "POST", "/tv/poll", JSONObject().put("poll", poll).toString()))
         val token = res.optString("token")
-        if (token.isEmpty()) return false
-        prefs(ctx).edit().putString("cloud_token", token)
-            .putString("cloud_user", res.optJSONObject("user")?.optString("username") ?: "").apply()
-        return true
+        if (token.isNotEmpty()) {
+            prefs(ctx).edit().putString("cloud_token", token)
+                .putString("cloud_user", res.optJSONObject("user")?.optString("username") ?: "").apply()
+        }
+        return res
     }
 
     fun logout(ctx: Context) {

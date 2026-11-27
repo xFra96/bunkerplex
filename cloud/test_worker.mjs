@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createHash, createPublicKey, generateKeyPairSync, verify } from 'node:crypto';
+import { createHash, createPublicKey, createSign, generateKeyPairSync, verify } from 'node:crypto';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Il Worker e' un modulo ES in un file .js: se ne fa una copia .mjs da importare
@@ -678,7 +678,10 @@ test('la TV entra dal telefono: codice, conferma con l\'account, gettone una vol
   const { code, poll } = start.body;
   assert.match(code, /^[A-Z2-9]{8}$/);
   assert.equal(start.body.url, 'https://acc.test/#/tv/' + code);
-  assert.deepEqual((await t.call('POST', '/tv/poll', { poll })).body, { done: false });
+  assert.deepEqual((await t.call('POST', '/tv/poll', { poll })).body, { done: false, seen: false });
+  // Il telefono apre il QR: la TV lo sa
+  assert.equal((await t.call('POST', '/tv/' + code + '/seen', {})).status, 200);
+  assert.equal((await t.call('POST', '/tv/poll', { poll })).body.seen, true);
   // Il segreto per ritirare il gettone non e' il codice
   assert.equal((await t.call('POST', '/tv/poll', { poll: code })).status, 404);
   // Senza account non si conferma
@@ -703,4 +706,234 @@ test('la TV entra dal telefono: codice, conferma con l\'account, gettone una vol
   const r = await worker.fetch(new Request('https://acc.test/tv'), t.env);
   assert.equal(r.status, 302);
   assert.equal(r.headers.get('Location'), 'https://acc.test/#/tv');
+});
+
+// ---- Entra con Google (Google finto)
+
+function fakeGoogle(env, claims) {
+  const st = { form: null };
+  const fetch = async (input, init = {}) => {
+    const url = String(input.url || input);
+    if (url === 'https://oauth2.googleapis.com/token') {
+      st.form = new URLSearchParams(init.body);
+      const c = typeof claims === 'function' ? claims() : claims;
+      const part = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      return new Response(JSON.stringify({ id_token: part({ alg: 'RS256' }) + '.' + part({
+        iss: 'https://accounts.google.com', aud: env.GOOGLE_CLIENT_ID, exp: Date.now() / 1000 + 600, nonce: st.nonce, ...c
+      }) + '.x' }));
+    }
+    return new Response('{}', { status: 404 });
+  };
+  return { st, fetch };
+}
+
+async function googleGo(t, code, g, cookie) {
+  const headers = cookie ? { Cookie: cookie } : {};
+  const r = cookie
+    ? await worker.fetch(new Request('https://acc.test/g/' + code, { headers }), t.env)
+    : await worker.fetch(new Request('https://acc.test/g/' + code, { method: 'POST' }), t.env);
+  assert.equal(r.status, 303);
+  const to = new URL(r.headers.get('Location'));
+  assert.equal(to.host, 'accounts.google.com');
+  assert.equal(to.searchParams.get('code_challenge_method'), 'S256');
+  g.st.nonce = to.searchParams.get('nonce');
+  g.st.challenge = to.searchParams.get('code_challenge');
+  return to;
+}
+
+async function googleBack(t, to) {
+  const r = await worker.fetch(new Request('https://acc.test/google/callback?code=c&state=' + encodeURIComponent(to.searchParams.get('state')),
+    { headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14)' } }), t.env);
+  return { status: r.status, html: await r.text() };
+}
+
+test('google: dalla TV, account sbagliato si riprova, poi entra (PKCE, nonce, stato)', async () => {
+  const t = setup();
+  t.env.GOOGLE_CLIENT_ID = 'cid';
+  t.env.GOOGLE_CLIENT_SECRET = 'sec';
+  const anna = t.addUser('anna');
+  t.env.DB.raw.prepare('UPDATE users SET google_email = ? WHERE id = ?').run('anna@example.com', anna);
+  let who = { sub: 'g-bob', email: 'bob@example.com', email_verified: true };
+  const g = fakeGoogle(t.env, () => who);
+  const real = globalThis.fetch;
+  globalThis.fetch = g.fetch;
+  try {
+    const start = await t.call('POST', '/google/start', { kind: 'tv', device: 'TV Sony', hint: 'anna@example.com' });
+    const { code, poll } = start.body;
+    assert.deepEqual((await t.call('POST', '/google/poll', { poll })).body, { done: false, seen: false, note: '' });
+    // Il telefono apre il codice: la TV lo sa
+    const page = await worker.fetch(new Request('https://acc.test/g/' + code), t.env);
+    assert.equal(page.status, 200);
+    assert.equal((await t.call('POST', '/google/poll', { poll })).body.seen, true);
+    const to = await googleGo(t, code, g);
+    assert.equal(to.searchParams.get('login_hint'), 'anna@example.com');
+    // Account Google sconosciuto: il codice resta buono e la TV legge il motivo
+    const bad = await googleBack(t, to);
+    assert.equal(bad.status, 403);
+    assert.match(bad.html, /Prova con un altro account Google/);
+    const mid = (await t.call('POST', '/google/poll', { poll })).body;
+    assert.equal(mid.done, false);
+    assert.match(mid.note, /bob@example\.com/);
+    // Il vecchio state non vale piu'
+    assert.equal((await googleBack(t, to)).status, 400);
+    // Con l'account giusto
+    who = { sub: 'g-anna', email: 'anna@example.com', email_verified: true };
+    const to2 = await googleGo(t, code, g);
+    const ok = await googleBack(t, to2);
+    assert.equal(ok.status, 200);
+    assert.match(ok.html, /La TV entra da sola/);
+    const v = g.st.form.get('code_verifier');
+    assert.equal(createHash('sha256').update(v).digest('base64url'), g.st.challenge, 'PKCE');
+    const done = (await t.call('POST', '/google/poll', { poll })).body;
+    assert.equal(done.done, true);
+    assert.equal(done.user.username, 'anna');
+    assert.equal(done.user.google, 'anna@example.com');
+    // Una volta sola
+    assert.equal((await t.call('POST', '/google/poll', { poll })).status, 404);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test('google: un nonce diverso non entra; lo stesso browser salta la conferma', async () => {
+  const t = setup();
+  t.env.GOOGLE_CLIENT_ID = 'cid';
+  t.env.GOOGLE_CLIENT_SECRET = 'sec';
+  const anna = t.addUser('anna');
+  t.env.DB.raw.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').run('g-anna', 'anna@example.com', anna);
+  let extra = { nonce: 'altro' };
+  const g = fakeGoogle(t.env, () => ({ sub: 'g-anna', email: 'anna@example.com', email_verified: true, ...extra }));
+  const real = globalThis.fetch;
+  globalThis.fetch = g.fetch;
+  try {
+    const res = await worker.fetch(new Request('https://acc.test/google/start', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'browser', back: 'https://acc.test/#/home' }) }), t.env);
+    const start = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(start));
+    const cookie = res.headers.get('Set-Cookie').split(';')[0];
+    assert.match(cookie, new RegExp('^bpg=' + start.code + '\.'));
+    // Senza il cookie: la pagina di conferma
+    assert.equal((await worker.fetch(new Request('https://acc.test/g/' + start.code), t.env)).status, 200);
+    // Col cookie: dritto a Google
+    const to = await googleGo(t, start.code, g, cookie);
+    assert.equal((await googleBack(t, to)).status, 403);
+    assert.equal((await t.call('POST', '/google/poll', { poll: start.poll })).body.done, false);
+    extra = {};
+    const ok = await googleBack(t, await googleGo(t, start.code, g));
+    assert.equal(ok.status, 200);
+    assert.match(ok.html, /window\.close/);
+    assert.match(ok.html, /href="https:\/\/acc\.test\/#\/home"/);
+    assert.ok((await t.call('POST', '/google/poll', { poll: start.poll })).body.token);
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+// ---- Passkey (autenticatore finto: chiave P-256 vera, CBOR scritto a mano)
+
+function cborEnc(v) {
+  const head = (major, n) => n < 24 ? [major << 5 | n] : n < 256 ? [major << 5 | 24, n] : [major << 5 | 25, n >> 8, n & 255];
+  if (typeof v === 'number') return Buffer.from(v >= 0 ? head(0, v) : head(1, -1 - v));
+  if (typeof v === 'string') { const b = Buffer.from(v); return Buffer.concat([Buffer.from(head(3, b.length)), b]); }
+  if (v instanceof Uint8Array) return Buffer.concat([Buffer.from(head(2, v.length)), v]);
+  const entries = [...v.entries()];
+  return Buffer.concat([Buffer.from(head(5, entries.length)), ...entries.flatMap(([k, x]) => [cborEnc(k), cborEnc(x)])]);
+}
+
+function fakeAuthenticator(origin = 'https://acc.test') {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const jwk = publicKey.export({ format: 'jwk' });
+  const credId = Buffer.from('cred-' + Math.random().toString(36).slice(2));
+  const rpHash = createHash('sha256').update('acc.test').digest();
+  let counter = 0;
+  const ad = (flags, extra = Buffer.alloc(0)) => {
+    const c = Buffer.alloc(4); c.writeUInt32BE(counter);
+    return Buffer.concat([rpHash, Buffer.from([flags]), c, extra]);
+  };
+  const cd = (type, challenge) => Buffer.from(JSON.stringify({ type, challenge, origin }));
+  return {
+    id: credId.toString('base64url'),
+    create(challenge) {
+      const cose = new Map([[1, 2], [3, -7], [-1, 1], [-2, Buffer.from(jwk.x, 'base64url')], [-3, Buffer.from(jwk.y, 'base64url')]]);
+      const len = Buffer.from([credId.length >> 8, credId.length & 255]);
+      const authData = ad(0x45, Buffer.concat([Buffer.alloc(16), len, credId, cborEnc(cose)]));
+      return { clientDataJSON: cd('webauthn.create', challenge).toString('base64url'),
+        attestationObject: cborEnc(new Map([['fmt', 'none'], ['attStmt', new Map()], ['authData', authData]])).toString('base64url') };
+    },
+    get(challenge, flags = 0x05) {
+      counter++;
+      const authData = ad(flags);
+      const client = cd('webauthn.get', challenge);
+      const sig = createSign('sha256').update(Buffer.concat([authData, createHash('sha256').update(client).digest()])).sign(privateKey);
+      return { id: credId.toString('base64url'), clientDataJSON: client.toString('base64url'),
+        authenticatorData: authData.toString('base64url'), signature: sig.toString('base64url') };
+    }
+  };
+}
+
+test('passkey: si aggiunge con l\'account, poi si entra con impronta o volto', async () => {
+  const t = setup();
+  t.addUser('anna');
+  const tok = await t.login('anna', 'pwa');
+  const dev = fakeAuthenticator();
+  // Senza account non si aggiunge
+  assert.equal((await t.call('POST', '/passkeys/register/start', {})).status, 401);
+  const rs = (await t.call('POST', '/passkeys/register/start', {}, tok)).body;
+  assert.equal(rs.rp.id, 'acc.test');
+  const reg = await t.call('POST', '/passkeys/register/finish', { ...dev.create(rs.challenge), label: 'iPhone' }, tok);
+  assert.equal(reg.status, 200, JSON.stringify(reg.body));
+  // La stessa sfida non vale due volte
+  assert.equal((await t.call('POST', '/passkeys/register/finish', { ...dev.create(rs.challenge) }, tok)).status, 400);
+  const list = (await t.call('GET', '/passkeys', undefined, tok)).body.passkeys;
+  assert.deepEqual(list.map((p) => p.label), ['iPhone']);
+  assert.deepEqual((await t.call('POST', '/passkeys/register/start', {}, tok)).body.exclude, [dev.id]);
+
+  const ls = (await t.call('POST', '/passkeys/login/start', {})).body;
+  const ok = await t.call('POST', '/passkeys/login/finish', { ...dev.get(ls.challenge), device: 'iPhone', kind: 'pwa' });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.user.username, 'anna');
+  assert.equal((await t.call('GET', '/me', undefined, ok.body.token)).body.user.username, 'anna');
+  // Sfida gia' usata
+  assert.equal((await t.call('POST', '/passkeys/login/finish', dev.get(ls.challenge))).status, 400);
+  // Senza verifica dell'identita' (UV) non entra
+  const ls2 = (await t.call('POST', '/passkeys/login/start', {})).body;
+  assert.equal((await t.call('POST', '/passkeys/login/finish', dev.get(ls2.challenge, 0x01))).status, 401);
+  // Da un altro indirizzo non vale
+  const other = fakeAuthenticator('https://evil.test');
+  const ls3 = (await t.call('POST', '/passkeys/login/start', {})).body;
+  assert.equal((await t.call('POST', '/passkeys/login/finish', other.get(ls3.challenge))).status, 400);
+  // Firma sbagliata
+  const ls4 = (await t.call('POST', '/passkeys/login/start', {})).body;
+  const bad = dev.get(ls4.challenge);
+  bad.signature = fakeAuthenticator().get(ls4.challenge).signature;
+  assert.equal((await t.call('POST', '/passkeys/login/finish', bad)).status, 401);
+  // Tolta: non entra piu'
+  assert.equal((await t.call('DELETE', '/passkeys/' + dev.id, undefined, tok)).status, 200);
+  const ls5 = (await t.call('POST', '/passkeys/login/start', {})).body;
+  assert.equal((await t.call('POST', '/passkeys/login/finish', dev.get(ls5.challenge))).status, 401);
+});
+
+test('assetlinks: l\'app Android dichiarata solo con le impronte giuste', async () => {
+  const t = setup();
+  assert.equal((await worker.fetch(new Request('https://acc.test/.well-known/assetlinks.json'), t.env)).status, 404);
+  const fp = Array.from({ length: 32 }, () => 'ab').join(':');
+  t.env.ANDROID_CERT_SHA256 = fp + ', nonvalida';
+  const r = await worker.fetch(new Request('https://acc.test/.well-known/assetlinks.json'), t.env);
+  assert.equal(r.status, 200);
+  const j = await r.json();
+  assert.equal(j[0].target.package_name, 'it.bunkerplex.tv');
+  assert.deepEqual(j[0].target.sha256_cert_fingerprints, [fp.toUpperCase()]);
+  assert.ok(j[0].relation.includes('delegate_permission/common.get_login_creds'));
+});
+
+test('google: «back» solo verso questo servizio; sfide passkey tante: via le vecchie', async () => {
+  const t = setup();
+  t.env.GOOGLE_CLIENT_ID = 'cid';
+  t.env.GOOGLE_CLIENT_SECRET = 'sec';
+  await t.call('POST', '/google/start', { kind: 'browser', back: 'https://evil.test/x' });
+  await t.call('POST', '/google/start', { kind: 'browser', back: 'https://acc.test/#/home' });
+  const backs = t.env.DB.raw.prepare('SELECT back FROM google_flows ORDER BY rowid').all().map((r) => r.back);
+  assert.deepEqual(backs, [null, 'https://acc.test/#/home']);
+  for (let i = 0; i < 505; i++) assert.equal((await t.call('POST', '/passkeys/login/start', {})).status, 200);
+  assert.ok(t.env.DB.raw.prepare('SELECT COUNT(*) n FROM passkey_challenges').get().n <= 500);
 });
