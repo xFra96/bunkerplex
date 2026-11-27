@@ -385,10 +385,7 @@ def cert_state(duid):
 
 def _certificate_for(tv):
     """Chiede il certificato Samsung per la TV e aspetta che GitHub lo prepari."""
-    token = _hooks["cloud_token"]()
-    if not token:
-        raise RuntimeError("Questa TV vuole un certificato Samsung fatto per lei: collega prima il server "
-                           "al tuo account BunkerPlex, poi riprova.")
+    token = _hooks["cloud_token"]() or None      # senza: il servizio accetta lo stesso (poche al giorno)
     _say("Chiedo il certificato Samsung per questa TV…", step="cert")
     try:
         st = accounts.call("POST", "/samsung/tv", {"duid": tv["duid"], "model": tv.get("model", ""),
@@ -568,3 +565,38 @@ def samsung_cancel(request: Request):
     if _state["phase"]:
         _cancel.set()
     return _status(request.headers.get("host", ""))
+
+
+# ---------------------------------------------------------------- certificato Samsung (chi amministra)
+# La PWA (anche dentro l'app del telefono) mostra a chi amministra com'e' messo il
+# certificato Samsung e manda l'accesso a Samsung fatto dal telefono: passano da qui
+# con la credenziale del server, che il servizio accetta come il proprietario.
+
+def _admin_token():
+    u = accounts.CURRENT.get()
+    if not u or not u.get("admin"):
+        raise HTTPException(403, "Solo chi amministra BunkerPlex")
+    token = _hooks["cloud_token"]()
+    if not token:
+        raise HTTPException(409, "Il server non è ancora collegato al tuo account BunkerPlex")
+    return token
+
+
+def _forward(method, path, body=None):
+    try:
+        return accounts.call(method, path, body, _admin_token())
+    except accounts.CloudError as ex:
+        raise HTTPException(ex.status if 400 <= ex.status < 500 else 502, ex.detail)
+    except accounts.CloudOffline as ex:
+        raise HTTPException(503, str(ex))
+
+
+@router.get("/cert")
+def samsung_cert():
+    return _forward("GET", "/samsung/admin")
+
+
+@router.post("/login")
+async def samsung_login(request: Request):
+    body = await request.json()
+    return _forward("POST", "/samsung/login", {"code": str((body or {}).get("code") or "")[:16384]})

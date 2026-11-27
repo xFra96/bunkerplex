@@ -218,12 +218,45 @@ class SamsungInstall(unittest.TestCase):
         self.assertEqual(signed, [True])
 
     def test_certificato_senza_credenziale(self):
-        tv = FakeTv(install=self.REFUSED)
-        with mock.patch.dict(si._hooks, {"cloud_token": lambda: ""}):
-            with self.assertRaises(RuntimeError) as e:
-                self.run_install_plain(tv)
-        self.assertIn("certificato Samsung", str(e.exception))
-        self.assertNotIn("0 was_execute BnkrPlex01.BunkerPlex", tv.shells)
+        # Server non collegato all'account: la richiesta parte lo stesso, senza gettone
+        tv = FakeTv(install=[self.REFUSED, FakeTv.OK])
+        calls = []
+
+        def fake_call(method, path, body=None, token=None, timeout=12):
+            calls.append((method, path, token))
+            return {"state": "waiting"} if method == "POST" else {"state": "ready"} if len(calls) > 2 else {"state": "unknown"}
+
+        with mock.patch.object(si, "SDB_PORT", tv.port), \
+             mock.patch.object(si, "_download", return_value=WGT), \
+             mock.patch.object(si, "tv_info", return_value=None), \
+             mock.patch.object(si.accounts, "call", side_effect=fake_call), \
+             mock.patch.object(si.time, "sleep", lambda s: None), \
+             mock.patch.dict(si._hooks, {"cloud_token": lambda: ""}):
+            si._state["tvs"] = {}
+            si._install("127.0.0.1", "")
+        post = [c for c in calls if c[0] == "POST"]
+        self.assertEqual(post[0][1], "/samsung/tv")
+        self.assertIsNone(post[0][2])
+        self.assertIn("0 was_execute BnkrPlex01.BunkerPlex", tv.shells)
+
+    def test_cert_solo_chi_amministra(self):
+        from fastapi import HTTPException
+        tok = si.accounts.CURRENT.set({"id": 1, "admin": False})
+        try:
+            with self.assertRaises(HTTPException) as e:
+                si.samsung_cert()
+            self.assertEqual(e.exception.status_code, 403)
+        finally:
+            si.accounts.CURRENT.reset(tok)
+        tok = si.accounts.CURRENT.set({"id": 1, "admin": True})
+        try:
+            with mock.patch.dict(si._hooks, {"cloud_token": lambda: "s_x"}), \
+                 mock.patch.object(si.accounts, "call", return_value={"login": None}) as c:
+                self.assertEqual(si.samsung_cert(), {"login": None})
+            self.assertEqual(c.call_args[0][:2], ("GET", "/samsung/admin"))
+            self.assertEqual(c.call_args[0][3], "s_x")
+        finally:
+            si.accounts.CURRENT.reset(tok)
 
     def run_install_plain(self, tv):
         with mock.patch.object(si, "SDB_PORT", tv.port), \

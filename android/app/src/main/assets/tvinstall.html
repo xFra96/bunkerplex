@@ -176,7 +176,7 @@ function ssNow(t) {
   var tvs = t.tvs || [];
   if (t.phase) {
     cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…') + '<div class="row">' +
-      (t.wait_login && t.admin && !t.login_busy ? '<button class="primary" data-act="sslogin">Accedi a Samsung</button>' : '') +
+      (t.wait_login && !t.login_busy ? '<button class="primary" data-act="sslogin">Accedi a Samsung</button>' : '') +
       '<button data-act="sscancel">Interrompi</button></div>';
   } else if (t.error) {
     cls = 'err'; msg = esc(t.error);

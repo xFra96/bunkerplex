@@ -404,22 +404,20 @@ object SamsungInstaller {
      * fa da solo, se chi amministra e' entrato in Samsung: se no gli arriva un avviso).
      */
     private fun certificateFor(ctx: Context, tv: Tv) {
+        // Il gettone dell'account se c'e'; se no (entrati dal server di casa) il servizio
+        // accetta lo stesso la richiesta (poche TV nuove al giorno per rete)
         loadAccount(ctx)
-        if (account.isEmpty()) throw IOException(
-            "Questa TV vuole un certificato Samsung fatto per lei, ma su questo telefono non trovo il tuo account BunkerPlex: " +
-                "chiudi e riapri l'app BunkerPlex, poi riprova.")
         step = "cert"
         message = "Chiedo il certificato Samsung per questa TV…"
         push(ctx)
         var st = try {
             cloudCall(ctx, "POST", "/samsung/tv", JSONObject().put("duid", tv.duid).put("model", tv.model).put("name", tv.name))
         } catch (e: CloudFail) {
-            if (e.status == 401) {
-                account = ""
-                ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE).edit().remove("ss_account").apply()
-                throw IOException("L'accesso al tuo account BunkerPlex è scaduto su questo telefono: chiudi e riapri l'app, poi riprova.")
-            }
-            throw e
+            if (e.status != 401) throw e
+            // Gettone scaduto: si dimentica e si chiede senza
+            account = ""
+            ctx.getSharedPreferences("bunkerplex", Context.MODE_PRIVATE).edit().remove("ss_account").apply()
+            cloudCall(ctx, "POST", "/samsung/tv", JSONObject().put("duid", tv.duid).put("model", tv.model).put("name", tv.name), auth = false)
         }
         say("Chiesto il certificato Samsung per la TV ${tv.duid}", "ok")
         val until = System.currentTimeMillis() + WAIT_MS
@@ -431,8 +429,8 @@ object SamsungInstaller {
             waitLogin = st.optBoolean("login")
             val now = when {
                 st.optString("error").isNotEmpty() -> "Il certificato Samsung non è riuscito (${st.optString("error")}): si riprova da solo."
-                waitLogin && admin != null -> "Serve il tuo accesso a Samsung: premi «Accedi a Samsung» qui sotto. Poi faccio tutto da solo."
-                waitLogin -> "Aspetto chi amministra BunkerPlex: deve entrare in Samsung (gli è arrivato un avviso). Poi faccio tutto da solo."
+                waitLogin -> "Aspetto chi amministra BunkerPlex: deve entrare in Samsung (gli è arrivato un avviso). " +
+                    "Se sei tu, premi «Accedi a Samsung» qui sotto. Poi faccio tutto da solo."
                 else -> "Samsung prepara il certificato per questa TV (qualche minuto)…"
             }
             if (now != last) { say(now, "info"); last = now }
@@ -487,9 +485,18 @@ object SamsungInstaller {
      * telefono ascolta li', apre la pagina di Samsung nel browser e passa il gettone al
      * servizio account, che lo usa per i certificati finche' vale.
      */
+    /** L'accesso a Samsung ricevuto, finche' la PWA non lo prende (ssPendingCode). */
+    @Volatile private var pendingCode = ""
+
+    /** Chi porta l'accesso alla PWA (MainActivity): torna alla pagina e la avvisa. */
+    @Volatile
+    var codeListener: (() -> Unit)? = null
+
+    @Synchronized
+    fun takeCode(): String = pendingCode.also { pendingCode = "" }
+
     fun samsungLogin(ctx: Context) {
-        loadAccount(ctx)
-        if (loginBusy || account.isEmpty()) return
+        if (loginBusy) return
         loginBusy = true
         loginMsg = "Entra con il tuo account Samsung nella pagina che si è aperta, poi torna qui."
         push(ctx)
@@ -513,12 +520,13 @@ object SamsungInstaller {
                 while (code == null) {
                     srv.accept().use { s -> code = callback(s) }
                 }
-                cloudCall(ctx, "POST", "/samsung/login", JSONObject().put("code", code))
+                synchronized(this) { pendingCode = code ?: "" }
                 loginMsg = "Fatto: sei entrato in Samsung. Le TV in attesa ricevono il certificato in pochi minuti."
                 say("Accesso a Samsung riuscito", "ok")
-                // Di nuovo davanti: l'utente era nel browser
+                // Di nuovo davanti (l'utente era nel browser); la PWA manda l'accesso al servizio
                 ctx.startActivity(android.content.Intent(ctx, MainActivity::class.java)
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                codeListener?.invoke()
             } catch (e: java.net.SocketTimeoutException) {
                 loginMsg = "Nessun accesso a Samsung in 5 minuti: riprova."
             } catch (e: Exception) {

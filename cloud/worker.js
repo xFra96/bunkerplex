@@ -642,7 +642,8 @@ async function claimUserRoutes(request, env, path, method, user) {
 // telefono del proprietario anche se lui sul PC non ha mai scritto la password.
 const SERVER_AS_OWNER = [['GET', /^\/me$/], ['GET', /^\/settings$/], ['PUT', /^\/settings$/], ['GET', /^\/state$/],
   ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/],
-  ['POST', /^\/notices$/], ['GET', /^\/notices$/], ['POST', /^\/samsung\/tv$/]];
+  ['POST', /^\/notices$/], ['GET', /^\/notices$/], ['POST', /^\/samsung\/tv$/],
+  ['GET', /^\/samsung\/admin$/], ['POST', /^\/samsung\/login$/]];
 
 async function serverAsOwner(request, env, path, method) {
   if (!/^Bearer s_/.test(request.headers.get('Authorization') || '')) return null;
@@ -2892,8 +2893,10 @@ async function noticePrefs(env, uid) {
 //  - chi installa dal telefono (o dal server di casa) manda il DUID della TV
 //    (POST /samsung/tv); la TV aspetta nell'elenco;
 //  - serve un accesso all'account Samsung di chi amministra: lo fa il suo telefono
-//    (BunkerPlex → Installa sulla TV → TV Samsung → Accedi a Samsung) e il gettone
-//    arriva qui (POST /samsung/login). Dura un po': finche' vale, le TV nuove passano
+//    (BunkerPlex → Impostazioni → Collegamento e visione → Certificato Samsung) e il
+//    gettone arriva qui (POST /samsung/login: dalla PWA centrale o dal server di casa).
+//  - la richiesta della TV non chiede l'account (dal server di casa il telefono non
+//    ha il gettone del servizio): poche TV nuove al giorno per indirizzo. Dura un po': finche' vale, le TV nuove passano
 //    da sole. Quando serve di nuovo, chi amministra riceve un avviso;
 //  - GitHub (.github/workflows/app-samsung.yml, ogni 5 minuti) chiede qui cosa fare
 //    (GET /samsung/job, con RELEASE_KEY), chiede il certificato a Samsung con tutte le
@@ -2904,6 +2907,7 @@ async function noticePrefs(env, uid) {
 const SAMSUNG_MAX_TVS = 50;
 const SAMSUNG_DUID = /^[A-Za-z0-9]{10,64}$/;
 const SAMSUNG_WORKFLOW = 'app-samsung.yml';
+const SAMSUNG_IP_DAY = 5;          // TV nuove al giorno per indirizzo, senza account
 
 let samsungTable = false;
 async function ensureSamsung(env) {
@@ -2967,9 +2971,44 @@ function samsungJobKey(request, env) {
   if (!env.RELEASE_KEY || !m || !sameString(m[1], env.RELEASE_KEY)) fail(401, 'Chiave non valida');
 }
 
+// Una TV vuole il certificato Samsung. Dal telefono senza il gettone dell'account
+// (entrato dal server di casa) si accetta lo stesso: poche TV nuove al giorno per
+// indirizzo, al massimo SAMSUNG_MAX_TVS in tutto, e chi amministra viene avvisato.
+async function samsungAddTv(request, env, user) {
+  const b = await body(request);
+  const duid = String(b.duid || '').trim();
+  if (!SAMSUNG_DUID.test(duid)) fail(400, 'Codice della TV (DUID) non valido');
+  await ensureSamsung(env);
+  const known = await env.DB.prepare('SELECT duid FROM samsung_tvs WHERE duid = ?').bind(duid).first();
+  if (!known) {
+    const n = await env.DB.prepare('SELECT COUNT(*) n FROM samsung_tvs').first('n');
+    if (n >= SAMSUNG_MAX_TVS) fail(409, 'Il certificato Samsung ha già ' + SAMSUNG_MAX_TVS + ' TV: chiedi a chi amministra di toglierne una');
+    if (!user) {
+      const ip = request.headers.get('CF-Connecting-IP') || 'x';
+      const day = Math.floor(now() / 86400);
+      const k = 'samsung_ip:' + ip;
+      let c = await samsungKv(env, k);
+      if (!c || c.d !== day) c = { d: day, n: 0 };
+      if (c.n >= SAMSUNG_IP_DAY) fail(429, 'Troppe TV nuove da questa rete oggi: riprova domani');
+      c.n++;
+      await kvSet(env, k, JSON.stringify(c));
+    }
+    await env.DB.prepare('INSERT INTO samsung_tvs(duid, user_id, model, name, t) VALUES(?,?,?,?,?)')
+      .bind(duid, user ? user.id : null, cleanText(b.model, 40), cleanText(b.name, 60), now()).run();
+    const who = user ? user.username : 'Qualcuno';
+    const tv = cleanText(b.name, 60) || cleanText(b.model, 40) || 'una TV Samsung';
+    if (!(await samsungToken(env))) await samsungTellAdmins(env, 'TV Samsung in attesa',
+      who + ' vuole BunkerPlex su ' + tv + ': apri BunkerPlex → Impostazioni → Collegamento e visione → ' +
+      'Certificato Samsung → Accedi a Samsung.');
+    await samsungKick(env);
+  }
+  return json(await samsungTvState(env, duid));
+}
+
 async function samsungPublicRoutes(request, env, path, method) {
   const tm = /^\/samsung\/tv\/([A-Za-z0-9]{10,64})$/.exec(path);
   if (tm && method === 'GET') return json(await samsungTvState(env, tm[1]));
+  if (path === '/samsung/tv' && method === 'POST' && !request.headers.get('Authorization')) return samsungAddTv(request, env, null);
 
   // GitHub: cosa c'e' da fare
   if (path === '/samsung/job' && method === 'GET') {
@@ -2995,7 +3034,7 @@ async function samsungPublicRoutes(request, env, path, method) {
       if (b.error === 'token') {
         await env.DB.prepare("DELETE FROM kv WHERE k = 'samsung_token'").run();
         if (first) await samsungTellAdmins(env, 'Serve un accesso a Samsung',
-          'Una TV Samsung aspetta il certificato: apri BunkerPlex sul telefono → Installa sulla TV → TV Samsung → Accedi a Samsung.');
+          'Una TV Samsung aspetta il certificato: apri BunkerPlex sul telefono → Impostazioni → Collegamento e visione → Certificato Samsung → Accedi a Samsung.');
       }
       await kvSet(env, 'samsung_cert', JSON.stringify(cert));
       return json({ ok: true });
@@ -3013,25 +3052,9 @@ async function samsungPublicRoutes(request, env, path, method) {
 async function samsungUserRoutes(request, env, path, method, user) {
   if (!/^\/samsung\//.test(path)) return null;
   // Dal telefono o dal server di casa: questa TV vuole il certificato Samsung
-  if (path === '/samsung/tv' && method === 'POST') {
-    const b = await body(request);
-    const duid = String(b.duid || '').trim();
-    if (!SAMSUNG_DUID.test(duid)) fail(400, 'Codice della TV (DUID) non valido');
-    await ensureSamsung(env);
-    const known = await env.DB.prepare('SELECT duid FROM samsung_tvs WHERE duid = ?').bind(duid).first();
-    if (!known) {
-      const n = await env.DB.prepare('SELECT COUNT(*) n FROM samsung_tvs').first('n');
-      if (n >= SAMSUNG_MAX_TVS) fail(409, 'Il certificato Samsung ha già ' + SAMSUNG_MAX_TVS + ' TV: chiedi a chi amministra di toglierne una');
-      await env.DB.prepare('INSERT INTO samsung_tvs(duid, user_id, model, name, t) VALUES(?,?,?,?,?)')
-        .bind(duid, user.id, cleanText(b.model, 40), cleanText(b.name, 60), now()).run();
-      if (!(await samsungToken(env))) await samsungTellAdmins(env, 'TV Samsung in attesa',
-        (user.username || 'Qualcuno') + ' vuole BunkerPlex su una TV Samsung: apri BunkerPlex sul telefono → ' +
-        'Installa sulla TV → TV Samsung → Accedi a Samsung.');
-      await samsungKick(env);
-    }
-    return json(await samsungTvState(env, duid));
-  }
-  if (!user.admin || user.via_server) fail(403, 'Solo chi amministra BunkerPlex');
+  if (path === '/samsung/tv' && method === 'POST') return samsungAddTv(request, env, user);
+  // Chi amministra: dal suo gettone o dal server di casa di cui e' proprietario
+  if (!user.admin) fail(403, 'Solo chi amministra BunkerPlex');
 
   // Chi amministra: com'e' messo il certificato
   if (path === '/samsung/admin' && method === 'GET') {

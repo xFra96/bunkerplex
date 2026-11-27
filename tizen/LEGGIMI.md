@@ -67,11 +67,13 @@ distributore che elenca le TV (DUID, fino a 50). Si fa da solo:
    (`POST /samsung/tv`). Poi aspetta con la pagina aperta e, appena il certificato è
    pronto, installa da solo `BunkerPlex-samsung-cert.wgt`. Una TV già nel certificato
    riceve subito quella.
-2. **Chi amministra BunkerPlex** deve aver fatto l'accesso al suo account Samsung:
-   telefono → Impostazioni → Installa sulla TV → TV Samsung → **Accedi a Samsung**. Si
-   apre la pagina di Samsung, ci si entra e il telefono passa il gettone al servizio
-   (come Tizen Studio: Samsung rimanda a `http://localhost:4794/signin/callback`, dove
-   ascolta l'app). Il gettone dura un po': finché vale, le TV nuove passano senza
+2. **Chi amministra BunkerPlex** deve aver fatto l'accesso al suo account Samsung, dall'app
+   Android del telefono: Impostazioni → Collegamento e visione → **Certificato Samsung** →
+   Accedi a Samsung (o dal pulsante che compare in «Installa sulla TV» mentre una TV
+   aspetta). Si apre la pagina di Samsung, ci si entra; l'app riceve il gettone (come
+   Tizen Studio: Samsung rimanda a `http://localhost:4794/signin/callback`, dove ascolta
+   l'app) e la PWA lo manda al servizio, dal server di casa con la sua credenziale. La
+   richiesta della TV invece non chiede l'account (poche TV nuove al giorno per rete). Il gettone dura un po': finché vale, le TV nuove passano senza
    toccare niente. Quando serve rifarlo, a chi amministra arriva un avviso
    («TV Samsung in attesa» / «Serve un accesso a Samsung»).
 3. **GitHub** (`.github/workflows/app-samsung.yml`, lavoro `samsung`, ogni 5 minuti) chiede
