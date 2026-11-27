@@ -5559,8 +5559,8 @@ def set_disabled(cloud_id=None, uid=None, off=True):
 
 def sync_user(uid, token, via_cred=False):
     """via_cred: il proprietario non ha dato la password su questo PC (e' entrato dalla
-    PWA o dalla TV): si sincronizza con la credenziale del server, solo impostazioni,
-    visti e profili; amici e avvisi aspettano che entri con la password."""
+    PWA o dalla TV): si sincronizza con la credenziale del server impostazioni, visti,
+    profili e avvisi (nuovi titoli, aggiornamenti); gli amici aspettano che entri con la password."""
     refresh_role(uid, token)
     push_settings(uid, token)
     pull_settings(uid, token)
@@ -5583,7 +5583,7 @@ def sync_user(uid, token, via_cred=False):
         publish_presence(uid, token)
     else:
         sync_friends(uid, token)      # amici dell'account (un servizio di prima risponde 404: niente)
-        sync_notices(uid, token)      # avvisi per telefoni e tablet: partono quelli in coda, arrivano gli ultimi
+    sync_notices(uid, token)          # avvisi per telefoni e tablet: partono quelli in coda, arrivano gli ultimi
     con = db(raw=True)
     try:
         con.execute("UPDATE users SET last_sync=? WHERE id=?", (time.time(), uid))
@@ -5795,6 +5795,10 @@ def note_update():
     if not before:
         return                     # prima installazione: niente da annunciare
     print("BunkerPlex aggiornato:", before[:7], "->", now[:7], flush=True)
+    try:
+        notice_updated()
+    except Exception as ex:
+        print("Avviso dell'aggiornamento fatto non preparato:", repr(ex), flush=True)
     for wait in (0, 60, 600):      # la rete puo' non essere ancora pronta
         time.sleep(wait)
         try:
@@ -5808,6 +5812,23 @@ def note_update():
                 n["changes"] = found
                 save_config()
         return
+
+
+def notice_updated():
+    """Notifica sul telefono del padrone: il server si e' aggiornato (anche da solo,
+    di notte). Parte alla prossima sincronizzazione con il servizio account."""
+    owner = server_owner()
+    if owner is None:
+        return
+    ver = ""
+    for _ in range(10):            # il nome della versione puo' arrivare da GitHub tra poco
+        ver = updater.release()
+        if ver:
+            break
+        time.sleep(3)
+    what = f"alla versione {ver}" if ver else "all'ultima versione"
+    queue_notice(owner, {"kind": "update", "title": "BunkerPlex aggiornato",
+                         "body": f"{pc_name()} è passato {what}."})
 
 
 def update_notice():

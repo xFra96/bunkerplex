@@ -178,6 +178,24 @@ class Profili(unittest.TestCase):
         self.assertEqual(r["profile"], 301)
         self.assertEqual(app.session_user(r["session"])["profile"], 301)
 
+    def test_avvisi_anche_col_codice_e_dopo_un_aggiornamento(self):
+        # Server collegato con il codice (proprietario senza password sul PC): gli avvisi partono lo stesso
+        with mock.patch.object(app, "sync_notices") as sn, mock.patch.object(app, "publish_presence"), \
+                mock.patch.object(app, "sync_friends") as sf:
+            app.sync_user(self.uid, "t" * 64, via_cred=True)
+        sn.assert_called_once_with(self.uid, "t" * 64)
+        sf.assert_not_called()
+        # Aggiornamento fatto (anche da solo): notifica al proprietario con la versione
+        with mock.patch.object(app.updater, "release", return_value="3.42.4"), \
+                mock.patch.object(app, "server_owner", return_value=self.uid), \
+                mock.patch.object(app, "pc_name", return_value="PC Anna"), \
+                mock.patch.object(app, "queue_notice") as q:
+            app.notice_updated()
+        uid, body = q.call_args[0]
+        self.assertEqual(uid, self.uid)
+        self.assertEqual([body["kind"], body["title"]], ["update", "BunkerPlex aggiornato"])
+        self.assertEqual(body["body"], "PC Anna è passato alla versione 3.42.4.")
+
 
 class Collegamento(unittest.TestCase):
     def setUp(self):

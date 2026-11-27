@@ -622,8 +622,11 @@ async function claimUserRoutes(request, env, path, method, user) {
 // Con la credenziale del server si leggono e scrivono i dati del proprietario che
 // servono al server (impostazioni, visti, profili): cosi' funziona anche quando sul PC
 // il proprietario e' entrato solo dalla PWA o dalla TV (gettone d'accesso, nessuna password).
+// /notices: il server collegato con il codice manda gli avvisi (nuovi titoli, aggiornamenti) al
+// telefono del proprietario anche se lui sul PC non ha mai scritto la password.
 const SERVER_AS_OWNER = [['GET', /^\/me$/], ['GET', /^\/settings$/], ['PUT', /^\/settings$/], ['GET', /^\/state$/],
-  ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/]];
+  ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/],
+  ['POST', /^\/notices$/], ['GET', /^\/notices$/]];
 
 async function serverAsOwner(request, env, path, method) {
   if (!/^Bearer s_/.test(request.headers.get('Authorization') || '')) return null;

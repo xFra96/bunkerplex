@@ -39,6 +39,17 @@ Se resta «per ora l'app controlla gli avvisi ogni 15 minuti circa»: il segreto
 oppure il telefono non ha Google Play. Appena il segreto è giusto l'app passa da sola alle notifiche istantanee
 (al primo controllo o alla prossima apertura).
 
+## Aggiornamenti del server
+
+Il server avvisa il telefono del proprietario (avvisi dell'account, tipo «aggiornamenti»):
+
+- **«BunkerPlex aggiornato»** dopo ogni aggiornamento installato, anche quello automatico di notte
+  (`notice_updated` in `server/app.py`, con il numero della versione);
+- **«Aggiornamento di BunkerPlex disponibile»** quando l'installazione automatica è spenta (`notice_update_available`).
+
+Partono alla sincronizzazione con il servizio account, anche se il server è collegato con il codice e il
+proprietario sul PC non ha mai scritto la password (il Worker accetta `/notices` con la credenziale del server).
+
 ## Aggiornamenti dell'app
 
 Sul telefono e sul tablet (non sulle TV) arriva **«Aggiornamento di BunkerPlex disponibile»** appena esce una

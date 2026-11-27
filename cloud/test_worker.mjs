@@ -1192,3 +1192,24 @@ test("aggiornamento dell'app: un avviso FCM al topic, una volta per versione", a
   await withNet(fake, () => worker.scheduled({ cron: '0 6 * * 1' }, t.env));
   assert.equal(net.st.sent.length, before);
 });
+
+test('il server collegato con il codice manda gli avvisi al telefono del proprietario', async () => {
+  const t = await twoFriends();
+  const annaPc = await t.login('anna', 'server', 'PC di Anna');
+  const cred = (await t.call('POST', `/servers/${SID}/claim`, { name: 'PC Anna' }, annaPc)).body.credential;
+  const net = fakeFcm();
+  t.env.FCM_SERVICE_ACCOUNT = JSON.stringify(net.sa);
+  const anna = await noticeDev(t, 'anna');
+  await t.call('POST', `/avvisi/${anna.dev}/fcm`, { token: FCM_TOK });
+
+  const r = await withNet(net, () => t.call('POST', '/notices',
+    { kind: 'update', title: 'BunkerPlex aggiornato', body: 'PC Anna è passato alla versione 3.42.4.' }, cred));
+  assert.deepEqual([r.status, r.body.sent], [200, 1]);
+  const m = net.st.sent[net.st.sent.length - 1];
+  assert.deepEqual([m.token, m.data.title], [FCM_TOK, 'BunkerPlex aggiornato']);
+  const list = await t.call('GET', '/notices', undefined, cred);
+  assert.equal(list.status, 200);
+  assert.equal(list.body.notices[0].title, 'BunkerPlex aggiornato');
+  // Il resto dell'account resta fuori dalla credenziale del server
+  assert.equal((await t.call('POST', '/notices/devices', { kind: 'android', label: 'x' }, cred)).status, 403);
+});
