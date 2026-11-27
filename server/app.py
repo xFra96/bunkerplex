@@ -4785,6 +4785,40 @@ async def auth_google_poll(fid: str):
     return with_session({"done": True, "ok": True, "user": user_json(u), "conflicts": conflicts}, token)
 
 
+# Sicurezza dell'accesso (Impostazioni → Account) anche da qui: passkey e verifica in
+# due passaggi stanno nel servizio account; il server le chiede con il gettone
+# dell'account di chi e' entrato. «Conferma che sei tu» con la password: la verifica
+# si calcola qui (la password non va al servizio). Aggiungere una passkey invece si fa
+# solo dalla pagina del servizio (le passkey sono del suo indirizzo): GET passkeys
+# porta «service», l'indirizzo da aprire.
+SEC_PATHS = re.compile(r"^(passkeys|passkeys/verify|2fa|2fa/(setup|enable|disable|recovery|trust)"
+                       r"|passkeys/[A-Za-z0-9_-]{1,400}(/remove(/confirm)?)?)$")
+
+
+@app.api_route("/api/auth/sec/{path:path}", methods=["GET", "POST", "PATCH", "DELETE"])
+async def auth_security(path: str, request: Request):
+    u = CURRENT.get()
+    if u is None or not u["linked"]:
+        raise HTTPException(400, "Qui non sei entrato con un account")
+    if not SEC_PATHS.match(path) or path.startswith(("passkeys/register", "passkeys/login", "passkeys/verify/")):
+        raise HTTPException(404, "Non trovato")
+    token = user_cloud_token(u["id"])
+    body = None if request.method in ("GET", "DELETE") else await read_json(request)
+    if path == "passkeys/verify" and body and body.get("password"):
+        body = {"verifier": await asyncio.to_thread(accounts.verifier, u["name"], str(body["password"]))}
+    try:
+        res = await asyncio.to_thread(accounts.call, request.method, "/" + path, body, token, 15)
+    except accounts.CloudError as ex:
+        # Passa anche i campi in piu' (es. «reauth»: prima conferma che sei tu)
+        return JSONResponse({**(ex.data or {}), "detail": ex.detail},
+                            status_code=ex.status if ex.status in (400, 401, 403, 404, 409, 429) else 502)
+    except accounts.CloudOffline:
+        raise HTTPException(503, "Il servizio account non risponde: riprova tra poco")
+    if path == "passkeys" and isinstance(res, dict):
+        res["service"] = accounts.cloud_url()
+    return res
+
+
 @app.delete("/api/auth/google")
 async def auth_google_unlink():
     u = CURRENT.get()

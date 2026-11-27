@@ -1952,3 +1952,7 @@ html.tv .gstatus { font-size: 1.15rem; margin-bottom: 1.8rem; }
 .secline .actions { margin: 0; flex-wrap: nowrap; }
 .secerr { color: #ff8f80; margin: .2rem 0 .8rem; }
 @media (max-width: 520px) { .secline { flex-wrap: wrap; } .secline .actions { width: 100%; } }
+/* Sicurezza dell'accesso dentro il riquadro Account: sezioni come «Email» e «Google», non un riquadro nel riquadro */
+.secbox .secsec h2 { margin-top: 1.2rem; }
+.secpage .secsec:first-child h2 { margin-top: 0; }
+.secpage { text-align: left; }
