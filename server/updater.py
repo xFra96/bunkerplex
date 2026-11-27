@@ -498,6 +498,13 @@ def wake():
     _wake.set()
 
 
+def announced_version(commit):
+    """Il numero della release annunciata (es. 3.43.1) se e' quella di 'commit'
+    (anche abbreviato), altrimenti ""."""
+    c = str(commit or "")
+    return _push["version"] if c and len(c) >= 7 and _push["commit"].startswith(c) else ""
+
+
 def pushed():
     """True se gli avvisi di release arrivano (non serve controllare a intervalli)."""
     return time.time() - _push["at"] < PUSH_FRESH
@@ -928,15 +935,21 @@ def apps_loop():
         time.sleep(600)
 
 
-def loop(auto):
+def loop(auto, on_new=None):
     """Controllo all'avvio, poi a ogni avviso di release (o ogni CHECK_HOURS se gli
-    avvisi non arrivano). 'auto' dice se installare da soli quando nessuno guarda."""
+    avvisi non arrivano). 'auto' dice se installare da soli quando nessuno guarda;
+    on_new() avvisa della versione nuova (prima di installarla)."""
     _sleep(90, always=True)
     while True:
         wait, always = CHECK_HOURS * 3600, False
         try:
             if _status["phase"] != "host":
                 check()
+                if available() and on_new:
+                    try:
+                        on_new()
+                    except Exception as ex:
+                        print("Avviso della versione nuova non preparato:", repr(ex), flush=True)
                 if available() and auto():
                     # c'e' un film in corso, o l'installazione non e' riuscita: si riprova tra poco
                     wait, always = 15 * 60, True

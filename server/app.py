@@ -2713,7 +2713,7 @@ def startup():
         threading.Thread(target=watch_loop, daemon=True).start()
     threading.Thread(target=sigle_loop, daemon=True).start()
     updater.resume()      # l'aiutante sul PC stava aggiornando (e ha riacceso il server)?
-    threading.Thread(target=updater.loop, args=(auto_update,), daemon=True).start()
+    threading.Thread(target=updater.loop, args=(auto_update, notice_update_available), daemon=True).start()
     threading.Thread(target=updater.apps_loop, daemon=True).start()   # copie delle app per la prima installazione
     threading.Thread(target=friends_loop, daemon=True).start()
     cast.scan_later()     # la lista di «Guarda su» pronta quando serve
@@ -5360,11 +5360,14 @@ def announce_new(ids, lib_before, gone_names):
 
 
 def notice_update_available():
-    """Aggiornamento trovato su GitHub e installazione automatica spenta: lo si dice
-    al padrone del server, una volta per ogni versione nuova."""
+    """Versione nuova trovata: lo si dice al padrone del server, una volta per ogni
+    versione. Manuale: la installa lui (Impostazioni → Aggiornamenti). Automatico:
+    parte da sola, e a installazione finita arriva «BunkerPlex aggiornato»
+    (notice_updated). La chiama anche il giro degli aggiornamenti prima di
+    installare, cosi' l'avviso c'e' anche quando il server si riavvia subito."""
     snap = updater.snapshot()
     remote = snap.get("remote") or ""
-    if not snap.get("available") or auto_update() or not remote or config.get("notified_update") == remote:
+    if not snap.get("available") or not remote or config.get("notified_update") == remote:
         return
     owner = server_owner()
     if owner is None:
@@ -5372,8 +5375,15 @@ def notice_update_available():
     with config_lock:
         config["notified_update"] = remote
         save_config()
-    queue_notice(owner, {"kind": "update", "title": "Aggiornamento di BunkerPlex disponibile",
-                         "body": f"Su {pc_name()}: installalo da Impostazioni → Aggiornamenti."})
+    ver = updater.announced_version(remote)
+    what = f"La versione {ver}" if ver else "Una versione nuova"
+    if auto_update():
+        queue_notice(owner, {"kind": "update", "title": "Nuova versione di BunkerPlex",
+                             "body": f"{what} si sta installando su {pc_name()} (se c'è un video in corso, appena finisce). "
+                                     "Ti avviso quando ha finito."})
+    else:
+        queue_notice(owner, {"kind": "update", "title": "Aggiornamento di BunkerPlex disponibile",
+                             "body": f"{what} è pronta per {pc_name()}: installala da Impostazioni → Aggiornamenti."})
 
 
 def sync_notices(uid, token):

@@ -35,6 +35,12 @@ class AvvisoRelease(unittest.TestCase):
         updater.notify(B, "3.43")          # stesso annuncio alla presenza dopo: niente
         self.assertFalse(updater._wake.is_set())
 
+    def test_numero_della_release_annunciata(self):
+        updater.notify(B, "3.43.1")
+        self.assertEqual(updater.announced_version(B[:7]), "3.43.1")
+        self.assertEqual(updater.announced_version(A[:7]), "")
+        self.assertEqual(updater.announced_version(""), "")
+
     def test_valori_strani_ignorati(self):
         updater.notify("zz", "x")
         self.assertFalse(updater.pushed())
