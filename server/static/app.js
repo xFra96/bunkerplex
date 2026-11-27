@@ -4324,6 +4324,77 @@ async function tvPanel() {
   return '<div class="panel" id="tvpanel"><h2>Installa sulla TV dal PC</h2>' + tvPanelBody(t) + '</div>';
 }
 
+// ---------------------------------------------------------------- App sulle TV Samsung dal PC (sdb)
+// Le Samsung (Tizen) non prendono l'APK: il server installa l'app Tizen con la
+// Modalita' sviluppatore della TV (server/samsunginstall.py). Senza installare
+// niente, BunkerPlex si usa comunque dal browser della TV.
+var ssPoll = null;
+
+function ssRow(tv, t, pc) {
+  var name = tv.name || 'TV Samsung';
+  var state, btn = '';
+  if (t.phase && t.target === tv.ip) state = '<span class="nodot">' + esc(t.message || 'Un attimo…') + '</span>';
+  else if (!tv.dev) state = '<span class="nodot">Modalità sviluppatore spenta</span>';
+  else if (pc && tv.dev_ip && tv.dev_ip !== pc) state = '<span class="nodot">IP del PC host sulla TV: <span class="num">' + esc(tv.dev_ip) + '</span>, deve essere <span class="num">' + esc(pc) + '</span></span>';
+  else if (tv.installed) state = '<span class="okdot">App installata</span>';
+  else state = 'Pronta per l\'app';
+  if (!t.phase && tv.dev) {
+    btn = '<div class="actions" style="justify-content:flex-end;margin-top:.4rem"><button class="btn' + (tv.installed ? '' : ' primary') +
+      ' f" data-act="ssinstall" data-arg="' + esc(tv.ip) + '" data-key="ssi-' + esc(tv.ip) + '">' + (tv.installed ? 'Reinstalla' : 'Installa l\'app') + '</button></div>';
+  }
+  return '<dt>' + esc(name) + '<small class="num">' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip) + '</small></dt><dd>' + state + btn + '</dd>';
+}
+
+function ssBody(t) {
+  if (!t) return '<p>Il server non risponde in questo momento.</p>';
+  var pc = t.pc || '';
+  var tvs = t.tvs || [];
+  var html = '<p>Le Samsung non hanno Android. BunkerPlex si usa già dal <b>browser della TV</b> (Internet), senza installare niente; ' +
+    'l\'app aggiunge l\'icona tra le App e il PC la installa da qui.</p>' +
+    '<ol><li>Sulla TV apri <b>App</b>, scrivi <b>1 2 3 4 5</b> col telecomando e accendi <b>Modalità sviluppatore</b>. ' +
+      'Come <b>IP del PC host</b> scrivi <b class="num">' + esc(pc || 'l\'IP di questo PC') + '</b>, poi spegni e riaccendi la TV.</li>' +
+    '<li>Cerca la TV qui sotto e premi <b>Installa l\'app</b>.</li></ol>';
+  if (t.phase && !t.target) html += '<p class="nodot">' + esc(t.message || 'Cerco…') + '</p>';
+  else if (t.error) html += '<p class="nodot">' + esc(t.error) + '</p>';
+  else if (t.step === 'done') html += '<p class="okdot">' + esc((t.log || []).slice(-1)[0] ? t.log.slice(-1)[0].text : 'Fatto') + '</p>';
+  if (tvs.length) html += '<dl class="kv">' + tvs.map(function (tv) { return ssRow(tv, t, pc); }).join('') + '</dl>';
+  else if (t.scanned_at && !t.phase) html += '<p>Nessuna TV Samsung trovata nella rete di casa: controlla che sia accesa e sulla stessa rete del PC.</p>';
+  html += '<div class="actions" style="margin-top:.8rem">' +
+    (t.phase ? '<button class="btn f" data-act="sscancel" data-key="sscancel">Interrompi</button>'
+      : '<button class="btn' + (tvs.length ? '' : ' primary') + ' f" data-act="ssscan" data-key="ssscan">' + (t.scanned_at ? 'Cerca di nuovo' : 'Cerca le TV Samsung') + '</button>' +
+        '<input class="field f num tvaddr" id="ssaddr" data-key="ssaddr" placeholder="Indirizzo della TV, es. 192.168.1.180" data-enter="ssaddrgo">' +
+        '<button class="btn f" data-act="ssaddrgo" data-key="ssaddrgo">Installa</button>') + '</div>';
+  if ((t.log || []).length) html += '<div class="tvlogtitle"><h3>Cosa sta succedendo</h3></div>' + tvLog(t);
+  html += '<p class="kvnote">Le TV più nuove (dal 2024 circa) possono rifiutare l\'app: vogliono un certificato Samsung fatto per loro. ' +
+    'Il browser della TV va bene con tutte.</p>';
+  return html;
+}
+
+function ssShow(t) {
+  var el = document.getElementById('sspanel');
+  if (!el) { clearTimeout(ssPoll); ssPoll = null; return; }
+  var addr = document.getElementById('ssaddr');
+  var keep = addr ? addr.value : '';
+  var focused = document.activeElement && document.activeElement.getAttribute('data-key');
+  el.innerHTML = '<h2>Installa sulla TV Samsung dal PC</h2>' + ssBody(t);
+  addr = document.getElementById('ssaddr');
+  if (addr) addr.value = keep;
+  if (focused) { var f = el.querySelector('[data-key="' + focused + '"]'); if (f && !f.disabled) f.focus(); }
+  var lg = el.querySelector('.tvlog'); if (lg) lg.scrollTop = lg.scrollHeight;
+  clearTimeout(ssPoll);
+  ssPoll = t && t.phase ? setTimeout(function () { api('/tv/samsung').then(ssShow, function () { ssShow(null); }); }, 1500) : null;
+}
+
+function ssSend(path, body) {
+  return post('/tv/samsung/' + path, body).then(ssShow, function (e) { toast(e.message); });
+}
+
+async function samsungPanel() {
+  var t = await api('/tv/samsung').catch(function () { return null; });
+  setTimeout(function () { if (t && t.phase) ssShow(t); }, 0);
+  return '<div class="panel" id="sspanel"><h2>Installa sulla TV Samsung dal PC</h2>' + ssBody(t) + '</div>';
+}
+
 // Indirizzi del PC, ognuno dove serve: quello di casa in «App per TV e telefono»
 // (lo usano TV e telefoni), quelli da fuori casa in «PC e dispositivi»
 function lanPanel(n) {
@@ -4565,7 +4636,7 @@ async function settingsArea(area) {
   if (area === 'apps') {
     var net = await api('/network').catch(function () { return null; });
     return settingsShell('apps', 'App per TV e telefono', 'L\'app per TV e telefoni Android arriva da questo PC e poi si aggiorna da sola.',
-      await publicPanel() + installPanel() + await tvPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
+      await publicPanel() + installPanel() + await tvPanel() + await samsungPanel() + await apkPanel('App Android per il telefono') + lanPanel(net));
   }
 
   // Questo dispositivo: come arriva al server (locale / online) e preferenze di visione
@@ -4616,7 +4687,8 @@ function phoneTvOk() {
 function phoneTvPanel() {
   if (!phoneTvOk()) return '';
   return '<div class="panel"><h2>App sulla TV</h2>' +
-    '<p>Installa BunkerPlex sulla TV di casa direttamente da questo telefono: basta accendere una volta il debug sulla TV.</p>' +
+    '<p>Installa BunkerPlex sulla TV direttamente da questo telefono, anche a casa di un amico: sulle TV Android basta accendere una volta il debug, ' +
+      'sulle <b>Samsung</b> la Modalità sviluppatore (scheda «TV Samsung»).</p>' +
     '<div class="actions"><button class="btn primary f" data-act="phonetv" data-key="phonetv">Installa sulla TV</button></div></div>';
 }
 
@@ -8184,6 +8256,14 @@ var actions = {
   updinstall: function () { startServerUpdate(); },
   // --- app sulla TV dal PC
   tvscan: function () { tvSend('scan'); },
+  ssscan: function () { ssSend('scan'); },
+  ssinstall: function (ip) { ssSend('install', { ip: ip }); },
+  ssaddrgo: function () {
+    var ip = fieldValue('ssaddr').trim();
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { toast('Scrivi l\'indirizzo della TV, es. 192.168.1.180'); return; }
+    ssSend('install', { ip: ip });
+  },
+  sscancel: function () { ssSend('cancel'); },
   tvconnect: function () {
     var v = (document.getElementById('tvaddr') || {}).value || '';
     if (!v.trim()) { toast('Scrivi l\'indirizzo della TV (Impostazioni → Rete sulla TV)'); return; }
