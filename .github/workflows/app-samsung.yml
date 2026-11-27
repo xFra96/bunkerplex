@@ -7,11 +7,16 @@
 # nuove vogliono un certificato Samsung legato alla TV: lo si aggiunge al momento di
 # installare (vedi tizen/LEGGIMI.md e strumenti/sviluppo/Installa su TV Samsung.bat).
 #
+# Gli strumenti Tizen sono quelli dell'immagine Docker di install-jellyfin-tizen, la
+# stessa dell'installazione (bloccata a una versione provata). Tizen Studio 5.6 sul
+# server di GitHub non legge il certificato d'autore («Invalid file or password»).
+#
 # Il certificato d'autore deve restare sempre lo stesso, se no la TV non accetta
 # l'aggiornamento («Author certificate not match»): sta nei segreti
 #   TIZEN_AUTHOR_P12_B64  (il file .p12 in base64)
 #   TIZEN_AUTHOR_PASSWORD (la sua password)
-# Senza i segreti se ne crea uno al volo (va bene per provare, non per aggiornare).
+# Il certificato vale fino al 2027-01-01, come la «Tizen Developers CA» che lo firma:
+# poi va rifatto (vedi tizen/LEGGIMI.md).
 
 name: Pubblica l'app per TV Samsung
 
@@ -30,7 +35,7 @@ concurrency:
 
 env:
   GH_TOKEN: ${{ github.token }}
-  TIZEN_STUDIO_VER: "5.6"
+  TIZEN_IMAGE: ghcr.io/georift/install-jellyfin-tizen@sha256:d872a8b7fdb8f9c52e8181a76d3f320fda585c0e059d65d800d2aadad27f0a66
 
 jobs:
   release:
@@ -39,60 +44,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Tizen Studio (solo riga di comando)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq expect zip > /dev/null
-          curl -fsSL -o tizen-installer \
-            "https://download.tizen.org/sdk/Installer/tizen-studio_${TIZEN_STUDIO_VER}/web-cli_Tizen_Studio_${TIZEN_STUDIO_VER}_ubuntu-64.bin"
-          chmod +x tizen-installer
-          ./tizen-installer --accept-license "$HOME/tizen-studio"
-          rm tizen-installer
-          echo "$HOME/tizen-studio/tools/ide/bin" >> "$GITHUB_PATH"
-
-      - name: Certificato d'autore
+      - name: Compila e firma
         env:
           P12_B64: ${{ secrets.TIZEN_AUTHOR_P12_B64 }}
           P12_PW: ${{ secrets.TIZEN_AUTHOR_PASSWORD }}
         run: |
-          mkdir -p cert
-          if [ -n "$P12_B64" ] && [ -n "$P12_PW" ]; then
-            echo "$P12_B64" | base64 -d > cert/author.p12
-            echo "PW=$P12_PW" >> "$GITHUB_ENV"
-          else
-            echo "::warning::Mancano TIZEN_AUTHOR_P12_B64 e TIZEN_AUTHOR_PASSWORD: certificato creato al volo. Gli aggiornamenti sulla TV non passeranno (serve disinstallare prima)."
-            pw="$(openssl rand -hex 12)"
-            echo "::add-mask::$pw"
-            tizen certificate -a BunkerPlex -p "$pw" -c IT -n BunkerPlex -f bunkerplex
-            cp "$(find "$HOME/tizen-studio-data" -name 'bunkerplex.p12' | head -1)" cert/author.p12
-            echo "PW=$pw" >> "$GITHUB_ENV"
+          if [ -z "$P12_B64" ] || [ -z "$P12_PW" ]; then
+            echo "::error::Mancano i segreti TIZEN_AUTHOR_P12_B64 e TIZEN_AUTHOR_PASSWORD (il certificato d'autore)."
+            exit 1
           fi
-          tizen security-profiles add -n BunkerPlex -a "$PWD/cert/author.p12" -p "$PW"
-          # Le password nel profilo in chiaro: cosi' «tizen package» non le chiede
-          prof="$HOME/tizen-studio-data/profile/profiles.xml"
-          sed -i "s|$PWD/cert/author.pwd|$PW|g" "$prof"
-          sed -i 's|[^"]*tizen-distributor-signer.pwd|tizenpkcs12passfordsigner|g' "$prof"
-          sed -i 's|password=""|password="tizenpkcs12passfordsigner"|g' "$prof"
-
-      - name: Compila e firma
-        run: |
-          rm -rf build && mkdir -p build out
-          cp tizen/config.xml tizen/index.html tizen/icon.png build/
-          tizen build-web -- "$PWD/build"
-          expect <<EOF
-          set timeout 300
-          spawn tizen package -t wgt -s BunkerPlex -o "$PWD/out" -- "$PWD/build/.buildResult"
-          expect {
-            "Author password:" { send -- "\$env(PW)\r"; exp_continue }
-            "Yes: (Y), No: (N) ?" { send -- "N\r"; exp_continue }
-            eof
-          }
-          EOF
-          f=$(ls out/*.wgt | head -1)
-          test -n "$f"
-          mv "$f" out/BunkerPlex.wgt
-          unzip -l out/BunkerPlex.wgt
+          mkdir -p cert out
+          echo "$P12_B64" | base64 -d > cert/author.p12
+          chmod 755 cert && chmod 644 cert/author.p12 && chmod 777 out    # nel contenitore si e' un altro utente
+          docker run --rm -e PW="$P12_PW" -v "$PWD/tizen:/src:ro" -v "$PWD/cert:/cert:ro" -v "$PWD/out:/out" \
+            --entrypoint /bin/bash "$TIZEN_IMAGE" -c '
+            set -e
+            mkdir -p /tmp/b /tmp/o
+            cp /src/config.xml /src/index.html /src/icon.png /tmp/b/
+            cp /cert/author.p12 /tmp/a.p12
+            tizen security-profiles add -n BunkerPlex -a /tmp/a.p12 -p "$PW" > /dev/null
+            # le password in chiaro nel profilo: cosi tizen package non le chiede
+            prof="$HOME/tizen-studio-data/profile/profiles.xml"
+            sed -i "s|password=\"/tmp/a.pwd\"|password=\"$PW\"|; s|password=\"[^\"]*tizen-distributor-signer.pwd\"|password=\"tizenpkcs12passfordsigner\"|g" "$prof"
+            tizen build-web -- /tmp/b > /dev/null
+            tizen package -t wgt -s BunkerPlex -o /tmp/o -- /tmp/b/.buildResult < /dev/null | grep -v "$PW" || true
+            cp /tmp/o/*.wgt /out/BunkerPlex.wgt'
           rm -rf cert
+          unzip -l out/BunkerPlex.wgt
+          unzip -l out/BunkerPlex.wgt | grep -q author-signature.xml
 
       - name: Pubblica
         run: |
