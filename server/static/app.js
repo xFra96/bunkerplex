@@ -7756,7 +7756,7 @@ function updatePanel(u, title) {
     // Automatico (di base) o manuale: spento, arriva una notifica e si installa con «Aggiorna ora»
     (u.can_update !== false ? swRow('Aggiornamento automatico', !!u.auto,
       'data-act="updauto" data-arg="' + (u.auto ? '0' : '1') + '" data-key="updauto"',
-      u.auto ? 'Installa da solo le versioni nuove, quando nessuno guarda un video'
+      u.auto ? 'Installa da solo le versioni nuove, quando nessuno guarda un video: ti avviso quando esce e quando ha finito'
              : 'Manuale: ti avviso con una notifica e installi tu con «Aggiorna ora»') : '') +
     '<div class="actions">' +
       (u.available && !u.phase && u.can_update !== false ? '<button class="btn primary f" data-act="updinstall" data-key="updinstall">Aggiorna ora</button>' : '') +
