@@ -161,7 +161,8 @@ var ss = null;
 function ssSteps(t) {
   var ready = (t.tvs || []).some(function (x) { return x.dev; });
   var names = [['dev', 'Modalità sviluppatore'], ['scan', 'Cerco'], ['install', 'Installo'], ['done', 'Fatto']];
-  var step = t.step === 'done' ? 'done' : t.phase === 'install' ? 'install' : t.phase === 'scan' ? 'scan' : ready ? 'install' : 'dev';
+  if (t.step === 'cert') names.splice(3, 0, ['cert', 'Certificato Samsung']);
+  var step = t.step === 'done' ? 'done' : t.step === 'cert' ? 'cert' : t.phase === 'install' ? 'install' : t.phase === 'scan' ? 'scan' : ready ? 'install' : 'dev';
   var now = names.map(function (x) { return x[0]; }).indexOf(step);
   var failed = !!t.error && !t.phase;
   return '<ol class="steps">' + names.map(function (x, n) {
@@ -174,7 +175,9 @@ function ssNow(t) {
   var cls = '', msg;
   var tvs = t.tvs || [];
   if (t.phase) {
-    cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…') + '<div class="row"><button data-act="sscancel">Interrompi</button></div>';
+    cls = 'wait'; msg = '<span class="spin"></span>' + esc(t.message || 'Un attimo…') + '<div class="row">' +
+      (t.wait_login && t.admin && !t.login_busy ? '<button class="primary" data-act="sslogin">Accedi a Samsung</button>' : '') +
+      '<button data-act="sscancel">Interrompi</button></div>';
   } else if (t.error) {
     cls = 'err'; msg = esc(t.error);
   } else if (t.step === 'done') {
@@ -196,8 +199,30 @@ function ssRow(tv, t) {
   if (!tv.dev) st = '<span class="warn">Modalità sviluppatore spenta</span>';
   else if (t.pc && tv.dev_ip && tv.dev_ip !== t.pc) st = '<span class="warn">IP del PC host: ' + esc(tv.dev_ip) + ' (deve essere ' + esc(t.pc) + ')</span>';
   else st = tv.installed ? 'App installata' : 'Pronta';
-  return '<div class="dev"><div><b>' + esc(tv.name || 'TV Samsung') + '</b><small>' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip) + ' · ' + st + '</small></div>' +
+  return '<div class="dev"><div><b>' + esc(tv.name || 'TV Samsung') + '</b><small>' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip) + ' · ' + st +
+      (tv.duid ? '<br>Codice TV (DUID): ' + esc(tv.duid) : '') + '</small></div>' +
     (t.phase || !tv.dev ? '' : '<button class="' + (tv.installed ? '' : 'primary') + '" data-act="ssinstall" data-arg="' + esc(tv.ip) + '">' + (tv.installed ? 'Reinstalla' : 'Installa') + '</button>') + '</div>';
+}
+
+// Chi amministra BunkerPlex: il certificato Samsung delle TV e l'accesso a Samsung che
+// serve a farlo (dura un po', poi va rifatto: arriva un avviso)
+function ssAdminBox(t) {
+  var a = t.admin;
+  if (!a) return '';
+  var when = function (s) { return new Date(s * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' }); };
+  var login = a.login ? 'Accesso a Samsung attivo' + (a.login.email ? ' (' + esc(a.login.email) + ')' : '') + ' fino al ' + when(a.login.exp) + '.'
+    : '<span class="warn">Serve un accesso a Samsung</span> per mettere nel certificato le TV nuove.';
+  var waiting = (a.tvs || []).filter(function (x) { return !x.ready; });
+  var cert = a.cert && a.cert.tvs ? 'Nel certificato: ' + a.cert.tvs + ' TV' +
+    (a.cert.until ? ', vale fino al ' + when(a.cert.until) : '') + '.' : 'Ancora nessuna TV nel certificato.';
+  var err = a.cert && a.cert.error && a.cert.error !== 'token' ? '<br><span class="warn">Ultimo giro non riuscito: ' + esc(a.cert.detail || a.cert.error) + '</span>' : '';
+  return '<h2>Certificato Samsung (chi amministra)</h2><p>' + login + '<br>' + cert +
+    (waiting.length ? '<br>In attesa: ' + waiting.map(function (x) { return esc((x.name || x.model || 'TV') + (x.who ? ' di ' + x.who : '')); }).join(', ') + '.' : '') + err + '</p>' +
+    (t.login_msg ? '<p><small>' + esc(t.login_msg) + '</small></p>' : '') +
+    '<div class="row"><button class="' + (a.login ? '' : 'primary') + '" data-act="sslogin"' + (t.login_busy ? ' disabled' : '') + '>' +
+      (a.login ? 'Rifai l\'accesso a Samsung' : 'Accedi a Samsung') + '</button></div>' +
+    '<p><small>Le TV che rifiutano l\'app mandano qui il loro codice: con l\'accesso attivo GitHub prepara da solo l\'app firmata Samsung ' +
+      'con tutte le TV (qualche minuto) e il telefono la installa.</small></p>';
 }
 
 function renderSamsung(t) {
@@ -213,11 +238,11 @@ function renderSamsung(t) {
       '<li>Apri <b>App</b> e col telecomando scrivi <b>1 2 3 4 5</b> (sui telecomandi senza numeri: tieni premuto il tasto 123 o Home).</li>' +
       '<li>Metti <b>Modalità sviluppatore</b> su <b>On</b> e come <b>IP del PC host</b> scrivi l\'indirizzo di questo telefono:<div class="ip">' + esc(t.pc || '— (collega il telefono al Wi-Fi)') + '</div></li>' +
       '<li>Spegni e riaccendi la TV, poi premi <b>Cerca le TV</b>.</li></ol>' +
-    '<p><small>Le TV più nuove (dal 2024 circa) possono rifiutare l\'app: vogliono un certificato Samsung fatto per loro. ' +
-      'BunkerPlex funziona comunque dal <b>browser della TV</b> (Internet), senza installare niente.</small></p>' +
+    '<p><small>Le TV più nuove possono rifiutare l\'app: vogliono un certificato Samsung fatto per loro. Il telefono lo chiede da solo ' +
+      'e installa l\'app firmata Samsung appena è pronta. BunkerPlex funziona comunque dal <b>browser della TV</b> (Internet).</small></p>' +
     '<h2>Oppure scrivi l\'indirizzo della TV</h2><div class="row"><input id="addr" inputmode="decimal" autocomplete="off" placeholder="192.168.1.180">' +
       '<button data-act="ssmanual"' + (t.phase ? ' disabled' : '') + '>Installa</button></div>' +
-    logBox(t);
+    ssAdminBox(t) + logBox(t);
   if ($('addr')) $('addr').value = addr;
   var lg = $('log'); if (lg) lg.scrollTop = lg.scrollHeight;
 }
@@ -240,6 +265,7 @@ function showTab(name) {
     if (!state.scanned && !state.phase && state.supported) app.tvScan();
   } else if (name === 'samsung' && app.ssState) {
     renderSamsung(JSON.parse(app.ssState()));
+    if (app.ssAdmin) app.ssAdmin();
     if (!ss.scanned && !ss.phase) app.ssScan();
   }
 }
@@ -262,6 +288,7 @@ document.addEventListener('click', function (e) {
   else if (act === 'ssscan') app.ssScan();
   else if (act === 'ssinstall') app.ssInstall(arg);
   else if (act === 'sscancel') app.ssCancel();
+  else if (act === 'sslogin' && app.ssLogin) app.ssLogin();
   else if (act === 'ssmanual') {
     var ip = ($('addr').value || '').trim();
     if (ip) app.ssInstall(ip); else $('addr').focus();

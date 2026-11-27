@@ -17,6 +17,18 @@
 #   TIZEN_AUTHOR_PASSWORD (la sua password)
 # Il certificato vale fino al 2027-01-01, come la «Tizen Developers CA» che lo firma:
 # poi va rifatto (vedi tizen/LEGGIMI.md).
+#
+# Le TV che rifiutano il certificato generico (le piu' nuove) vogliono autore e
+# distributore firmati da Samsung, col distributore che elenca le TV (DUID). Il lavoro
+# «samsung» li chiede a Samsung (tizen/certificato_samsung.py) e pubblica
+# BunkerPlex-samsung-cert.wgt nella stessa release:
+#   - il telefono che installa manda il DUID della TV al servizio account;
+#   - chi amministra entra una volta nell'account Samsung dal telefono (il gettone
+#     dura un po'): il servizio lo tiene e lo passa qui;
+#   - ogni 5 minuti (o subito, se il servizio riesce ad avviare questo giro) si chiede
+#     al servizio se c'e' una TV nuova (GET /samsung/job, con RELEASE_KEY): se si',
+#     certificato nuovo con tutte le TV, app firmata, risultato al servizio
+#     (POST /samsung/job). I .p12 li tiene il servizio, cifrati con TIZEN_AUTHOR_PASSWORD.
 
 name: Pubblica l'app per TV Samsung
 
@@ -25,6 +37,8 @@ on:
     branches: [main]
     paths: ["tizen/**", ".github/workflows/app-samsung.yml"]
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
@@ -39,6 +53,7 @@ env:
 
 jobs:
   release:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -92,3 +107,105 @@ jobs:
             gh release create samsung-tv out/BunkerPlex.wgt out/BunkerPlex-samsung.json \
               --title "BunkerPlex per TV Samsung" --notes-file notes.md --verify-tag --latest=false
           fi
+
+  # L'app firmata Samsung per le TV che la vogliono (vedi sopra)
+  samsung:
+    needs: release
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RELEASE_KEY: ${{ secrets.RELEASE_KEY }}
+      P12_PW: ${{ secrets.TIZEN_AUTHOR_PASSWORD }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cosa c'e' da fare
+        id: job
+        run: |
+          if [ -z "$RELEASE_KEY" ] || [ -z "$P12_PW" ]; then echo "Mancano RELEASE_KEY o TIZEN_AUTHOR_PASSWORD"; echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0; fi
+          url=$(python3 -c "import json; print(json.load(open('server/cloud.json'))['url'].rstrip('/'))")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          umask 077
+          if ! curl -fsS -m 30 -H "Authorization: Bearer $RELEASE_KEY" "$url/samsung/job" -o "$RUNNER_TEMP/job.json"; then
+            echo "::warning::Servizio account non raggiungibile"; echo "mode=none" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # issue: TV nuove e gettone Samsung valido; restore: l'app cambia, certificati gia' avuti
+          mode=$(python3 - "$RUNNER_TEMP/job.json" <<'EOF'
+          import json, os, sys
+          j = json.load(open(sys.argv[1]))
+          if j.get("need") and j.get("token"):
+              print("issue")
+          elif os.environ["EVENT"] != "schedule" and (j.get("keys") or {}).get("distributor"):
+              print("restore")
+          else:
+              print("none")
+          EOF
+          )
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Da fare: $mode"
+
+      - name: Certificati Samsung
+        id: cert
+        if: steps.job.outputs.mode != 'none'
+        env:
+          URL: ${{ steps.job.outputs.url }}
+          MODE: ${{ steps.job.outputs.mode }}
+        run: |
+          umask 077
+          set +e
+          python3 tizen/certificato_samsung.py "$MODE" "$RUNNER_TEMP/job.json" "$RUNNER_TEMP/cert"
+          code=$?
+          set -e
+          if [ "$code" != 0 ]; then
+            # Il servizio lo dice a chi amministra (gettone scaduto: serve un nuovo accesso Samsung)
+            curl -fsS -m 30 -X POST "$URL/samsung/job" -H "Authorization: Bearer $RELEASE_KEY" \
+              -H "Content-Type: application/json" --data-binary @"$RUNNER_TEMP/cert/result.json" || true
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ok=1" >> "$GITHUB_OUTPUT"
+
+      - name: Firma con i certificati Samsung
+        if: steps.cert.outputs.ok == '1'
+        run: |
+          mkdir -p out-s
+          chmod 777 out-s && chmod 755 "$RUNNER_TEMP/cert" && chmod 644 "$RUNNER_TEMP/cert/"*.p12
+          docker run --rm -e PW="$P12_PW" -v "$PWD/tizen:/src:ro" -v "$RUNNER_TEMP/cert:/cert:ro" -v "$PWD/out-s:/out" \
+            --entrypoint /bin/bash "$TIZEN_IMAGE" -c '
+            set -e
+            mkdir -p /tmp/b /tmp/o
+            cp /src/config.xml /src/index.html /src/main.css /src/main.js /src/icon.png /tmp/b/
+            cp /cert/author.p12 /tmp/a.p12 && cp /cert/distributor.p12 /tmp/d.p12
+            tizen security-profiles add -n BPSamsung -a /tmp/a.p12 -p "$PW" -d /tmp/d.p12 -dp "$PW" > /dev/null
+            prof="$HOME/tizen-studio-data/profile/profiles.xml"
+            sed -i "s|/tmp/a.pwd|$PW|g; s|/tmp/d.pwd|$PW|g" "$prof"
+            tizen build-web -- /tmp/b > /dev/null
+            tizen package -t wgt -s BPSamsung -o /tmp/o -- /tmp/b/.buildResult < /dev/null | grep -v "$PW" || true
+            cp /tmp/o/*.wgt /out/BunkerPlex-samsung-cert.wgt'
+          unzip -l out-s/BunkerPlex-samsung-cert.wgt | grep -q author-signature.xml
+
+      - name: Pubblica e avvisa il servizio
+        if: steps.cert.outputs.ok == '1'
+        env:
+          URL: ${{ steps.job.outputs.url }}
+        run: |
+          umask 077
+          ver=$(python3 -c "import xml.etree.ElementTree as E; print(E.parse('tizen/config.xml').getroot().get('version'))")
+          python3 - "$RUNNER_TEMP/cert/result.json" "$ver" "${GITHUB_SHA::7}" > out-s/BunkerPlex-samsung-cert.json <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print(json.dumps({"version": sys.argv[2], "commit": sys.argv[3], "tvs": len(r["listed"]),
+                            "until": int(min(r["author_until"], r["distributor_until"]))}))
+          EOF
+          gh release upload samsung-tv out-s/BunkerPlex-samsung-cert.wgt out-s/BunkerPlex-samsung-cert.json --clobber
+          python3 - "$RUNNER_TEMP/cert/result.json" "$ver" > "$RUNNER_TEMP/done.json" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          r["version"] = sys.argv[2]
+          print(json.dumps(r))
+          EOF
+          curl -fsS -m 30 -X POST "$URL/samsung/job" -H "Authorization: Bearer $RELEASE_KEY" \
+            -H "Content-Type: application/json" --data-binary @"$RUNNER_TEMP/done.json"
+          rm -rf "$RUNNER_TEMP/cert" "$RUNNER_TEMP/job.json" "$RUNNER_TEMP/done.json"

@@ -31,6 +31,12 @@ import kotlin.concurrent.thread
  * l'indirizzo del telefono: la TV accetta collegamenti sdb (porta 26101) solo da
  * li'. Poi: BunkerPlex.wgt dalla release «samsung-tv», copia sulla TV («sync:»),
  * installazione («0 vd_appinstall») e apertura («0 was_execute»).
+ *
+ * Le TV piu' nuove rifiutano il certificato generico: allora il telefono legge il
+ * codice della TV («0 getduid»), lo manda al servizio account e aspetta che GitHub
+ * prepari l'app firmata Samsung con quella TV (BunkerPlex-samsung-cert.wgt, vedi
+ * tizen/certificato_samsung.py). Serve un accesso all'account Samsung di chi
+ * amministra BunkerPlex: dal suo telefono, «Accedi a Samsung» (samsungLogin).
  */
 object SamsungInstaller {
     private const val SDB_PORT = 26101
@@ -38,6 +44,11 @@ object SamsungInstaller {
     private const val PACKAGE = "BnkrPlex01"
     private const val APP_ID = "$PACKAGE.BunkerPlex"
     private const val WGT_URL = "https://github.com/xFra96/bunkerplex/releases/download/samsung-tv/BunkerPlex.wgt"
+    private const val SIGNED_URL = "https://github.com/xFra96/bunkerplex/releases/download/samsung-tv/BunkerPlex-samsung-cert.wgt"
+    /** Quanto si aspetta il certificato Samsung con la pagina aperta */
+    private const val WAIT_MS = 30 * 60_000L
+    /** La porta dove Samsung rimanda l'accesso (come Tizen Studio: 4794-4813) */
+    private const val LOGIN_PORT = 4794
     private const val TOOLPATH = "/home/owner/share/tmp/sdk_tools"
 
     @Volatile
@@ -49,6 +60,7 @@ object SamsungInstaller {
         var dev = false
         var devIp = ""
         var installed = false
+        var duid = ""
     }
 
     private val tvs = LinkedHashMap<String, Tv>()
@@ -83,8 +95,10 @@ object SamsungInstaller {
         .put("target", target).put("scanned", scanned).put("pc", phoneIp())
         .put("tvs", JSONArray(tvs.values.map {
             JSONObject().put("ip", it.ip).put("name", it.name).put("model", it.model).put("dev", it.dev)
-                .put("dev_ip", it.devIp).put("installed", it.installed)
+                .put("dev_ip", it.devIp).put("installed", it.installed).put("duid", it.duid)
         }))
+        .put("account", account.isNotEmpty()).put("admin", admin ?: JSONObject.NULL)
+        .put("wait_login", waitLogin).put("login_busy", loginBusy).put("login_msg", loginMsg)
         .put("log", JSONArray(log.takeLast(80)))
         .toString()
 
@@ -194,6 +208,7 @@ object SamsungInstaller {
             tvs.clear()
             for (tv in found.sortedBy { it.ip.substringAfterLast('.').toIntOrNull() ?: 0 }) {
                 tv.installed = before[tv.ip]?.installed ?: false
+                tv.duid = before[tv.ip]?.duid ?: ""
                 tvs[tv.ip] = tv
             }
         }
@@ -217,13 +232,18 @@ object SamsungInstaller {
         if (Regex("install completed|installing\\[100\\]").containsMatchIn(out)) return null
         if (Regex("118\\s*,\\s*-11|Author certificate not match", RegexOption.IGNORE_CASE).containsMatchIn(out))
             return "Sulla TV c'è già BunkerPlex firmata in un altro modo: disinstallala dalla TV (App → BunkerPlex → Elimina) e riprova."
-        if (Regex("118\\s*,\\s*-12|118012|certificate", RegexOption.IGNORE_CASE).containsMatchIn(out))
-            return "La TV non accetta il certificato dell'app: le TV più nuove (dal 2024 circa) vogliono un certificato Samsung fatto per loro. Intanto usa BunkerPlex dal browser della TV."
+        if (certRefused(out))
+            return "La TV non accetta il certificato dell'app: vuole un certificato Samsung fatto per lei. Intanto usa BunkerPlex dal browser della TV."
         if (out.contains("[116]")) return "Sulla TV non c'è spazio: togli qualche app e riprova."
         if (Regex("118\\s*,\\s*-4\\b").containsMatchIn(out)) return "Questa TV è troppo vecchia per l'app: usa BunkerPlex dal browser della TV."
         val m = Regex("failed\\[[^\\]]*\\][^\\n]*").find(out)
         return "La TV non ha installato l'app" + (m?.let { ": ${it.value.trim()}" } ?: ".")
     }
+
+    /** La TV rifiuta il certificato (non l'autore diverso): vuole quello Samsung. */
+    private fun certRefused(out: String) =
+        !Regex("118\\s*,\\s*-11|Author certificate not match", RegexOption.IGNORE_CASE).containsMatchIn(out) &&
+            Regex("118\\s*,\\s*-12|118012|certificate", RegexOption.IGNORE_CASE).containsMatchIn(out)
 
     fun install(ctx: Context, addr: String) {
         val ip = addr.trim()
@@ -233,8 +253,8 @@ object SamsungInstaller {
             return
         }
         job(ctx, "install", ip) {
-            val me = phoneIp()
             val tv = synchronized(this) { tvs.getOrPut(ip) { Tv(ip) } }
+            val me = phoneIp()
             info(ip)?.let { d ->
                 apply(tv, d)
                 if (d.optString("developerMode").isNotEmpty() && d.optString("developerMode") != "1")
@@ -242,12 +262,45 @@ object SamsungInstaller {
                 if (tv.devIp.isNotEmpty() && me.isNotEmpty() && tv.devIp != me)
                     throw IOException("Sulla TV come IP del PC host c'è ${tv.devIp}, ma questo telefono è $me: correggilo in Modalità sviluppatore, poi spegni e riaccendi la TV.")
             }
-
             step = "install"
+            val first = installOnce(ctx, ip, tv, null)
+            if (first == null) return@job
+            // La TV vuole il certificato Samsung: si chiede (col suo DUID) e si aspetta che
+            // GitHub lo faccia, poi si installa l'app firmata Samsung
+            certificateFor(ctx, tv)
+            installOnce(ctx, ip, tv, true)?.let { throw IOException(it) }
+        }
+    }
+
+    /**
+     * Un giro: collegamento, DUID, l'app giusta (firmata Samsung se la TV e' nel
+     * certificato), copia e installazione. Ritorna null se fatto, il testo dell'errore
+     * se la TV vuole il certificato Samsung (e il DUID c'e'); le altre cose le lancia.
+     */
+    private fun installOnce(ctx: Context, ip: String, tv: Tv, forceSigned: Boolean?): String? {
+        val me = phoneIp()
+        message = "Mi collego alla TV…"
+        push(ctx)
+        val sdb = Sdb.connect(ip, SDB_PORT) ?: throw IOException(
+            "La TV non accetta il collegamento. Sulla TV, in Modalità sviluppatore, come IP del PC host deve esserci " +
+                "${me.ifEmpty { "l'IP di questo telefono" }}; poi la TV va spenta e riaccesa.")
+        open = sdb
+        try {
+            say("Collegata: ${sdb.banner}", "dbg")
+            val caps = try { sdb.capability() } catch (_: Exception) { emptyMap() }
+            caps["platform_version"]?.let { say("Tizen $it", "dbg") }
+            val path = (caps["sdk_toolpath"]?.trimEnd('/') ?: TOOLPATH) + "/BunkerPlex.wgt"
+            if (tv.duid.isEmpty()) {
+                tv.duid = duid(sdb)
+                if (tv.duid.isNotEmpty()) say("Codice della TV (DUID): ${tv.duid}", "dbg")
+            }
+            check()
+
+            val signed = forceSigned ?: (tv.duid.isNotEmpty() && certState(ctx, tv.duid).optString("state") == "ready")
             message = "Scarico l'app per Samsung da GitHub…"
             push(ctx)
             val file = File(ctx.cacheDir, "BunkerPlex.wgt")
-            Net.download(WGT_URL, file, auth = false) { pct ->
+            Net.download(if (signed) SIGNED_URL else WGT_URL, file, auth = false) { pct ->
                 message = "Scarico l'app per Samsung da GitHub… $pct%"
                 push(ctx)
             }
@@ -255,19 +308,7 @@ object SamsungInstaller {
             file.delete()
             if (data.size < 2 || data[0] != 'P'.code.toByte() || data[1] != 'K'.code.toByte())
                 throw IOException("Il file dell'app scaricato da GitHub non è valido")
-            say("Scaricata BunkerPlex.wgt (${data.size / 1024} kB)", "ok")
-            check()
-
-            message = "Mi collego alla TV…"
-            push(ctx)
-            val sdb = Sdb.connect(ip, SDB_PORT) ?: throw IOException(
-                "La TV non accetta il collegamento. Sulla TV, in Modalità sviluppatore, come IP del PC host deve esserci " +
-                    "${me.ifEmpty { "l'IP di questo telefono" }}; poi la TV va spenta e riaccesa.")
-            open = sdb
-            say("Collegata: ${sdb.banner}", "dbg")
-            val caps = try { sdb.capability() } catch (_: Exception) { emptyMap() }
-            caps["platform_version"]?.let { say("Tizen $it", "dbg") }
-            val path = (caps["sdk_toolpath"]?.trimEnd('/') ?: TOOLPATH) + "/BunkerPlex.wgt"
+            say("Scaricata " + (if (signed) "l'app firmata Samsung" else "BunkerPlex.wgt") + " (${data.size / 1024} kB)", "ok")
             check()
 
             message = "Copio l'app sulla TV…"
@@ -282,7 +323,14 @@ object SamsungInstaller {
                 it.contains("spend time") || it.contains("install completed") || it.contains("failed[")
             }
             say("vd_appinstall: " + out.trim().takeLast(1500).ifEmpty { "(nessuna risposta)" }, "dbg")
-            installResult(out)?.let { throw IOException(it) }
+            installResult(out)?.let { msg ->
+                try { sdb.shell("0 rmfile", 5000) } catch (_: Exception) {}
+                if (!signed && tv.duid.isNotEmpty() && certRefused(out)) {
+                    say("La TV vuole il certificato Samsung", "err")
+                    return msg
+                }
+                throw IOException(msg)
+            }
             tv.installed = true
             say("App installata", "ok")
             try { sdb.shell("0 rmfile", 5000) } catch (_: Exception) {}
@@ -293,7 +341,209 @@ object SamsungInstaller {
             }
             say("Fatto: BunkerPlex è tra le App della TV e si è aperta. Collegala dal telefono con il codice.", "ok")
             step = "done"
+            return null
+        } finally {
+            try { sdb.close() } catch (_: Exception) {}
+            open = null
         }
+    }
+
+    /** Il DUID della TV («0 getduid»): a volte la prima risposta arriva vuota. */
+    private fun duid(sdb: Sdb): String {
+        repeat(3) {
+            try {
+                val out = sdb.shell("0 getduid", 8000) { it.trim().length >= 10 }.trim()
+                Regex("[A-Za-z0-9]{10,64}").find(out)?.let { return it.value }
+            } catch (_: Exception) {
+            }
+        }
+        return ""
+    }
+
+    // ---------------------------------------------------------------- certificato Samsung
+
+    /** Il servizio account: GET senza account, il resto col gettone dell'account. */
+    private fun cloudCall(ctx: Context, method: String, path: String, body: JSONObject? = null, auth: Boolean = true): JSONObject {
+        val c = URL(Remote.cloud(ctx) + path).openConnection() as HttpURLConnection
+        c.connectTimeout = 10_000
+        c.readTimeout = 20_000
+        c.requestMethod = method
+        c.setRequestProperty("Accept", "application/json")
+        c.setRequestProperty("User-Agent", "BunkerPlex")
+        if (auth && account.isNotEmpty()) c.setRequestProperty("Authorization", "Bearer $account")
+        try {
+            if (body != null) {
+                c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toString().toByteArray()) }
+            }
+            val code = c.responseCode
+            val text = (if (code < 400) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
+            val j = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
+            if (code >= 400) throw CloudFail(code, j.optString("detail").ifEmpty { "Servizio account: errore $code" })
+            return j
+        } catch (e: CloudFail) {
+            throw e
+        } catch (e: Exception) {
+            throw CloudFail(0, "Non riesco a contattare il servizio account: controlla la connessione")
+        } finally {
+            c.disconnect()
+        }
+    }
+
+    private class CloudFail(val status: Int, msg: String) : IOException(msg)
+
+    private fun certState(ctx: Context, duid: String): JSONObject = try {
+        cloudCall(ctx, "GET", "/samsung/tv/$duid", auth = false)
+    } catch (_: Exception) {
+        JSONObject()
+    }
+
+    /**
+     * Chiede il certificato Samsung per questa TV e aspetta che sia pronto (GitHub lo
+     * fa da solo, se chi amministra e' entrato in Samsung: se no gli arriva un avviso).
+     */
+    private fun certificateFor(ctx: Context, tv: Tv) {
+        if (account.isEmpty()) throw IOException(
+            "Questa TV vuole un certificato Samsung fatto per lei. Apri «Installa sulla TV» da BunkerPlex con il tuo account e riprova.")
+        step = "cert"
+        message = "Chiedo il certificato Samsung per questa TV…"
+        push(ctx)
+        var st = cloudCall(ctx, "POST", "/samsung/tv", JSONObject().put("duid", tv.duid).put("model", tv.model).put("name", tv.name))
+        say("Chiesto il certificato Samsung per la TV ${tv.duid}", "ok")
+        val until = System.currentTimeMillis() + WAIT_MS
+        var last = ""
+        while (st.optString("state") != "ready") {
+            check()
+            if (System.currentTimeMillis() > until) throw IOException(
+                "Il certificato Samsung non è ancora pronto. Riprova più tardi con «Installa»: la TV resta in elenco.")
+            waitLogin = st.optBoolean("login")
+            val now = when {
+                st.optString("error").isNotEmpty() -> "Il certificato Samsung non è riuscito (${st.optString("error")}): si riprova da solo."
+                waitLogin && admin != null -> "Serve il tuo accesso a Samsung: premi «Accedi a Samsung» qui sotto. Poi faccio tutto da solo."
+                waitLogin -> "Aspetto chi amministra BunkerPlex: deve entrare in Samsung (gli è arrivato un avviso). Poi faccio tutto da solo."
+                else -> "Samsung prepara il certificato per questa TV (qualche minuto)…"
+            }
+            if (now != last) { say(now, "info"); last = now }
+            message = now
+            push(ctx)
+            for (i in 0 until 15) { check(); Thread.sleep(1000) }
+            st = certState(ctx, tv.duid)
+        }
+        waitLogin = false
+        say("Certificato Samsung pronto", "ok")
+        message = "Certificato pronto: installo l'app firmata Samsung…"
+        push(ctx)
+    }
+
+    // ---------------------------------------------------------------- chi amministra
+
+    /** Gettone dell'account BunkerPlex (lo passa la pagina: ssAccount). */
+    @Volatile private var account = ""
+    @Volatile private var admin: JSONObject? = null
+    @Volatile private var waitLogin = false
+    @Volatile private var loginBusy = false
+    @Volatile private var loginMsg = ""
+
+    fun setAccount(ctx: Context, token: String) {
+        if (token == account) return
+        account = token.trim()
+        admin = null
+        refreshAdmin(ctx)
+    }
+
+    /** Il pannello del certificato Samsung, solo per chi amministra (se no 403 e niente). */
+    fun refreshAdmin(ctx: Context) {
+        if (account.isEmpty()) return
+        thread(name = "samsung-admin") {
+            admin = try { cloudCall(ctx, "GET", "/samsung/admin") } catch (_: Exception) { null }
+            push(ctx)
+        }
+    }
+
+    /**
+     * «Accedi a Samsung»: come il Certificate Manager di Tizen Studio, Samsung rimanda il
+     * gettone a http://localhost:4794/signin/callback (un POST con code=<JSON>). Il
+     * telefono ascolta li', apre la pagina di Samsung nel browser e passa il gettone al
+     * servizio account, che lo usa per i certificati finche' vale.
+     */
+    fun samsungLogin(ctx: Context) {
+        if (loginBusy || account.isEmpty()) return
+        loginBusy = true
+        loginMsg = "Entra con il tuo account Samsung nella pagina che si è aperta, poi torna qui."
+        push(ctx)
+        thread(name = "samsung-login") {
+            var server: java.net.ServerSocket? = null
+            try {
+                var port = LOGIN_PORT
+                while (server == null && port < LOGIN_PORT + 20) {
+                    server = try {
+                        java.net.ServerSocket(port, 1, java.net.InetAddress.getByName("127.0.0.1"))
+                    } catch (_: Exception) { port++; null }
+                }
+                val srv = server ?: throw IOException("Nessuna porta libera per l'accesso a Samsung")
+                srv.soTimeout = 5 * 60_000
+                val back = java.net.URLEncoder.encode("http://localhost:$port/signin/callback", "UTF-8")
+                val url = "https://account.samsung.com/mobile/account/check.do?serviceID=v285zxnl3h" +
+                    "&actionID=StartOAuth2&accessToken=Y&redirect_uri=$back"
+                ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                var code: String? = null
+                while (code == null) {
+                    srv.accept().use { s -> code = callback(s) }
+                }
+                cloudCall(ctx, "POST", "/samsung/login", JSONObject().put("code", code))
+                loginMsg = "Fatto: sei entrato in Samsung. Le TV in attesa ricevono il certificato in pochi minuti."
+                say("Accesso a Samsung riuscito", "ok")
+                // Di nuovo davanti: l'utente era nel browser
+                ctx.startActivity(android.content.Intent(ctx, MainActivity::class.java)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            } catch (e: java.net.SocketTimeoutException) {
+                loginMsg = "Nessun accesso a Samsung in 5 minuti: riprova."
+            } catch (e: Exception) {
+                loginMsg = "Accesso a Samsung non riuscito: ${e.message}"
+            } finally {
+                try { server?.close() } catch (_: Exception) {}
+                loginBusy = false
+                refreshAdmin(ctx)
+                push(ctx)
+            }
+        }
+    }
+
+    /** Legge la richiesta di Samsung: il gettone in code=, nel corpo (POST) o nell'indirizzo. */
+    private fun callback(s: Socket): String? {
+        s.soTimeout = 15_000
+        val inp = s.getInputStream()
+        val head = ByteArrayOutputStream()
+        var last4 = 0
+        while (true) {
+            val b = inp.read()
+            if (b < 0) break
+            head.write(b)
+            last4 = (last4 shl 8) or b
+            if (last4 == 0x0D0A0D0A || head.size() > 16_384) break
+        }
+        val lines = head.toString("UTF-8").split("\r\n")
+        val target = lines.firstOrNull()?.split(" ")?.getOrNull(1) ?: ""
+        val len = lines.firstOrNull { it.startsWith("Content-Length:", true) }?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
+        val body = ByteArray(len.coerceIn(0, 65_536))
+        var n = 0
+        while (n < body.size) { val r = inp.read(body, n, body.size - n); if (r < 0) break; n += r }
+        fun field(form: String): String? = form.split('&').firstOrNull { it.startsWith("code=") }
+            ?.substringAfter('=')?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+        val code = if (target.startsWith("/signin/callback")) field(String(body, 0, n)) ?: field(target.substringAfter('?', "")) else null
+        val page = if (code != null) "<p>Fatto: torna in BunkerPlex.</p>" else "<p>Niente da fare qui.</p>"
+        val html = "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">" +
+            "<title>BunkerPlex</title><body style=\"font:18px sans-serif;padding:2rem\">$page"
+        val bytes = html.toByteArray()
+        s.getOutputStream().apply {
+            write(("HTTP/1.1 ${if (code != null) 200 else 404} OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
+                "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n").toByteArray())
+            write(bytes)
+            flush()
+        }
+        return code
     }
 
     // ---------------------------------------------------------------- sdb

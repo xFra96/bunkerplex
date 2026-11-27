@@ -706,6 +706,17 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun ssCancel() = SamsungInstaller.cancel(this@MainActivity)
 
+        /** Il gettone dell'account (dalla PWA, prima di aprire la pagina): serve per chiedere
+         *  il certificato Samsung di una TV e, a chi amministra, per l'accesso a Samsung. */
+        @JavascriptInterface
+        fun ssAccount(token: String) = SamsungInstaller.setAccount(this@MainActivity, token)
+
+        @JavascriptInterface
+        fun ssLogin() = SamsungInstaller.samsungLogin(this@MainActivity)
+
+        @JavascriptInterface
+        fun ssAdmin() = SamsungInstaller.refreshAdmin(this@MainActivity)
+
         @JavascriptInterface
         fun tvClose() = runOnUiThread { if (web.canGoBack()) web.goBack() else showHome() }
 

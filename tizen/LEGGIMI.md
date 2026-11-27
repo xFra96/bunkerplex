@@ -40,8 +40,8 @@ Tre modi, tutti con lo stesso `BunkerPlex.wgt` della release `samsung-tv`:
 
 1. **Dal telefono** (anche a casa di un amico, niente PC): app BunkerPlex per Android →
    Impostazioni → «Installa sulla TV» → scheda **TV Samsung**. Mostra l'IP del telefono da
-   scrivere sulla TV, cerca le Samsung nel Wi-Fi e installa
-   (`android/app/.../SamsungInstaller.kt`).
+   scrivere sulla TV, cerca le Samsung nel Wi-Fi e installa; se la TV vuole il certificato
+   Samsung lo chiede da solo (vedi sotto) (`android/app/.../SamsungInstaller.kt`).
 2. **Dal server di casa** (PWA o browser): Impostazioni → App per TV e telefono →
    **Installa sulla TV Samsung dal PC**. Sulla TV va scritto l'IP del PC del server
    (`server/samsunginstall.py`).
@@ -56,25 +56,44 @@ senza chiavi): copiano il file (`sync:`), lo installano (`0 vd_appinstall`) e ap
 (`0 was_execute`). Le prove contro una TV finta sono in `server/test_samsung.py`. Prima di
 installare chiedono alla TV (porta 8001) se la Modalità sviluppatore è accesa e con quale IP.
 
-### TV dal 2024 circa: il certificato Samsung
+### Le TV che vogliono il certificato Samsung (automatico)
 
-Le TV più nuove rifiutano l'app firmata col certificato generico
-(`Check certificate error`, `Invalid certificate chain`). Allora serve un certificato
-Samsung fatto per **quella** TV:
+Le TV più nuove rifiutano l'app firmata col certificato generico (`Check certificate
+error`, `[118,-12]`). Vogliono autore e distributore firmati da Samsung, con il
+distributore che elenca le TV (DUID, fino a 50). Si fa da solo:
 
-1. Installa Tizen Studio con **Samsung Certificate Extension** (Package Manager →
-   Extension SDK).
-2. Con la TV in Modalità sviluppatore, collegala da **Device Manager** di Tizen Studio.
-3. **Certificate Manager** → nuovo certificato → **Samsung** → TV → entra con un account
-   Samsung → il DUID della TV si aggiunge da solo. Scegli una password.
-4. Copia `author.p12` e `distributor.p12` in `tizen/certificati/` (non va su GitHub, è in
-   `.gitignore`).
-5. Lancia di nuovo `Installa su TV Samsung.bat`: trova i certificati e chiede la password.
+1. **Chi installa** (telefono o server di casa) prova l'app normale. Se la TV la rifiuta,
+   legge il codice della TV (`0 getduid` via sdb) e lo manda al servizio account
+   (`POST /samsung/tv`). Poi aspetta con la pagina aperta e, appena il certificato è
+   pronto, installa da solo `BunkerPlex-samsung-cert.wgt`. Una TV già nel certificato
+   riceve subito quella.
+2. **Chi amministra BunkerPlex** deve aver fatto l'accesso al suo account Samsung:
+   telefono → Impostazioni → Installa sulla TV → TV Samsung → **Accedi a Samsung**. Si
+   apre la pagina di Samsung, ci si entra e il telefono passa il gettone al servizio
+   (come Tizen Studio: Samsung rimanda a `http://localhost:4794/signin/callback`, dove
+   ascolta l'app). Il gettone dura un po': finché vale, le TV nuove passano senza
+   toccare niente. Quando serve rifarlo, a chi amministra arriva un avviso
+   («TV Samsung in attesa» / «Serve un accesso a Samsung»).
+3. **GitHub** (`.github/workflows/app-samsung.yml`, lavoro `samsung`, ogni 5 minuti) chiede
+   al servizio se c'è una TV nuova (`GET /samsung/job`, con `RELEASE_KEY`). Se sì:
+   `certificato_samsung.py` chiede a Samsung il distributore con tutte le TV (l'autore
+   resta lo stesso finché vale, un anno), firma l'app, la mette nella release
+   `samsung-tv` e lo dice al servizio (`POST /samsung/job`).
 
-Più TV con lo stesso certificato: in Certificate Manager si aggiungono i DUID di tutte.
+I `.p12` li tiene il servizio account, cifrati con `TIZEN_AUTHOR_PASSWORD` (sta solo su
+GitHub). Le autorità Samsung che vanno nella firma sono in `tizen/samsung-ca` (Apache-2.0,
+da Samsung). Riferimento del protocollo: il Certificate Manager di Samsung in
+[Samsung/tizen-agent-skills](https://github.com/Samsung/tizen-agent-skills).
 
-Se la TV dice `Author certificate not match`, sulla TV c'è già BunkerPlex firmata in un altro
-modo: disinstallala dalla TV e riprova.
+Per far partire GitHub subito invece che entro 5 minuti: al token `GITHUB_TOKEN` del
+Worker si aggiunge il permesso **Actions: Read and write** sul repository.
+
+Una TV con BunkerPlex firmata in un altro modo non accetta l'aggiornamento
+(`Author certificate not match`, `[118,-11]`): si disinstalla dalla TV e si riprova.
+
+A mano, senza il giro automatico: certificato Samsung da Tizen Studio (Certificate Manager
+→ Samsung → TV) o da [tizen-cert](https://github.com/gifflet/tizen-cert-cli), `author.p12` e
+`distributor.p12` in `tizen/certificati/` (in `.gitignore`), poi `Installa su TV Samsung.bat`.
 
 ### Da sapere
 

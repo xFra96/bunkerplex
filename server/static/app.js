@@ -4875,7 +4875,8 @@ function ssRow(tv, t, pc) {
     btn = '<div class="actions" style="justify-content:flex-end;margin-top:.4rem"><button class="btn' + (tv.installed ? '' : ' primary') +
       ' f" data-act="ssinstall" data-arg="' + esc(tv.ip) + '" data-key="ssi-' + esc(tv.ip) + '">' + (tv.installed ? 'Reinstalla' : 'Installa l\'app') + '</button></div>';
   }
-  return '<dt>' + esc(name) + '<small class="num">' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip) + '</small></dt><dd>' + state + btn + '</dd>';
+  return '<dt>' + esc(name) + '<small class="num">' + esc((tv.model ? tv.model + ' · ' : '') + tv.ip + (tv.duid ? ' · DUID ' + tv.duid : '')) +
+    '</small></dt><dd>' + state + btn + '</dd>';
 }
 
 function ssBody(t) {
@@ -5529,7 +5530,8 @@ document.addEventListener('click', function (e) {
 //    browser, ricevute dal service worker di BunkerPlex (sw.js).
 // La vecchia pagina «BP Avvisi» continua a funzionare per chi l'aveva, ma non si propone piu'.
 var NOTICE_KINDS = [['titles', 'Nuovi film ed episodi sui tuoi PC'], ['friends_titles', 'Novità sui PC dei tuoi amici'],
-  ['friends', 'Richieste di amicizia'], ['update', 'Aggiornamenti del server']];
+  ['friends', 'Richieste di amicizia'], ['update', 'Aggiornamenti del server'],
+  ['samsung', 'TV Samsung in attesa del certificato', 'admin']];
 
 function noticeWhen(t) {
   return new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -5767,7 +5769,9 @@ async function noticesArea() {
 function noticesPanels(d, full) {
   var prefs = d.prefs || {};
   // Ogni tipo di avviso: una riga con l'interruttore a destra, come nelle app del telefono
-  var kinds = NOTICE_KINDS.map(function (k) {
+  // Le TV Samsung in attesa riguardano solo chi amministra (l'accesso a Samsung e' suo)
+  var isAdmin = (C.user && C.user.admin) || (auth && auth.user && auth.user.admin);
+  var kinds = NOTICE_KINDS.filter(function (k) { return k[2] !== 'admin' || isAdmin; }).map(function (k) {
     var on = prefs[k[0]] !== false;
     return swRow(k[1], on, 'data-act="noticepref" data-arg="' + k[0] + ':' + (on ? 0 : 1) + '" data-key="npref-' + k[0] + '"');
   }).join('');
@@ -8835,7 +8839,13 @@ var actions = {
     tvSend('pair', { target: a.trim(), code: c.trim() });
   },
   tvinstall: function (serial) { tvSend('install', { target: serial }); },
-  phonetv: function () { if (phoneTvOk()) tvApp.openTvInstall(); },
+  phonetv: function () {
+    if (!phoneTvOk()) return;
+    // Il gettone dell'account all'app: con le TV Samsung che vogliono il certificato
+    // il telefono lo chiede al servizio (e chi amministra entra in Samsung da li')
+    if (CENTRAL && C.token && typeof tvApp.ssAccount === 'function') callSafe(function () { tvApp.ssAccount(C.token); });
+    tvApp.openTvInstall();
+  },
   tvcancel: function () { tvSend('cancel'); },
   tvcopylog: function () {
     api('/tv/log').then(function (r) { return copyText(r.text || ''); }).then(function (ok) {

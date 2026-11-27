@@ -33,6 +33,8 @@
 // GITHUB_TOKEN: token di sola lettura (Contents: Read-only) sul repository degli
 // aggiornamenti, che e' privato: i PC senza token propri si aggiornano da qui
 // (vedi /aggiornamenti/ e /scarica). GITHUB_REPO se diverso da xFra96/bunkerplex.
+// Con anche «Actions: Read and write» il servizio fa partire subito il giro del
+// certificato Samsung delle TV (vedi «Certificato Samsung»); senza, parte entro 5 minuti.
 
 const BREVO_CRON = '0 6 * * 1';   // come in wrangler.toml
 const MAX_ROWS = 40;          // righe per richiesta (il piano gratuito ha 50 query a chiamata)
@@ -640,7 +642,7 @@ async function claimUserRoutes(request, env, path, method, user) {
 // telefono del proprietario anche se lui sul PC non ha mai scritto la password.
 const SERVER_AS_OWNER = [['GET', /^\/me$/], ['GET', /^\/settings$/], ['PUT', /^\/settings$/], ['GET', /^\/state$/],
   ['POST', /^\/state$/], ['GET', /^\/profiles$/], ['POST', /^\/profiles\/\d{1,12}\/open$/],
-  ['POST', /^\/notices$/], ['GET', /^\/notices$/]];
+  ['POST', /^\/notices$/], ['GET', /^\/notices$/], ['POST', /^\/samsung\/tv$/]];
 
 async function serverAsOwner(request, env, path, method) {
   if (!/^Bearer s_/.test(request.headers.get('Authorization') || '')) return null;
@@ -2670,7 +2672,7 @@ const NOTICE_KEEP = 100;        // avvisi tenuti per account
 const NOTICE_DAYS = 30;         // e per quanti giorni al massimo
 const NOTICE_RATE = 40;         // avvisi all'ora che un account puo' mandare
 const NOTICE_DEVICES = 10;      // telefoni e tablet per account
-const NOTICE_KINDS = ['titles', 'friends_titles', 'friends', 'update'];
+const NOTICE_KINDS = ['titles', 'friends_titles', 'friends', 'update', 'samsung'];
 const ICON_PNG = 'iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAADm0lEQVR42u3czYtVZQDH8fOcc+/cGbkOOeMomArZC7ZoY5ugNi2EpI2zKUHBhQsj99KmRIgW7QoqRi2oZUWrIKQX2qgbN7Y2WrgIxMbxpav33vM8T5s0Ria4KDN453y+f8F5zvPhx11cTth2Ym8hrVTpFQgOwSE4BIfgEByCQ3AIDsEhwSE4BIfgEByCQ3AIDsEhOCQ4BIfgEByCQ3AIDsEhOASHBIfgEByCQ3AIDsEhOASH4BAcEhyCQ3AIDsEhOASH4BAcgkOCQ3AIjhULIYQQ3DEcK8gY1MN+PWiVlWuGY5mMfj3YtXn707Pbr95erMqyNCFw/HuqEO4O+89u3vHD0U8Ovfj6Uu9Wvx6aEDju+yjvDPubpqZPv/nelwff39Kd+at3w4TA8Z+PnPMw1vMvvPrLsVMH9+wzIXAs+/FRlWVMcUt3ZuGNd78yIXA8UFVWOeeY0n4TAocJgcOEwGFC4DAhcJgQOEwIHCYEDhMChwn5nwlp5v9C4BhpQupYN3BC4BhpQqYnu4u9G62yatSEwDHShJx969N9z79y7e+lmGJzJgSOkSbkqZknvz784cfzxydbnet3bjZkQuAYaUJSzimnIy/N//z2qdd2v9yQCYFjtNcUQhnKmOKu2QZNCBwmBA4TAocJgcOEwGFC4DAhcJgQOEzIepkQOEwIHCYEjsd5Qq7eXhzUwzHyAcfaTcgXB05u3ThbxzguPuBY/e5ReG5u51S7k4s0Lg/ecnerV8455tQqq1v93gc/nvns3Detqppqd1LOcDS6mFJVlq1Q/Xr54jvff/Tbn5dnN0wXRTEuMuBY/cH46fOF89+GEOa6m+pYj9dB4FibwQhjJwOONRuMPI4ngsNgwGEw4DAYcBgMOAwGHAYDDoMBh8GAw2Cs18GAw2DAYTDgMBhwGAw4DAYcBgMOgwGHwYDDYMBhMNQ8HAYDDoMBh8GAw2DAsQqDUeQ6xYmqbTDgWFbKKRRhomobDDgekJEn253e8O7JswunL3xnMB6isO3E3nV4qhD6w8Ezczs3tDvn/rg0132iKELKyX1bjiLn3GlP/H7tSsxp68aZOkWDAccyHxOtdihCnaJrhmMFH9lgPEK+CSY4BIfgEByCQ3AIDsEhOASHBIfgEByCQ3AIDsEhOASH4JDgEByCQ3AIDsEhOASH4BAcEhyCQ3AIDsEhOASH4BAcgkNwSHAIDsEhOASH4BAcgkNwCA4JDsGhR+kfx6aAFawJ73gAAAAASUVORK5CYII=';
 
 let noticeTables = false;
@@ -2881,6 +2883,193 @@ async function noticePrefs(env, uid) {
   const out = {};
   for (const k of NOTICE_KINDS) out[k] = p[k] !== false;
   return out;
+}
+
+// ---- Certificato Samsung per le TV che rifiutano quello generico
+//
+// Le Samsung piu' nuove installano BunkerPlex solo firmata da Samsung, con un
+// certificato che elenca le TV (DUID). Il giro e' automatico:
+//  - chi installa dal telefono (o dal server di casa) manda il DUID della TV
+//    (POST /samsung/tv); la TV aspetta nell'elenco;
+//  - serve un accesso all'account Samsung di chi amministra: lo fa il suo telefono
+//    (BunkerPlex → Installa sulla TV → TV Samsung → Accedi a Samsung) e il gettone
+//    arriva qui (POST /samsung/login). Dura un po': finche' vale, le TV nuove passano
+//    da sole. Quando serve di nuovo, chi amministra riceve un avviso;
+//  - GitHub (.github/workflows/app-samsung.yml, ogni 5 minuti) chiede qui cosa fare
+//    (GET /samsung/job, con RELEASE_KEY), chiede il certificato a Samsung con tutte le
+//    TV, firma BunkerPlex-samsung-cert.wgt e dice com'e' andata (POST /samsung/job).
+//    I .p12 restano qui, cifrati con una password che sta solo su GitHub;
+//  - il telefono chiede se la sua TV c'e' (GET /samsung/tv/<duid>) e installa l'app giusta.
+
+const SAMSUNG_MAX_TVS = 50;
+const SAMSUNG_DUID = /^[A-Za-z0-9]{10,64}$/;
+const SAMSUNG_WORKFLOW = 'app-samsung.yml';
+
+let samsungTable = false;
+async function ensureSamsung(env) {
+  if (samsungTable) return;
+  await env.DB.batch([
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS samsung_tvs(duid TEXT PRIMARY KEY, user_id INTEGER, model TEXT, ' +
+      'name TEXT, t REAL NOT NULL)'),
+    env.DB.prepare('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)')
+  ]);
+  samsungTable = true;
+}
+
+async function samsungKv(env, k) {
+  await ensureSamsung(env);
+  try { return JSON.parse((await kvGet(env, k)) || 'null'); } catch (e) { return null; }
+}
+
+// Il gettone Samsung, se vale ancora per qualche minuto
+async function samsungToken(env) {
+  const t = await samsungKv(env, 'samsung_token');
+  return t && t.access_token && t.exp > now() + 120 ? t : null;
+}
+
+async function samsungTvs(env) {
+  await ensureSamsung(env);
+  return (await env.DB.prepare('SELECT s.*, u.username FROM samsung_tvs s LEFT JOIN users u ON u.id = s.user_id ORDER BY s.t')
+    .all()).results;
+}
+
+// GitHub fa il giro subito, se il gettone GitHub del servizio puo' anche avviare i
+// giri (Actions: Read and write); se no ci pensa il giro ogni 5 minuti
+async function samsungKick(env) {
+  if (!env.GITHUB_TOKEN) return;
+  const last = Number(await kvGet(env, 'samsung_kick')) || 0;
+  if (now() - last < 60) return;
+  await kvSet(env, 'samsung_kick', now());
+  const repo = env.GITHUB_REPO || 'xFra96/bunkerplex';
+  await fetch('https://api.github.com/repos/' + repo + '/actions/workflows/' + SAMSUNG_WORKFLOW + '/dispatches', {
+    method: 'POST', body: JSON.stringify({ ref: 'main' }),
+    headers: { Authorization: 'Bearer ' + env.GITHUB_TOKEN, Accept: 'application/vnd.github+json',
+      'User-Agent': 'bunkerplex-account', 'Content-Type': 'application/json' }
+  }).catch(() => null);
+}
+
+async function samsungTellAdmins(env, title, text) {
+  const ids = (await env.DB.prepare('SELECT id FROM users WHERE admin = 1').all()).results.map((r) => r.id);
+  for (const id of ids) await notifySafe(env, id, 'samsung', title, text);
+}
+
+// Com'e' messa una TV: nel certificato (app pronta), in attesa, o sconosciuta
+async function samsungTvState(env, duid) {
+  const cert = (await samsungKv(env, 'samsung_cert')) || {};
+  if ((cert.listed || []).includes(duid)) return { state: 'ready', version: cert.version || '' };
+  const r = await env.DB.prepare('SELECT duid FROM samsung_tvs WHERE duid = ?').bind(duid).first();
+  if (!r) return { state: 'unknown' };
+  return { state: 'waiting', login: !(await samsungToken(env)), error: cert.error && cert.error !== 'token' ? cert.error : '' };
+}
+
+function samsungJobKey(request, env) {
+  const m = /^Bearer (.{16,200})$/.exec(request.headers.get('Authorization') || '');
+  if (!env.RELEASE_KEY || !m || !sameString(m[1], env.RELEASE_KEY)) fail(401, 'Chiave non valida');
+}
+
+async function samsungPublicRoutes(request, env, path, method) {
+  const tm = /^\/samsung\/tv\/([A-Za-z0-9]{10,64})$/.exec(path);
+  if (tm && method === 'GET') return json(await samsungTvState(env, tm[1]));
+
+  // GitHub: cosa c'e' da fare
+  if (path === '/samsung/job' && method === 'GET') {
+    samsungJobKey(request, env);
+    const duids = (await samsungTvs(env)).map((t) => t.duid).slice(0, SAMSUNG_MAX_TVS);
+    const cert = (await samsungKv(env, 'samsung_cert')) || {};
+    const listed = cert.listed || [];
+    const need = duids.some((d) => !listed.includes(d));
+    const tok = need ? await samsungToken(env) : null;
+    return json({ need, duids, listed, keys: cert.keys || null,
+      token: tok ? { access_token: tok.access_token, user_id: tok.user_id, email: tok.email || '' } : null });
+  }
+  // GitHub: com'e' andata
+  if (path === '/samsung/job' && method === 'POST') {
+    samsungJobKey(request, env);
+    const b = await body(request);
+    const cert = (await samsungKv(env, 'samsung_cert')) || {};
+    if (b.error) {
+      const first = cert.error !== b.error;
+      cert.error = String(b.error).slice(0, 40);
+      cert.detail = String(b.detail || '').slice(0, 300);
+      cert.error_t = now();
+      if (b.error === 'token') {
+        await env.DB.prepare("DELETE FROM kv WHERE k = 'samsung_token'").run();
+        if (first) await samsungTellAdmins(env, 'Serve un accesso a Samsung',
+          'Una TV Samsung aspetta il certificato: apri BunkerPlex sul telefono → Installa sulla TV → TV Samsung → Accedi a Samsung.');
+      }
+      await kvSet(env, 'samsung_cert', JSON.stringify(cert));
+      return json({ ok: true });
+    }
+    const listed = (Array.isArray(b.listed) ? b.listed : []).map(String).filter((d) => SAMSUNG_DUID.test(d));
+    const keys = b.keys && typeof b.keys.author === 'string' && typeof b.keys.distributor === 'string' &&
+      b.keys.author.length < 20000 && b.keys.distributor.length < 20000 ? { author: b.keys.author, distributor: b.keys.distributor } : cert.keys;
+    await kvSet(env, 'samsung_cert', JSON.stringify({ listed, keys, version: String(b.version || '').slice(0, 20),
+      author_until: Number(b.author_until) || 0, distributor_until: Number(b.distributor_until) || 0, t: now() }));
+    return json({ ok: true });
+  }
+  return null;
+}
+
+async function samsungUserRoutes(request, env, path, method, user) {
+  if (!/^\/samsung\//.test(path)) return null;
+  // Dal telefono o dal server di casa: questa TV vuole il certificato Samsung
+  if (path === '/samsung/tv' && method === 'POST') {
+    const b = await body(request);
+    const duid = String(b.duid || '').trim();
+    if (!SAMSUNG_DUID.test(duid)) fail(400, 'Codice della TV (DUID) non valido');
+    await ensureSamsung(env);
+    const known = await env.DB.prepare('SELECT duid FROM samsung_tvs WHERE duid = ?').bind(duid).first();
+    if (!known) {
+      const n = await env.DB.prepare('SELECT COUNT(*) n FROM samsung_tvs').first('n');
+      if (n >= SAMSUNG_MAX_TVS) fail(409, 'Il certificato Samsung ha già ' + SAMSUNG_MAX_TVS + ' TV: chiedi a chi amministra di toglierne una');
+      await env.DB.prepare('INSERT INTO samsung_tvs(duid, user_id, model, name, t) VALUES(?,?,?,?,?)')
+        .bind(duid, user.id, cleanText(b.model, 40), cleanText(b.name, 60), now()).run();
+      if (!(await samsungToken(env))) await samsungTellAdmins(env, 'TV Samsung in attesa',
+        (user.username || 'Qualcuno') + ' vuole BunkerPlex su una TV Samsung: apri BunkerPlex sul telefono → ' +
+        'Installa sulla TV → TV Samsung → Accedi a Samsung.');
+      await samsungKick(env);
+    }
+    return json(await samsungTvState(env, duid));
+  }
+  if (!user.admin || user.via_server) fail(403, 'Solo chi amministra BunkerPlex');
+
+  // Chi amministra: com'e' messo il certificato
+  if (path === '/samsung/admin' && method === 'GET') {
+    const tok = await samsungToken(env);
+    const cert = (await samsungKv(env, 'samsung_cert')) || {};
+    const listed = cert.listed || [];
+    return json({
+      login: tok ? { email: tok.email || '', exp: Math.floor(tok.exp) } : null,
+      cert: { tvs: listed.length, version: cert.version || '',
+        until: Math.floor(Math.min(cert.author_until || 0, cert.distributor_until || 0)),
+        error: cert.error || '', detail: cert.detail || '', t: Math.floor(cert.t || cert.error_t || 0) },
+      tvs: (await samsungTvs(env)).map((t) => ({ duid: t.duid, model: t.model || '', name: t.name || '', who: t.username || '',
+        t: Math.floor(t.t), ready: listed.includes(t.duid) }))
+    });
+  }
+  // L'accesso a Samsung fatto dal telefono: il gettone resta qui finche' vale
+  if (path === '/samsung/login' && method === 'POST') {
+    const b = await body(request);
+    let a = b.code;
+    if (typeof a === 'string') { try { a = JSON.parse(a); } catch (e) { a = null; } }
+    if (!a || typeof a.access_token !== 'string' || !a.access_token || a.access_token.length > 4096 || !a.userId)
+      fail(400, 'Samsung non ha dato un accesso valido: riprova');
+    const life = Math.min(Math.max(Number(a.access_token_expires_in) || 3600, 300), 90 * 86400);
+    await kvSet(env, 'samsung_token', JSON.stringify({ access_token: a.access_token, user_id: String(a.userId).slice(0, 256),
+      email: String(a.inputEmailID || '').replace(/%40/g, '@').slice(0, 254), exp: now() + life, by: user.id }));
+    const cert = (await samsungKv(env, 'samsung_cert')) || {};
+    if (cert.error) { delete cert.error; delete cert.detail; await kvSet(env, 'samsung_cert', JSON.stringify(cert)); }
+    await samsungKick(env);
+    return json({ ok: true, exp: Math.floor(now() + life) });
+  }
+  // Toglie una TV dal certificato (al prossimo giro con TV nuove)
+  const dm = /^\/samsung\/tv\/([A-Za-z0-9]{10,64})$/.exec(path);
+  if (dm && method === 'DELETE') {
+    await ensureSamsung(env);
+    await env.DB.prepare('DELETE FROM samsung_tvs WHERE duid = ?').bind(dm[1]).run();
+    return json({ ok: true });
+  }
+  return null;
 }
 
 const cleanText = (raw, max) => String(raw || '').replace(/[\u0000-\u001f]+/g, ' ').trim().slice(0, max);
@@ -3350,6 +3539,8 @@ async function route(request, env) {
   if (tf) return tf;
   const tp = await tvPublicRoutes(request, env, url, path, method);
   if (tp) return tp;
+  const sp = await samsungPublicRoutes(request, env, path, method);
+  if (sp) return sp;
   const nr = await noticeRoutes(request, env, url, path, method);
   if (nr) return nr;
   // L'immagine di un server (pubblica: e' solo la copertina, l'indirizzo cambia a ogni modifica)
@@ -3373,6 +3564,8 @@ async function route(request, env) {
   if (dr) return dr;
   const tu = await tvUserRoutes(request, env, path, method, user);
   if (tu) return tu;
+  const su = await samsungUserRoutes(request, env, path, method, user);
+  if (su) return su;
   const na = await noticeAccountRoutes(request, env, url, path, method, user);
   if (na) return na;
 
