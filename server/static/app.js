@@ -1142,12 +1142,40 @@ function cCandidates(s) {
   return out;
 }
 
+// La scadenza si conta con l'orologio di QUESTO dispositivo (quanto manca, non l'ora
+// del server): con l'orologio della TV indietro la chiave sembrava buona ma il server
+// la rifiutava, e tutte le locandine restavano vuote finche' non si riapriva l'app.
 async function cMediaKey(force) {
   if (!C.session || (!force && C.mkey && C.mexp - Date.now() / 1000 > 1800)) return;
   var r = await fetch(C.base + '/api/access/media', { method: 'POST', headers: { 'X-BP-Session': C.session } });
   var j = await r.json().catch(function () { return {}; });
-  if (r.ok && j.key) { C.mkey = j.key; C.mexp = j.exp; }
+  if (r.ok && j.key) { C.mkey = j.key; C.mexp = Date.now() / 1000 + (j.ttl || 6 * 3600); }
 }
+
+// Locandine che non arrivano dal server scelto: di solito la chiave non vale piu'
+// (TV rimasta in standby, server riavviato). Si chiede una chiave nuova e si
+// ridisegna, al massimo una volta ogni due minuti (se l'immagine manca davvero,
+// nessun giro infinito).
+var mkeyHeal = { at: 0, busy: false };
+function cHealMedia() {
+  if (!CENTRAL || !C.session || mkeyHeal.busy || Date.now() - mkeyHeal.at < 120000) return;
+  mkeyHeal.busy = true;
+  mkeyHeal.at = Date.now();
+  var old = C.mkey;
+  cMediaKey(true).then(function () {
+    if (C.mkey && C.mkey !== old) { dropCached(); if (modal.hidden && !player) render(); }
+  }).catch(function () {}).then(function () { mkeyHeal.busy = false; });
+}
+document.addEventListener('error', function (e) {
+  var t = e.target;
+  if (!t || t.tagName !== 'IMG' || !C.base) return;
+  var src = t.currentSrc || t.src || '';
+  if (src.indexOf(C.base + '/k/') === 0 || src.indexOf(C.base + '/api/') === 0) cHealMedia();
+}, true);
+// Tornando all'app dopo un po' (standby della TV): chiave rinnovata se sta per scadere
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden && CENTRAL && C.session && C.mexp - Date.now() / 1000 <= 1800) cHealMedia();
+});
 
 // Collegamento al server scelto: indirizzo, sessione, chiave dei video.
 // Anche il server di un amico si apre direttamente: il servizio da' un gettone

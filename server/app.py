@@ -8419,7 +8419,8 @@ def access_media():
         raise HTTPException(403, "Chiavi dei video solo per il proprietario e i suoi amici")
     exp = int(time.time()) + MEDIA_TTL
     msg = f"{u['id']}.{exp}"
-    return {"key": f"{msg}.{media_sign(msg)}", "exp": exp, "param": "bpk"}
+    # ttl: la PWA conta la scadenza col suo orologio (quello della TV puo' essere sbagliato)
+    return {"key": f"{msg}.{media_sign(msg)}", "exp": exp, "ttl": MEDIA_TTL, "param": "bpk"}
 
 
 def media_user(key):
