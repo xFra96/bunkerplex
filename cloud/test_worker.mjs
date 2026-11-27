@@ -87,7 +87,8 @@ test('un server prende la credenziale, manda la presenza e compare in GET /serve
   const cred = claim.body.credential;
 
   const hb = await t.call('POST', '/server/heartbeat',
-    { name: 'PC Anna', url: 'https://1.2.3.4:32501', lan: 'https://192.168.1.5:32501', pin: PIN, friends: true }, cred);
+    { name: 'PC Anna', url: 'https://1.2.3.4:32501', lan: 'https://192.168.1.5:32501', pin: PIN, friends: true,
+      release: '3.42.1', commit: '50346bb53e58' }, cred);
   assert.equal(hb.status, 200);
   assert.equal(hb.body.owner.username, 'anna');
 
@@ -96,6 +97,10 @@ test('un server prende la credenziale, manda la presenza e compare in GET /serve
   assert.equal(mine.body.servers.length, 1);
   const s = mine.body.servers[0];
   assert.deepEqual([s.sid, s.role, s.online, s.addresses.lan], [SID, 'owner', true, 'https://192.168.1.5:32501']);
+  assert.equal(s.build, '3.42.1 50346bb53e58');
+  // Valori strani non passano
+  await t.call('POST', '/server/heartbeat', { name: 'PC Anna', url: 'https://1.2.3.4:32501', lan: 'https://192.168.1.5:32501', pin: PIN, friends: true, release: '<x>', commit: 'zz' }, cred);
+  assert.equal((await t.call('GET', '/servers', undefined, await t.login('anna', 'pwa'))).body.servers[0].build, '');
 
   const theirs = await t.call('GET', '/servers', undefined, await t.login('bob', 'pwa'));
   const f = theirs.body.servers[0];

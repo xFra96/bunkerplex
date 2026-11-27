@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS server_creds(
   created REAL NOT NULL,
   last_seen REAL NOT NULL DEFAULT 0, -- ultima presenza: acceso se recente (10 minuti)
   secure_port INTEGER NOT NULL DEFAULT 0, -- porta https con certificato valido (0 = non ancora)
-  machine TEXT                       -- impronta della macchina: reinstallando sullo stesso PC si propone di sostituire
+  machine TEXT,                      -- impronta della macchina: reinstallando sullo stesso PC si propone di sostituire
+  build TEXT                         -- programma installato: "<release> <commit>" (es. "3.42.1 50346bb")
 );
 CREATE INDEX IF NOT EXISTS server_creds_owner ON server_creds(owner_id);
 

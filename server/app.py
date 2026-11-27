@@ -10720,6 +10720,8 @@ def heartbeat_body(uid):
     pin = share_tls["pin"] if share_tls["on"] else ""
     return {"name": pc_name(), "machine": machine_id(), "url": presence_url() if (friends or self_reach(uid)) else "",
             "lan": lan_url() if pin else "", "pin": pin, "friends": friends, "version": VERSION,
+            # Il programma installato: cosi' dall'account si vede quando si e' aggiornato
+            "release": updater.release(), "commit": updater.current_commit()[:12],
             "secure_port": SECURE_PORT if secure["on"] else 0,
             # Da fuori casa: l'indirizzo pubblico (Funnel), se acceso. Lo usa la PWA.
             "public": public["url"] if public["on"] and public["url"].startswith("https://") else ""}
