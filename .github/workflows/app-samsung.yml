@@ -60,7 +60,7 @@ jobs:
             --entrypoint /bin/bash "$TIZEN_IMAGE" -c '
             set -e
             mkdir -p /tmp/b /tmp/o
-            cp /src/config.xml /src/index.html /src/icon.png /tmp/b/
+            cp /src/config.xml /src/index.html /src/main.css /src/main.js /src/icon.png /tmp/b/
             cp /cert/author.p12 /tmp/a.p12
             tizen security-profiles add -n BunkerPlex -a /tmp/a.p12 -p "$PW" > /dev/null
             # le password in chiaro nel profilo: cosi tizen package non le chiede
