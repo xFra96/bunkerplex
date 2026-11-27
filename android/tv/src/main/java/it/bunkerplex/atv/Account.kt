@@ -335,7 +335,6 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
                     Txt("Ora il PC non raggiunge il servizio account: per entrare serve Internet.", Modifier.padding(top = 12.dp), color = C.warn, lines = 2)
                 } else Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     Btn("Entra dal telefono", at("pair"), primary = true) { act.go(Screen.Phone) }
-                    if (s.optBoolean("google")) Btn("Entra con Google") { act.go(Screen.Google(false)) }
                 }
             }
 
@@ -369,10 +368,6 @@ fun AccountScreen(act: MainActivity, refresh: Int) {
                             })
                         }
                     }
-                } else if (s.optBoolean("google") && online) {
-                    Txt("Collega il tuo account Google: poi su ogni PC, TV e telefono entri con quello, senza scrivere la password.",
-                        Modifier.padding(top = 18.dp), color = C.ink2, lines = 2)
-                    Row(Modifier.padding(top = 12.dp)) { Btn("Collega Google") { act.go(Screen.Google(true)) } }
                 }
             }
 

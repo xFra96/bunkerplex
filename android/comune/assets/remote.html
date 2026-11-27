@@ -768,6 +768,61 @@ function googlePoll(g) {
   });
 }
 
+// Sulla TV (app con la pagina web) non si scrive la password: QR e codice, si entra
+// dal telefono (/tv/start del servizio account). Il codice si rinnova da solo.
+var tflow = null;
+function tvLinkPage(t) {
+  var body = t ? '<div class="gtv">' +
+      (t.qr && t.qr.length ? '<div class="gqr">' + qrSvg(t.qr) + '<b>Inquadra il QR</b><small>con la fotocamera del telefono</small></div>' +
+        '<div class="gor"><span>oppure</span></div>' : '') +
+      '<div class="gtvcode"><small>Sul telefono apri</small><b>' + esc(t.short.replace(/^https?:\/\//, '')) + '</b>' +
+        '<small>(o nell\'app BunkerPlex: Impostazioni → Collega una TV) e scrivi</small>' +
+        '<div class="gcode">' + esc(t.code.slice(0, 4) + '-' + t.code.slice(4)) + '</div><small>Il codice cambia da solo ogni 10 minuti</small></div>' +
+    '</div>' : '<p class="authnote" id="tverr">Un attimo…</p>';
+  return authShell('<h1>Entra dal telefono</h1>' +
+    '<p class="authsub">Accedi una volta dal telefono: la TV entra da sola</p>' +
+    '<div class="gstatus" id="gstatus"><i></i><span>In attesa del telefono…</span></div>' + body +
+    '<button class="authlink f" data-autofocus data-act="ask" data-key="ask">Indietro</button>', 'wide', 'gwide');
+}
+
+function tvStart() {
+  tflow = null;
+  return bridge('remoteTvStart', []).then(function (s) {
+    var t = JSON.parse(s);
+    t.until = Date.now() + ((t.ttl || 600) - 60) * 1000;
+    tflow = t;
+    if (route()[0] === 'login') show(tvLinkPage(t));
+    setTimeout(function () { tvPoll(t); }, 2500);
+  }, function (m) {
+    var el = document.getElementById('tverr');
+    if (el) el.textContent = m;
+  });
+}
+
+function tvPoll(t) {
+  if (tflow !== t) return;
+  if (route()[0] !== 'login') { tflow = null; return; }      // uscito dalla pagina
+  if (Date.now() > t.until) { tvStart(); return; }            // scaduto: codice nuovo
+  bridge('remoteTvPoll', [t.poll]).then(function (s) {
+    if (tflow !== t) return;
+    var r = JSON.parse(s);
+    if (!r.done) {
+      gStatus(r.seen ? 'Codice aperto sul telefono: entra lì e la TV entra da sola' : 'In attesa del telefono…', r.seen ? 'ok' : '');
+      setTimeout(function () { tvPoll(t); }, 2500);
+      return;
+    }
+    tflow = null;
+    listedAt = 0;
+    go('friends');
+  }, function (s) {
+    if (tflow !== t) return;
+    var e;
+    try { e = JSON.parse(s); } catch (x) { e = { detail: s }; }
+    if (!e.status) { gStatus('Rete assente: riprovo…', 'warn'); setTimeout(function () { tvPoll(t); }, 4000); return; }
+    tvStart();
+  });
+}
+
 function loadingPage(text) {
   return authShell('<div class="spin"></div><h1 class="small">' + esc(text) + '</h1>');
 }
@@ -1043,6 +1098,7 @@ function render() {
   var page = r[0] || 'ask';
   // Sulla TV non si scrive la password: si entra dal telefono (il QR dell'app TV)
   if (page === 'login' && TV && app && app.phoneLogin) { app.phoneLogin(); return; }
+  if (page === 'login' && TV) { show(tvLinkPage(tflow)); if (!tflow) tvStart(); return; }
   if (page === 'login') { show(loginPage()); var u = document.getElementById('u'); if (u) u.focus(); return; }
   if (!account()) { if (page === 'ask') show(askPage()); else go('login'); return; }
   if (page === 'ask' || page === 'friends') { picker(); return; }

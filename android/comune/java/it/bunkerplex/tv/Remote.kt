@@ -125,7 +125,7 @@ object Remote {
     }
 
     /** Le righe di 0 e 1 del QR di un indirizzo (zxing), senza bordo. */
-    private fun qrRows(text: String): List<String> = try {
+    fun qrRows(text: String): List<String> = try {
         val m = com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, 0, 0,
             mapOf(com.google.zxing.EncodeHintType.MARGIN to 0,
                 com.google.zxing.EncodeHintType.ERROR_CORRECTION to com.google.zxing.qrcode.decoder.ErrorCorrectionLevel.M))
