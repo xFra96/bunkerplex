@@ -52,7 +52,7 @@ Sicurezza:
 Robustezza:
 - `GET /friends` fa una query per amico: con ~45 amici supera il limite di query di D1 per richiesta.
 - `rev = Date.now()` nella sincronizzazione dei visti non è monotòno tra istanze del Worker: si possono perdere righe.
-- `schema.sql` non contiene tabelle e colonne create dal Worker al volo (`ts_devices`, `google_flows`, `reset_codes`, `notices`, `kv`, `servers.lan`, `servers.friends`).
+- `schema.sql` non contiene tabelle e colonne create dal Worker al volo (`ts_devices`, `reset_codes`, `notices`, `kv`, `servers.lan`, `servers.friends`; `google_flows`, `tv_links` e `passkeys` invece ci sono).
 
 ---
 

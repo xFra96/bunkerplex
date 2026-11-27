@@ -15,6 +15,8 @@
 // TS_OAUTH_SECRET (Tailscale dentro BunkerPlex, vedi /tailscale/key; permessi
 // «Auth Keys: write» e «Devices: Core» sull'etichetta tag:bunkerplex).
 // GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET: «Entra con Google» (vedi /google/start).
+// ANDROID_CERT_SHA256: impronte dei certificati dell'APK del telefono, per le passkey
+// dentro l'app (vedi /.well-known/assetlinks.json e «Passkey»).
 // BREVO_API_KEY (e MAIL_FROM, di base bunkerplex@outlook.it): «Password dimenticata?»
 // con un codice via email (vedi /reset/start). Trigger cron settimanale (es.
 // «0 6 * * 1»): tiene viva la chiave Brevo (vedi scheduled).
@@ -1245,6 +1247,236 @@ async function tsDeleteDevice(ts, d) {
   if (!r.ok && r.status !== 404) fail(502, 'Tailscale non ha tolto il dispositivo (errore ' + r.status + ')');
 }
 
+// ---- Passkey: entrare con impronta, volto o PIN del dispositivo (WebAuthn)
+//
+// Dalla PWA di questo servizio (l'indirizzo delle passkey e' il suo nome: sui server
+// di casa non valgono). Si aggiunge una passkey da Impostazioni → Account (o subito
+// dopo essere entrati con la password); poi «Entra con impronta o volto» non chiede
+// niente: il dispositivo propone le passkey dell'account e ne controlla l'identita'
+// (userVerification: required). Qui resta solo la chiave pubblica.
+// /passkeys/login/start e /passkeys/register/start danno una sfida a uso singolo
+// (PASSKEY_TTL); /finish controlla firma, sfida, indirizzo e contatore.
+
+const PASSKEY_TTL = 300;
+const PASSKEY_MAX = 10;          // passkey per account
+
+let passkeyTables = false;
+async function ensurePasskeys(env) {
+  if (passkeyTables) return;
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS passkeys(id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, jwk TEXT NOT NULL, ' +
+    'alg INTEGER NOT NULL, counter INTEGER NOT NULL DEFAULT 0, label TEXT, created REAL NOT NULL, used REAL)').run();
+  await env.DB.prepare('CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys(user_id)').run();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS passkey_challenges(hash TEXT PRIMARY KEY, user_id INTEGER, exp REAL NOT NULL)').run();
+  passkeyTables = true;
+}
+
+// CBOR (RFC 8949), quanto basta per l'oggetto di attestazione e la chiave COSE
+function cbor(bytes) {
+  let p = 0;
+  const len = (info) => {
+    if (info < 24) return info;
+    let n = 0;
+    const size = { 24: 1, 25: 2, 26: 4, 27: 8 }[info];
+    if (!size) throw new Error('cbor');
+    for (let i = 0; i < size; i++) n = n * 256 + bytes[p++];
+    return n;
+  };
+  const item = () => {
+    if (p >= bytes.length) throw new Error('cbor');
+    const b = bytes[p++];
+    const major = b >> 5;
+    const info = b & 31;
+    if (major === 7) return { 20: false, 21: true, 22: null }[info];
+    const n = len(info);
+    if (major === 0) return n;
+    if (major === 1) return -1 - n;
+    if (major === 2) { const v = bytes.slice(p, p + n); p += n; return v; }
+    if (major === 3) { const v = new TextDecoder().decode(bytes.slice(p, p + n)); p += n; return v; }
+    if (major === 4) { const a = []; for (let i = 0; i < n; i++) a.push(item()); return a; }
+    if (major === 5) { const m = new Map(); for (let i = 0; i < n; i++) { const k = item(); m.set(k, item()); } return m; }
+    throw new Error('cbor');
+  };
+  const v = item();
+  return { value: v, end: p };
+}
+
+// I dati dell'autenticatore: impronta dell'indirizzo, segnali, contatore (e la chiave, alla creazione)
+function authData(bytes) {
+  if (bytes.length < 37) throw new Error('authData');
+  const flags = bytes[32];
+  const out = { rpHash: bytes.slice(0, 32), up: !!(flags & 1), uv: !!(flags & 4),
+    counter: ((bytes[33] << 24) >>> 0) + (bytes[34] << 16) + (bytes[35] << 8) + bytes[36] };
+  if (flags & 64) {
+    const idLen = (bytes[53] << 8) + bytes[54];
+    out.credId = bytes.slice(55, 55 + idLen);
+    out.cose = cbor(bytes.slice(55 + idLen)).value;
+  }
+  return out;
+}
+
+// Chiave COSE → JWK per WebCrypto: ES256 (-7) o RS256 (-257)
+function coseJwk(m) {
+  const alg = m.get(3);
+  if (alg === -7 && m.get(1) === 2 && m.get(-1) === 1) {
+    return { alg, jwk: { kty: 'EC', crv: 'P-256', x: b64url(m.get(-2)), y: b64url(m.get(-3)) } };
+  }
+  if (alg === -257 && m.get(1) === 3) {
+    return { alg, jwk: { kty: 'RSA', n: b64url(m.get(-1)), e: b64url(m.get(-2)) } };
+  }
+  fail(400, 'Questo dispositivo usa un tipo di passkey che BunkerPlex non conosce');
+}
+
+// Firma ECDSA in DER (come la danno gli autenticatori) → r||s (come la vuole WebCrypto)
+function derToRaw(der) {
+  let p = 2;
+  if (der[0] !== 0x30) throw new Error('der');
+  if (der[1] & 0x80) p = 2 + (der[1] & 0x7f);
+  const int = () => {
+    if (der[p++] !== 0x02) throw new Error('der');
+    const n = der[p++];
+    let v = der.slice(p, p + n);
+    p += n;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    const out = new Uint8Array(32);
+    out.set(v, 32 - v.length);
+    return out;
+  };
+  const r = int();
+  const s = int();
+  const raw = new Uint8Array(64);
+  raw.set(r, 0);
+  raw.set(s, 32);
+  return raw;
+}
+
+async function passkeyVerify(row, data, sig) {
+  const jwk = JSON.parse(row.jwk);
+  if (row.alg === -7) {
+    const key = await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    let raw;
+    try { raw = derToRaw(sig); } catch (e) { return false; }
+    return crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, raw, data);
+  }
+  const key = await crypto.subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+  return crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, sig, data);
+}
+
+async function newChallenge(env, userId) {
+  await env.DB.prepare('DELETE FROM passkey_challenges WHERE exp < ?').bind(now()).run();
+  // Tante sfide aperte (anche da chi prova a riempire): via le piu' vecchie, mai un rifiuto per tutti
+  const n = await env.DB.prepare('SELECT COUNT(*) n FROM passkey_challenges').first('n');
+  if (n >= 500) {
+    await env.DB.prepare('DELETE FROM passkey_challenges WHERE hash IN (SELECT hash FROM passkey_challenges ORDER BY exp LIMIT ?)')
+      .bind(n - 499).run();
+  }
+  const c = new Uint8Array(32);
+  crypto.getRandomValues(c);
+  const challenge = b64url(c);
+  await env.DB.prepare('INSERT INTO passkey_challenges(hash, user_id, exp) VALUES(?,?,?)')
+    .bind(await sha256(challenge), userId || null, now() + PASSKEY_TTL).run();
+  return challenge;
+}
+
+// clientDataJSON: tipo giusto, la sfida data da qui (una volta sola), questo indirizzo
+async function checkClient(env, url, raw, type, userId) {
+  let cd = null;
+  try { cd = JSON.parse(new TextDecoder().decode(b64urlBytes(raw))); } catch (e) { cd = null; }
+  if (!cd || cd.type !== type || cd.origin !== url.origin || typeof cd.challenge !== 'string') fail(400, 'Passkey non valida');
+  const h = await sha256(cd.challenge);
+  const row = await env.DB.prepare('SELECT * FROM passkey_challenges WHERE hash = ?').bind(h).first();
+  // Una volta sola: vale solo per chi la cancella davvero (due richieste insieme: una perde)
+  const del = await env.DB.prepare('DELETE FROM passkey_challenges WHERE hash = ?').bind(h).run();
+  const gone = del && del.meta && typeof del.meta.changes === 'number' ? del.meta.changes : 1;
+  if (!row || gone !== 1 || row.exp < now() || (userId && row.user_id !== userId)) fail(400, 'Tempo scaduto: riprova');
+}
+
+const passkeyJson = (r) => ({ id: r.id, label: r.label || 'Passkey', created: r.created, used: r.used || null });
+
+async function passkeyRoutes(request, env, url, path, method) {
+  if (!path.startsWith('/passkeys')) return null;
+  await ensurePasskeys(env);
+  const rpId = url.hostname;
+
+  // Entrare: la sfida (senza account: il dispositivo propone le sue passkey)
+  if (path === '/passkeys/login/start' && method === 'POST') {
+    return json({ challenge: await newChallenge(env, null), rpId, timeout: PASSKEY_TTL * 1000 });
+  }
+  if (path === '/passkeys/login/finish' && method === 'POST') {
+    const b = await body(request);
+    const row = await env.DB.prepare('SELECT * FROM passkeys WHERE id = ?').bind(String(b.id || '').slice(0, 400)).first();
+    await checkClient(env, url, b.clientDataJSON, 'webauthn.get', null);
+    if (!row) fail(401, 'Questa passkey non è più valida: entra con la password e aggiungila di nuovo');
+    let ad;
+    try { ad = authData(b64urlBytes(b.authenticatorData)); } catch (e) { fail(400, 'Passkey non valida'); }
+    const rpHash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rpId)));
+    if (b64url(ad.rpHash) !== b64url(rpHash) || !ad.up || !ad.uv) fail(401, 'Il dispositivo non ha confermato che sei tu');
+    const cdHash = new Uint8Array(await crypto.subtle.digest('SHA-256', b64urlBytes(b.clientDataJSON)));
+    // Firmati: i dati dell'autenticatore seguiti dall'impronta di clientDataJSON
+    const adBytes = b64urlBytes(b.authenticatorData);
+    const data = new Uint8Array(adBytes.length + 32);
+    data.set(adBytes, 0);
+    data.set(cdHash, adBytes.length);
+    if (!(await passkeyVerify(row, data, b64urlBytes(b.signature)))) fail(401, 'Passkey non valida');
+    // Contatore: se il dispositivo lo usa, deve crescere (una copia clonata resta indietro)
+    if (row.counter && ad.counter <= row.counter) fail(401, 'Passkey non valida: toglila e aggiungila di nuovo');
+    await env.DB.prepare('UPDATE passkeys SET counter = ?, used = ? WHERE id = ?').bind(ad.counter, now(), row.id).run();
+    const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(row.user_id).first();
+    if (!user) fail(401, 'Account non trovato');
+    if (user.disabled) fail(403, "Questo account è disattivato: chiedi all'amministratore");
+    if (user.fails || user.locked_until) {
+      await env.DB.prepare('UPDATE users SET fails = 0, locked_until = 0 WHERE id = ?').bind(user.id).run();
+    }
+    return json({ token: await newSession(env, user, b.device, b.kind), user: userJson(user) });
+  }
+
+  const u = await auth(request, env);
+
+  if (path === '/passkeys' && method === 'GET') {
+    const rows = (await env.DB.prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created').bind(u.id).all()).results;
+    return json({ passkeys: rows.map(passkeyJson) });
+  }
+
+  // Aggiungere: la sfida, con l'account e le passkey che ha gia' (per non farne due sullo stesso dispositivo)
+  if (path === '/passkeys/register/start' && method === 'POST') {
+    const rows = (await env.DB.prepare('SELECT id FROM passkeys WHERE user_id = ?').bind(u.id).all()).results;
+    if (rows.length >= PASSKEY_MAX) fail(409, 'Hai già ' + PASSKEY_MAX + ' passkey: togline una prima');
+    return json({
+      challenge: await newChallenge(env, u.id), rp: { id: rpId, name: 'BunkerPlex' },
+      user: { id: b64url(new TextEncoder().encode('bp-' + u.id)), name: u.email || u.google_email || u.username, displayName: u.username },
+      exclude: rows.map((r) => r.id), timeout: PASSKEY_TTL * 1000
+    });
+  }
+  if (path === '/passkeys/register/finish' && method === 'POST') {
+    const b = await body(request);
+    await checkClient(env, url, b.clientDataJSON, 'webauthn.create', u.id);
+    let att;
+    try { att = cbor(b64urlBytes(b.attestationObject)).value; } catch (e) { att = null; }
+    if (!(att instanceof Map) || !(att.get('authData') instanceof Uint8Array)) fail(400, 'Passkey non valida');
+    let ad;
+    try { ad = authData(att.get('authData')); } catch (e) { fail(400, 'Passkey non valida'); }
+    const rpHash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rpId)));
+    if (b64url(ad.rpHash) !== b64url(rpHash) || !ad.up || !ad.uv || !ad.credId || !(ad.cose instanceof Map)) {
+      fail(400, 'Il dispositivo non ha confermato che sei tu');
+    }
+    const key = coseJwk(ad.cose);
+    const id = b64url(ad.credId);
+    if (id.length > 400) fail(400, 'Passkey non valida');
+    const taken = await env.DB.prepare('SELECT user_id FROM passkeys WHERE id = ?').bind(id).first();
+    if (taken) fail(409, 'Questa passkey c\'è già');
+    const label = String(b.label || '').trim().slice(0, 60) || 'Passkey';
+    await env.DB.prepare('INSERT INTO passkeys(id, user_id, jwk, alg, counter, label, created) VALUES(?,?,?,?,?,?,?)')
+      .bind(id, u.id, JSON.stringify(key.jwk), key.alg, ad.counter, label, now()).run();
+    return json({ ok: true, passkey: passkeyJson({ id, label, created: now() }) });
+  }
+
+  const del = /^\/passkeys\/([A-Za-z0-9_-]{1,400})$/.exec(path);
+  if (del && method === 'DELETE') {
+    await env.DB.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').bind(del[1], u.id).run();
+    return json({ ok: true });
+  }
+  return null;
+}
+
 // ---- La TV entra dal telefono
 //
 // Sulla TV non si scrive mai una password. La TV chiede un codice (/tv/start, senza
@@ -1261,6 +1493,9 @@ async function ensureTvLinks(env) {
   if (tvTable) return;
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS tv_links(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, ' +
     'device TEXT, user_id INTEGER, exp REAL NOT NULL)').run();
+  // seen: il telefono ha aperto il QR o il codice (la TV lo dice)
+  const cols = (await env.DB.prepare('PRAGMA table_info(tv_links)').all()).results.map((c) => c.name);
+  if (!cols.includes('seen')) await env.DB.prepare('ALTER TABLE tv_links ADD COLUMN seen INTEGER').run();
   tvTable = true;
 }
 
@@ -1294,11 +1529,18 @@ async function tvPublicRoutes(request, env, url, path, method) {
     const ph = await sha256(String((await body(request)).poll || ''));
     const r = await env.DB.prepare('SELECT * FROM tv_links WHERE poll_hash = ?').bind(ph).first();
     if (!r || r.exp < now()) fail(404, 'Codice scaduto');
-    if (!r.user_id) return json({ done: false });
+    if (!r.user_id) return json({ done: false, seen: !!r.seen });
     await env.DB.prepare('DELETE FROM tv_links WHERE code = ?').bind(r.code).run();
     const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(r.user_id).first();
     if (!u) fail(404, 'Account non trovato');
     return json({ done: true, token: await newSession(env, u, r.device, 'tv'), user: userJson(u) });
+  }
+  // Il telefono ha aperto il codice (anche prima di entrare): la TV scrive «Continua sul telefono»
+  const sm = /^\/tv\/([A-Za-z0-9-]{1,12})\/seen$/.exec(path);
+  if (sm && method === 'POST') {
+    const r = await tvLink(env, sm[1]);
+    if (!r.seen) await env.DB.prepare('UPDATE tv_links SET seen = 1 WHERE code = ?').bind(r.code).run();
+    return json({ ok: true });
   }
   // L'indirizzo da scrivere a mano (o quello del QR aperto senza la PWA): la pagina giusta della PWA
   const pm = /^\/tv(?:\/([A-Za-z0-9-]{1,12}))?$/.exec(path);
@@ -1360,6 +1602,12 @@ async function ensureGoogle(env) {
   if (!fcols.includes('offer_user')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_user INTEGER').run();
   if (!fcols.includes('offer_sub')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_sub TEXT').run();
   if (!fcols.includes('offer_hash')) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN offer_hash TEXT').run();
+  // PKCE e nonce del giro con Google; hint: l'email gia' scritta; back: dove tornare
+  // dopo (stesso dispositivo); seen: la pagina del codice e' stata aperta; note:
+  // l'ultimo tentativo non riuscito (si puo' riprovare con un altro account Google)
+  for (const c of ['pkce TEXT', 'nonce TEXT', 'hint TEXT', 'back TEXT', 'seen INTEGER', 'note TEXT']) {
+    if (!fcols.includes(c.split(' ')[0])) await env.DB.prepare('ALTER TABLE google_flows ADD COLUMN ' + c).run();
+  }
   googleCols = true;
 }
 
@@ -1404,10 +1652,40 @@ function page(title, inner, status = 200) {
     'input{box-sizing:border-box;width:100%;font:700 1.4rem ui-monospace,monospace;letter-spacing:.12em;text-transform:uppercase;' +
     'padding:.7rem;border-radius:.5rem;border:1px solid #2c3a30;background:#0e1510;color:#f2f5f2;margin:.4rem 0 1rem}' +
     '.btn{display:inline-block;border:0;border-radius:.5rem;padding:.8rem 1.3rem;font:600 1rem system-ui,sans-serif;' +
-    'background:#1a7f45;color:#fff;text-decoration:none;cursor:pointer}.err{color:#ff8f80}small{color:#9fada3}</style></head>' +
-    '<body><main>' + inner + '</main></body></html>';
+    'background:#1a7f45;color:#fff;text-decoration:none;cursor:pointer}.err{color:#ff8f80}small{color:#9fada3}' +
+    '.btn.ghost{background:transparent;border:1px solid #2c3a30;color:#f2f5f2}' +
+    '.gbtn{display:flex;align-items:center;justify-content:center;gap:.7rem;width:100%;box-sizing:border-box;border:1px solid #dadce0;' +
+    'border-radius:.5rem;padding:.8rem 1.2rem;background:#fff;color:#1f1f1f;font:600 1rem system-ui,sans-serif;cursor:pointer;margin:.4rem 0 1rem}' +
+    '.gbtn:hover{background:#f1f3f4}.gbtn svg{width:1.25rem;height:1.25rem}' +
+    '.brand{display:flex;align-items:center;gap:.55rem;margin-bottom:1.6rem;font:700 1.1rem system-ui,sans-serif}' +
+    '.brand i{width:1.6rem;height:1.6rem;border-radius:.4rem;background:#1a7f45;display:inline-flex;align-items:center;justify-content:center}' +
+    '.brand i:after{content:"";border-left:.55rem solid #fff;border-top:.35rem solid transparent;border-bottom:.35rem solid transparent;margin-left:.15rem}' +
+    '.ok{width:3rem;height:3rem;border-radius:50%;background:#1a7f45;color:#fff;font:700 1.5rem/3rem system-ui;text-align:center;margin-bottom:1rem}' +
+    'button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #7fd6a0;outline-offset:2px}</style></head>' +
+    '<body><main><div class="brand"><i></i><span>BunkerPlex</span></div>' + inner + '</main></body></html>';
   return new Response(html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
     'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' } });
+}
+
+// Il pulsante di Google come lo vuole Google: bianco, con la «G» a colori
+const G_LOGO = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>' +
+  '<path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>' +
+  '<path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>' +
+  '<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>';
+
+function gButton(label) {
+  return '<button class="gbtn" autofocus>' + G_LOGO + '<span>' + esc(label) + '</span></button>';
+}
+
+function b64url(buf) {
+  let s = '';
+  for (const x of new Uint8Array(buf)) s += String.fromCharCode(x);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlBytes(part) {
+  const b = atob(String(part || '').replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((String(part || '').length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
 }
 
 function b64urlJson(part) {
@@ -1653,6 +1931,7 @@ async function googleRoutes(request, env, url, path, method) {
       'nome utente, un\'impronta della password (mai la password), impostazioni, visti e lista, amici e indirizzi dei propri server.</p>' +
       '<p>Con «Entra con Google» riceve da Google soltanto l\'identificativo dell\'account e l\'indirizzo email, ' +
       'usati unicamente per riconoscerti all\'accesso. Niente viene venduto, condiviso con terzi o usato per pubblicità.</p>' +
+      '<p>Con «Entra con impronta o volto» (passkey) tiene solo la chiave pubblica: impronta e volto restano sul tuo dispositivo.</p>' +
       '<p>Per scollegare Google: BunkerPlex → Impostazioni → Account → Scollega Google, oppure da ' +
       '<a href="https://myaccount.google.com/connections" style="color:#7fd6a0">myaccount.google.com</a>. ' +
       'Per cancellare l\'account chiedi all\'amministratore del tuo BunkerPlex.</p>');
@@ -1666,7 +1945,70 @@ async function googleRoutes(request, env, url, path, method) {
   const origin = url.origin;
   const redirect = origin + '/google/callback';
 
-  // Un codice nuovo. link = collega Google all'account che chiede (serve il suo gettone)
+  // Dove si vede il codice, in parole (per le pagine)
+  const devWord = (f) => ({ tv: 'la TV', phone: 'l\'app sul telefono', browser: 'il browser' }[f.kind] || 'il dispositivo');
+  const shownCode = (code) => code.slice(0, 4) + '-' + code.slice(4);
+  const expired = (status) => page('Codice scaduto', '<h1>Codice scaduto</h1>' +
+    '<p>Il codice vale 10 minuti e una volta sola. Sulla TV o nell\'app ricomincia da «Entra con Google»: compare un codice nuovo.</p>' +
+    '<p><a class="btn ghost" href="/g">Scrivi un altro codice</a></p>', status);
+
+  // Porta a Google: PKCE (S256) e nonce legano la risposta di Google a questo giro
+  const toGoogle = async (f, code) => {
+    const state = code + '.' + randomHex(16);
+    const verifier = randomHex(32);
+    const nonce = randomHex(16);
+    await env.DB.prepare('UPDATE google_flows SET state = ?, pkce = ?, nonce = ?, note = NULL, seen = 1 WHERE code = ?')
+      .bind(await sha256(state), verifier, nonce, code).run();
+    const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
+    const q = new URLSearchParams({
+      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: redirect, response_type: 'code', scope: 'openid email',
+      state, nonce, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account'
+    });
+    if (f.hint) q.set('login_hint', f.hint);
+    return new Response(null, { status: 303, headers: { Location: 'https://accounts.google.com/o/oauth2/v2/auth?' + q,
+      'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
+  };
+
+  // Non riuscito ma si puo' riprovare: il codice resta buono (la TV aspetta ancora)
+  // e chi aspetta legge il motivo nella risposta di /google/poll.
+  const retry = async (f, code, msg) => {
+    await env.DB.prepare('UPDATE google_flows SET note = ?, state = NULL, pkce = NULL, nonce = NULL WHERE code = ?')
+      .bind(msg, code).run();
+    return page('Non riuscito', '<h1>Non riuscito</h1><p class="err">' + esc(msg) + '</p>' +
+      '<form method="post" action="/g/' + code + '">' + gButton('Prova con un altro account Google') + '</form>' +
+      '<p><small>Codice <b>' + shownCode(code) + '</b> per ' + esc(devWord(f)) + '. Oppure torna su BunkerPlex ed entra con la password.</small></p>', 403);
+  };
+
+  // Fatto: sullo stesso dispositivo la finestra si chiude da sola (o si torna all'app)
+  const donePage = (f, head, line) => {
+    let after;
+    if (f.kind === 'tv') {
+      after = '<p>La TV entra da sola tra un attimo.</p><p><small>Puoi chiudere questa pagina.</small></p>';
+    } else if (f.kind === 'phone') {
+      after = '<p>Torna all\'app BunkerPlex: entra da sola.</p>' +
+        (/Android/i.test(request.headers.get('User-Agent') || '')
+          ? '<p><a class="btn" href="intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=it.bunkerplex.tv;end">Torna all\'app</a></p>' : '');
+    } else {
+      let host = '';
+      let here = false;
+      try {
+        const bu = f.back ? new URL(f.back) : null;
+        host = bu ? bu.host : '';
+        here = !!bu && bu.origin === origin;
+      } catch (e) { host = ''; }
+      // Finestra aperta dall'app: si chiude. Altrimenti (Google nella stessa scheda della
+      // PWA di questo servizio) si torna da soli alla PWA, che riprende e entra.
+      after = '<p>Torna su BunkerPlex: entra da solo.</p>' +
+        (host ? '<p><a class="btn" href="' + esc(f.back) + '">Torna a BunkerPlex</a></p><p><small>' + esc(host) + '</small></p>' : '<p><small>Puoi chiudere questa pagina.</small></p>') +
+        '<script>setTimeout(function(){window.close();' +
+        (here ? 'setTimeout(function(){location.replace(' + JSON.stringify(f.back).replace(/</g, '\\u003c') + ')},400);' : '') +
+        '},1200)</script>';
+    }
+    return page('Fatto', '<div class="ok">✓</div><h1>' + head + '</h1><p>' + line + '</p>' + after);
+  };
+
+  // Un codice nuovo. link = collega Google all'account che chiede (serve il suo gettone).
+  // hint: l'email gia' scritta (Google propone quell'account); back: dove tornare dopo.
   if (path === '/google/start' && method === 'POST') {
     const b = await body(request);
     let link = null;
@@ -1680,18 +2022,35 @@ async function googleRoutes(request, env, url, path, method) {
     const poll = randomHex(32);
     // device: il nome che avrà il gettone (il PC, o il telefono); kind: dove si vede il codice
     const kind = ['tv', 'phone', 'browser'].includes(b.kind) ? b.kind : 'browser';
-    await env.DB.prepare('INSERT INTO google_flows(code, poll_hash, link_user, device, kind, exp) VALUES(?,?,?,?,?,?)')
-      .bind(code, await sha256(poll), link ? link.id : null, String(b.device || '').slice(0, 80), kind, now() + GOOGLE_TTL).run();
-    return json({ code, poll, url: origin + '/g/' + code, short: origin + '/g', ttl: GOOGLE_TTL });
+    const hint = String(b.hint || '').trim().toLowerCase();
+    let back = '';
+    try {
+      const bu = new URL(String(b.back || ''));
+      // Solo verso la PWA di questo servizio: niente link verso indirizzi scelti da altri
+      if (bu.origin === origin && bu.href.length <= 300) back = bu.href;
+    } catch (e) { back = ''; }
+    await env.DB.prepare('INSERT INTO google_flows(code, poll_hash, link_user, device, kind, exp, hint, back) VALUES(?,?,?,?,?,?,?,?)')
+      .bind(code, await sha256(poll), link ? link.id : null, String(b.device || '').slice(0, 80), kind, now() + GOOGLE_TTL,
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint) && hint.length <= 120 ? hint : null, back || null).run();
+    const res = json({ code, poll, url: origin + '/g/' + code, short: origin + '/g', ttl: GOOGLE_TTL });
+    // Lo stesso browser che ha chiesto il codice (la PWA di questo servizio) salta la
+    // conferma del codice: lo prova un cookie che nessun altro può avere.
+    if (kind === 'browser') {
+      const same = randomHex(16);
+      await env.DB.prepare('UPDATE google_flows SET state = ? WHERE code = ?').bind('same:' + await sha256(same), code).run();
+      res.headers.append('Set-Cookie', 'bpg=' + code + '.' + same + '; Path=/g; Max-Age=' + GOOGLE_TTL + '; HttpOnly; Secure; SameSite=Lax');
+    }
+    return res;
   }
 
   // Chi ha chiesto il codice: finito? Il gettone si consegna una volta sola.
+  // Intanto: seen = il codice è stato aperto, note = l'ultimo tentativo non riuscito.
   if (path === '/google/poll' && method === 'POST') {
     const b = await body(request);
     const ph = await sha256(String(b.poll || ''));
     const f = await env.DB.prepare('SELECT * FROM google_flows WHERE poll_hash = ?').bind(ph).first();
     if (!f || f.exp < now()) fail(404, 'Codice scaduto: ricomincia');
-    if (!f.user_id && !f.error) return json({ done: false });
+    if (!f.user_id && !f.error) return json({ done: false, seen: !!f.seen, note: f.note || '' });
     await env.DB.prepare('DELETE FROM google_flows WHERE code = ?').bind(f.code).run();
     if (f.error) fail(403, f.error);
     const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(f.user_id).first();
@@ -1710,40 +2069,47 @@ async function googleRoutes(request, env, url, path, method) {
 
   // La pagina da aprire: senza codice lo chiede; col codice dice per cosa e porta a Google
   if ((path === '/g' || /^\/g\/[A-Za-z0-9-]{1,12}$/.test(path)) && method === 'GET') {
-    const code = cleanCode(path === '/g' ? url.searchParams.get('c') : path.slice(3));
+    const typed = path === '/g' ? url.searchParams.get('c') : null;
+    const code = cleanCode(path === '/g' ? typed : path.slice(3));
     if (!code) {
-      return page('Entra con Google', '<h1>Entra con Google</h1><p>Scrivi il codice che vedi sulla TV o sull\'app.</p>' +
-        '<form method="get" action="/g"><input name="c" autocomplete="off" autocapitalize="characters" maxlength="9" placeholder="XXXX-XXXX" autofocus>' +
-        '<button class="btn">Continua</button></form>');
+      return page('Entra con Google', '<h1>Entra con Google</h1><p>Scrivi il codice che vedi sulla TV o nell\'app.</p>' +
+        '<form method="get" action="/g"><input name="c" id="c" autocomplete="off" autocapitalize="characters" spellcheck="false" ' +
+        'inputmode="text" maxlength="9" placeholder="XXXX-XXXX" aria-label="Codice" required autofocus>' +
+        '<button class="btn">Continua</button></form>' +
+        // Il trattino si mette da solo dopo le prime quattro lettere
+        '<script>var c=document.getElementById("c");c.addEventListener("input",function(){var v=c.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,8);' +
+        'c.value=v.length>4?v.slice(0,4)+"-"+v.slice(4):v})</script>');
     }
     const f = await flowByCode(env, code);
     if (!f || f.user_id || f.error) {
-      return page('Codice scaduto', '<h1>Codice scaduto o sbagliato</h1><p>Sulla TV o nell\'app ricomincia da «Entra con Google»: compare un codice nuovo.</p>' +
-        '<p><a class="btn" href="/g">Scrivi un altro codice</a></p>', 404);
+      return page('Codice scaduto', '<h1>' + (typed ? 'Codice sbagliato o scaduto' : 'Codice scaduto') + '</h1>' +
+        '<p>Controlla il codice sulla TV o nell\'app: vale 10 minuti e una volta sola. Se è scaduto ricomincia da «Entra con Google».</p>' +
+        '<p><a class="btn ghost" href="/g">Scrivi un altro codice</a></p>', 404);
     }
+    // Lo stesso browser che l'ha chiesto: dritto a Google
+    const ck = /(?:^|;\s*)bpg=([A-Z0-9]{8})\.([0-9a-f]{32})/.exec(request.headers.get('Cookie') || '');
+    if (ck && ck[1] === code && f.state && f.state.startsWith('same:') &&
+        sameString('same:' + await sha256(ck[2]), f.state)) {
+      return toGoogle(f, code);
+    }
+    if (!f.seen) await env.DB.prepare('UPDATE google_flows SET seen = 1 WHERE code = ?').bind(code).run();
     let what = 'Entri in BunkerPlex';
     if (f.link_user) {
       const lu = await env.DB.prepare('SELECT username FROM users WHERE id = ?').bind(f.link_user).first();
       what = 'Colleghi Google all\'account BunkerPlex <b>' + esc(lu ? lu.username : '') + '</b>';
     }
-    const dev = { tv: 'la TV', phone: 'l\'app sul telefono', browser: 'il browser' }[f.kind] || 'il dispositivo';
     return page('Entra con Google', '<h1>' + (f.link_user ? 'Collega Google' : 'Entra con Google') + '</h1>' +
-      '<p>' + what + ' su <b>' + esc(dev) + '</b> che mostra questo codice:</p><p class="code">' + code.slice(0, 4) + '-' + code.slice(4) + '</p>' +
-      '<p><small>Se non l\'hai chiesto tu, o il codice non è quello che vedi, chiudi questa pagina.</small></p>' +
-      '<form method="post" action="/g/' + code + '"><button class="btn">Continua con Google</button></form>');
+      '<p>' + what + ' su <b>' + esc(devWord(f)) + '</b> che mostra questo codice:</p><p class="code">' + shownCode(code) + '</p>' +
+      (f.note ? '<p class="err">' + esc(f.note) + '</p>' : '') +
+      '<form method="post" action="/g/' + code + '">' + gButton('Continua con Google') + '</form>' +
+      '<p><small>Se non l\'hai chiesto tu, o il codice non è quello che vedi, chiudi questa pagina.</small></p>');
   }
   const gm = /^\/g\/([A-Za-z0-9-]{1,12})$/.exec(path);
   if (gm && method === 'POST') {
     const code = cleanCode(gm[1]);
     const f = await flowByCode(env, code);
-    if (!f || f.user_id || f.error) return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Entra con Google».</p>', 404);
-    const state = code + '.' + randomHex(16);
-    await env.DB.prepare('UPDATE google_flows SET state = ? WHERE code = ?').bind(await sha256(state), code).run();
-    const q = new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID, redirect_uri: redirect, response_type: 'code',
-      scope: 'openid email', state, prompt: 'select_account'
-    });
-    return Response.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + q, 303);
+    if (!f || f.user_id || f.error) return expired(404);
+    return toGoogle(f, code);
   }
 
   // «Collega ed entra»: la conferma della proposta fatta dopo Google (vedi sotto)
@@ -1754,18 +2120,19 @@ async function googleRoutes(request, env, url, path, method) {
     const form = await request.formData().catch(() => null);
     const nonce = form ? String(form.get('n') || '') : '';
     if (!f || !f.offer_user || f.user_id || f.error || !f.offer_hash || !sameString(await sha256(nonce), f.offer_hash)) {
-      return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Continua con Google».</p>', 404);
+      return expired(404);
     }
     const u = await env.DB.prepare('SELECT * FROM users WHERE id = ? AND google_sub IS NULL').bind(f.offer_user).first();
     const taken = await env.DB.prepare('SELECT id FROM users WHERE google_sub = ?').bind(f.offer_sub).first();
-    let error = null;
-    if (!u || taken) error = 'Non riesco a collegare: l\'account è cambiato nel frattempo. Ricomincia da «Continua con Google».';
-    else await env.DB.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').bind(f.offer_sub, f.email, u.id).run();
-    await env.DB.prepare('UPDATE google_flows SET error = ?, user_id = ?, offer_hash = NULL WHERE code = ?')
-      .bind(error, error ? null : u.id, code).run();
-    if (error) return page('Non riuscito', '<h1>Non riuscito</h1><p class="err">' + esc(error) + '</p>', 409);
-    return page('Fatto', '<h1>Google collegato</h1><p>Stai entrando come <b>' + esc(u.username) + '</b>. Torna su BunkerPlex: ' +
-      (f.kind === 'tv' ? 'la TV entra da sola.' : 'continua da solo.') + '</p><p><small>Puoi chiudere questa pagina.</small></p>');
+    if (!u || taken) {
+      await env.DB.prepare('UPDATE google_flows SET offer_hash = NULL WHERE code = ?').bind(code).run();
+      return retry(f, code, 'Non riesco a collegare: l\'account è cambiato nel frattempo.');
+    }
+    await env.DB.batch([
+      env.DB.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').bind(f.offer_sub, f.email, u.id),
+      env.DB.prepare('UPDATE google_flows SET error = NULL, user_id = ?, offer_hash = NULL, note = NULL WHERE code = ?').bind(u.id, code)
+    ]);
+    return donePage(f, 'Google collegato', 'Stai entrando come <b>' + esc(u.username) + '</b>.');
   }
 
   // Google torna qui
@@ -1773,23 +2140,21 @@ async function googleRoutes(request, env, url, path, method) {
     const state = String(url.searchParams.get('state') || '');
     const code = cleanCode(state.split('.')[0]);
     const f = code ? await flowByCode(env, code) : null;
-    if (!f || !f.state || !sameString(await sha256(state), f.state) || f.user_id || f.error) {
-      return page('Codice scaduto', '<h1>Codice scaduto</h1><p>Ricomincia da «Entra con Google» sulla TV o nell\'app.</p>', 400);
+    if (!f || !f.state || f.state.startsWith('same:') || !sameString(await sha256(state), f.state) || f.user_id || f.error) {
+      return expired(400);
     }
-    const end = async (error, uid, email) => {
-      await env.DB.prepare('UPDATE google_flows SET error = ?, user_id = ?, email = ?, state = NULL WHERE code = ?')
-        .bind(error || null, uid || null, email || null, code).run();
-      if (error) return page('Non riuscito', '<h1>Non riuscito</h1><p class="err">' + esc(error) + '</p>', 403);
-      return page('Fatto', '<h1>Fatto</h1><p>' + (f.link_user ? 'Google è collegato al tuo account BunkerPlex.'
-        : 'Stai entrando come <b>' + esc(f._name || '') + '</b>.') + ' Torna su BunkerPlex: ' +
-        (f.kind === 'tv' ? 'la TV entra da sola.' : 'continua da solo.') + '</p><p><small>Puoi chiudere questa pagina.</small></p>');
+    const ok = async (uid, email, head, line) => {
+      await env.DB.prepare('UPDATE google_flows SET user_id = ?, email = ?, state = NULL, pkce = NULL, nonce = NULL, note = NULL WHERE code = ?')
+        .bind(uid, email || null, code).run();
+      return donePage(f, head, line);
     };
-    if (url.searchParams.get('error')) return end('Accesso a Google annullato');
+    if (url.searchParams.get('error')) return retry(f, code, 'Hai annullato la scelta dell\'account Google.');
     const tr = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code: String(url.searchParams.get('code') || ''), client_id: env.GOOGLE_CLIENT_ID,
-        client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirect, grant_type: 'authorization_code'
+        client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: redirect, grant_type: 'authorization_code',
+        code_verifier: f.pkce || ''
       })
     });
     const tok = tr.ok ? await tr.json() : null;
@@ -1797,17 +2162,19 @@ async function googleRoutes(request, env, url, path, method) {
     try { id = b64urlJson(String(tok && tok.id_token || '').split('.')[1] || ''); } catch (e) { id = null; }
     // Il gettone arriva direttamente da Google (HTTPS): basta controllarne i campi
     if (!id || id.aud !== env.GOOGLE_CLIENT_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(id.iss) ||
-        !(id.exp > now()) || !id.sub) {
-      return end('Google non ha confermato l\'accesso: riprova');
+        !(id.exp > now()) || !id.sub || !f.nonce || !sameString(String(id.nonce || ''), f.nonce)) {
+      return retry(f, code, 'Google non ha confermato l\'accesso: riprova.');
     }
     const sub = String(id.sub);
     const email = id.email_verified ? String(id.email || '').toLowerCase() : '';
     const owner = await env.DB.prepare('SELECT * FROM users WHERE google_sub = ?').bind(sub).first();
 
     if (f.link_user) {
-      if (owner && owner.id !== f.link_user) return end('Questo account Google è già collegato all\'account BunkerPlex ' + owner.username);
+      if (owner && owner.id !== f.link_user) {
+        return retry(f, code, 'L\'account Google ' + (email || '') + ' è già collegato all\'account BunkerPlex ' + owner.username + '.');
+      }
       await env.DB.prepare('UPDATE users SET google_sub = ?, google_email = ? WHERE id = ?').bind(sub, email || null, f.link_user).run();
-      return end(null, f.link_user, email);
+      return ok(f.link_user, email, 'Google collegato', 'D\'ora in poi entri con <b>' + esc(email || 'Google') + '</b>, senza password.');
     }
     let u = owner;
     if (!u && email) {
@@ -1832,7 +2199,7 @@ async function googleRoutes(request, env, url, path, method) {
       const same = await env.DB.prepare('SELECT * FROM users WHERE email = ? AND google_sub IS NULL AND disabled = 0').bind(email).first();
       if (same) {
         const nonce = randomHex(16);
-        await env.DB.prepare('UPDATE google_flows SET offer_user = ?, offer_sub = ?, offer_hash = ?, email = ?, state = NULL WHERE code = ?')
+        await env.DB.prepare('UPDATE google_flows SET offer_user = ?, offer_sub = ?, offer_hash = ?, email = ?, state = NULL, pkce = NULL, nonce = NULL WHERE code = ?')
           .bind(same.id, sub, await sha256(nonce), email, code).run();
         return page('Collega Google', '<h1>Collega Google</h1>' +
           '<p>C\'è già l\'account BunkerPlex <b>' + esc(same.username) + '</b> con l\'email <b>' + esc(email) + '</b>.</p>' +
@@ -1843,14 +2210,14 @@ async function googleRoutes(request, env, url, path, method) {
       }
     }
     if (!u) {
-      return end('L\'account Google ' + (email || '') + ' non è collegato a nessun account BunkerPlex. ' +
-        'Entra una volta con nome e password e collegalo da Impostazioni → Account, oppure chiedi all\'amministratore di aggiungere questa email.');
+      return retry(f, code, 'L\'account Google ' + (email || '') + ' non è collegato a nessun account BunkerPlex. ' +
+        'Entra una volta con la password e collegalo da Impostazioni → Account, oppure chiedi all\'amministratore di aggiungere questa email.');
     }
+    if (u.disabled) return retry(f, code, 'L\'account BunkerPlex ' + u.username + ' è disattivato: chiedi all\'amministratore.');
     if (email && email !== u.google_email) {
       await env.DB.prepare('UPDATE users SET google_email = ? WHERE id = ?').bind(email, u.id).run();
     }
-    f._name = u.username;
-    return end(null, u.id, email);
+    return ok(u.id, email, 'Fatto', 'Stai entrando come <b>' + esc(u.username) + '</b>.');
   }
   return null;
 }
@@ -2393,6 +2760,19 @@ async function route(request, env) {
   const path = url.pathname.replace(/\/+$/, '') || '/';
   const method = request.method;
 
+  // L'app Android del telefono e' di questo servizio: le sue passkey valgono qui
+  // (impronta e volto dentro la WebView). ANDROID_CERT_SHA256: impronte SHA-256 dei
+  // certificati di firma dell'APK, separate da virgole (AA:BB:...).
+  if (path === '/.well-known/assetlinks.json' && method === 'GET') {
+    const prints = String(env.ANDROID_CERT_SHA256 || '').split(',').map((s) => s.trim().toUpperCase())
+      .filter((s) => /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/.test(s));
+    if (!prints.length) fail(404, 'Nessuna app dichiarata');
+    return new Response(JSON.stringify([{
+      relation: ['delegate_permission/common.handle_all_urls', 'delegate_permission/common.get_login_creds'],
+      target: { namespace: 'android_app', package_name: 'it.bunkerplex.tv', sha256_cert_fingerprints: prints }
+    }]), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' } });
+  }
+
   if (method === 'GET' || method === 'HEAD') {
     const asset = await pwaAsset(request, env, path);
     if (asset) return asset;
@@ -2400,7 +2780,7 @@ async function route(request, env) {
 
   if (path === '/' && method === 'GET') {
     const n = await env.DB.prepare('SELECT COUNT(*) n FROM users').first('n');
-    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env), certs: certOn(env) });
+    return json({ app: 'bunkerplex-account', version: 1, ready: n > 0, google: googleOn(env), reset: resetOn(env), certs: certOn(env), passkeys: true });
   }
 
   // L'indirizzo pubblico di chi chiama (lo mostra BunkerPlex in Impostazioni)
@@ -2516,6 +2896,8 @@ async function route(request, env) {
 
   const g = await googleRoutes(request, env, url, path, method);
   if (g) return g;
+  const pk = await passkeyRoutes(request, env, url, path, method);
+  if (pk) return pk;
   const tp = await tvPublicRoutes(request, env, url, path, method);
   if (tp) return tp;
   const nr = await noticeRoutes(request, env, url, path, method);

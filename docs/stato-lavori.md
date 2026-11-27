@@ -47,6 +47,13 @@ Niente più «server principale». Il **servizio centrale** (Cloudflare Worker +
 - **Android**: senza un server scelto apre la PWA del servizio (la WebView permette l'http verso il server di casa); ricorda l'ultimo server (anche con l'account); senza Internet passa alla ricerca in rete con l'IP già scritto.
 - I server degli amici si aprono ancora dal proprio server (serve un tuo server acceso).
 
+**Accesso rifinito** (novembre 2026)
+- **Google**: PKCE (S256) e `nonce` controllato nel gettone; l'email già scritta va a Google (`login_hint`); account sbagliato o scelta annullata non bruciano il codice: si riprova sul telefono e la TV legge il motivo (`note` in `/google/poll`); `seen` quando il codice viene aperto. Lo stesso browser che ha chiesto il codice (PWA del servizio) salta la conferma con un cookie `bpg`; a fine giro la finestra si chiude da sola o torna alla PWA (`back`), sul telefono Android c'è «Torna all'app».
+- **TV**: QR anche per Google (TV nativa, `remote.html` con zxing nell'app), riga di stato in diretta («In attesa del telefono…», «Codice aperto sul telefono», errori), codice nuovo da solo quando scade, niente stop per un attimo senza rete. Vale anche per «Collega questa TV» (`/api/auth/pair/<codice>/seen`) e per l'accesso dal servizio (`/tv/<codice>/seen`).
+- **Impronta e volto (passkey, WebAuthn)**: `/passkeys/*` nel Worker (ES256/RS256, verifica dell'utente obbligatoria, contatore, sfide a uso singolo); nella PWA centrale «Entra con impronta o volto», proposta dal campo email, offerta dopo il primo accesso e pagina `#/passkey` per toglierle.
+- **App Android del telefono**: passkey anche dentro l'app (WebView con `androidx.webkit`, `WEB_AUTHENTICATION_SUPPORT_FOR_APP`); il Worker dichiara l'app in `/.well-known/assetlinks.json` solo col segreto `ANDROID_CERT_SHA256` (impronta SHA-256 della chiave di firma: `keytool -list -v -keystore bunkerplex.jks -alias bunkerplex`). Senza il segreto le passkey vanno nel browser ma non nell'app. Dopo Google nel browser, «Torna all'app» riapre l'app.
+- **Moduli**: errori scritti sotto i campi, pulsante che gira mentre si entra, occhio per vedere la password, avviso del Bloc Maiusc.
+
 ## Prove
 
 - `node --test cloud/test_worker.mjs`: 13 passate (D1 finto, Cloudflare e Let's Encrypt finti).
@@ -70,7 +77,7 @@ Niente più «server principale». Il **servizio centrale** (Cloudflare Worker +
 
 ## Da fare dopo / limiti noti
 
-- QR per «Entra con Google» sulla TV (oggi indirizzo e codice da scrivere).
+- Passkey solo dalla PWA del servizio account (l'indirizzo delle passkey è il suo nome): non sui server di casa né dentro la WebView dell'app Android.
 - Server degli amici aperti direttamente (oggi passano dal proprio server).
 - Cron settimanale per Brevo spento su Cloudflare (riga commentata in `wrangler.toml`).
 - Service worker della PWA da ricontrollare su Chrome.

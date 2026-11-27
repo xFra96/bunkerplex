@@ -108,28 +108,9 @@ fun AuthPage(content: @Composable () -> Unit) {
 fun LinkScreen(act: MainActivity, google: Boolean) {
     var pair by remember { mutableStateOf<JSONObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var seen by remember { mutableStateOf(false) }
     var round by remember { mutableIntStateOf(0) }
-    LaunchedEffect(round) {
-        try {
-            val p = withContext(Dispatchers.IO) { JSONObject(Api.post("/api/auth/pair", JSONObject()).first) }
-            pair = p
-            msg = null
-            val until = System.currentTimeMillis() + (p.optLong("ttl", 600) - 60) * 1000
-            while (System.currentTimeMillis() < until) {
-                delay(2000)
-                val (body, token) = withContext(Dispatchers.IO) { Api.call("GET", "/api/auth/pair/${p.optString("code")}") }
-                if (JSONObject(body).optBoolean("done")) {
-                    act.entered(body, token)
-                    return@LaunchedEffect
-                }
-            }
-            round++                           // scaduto: codice nuovo
-        } catch (e: ApiError) {
-            if (e.status == 404) round++ else msg = e.message
-        } catch (e: Exception) {
-            msg = "Non riesco a raggiungere BunkerPlex."
-        }
-    }
+    LaunchedEffect(round) { pairLoop(act, { pair = it; seen = false }, { seen = it }, { msg = it }, { round++ }) }
     val first = remember { FocusRequester() }
     val p = pair
     val code = p?.optString("code") ?: ""
@@ -137,8 +118,16 @@ fun LinkScreen(act: MainActivity, google: Boolean) {
     AuthPage {
         Title("Collega questa TV", size = 34.sp, lines = 1)
         Txt("Accedi una volta dal telefono: la TV entra da sola.", Modifier.padding(top = 8.dp), size = 18.sp, color = C.ink2)
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 30.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
+        LiveStatus(
+            when {
+                msg != null -> msg!!
+                seen -> "Codice aperto sul telefono: conferma lì e la TV entra da sola"
+                else -> "In attesa del telefono…"
+            },
+            if (msg != null) Live.Warn else if (seen) Live.Ok else Live.Wait,
+            Modifier.padding(top = 14.dp),
+        )
+        Row(Modifier.padding(top = 24.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
             Panel {
                 if (p != null) Qr(p.optJSONArray("qr").strings(), 210.dp)
                 Txt("Inquadra il QR", Modifier.padding(top = 18.dp), size = 21.sp, weight = FontWeight.Bold)
@@ -169,8 +158,181 @@ fun LinkScreen(act: MainActivity, google: Boolean) {
     AutoFocus(first)
 }
 
+/**
+ * Il giro della TV che aspetta il telefono (QR o codice di /api/auth/pair): codice
+ * nuovo quando scade, «aperto sul telefono» appena il telefono lo apre, senza rete
+ * si riprova da solo. Lo usano «Collega questa TV» e «Entra dal telefono».
+ */
+suspend fun pairLoop(act: MainActivity, got: (JSONObject) -> Unit, seen: (Boolean) -> Unit,
+                     msg: (String?) -> Unit, again: () -> Unit) {
+    try {
+        val p = withContext(Dispatchers.IO) { JSONObject(Api.post("/api/auth/pair", JSONObject()).first) }
+        got(p)
+        msg(null)
+        val until = System.currentTimeMillis() + (p.optLong("ttl", 600) - 60) * 1000
+        while (System.currentTimeMillis() < until) {
+            delay(2000)
+            val (body, token) = try {
+                withContext(Dispatchers.IO) { Api.call("GET", "/api/auth/pair/${p.optString("code")}") }
+            } catch (e: ApiError) {
+                throw e
+            } catch (e: IOException) {
+                msg("Rete assente: riprovo…")
+                continue
+            }
+            msg(null)
+            val r = JSONObject(body)
+            if (r.optBoolean("done")) {
+                act.entered(body, token)
+                return
+            }
+            seen(r.optBoolean("seen"))
+        }
+        again()                               // scaduto: codice nuovo
+    } catch (e: ApiError) {
+        // Scaduto: codice nuovo subito. Altri errori (es. il server si riavvia): scritti, poi si riprova
+        if (e.status == 404) again() else {
+            msg(e.message)
+            delay(5000)
+            again()
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        msg("Non riesco a raggiungere BunkerPlex: riprovo…")
+        delay(5000)
+        again()
+    }
+}
+
+enum class Live { Wait, Ok, Warn }
+
+/** Una riga di stato con il pallino: in attesa (grigio), avanti (verde), problema (giallo). */
 @Composable
-private fun Panel(content: @Composable () -> Unit) {
+fun LiveStatus(text: String, kind: Live, modifier: Modifier = Modifier) {
+    val color = when (kind) { Live.Ok -> C.accentText; Live.Warn -> C.warn; Live.Wait -> C.ink3 }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Txt(text, Modifier.padding(start = 10.dp), size = 17.sp, color = if (kind == Live.Wait) C.ink2 else color, lines = 3)
+    }
+}
+
+// ---------------------------------------------------------------- Con Google
+
+/**
+ * «Entra con Google» sulla TV: come «Collega questa TV», il QR da una parte e il
+ * codice dall'altra; sopra, lo stato di quello che succede sul telefono (aperto,
+ * account sbagliato: si riprova lì con un altro). Il codice si rinnova da solo.
+ */
+@Composable
+fun GoogleScreen(act: MainActivity, s: Screen.Google) {
+    var flow by remember { mutableStateOf<JSONObject?>(null) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var seen by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf("") }
+    var round by remember { mutableIntStateOf(0) }
+    LaunchedEffect(round) {
+        seen = false
+        note = ""
+        try {
+            val g = withContext(Dispatchers.IO) {
+                JSONObject(Api.post("/api/auth/google", JSONObject().put("link", s.link).put("device", "tv")).first)
+            }
+            flow = g
+            msg = null
+            val until = System.currentTimeMillis() + (g.optLong("ttl", 600) - 60) * 1000
+            while (System.currentTimeMillis() < until) {
+                delay(2000)
+                val (body, token) = try {
+                    withContext(Dispatchers.IO) { Api.call("GET", "/api/auth/google/${g.optString("id")}") }
+                } catch (e: ApiError) {
+                    throw e
+                } catch (e: IOException) {
+                    msg = "Rete assente: riprovo…"
+                    continue
+                }
+                val r = JSONObject(body)
+                msg = if (r.optBoolean("offline")) "Il server non raggiunge il servizio account: riprovo…" else null
+                if (!r.optBoolean("done")) {
+                    seen = r.optBoolean("seen")
+                    note = r.optString("note")
+                    continue
+                }
+                if (r.optBoolean("linked")) {
+                    act.toast("Google collegato: d'ora in poi puoi entrare con ${r.optString("google").ifEmpty { "Google" }}")
+                    act.back()
+                } else act.entered(body, token)
+                return@LaunchedEffect
+            }
+            round++                           // scaduto: codice nuovo
+        } catch (e: ApiError) {
+            // Scaduto o non riuscito: il motivo resta scritto e il codice nuovo arriva da solo
+            if (e.status != 404) msg = e.message
+            if (e.status == 404 || e.status == 403) {
+                if (e.status == 403) delay(4000)
+                round++
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e                           // si e' cambiata pagina
+        } catch (e: Exception) {
+            msg = "Non riesco a raggiungere BunkerPlex: riprovo…"
+            delay(5000)
+            round++
+        }
+    }
+    val first = remember { FocusRequester() }
+    val g = flow
+    val code = g?.optString("code") ?: ""
+    AuthPage {
+        Title(if (s.link) "Collega Google" else "Entra con Google", size = 34.sp, lines = 1)
+        Txt(if (s.link) "Scegli dal telefono l'account Google da collegare: poi entri con quello, senza password."
+            else "Scegli il tuo account Google dal telefono: la TV entra da sola.",
+            Modifier.padding(top = 8.dp), size = 18.sp, color = C.ink2, lines = 2)
+        LiveStatus(
+            when {
+                msg != null -> msg!!
+                note.isNotEmpty() -> "Sul telefono: $note"
+                seen -> "Codice aperto sul telefono: scegli lì l'account Google"
+                else -> "In attesa del telefono…"
+            },
+            if (msg != null || note.isNotEmpty()) Live.Warn else if (seen) Live.Ok else Live.Wait,
+            Modifier.padding(top = 14.dp),
+        )
+        Row(Modifier.padding(top = 24.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
+            Panel {
+                if (g != null) Qr(g.optJSONArray("qr").strings(), 210.dp)
+                Txt("Inquadra il QR", Modifier.padding(top = 18.dp), size = 21.sp, weight = FontWeight.Bold)
+                Txt("con la fotocamera del telefono, anche fuori casa", Modifier.padding(top = 6.dp), size = 15.sp, color = C.ink2, lines = 2)
+            }
+            Column(Modifier.width(110.dp).fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Box(Modifier.width(1.dp).weight(1f).background(C.surface2))
+                Txt("OPPURE", Modifier.padding(vertical = 10.dp), size = 13.sp, color = C.ink3, weight = FontWeight.SemiBold)
+                Box(Modifier.width(1.dp).weight(1f).background(C.surface2))
+            }
+            Panel {
+                Txt("Dal telefono o dal PC apri", size = 16.sp, color = C.ink2)
+                Txt(g?.optString("short")?.removePrefix("https://") ?: "…", Modifier.padding(top = 4.dp),
+                    size = 19.sp, weight = FontWeight.Bold, lines = 2)
+                Txt("e scrivi", Modifier.padding(top = 6.dp), size = 16.sp, color = C.ink2)
+                Box(
+                    Modifier.padding(top = 16.dp).clip(RoundedCornerShape(14.dp)).background(C.bg)
+                        .border(2.dp, C.surface2, RoundedCornerShape(14.dp)).padding(horizontal = 22.dp, vertical = 14.dp)
+                ) {
+                    Txt(code.ifEmpty { "…" }, size = 44.sp, weight = FontWeight.ExtraBold)
+                }
+                Txt("Il codice cambia da solo ogni 10 minuti", Modifier.padding(top = 12.dp), size = 14.sp, color = C.ink3)
+            }
+        }
+        Row(Modifier.padding(top = 30.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Btn("Indietro", Modifier.focusRequester(first)) { act.back() }
+            Btn("Codice nuovo") { flow = null; round++ }
+        }
+    }
+    AutoFocus(first)
+}
+
+@Composable
+fun Panel(content: @Composable () -> Unit) {
     Column(
         Modifier.width(400.dp).fillMaxSize().clip(RoundedCornerShape(18.dp)).background(C.surface).padding(26.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center,
@@ -593,8 +755,10 @@ object CloudTv {
 fun CloudLoginScreen(act: MainActivity) {
     var start by remember { mutableStateOf<JSONObject?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var seen by remember { mutableStateOf(false) }
     var round by remember { mutableIntStateOf(0) }
     LaunchedEffect(round) {
+        seen = false
         try {
             val s = withContext(Dispatchers.IO) { Remote.tvStart(act) }
             start = s
@@ -603,12 +767,21 @@ fun CloudLoginScreen(act: MainActivity) {
             val until = System.currentTimeMillis() + (s.optLong("ttl", 600) - 30) * 1000
             while (System.currentTimeMillis() < until) {
                 delay(2500)
-                if (withContext(Dispatchers.IO) { Remote.tvPoll(act, poll) }) {
+                val r = try {
+                    withContext(Dispatchers.IO) { Remote.tvPoll(act, poll) }
+                } catch (e: Remote.CloudError) {
+                    if (e.status != 0) throw e
+                    msg = "Rete assente: riprovo…"   // un attimo senza rete: il codice resta buono
+                    continue
+                }
+                msg = null
+                if (r.optString("token").isNotEmpty()) {
                     CloudProfiles.clear(act)
                     Access.reset()
                     act.reset(Screen.Profiles())
                     return@LaunchedEffect
                 }
+                seen = r.optBoolean("seen")
             }
             round++                           // scaduto: codice nuovo
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -629,9 +802,18 @@ fun CloudLoginScreen(act: MainActivity) {
     val qr = remember(s) { s?.optString("url")?.takeIf { it.isNotEmpty() }?.let { qrRows(it) } ?: emptyList() }
     AuthPage {
         Title("Entra dal telefono", size = 34.sp, lines = 1)
-        Txt("Accedi una volta dal telefono: la TV entra da sola.", Modifier.padding(top = 8.dp), size = 18.sp, color = C.ink2)
-        msg?.let { Txt(it, Modifier.padding(top = 12.dp), color = C.warn, lines = 2) }
-        Row(Modifier.padding(top = 30.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
+        Txt("Accedi una volta dal telefono (password, Google, impronta o volto): la TV entra da sola.",
+            Modifier.padding(top = 8.dp), size = 18.sp, color = C.ink2, lines = 2)
+        LiveStatus(
+            when {
+                msg != null -> msg!!
+                seen -> "Codice aperto sul telefono: entra lì e la TV entra da sola"
+                else -> "In attesa del telefono…"
+            },
+            if (msg != null) Live.Warn else if (seen) Live.Ok else Live.Wait,
+            Modifier.padding(top = 14.dp),
+        )
+        Row(Modifier.padding(top = 24.dp).height(330.dp), verticalAlignment = Alignment.CenterVertically) {
             Panel {
                 if (qr.isNotEmpty()) Qr(qr, 210.dp) else Txt("…", color = C.ink3)
                 Txt("Inquadra il QR", Modifier.padding(top = 18.dp), size = 21.sp, weight = FontWeight.Bold)

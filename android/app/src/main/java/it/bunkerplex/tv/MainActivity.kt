@@ -129,6 +129,13 @@ class MainActivity : AppCompatActivity() {
         web.settings.mediaPlaybackRequiresUserGesture = false
         // BunkerPlex con l'account (pagina https del servizio) parla col server di casa in http
         web.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        // «Entra con impronta o volto» (passkey) nella pagina del servizio account: la WebView
+        // le passa al telefono come un'app. Il servizio dichiara l'app in
+        // /.well-known/assetlinks.json (segreto ANDROID_CERT_SHA256 del Worker).
+        if (!isTelevision && androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.WEB_AUTHENTICATION)) {
+            androidx.webkit.WebSettingsCompat.setWebAuthenticationSupport(web.settings,
+                androidx.webkit.WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP)
+        }
         web.addJavascriptInterface(Bridge(), "BunkerPlexTV")
 
         Posters.init(this)

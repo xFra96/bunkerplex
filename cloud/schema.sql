@@ -198,7 +198,16 @@ CREATE TABLE IF NOT EXISTS google_flows(
   user_id INTEGER,                   -- l'account entrato, quando Google ha risposto
   email TEXT,
   error TEXT,
-  exp REAL NOT NULL
+  exp REAL NOT NULL,
+  offer_user INTEGER,                -- proposta di collegamento (stessa email, senza Google)
+  offer_sub TEXT,
+  offer_hash TEXT,
+  pkce TEXT,                         -- PKCE del giro con Google (code_verifier)
+  nonce TEXT,                        -- nonce che deve tornare nel gettone di Google
+  hint TEXT,                         -- email gia' scritta: Google propone quell'account
+  back TEXT,                         -- dove tornare dopo (stesso dispositivo)
+  seen INTEGER,                      -- 1 = il codice e' stato aperto (sul telefono)
+  note TEXT                          -- ultimo tentativo non riuscito (si puo' riprovare)
 );
 
 -- «Password dimenticata»: un codice di 6 cifre per email, 15 minuti (si salva l'impronta).
@@ -265,4 +274,21 @@ CREATE TABLE IF NOT EXISTS activations(user_id INTEGER PRIMARY KEY, token_hash T
 CREATE TABLE IF NOT EXISTS magic_links(user_id INTEGER PRIMARY KEY, token_hash TEXT NOT NULL, exp REAL NOT NULL, sent REAL NOT NULL);
 
 -- La TV entra dal telefono: codice (QR) confermato dalla PWA, la TV ritira il gettone con poll.
-CREATE TABLE IF NOT EXISTS tv_links(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, device TEXT, user_id INTEGER, exp REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS tv_links(code TEXT PRIMARY KEY, poll_hash TEXT NOT NULL, device TEXT, user_id INTEGER, exp REAL NOT NULL,
+  seen INTEGER);                     -- 1 = il telefono ha aperto il codice
+
+-- Passkey (impronta, volto o PIN del dispositivo) per entrare dalla PWA del servizio.
+-- Solo la chiave pubblica (JWK); il Worker crea le tabelle anche da solo.
+CREATE TABLE IF NOT EXISTS passkeys(
+  id TEXT PRIMARY KEY,               -- id della credenziale (base64url)
+  user_id INTEGER NOT NULL,
+  jwk TEXT NOT NULL,                 -- chiave pubblica
+  alg INTEGER NOT NULL,              -- -7 ES256 / -257 RS256
+  counter INTEGER NOT NULL DEFAULT 0,
+  label TEXT,                        -- il nome del dispositivo
+  created REAL NOT NULL,
+  used REAL
+);
+CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys(user_id);
+-- Sfide a uso singolo (5 minuti)
+CREATE TABLE IF NOT EXISTS passkey_challenges(hash TEXT PRIMARY KEY, user_id INTEGER, exp REAL NOT NULL);
