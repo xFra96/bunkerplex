@@ -244,8 +244,9 @@ async function serverRoutes(request, env, path, method) {
     const t = now();
     await ensureClaims(env);
     await env.DB.batch([
-      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ?, machine = COALESCE(?, machine) WHERE sid = ?')
-        .bind(t, name, String(b.version || '').slice(0, 40), securePort, cleanMachine(b.machine) || null, srv.sid),
+      env.DB.prepare('UPDATE server_creds SET last_seen = ?, name = ?, version = ?, secure_port = ?, machine = COALESCE(?, machine), ' +
+        'build = ? WHERE sid = ?')
+        .bind(t, name, String(b.version || '').slice(0, 40), securePort, cleanMachine(b.machine) || null, cleanBuild(b), srv.sid),
       env.DB.prepare('INSERT INTO servers(user_id, sid, name, url, lan, public, friends, pin, t, ip, token_hash) VALUES(?,?,?,?,?,?,?,?,?,?,NULL) ' +
         'ON CONFLICT(user_id, sid) DO UPDATE SET name = excluded.name, url = excluded.url, lan = excluded.lan, ' +
         'public = excluded.public, friends = excluded.friends, pin = excluded.pin, t = excluded.t, ip = excluded.ip, token_hash = NULL')
@@ -495,7 +496,18 @@ async function ensureClaims(env) {
     'name TEXT, version TEXT, poll_hash TEXT NOT NULL, user_id INTEGER, target TEXT, secret TEXT, exp REAL NOT NULL)').run();
   const cols = (await env.DB.prepare('PRAGMA table_info(server_creds)').all()).results.map((c) => c.name);
   if (!cols.includes('machine')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN machine TEXT').run();
+  if (!cols.includes('build')) await env.DB.prepare('ALTER TABLE server_creds ADD COLUMN build TEXT').run();
   claimTable = true;
+}
+
+// Il programma installato sul server: numero della release (es. 3.42.1) e commit
+// (es. 50346bb), per vedere quando un server si e' aggiornato. "" se non lo manda.
+function cleanBuild(b) {
+  const release = String(b.release || '');
+  const commit = String(b.commit || '');
+  const r = /^[0-9][0-9A-Za-z.-]{0,30}$/.test(release) ? release : '';
+  const c = /^[0-9a-f]{7,40}$/.test(commit) ? commit.slice(0, 12) : '';
+  return [r, c].filter(Boolean).join(' ');
 }
 
 const cleanMachine = (raw) => (/^[0-9a-f]{16,64}$/.test(String(raw || '')) ? String(raw) : '');
@@ -691,7 +703,7 @@ async function userServerRoutes(request, env, path, method, user) {
     const online = (seen) => (seen ? t - seen < ONLINE_SECONDS : null);   // null = non si sa (server di prima)
     const local = (s) => !!here && s.ip === here && online(s.last_seen) !== false;
     await ensureClaims(env);
-    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, s.ip, c.last_seen, c.secure_port, c.machine, c.version, ' +
+    const own = await env.DB.prepare('SELECT s.sid, s.name, s.url, s.lan, s.public, s.pin, s.friends, s.t, s.ip, c.last_seen, c.secure_port, c.machine, c.version, c.build, ' +
       '(SELECT d.name FROM server_dns d WHERE d.sid = s.sid LIMIT 1) AS dns FROM servers s ' +
       'LEFT JOIN server_creds c ON c.sid = s.sid AND c.owner_id = s.user_id WHERE s.user_id = ?').bind(user.id).all();
     const shared = await env.DB.prepare(
@@ -704,7 +716,7 @@ async function userServerRoutes(request, env, path, method, user) {
       ...own.results.map((s) => ({
         sid: s.sid, name: s.name || 'PC', role: 'owner', owner: { id: user.id, username: user.username },
         online: online(s.last_seen), seen: s.last_seen || s.t, shared: !!s.friends, local: local(s),
-        machine: s.machine || '', version: s.version || '',
+        machine: s.machine || '', version: s.version || '', build: s.build || '',
         addresses: { lan: s.lan || '', remote: s.url || '', public: s.public || '',
           secure_lan: s.dns && s.secure_port ? 'https://' + s.dns + ':' + s.secure_port : '' }, pin: s.pin
       })),
