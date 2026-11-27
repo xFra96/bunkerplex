@@ -89,4 +89,5 @@ modo: disinstallala dalla TV e riprova.
   (bloccata a una versione provata): Tizen Studio 5.6 non legge il certificato.
 - I contenuti arrivano sempre dalla PWA centrale: l'app si reinstalla solo quando cambia
   `tizen/` (raramente).
-- **Non ancora provata su una TV Samsung vera.**
+- **Provata su una TV Samsung vera** (novembre 2026): installazione dal telefono, app e
+  icona. Da vedere ancora le TV che chiedono il certificato Samsung.
