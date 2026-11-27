@@ -1213,3 +1213,21 @@ test('il server collegato con il codice manda gli avvisi al telefono del proprie
   // Il resto dell'account resta fuori dalla credenziale del server
   assert.equal((await t.call('POST', '/notices/devices', { kind: 'android', label: 'x' }, cred)).status, 403);
 });
+
+test('la release annunciata da GitHub arriva ai server nella presenza', async () => {
+  const t = await twoFriends();
+  const cred = (await t.call('POST', `/servers/${SID}/claim`, { name: 'PC' }, await t.login('anna', 'server'))).body.credential;
+  const C = 'ab12'.repeat(10);
+  // Senza RELEASE_KEY non si annuncia niente
+  assert.equal((await t.call('POST', '/release', { commit: C, version: 'v3.43' }, 'x'.repeat(32))).status, 401);
+  t.env.RELEASE_KEY = 'r'.repeat(40);
+  assert.equal((await t.call('POST', '/release', { commit: C, version: 'v3.43' }, 'x'.repeat(40))).status, 401);
+  assert.equal((await t.call('POST', '/release', { commit: C, version: 'v3.43' }, cred)).status, 401);
+  assert.equal((await t.call('POST', '/release', { commit: 'zz', version: '3.43' }, t.env.RELEASE_KEY)).status, 400);
+  let hb = await t.call('POST', '/server/heartbeat', { name: 'PC', pin: PIN }, cred);
+  assert.equal(hb.body.release, null);
+  assert.equal((await t.call('POST', '/release', { commit: C, version: 'v3.43' }, t.env.RELEASE_KEY)).status, 200);
+  hb = await t.call('POST', '/server/heartbeat', { name: 'PC', pin: PIN }, cred);
+  assert.deepEqual([hb.body.release.commit, hb.body.release.version], [C, '3.43']);
+  assert.equal((await t.call('GET', '/release')).body.release.commit, C);
+});

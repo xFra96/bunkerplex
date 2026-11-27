@@ -7741,7 +7741,8 @@ function updatePanel(u, title) {
   else if (u.checked_at) state = dot(true) + ' Il server è aggiornato.';
   else state = 'Il primo controllo parte un paio di minuti dopo l\'avvio.';
   var when = updateTime(u.checked_at);
-  var hours = u.check_hours === 24 ? 'una volta al giorno' : 'ogni ' + u.check_hours + ' ore';
+  var hours = u.push ? 'appena esce una versione nuova'
+    : u.check_hours === 24 ? 'una volta al giorno' : 'ogni ' + u.check_hours + ' ore';
   return '<div class="panel"><h2>' + esc(title || 'Aggiornamenti del server') + '</h2>' +
     '<p>' + state + (when ? ' Ultimo controllo: ' + esc(when) + '.' : '') + '</p>' +
     '<p>Il server controlla da solo ' + hours + (u.auto
