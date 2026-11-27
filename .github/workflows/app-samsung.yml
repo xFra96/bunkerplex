@@ -75,7 +75,7 @@ jobs:
 
       - name: Pubblica
         run: |
-          ver=$(grep -oP '<widget[^>]*\bversion="\K[0-9.]+' tizen/config.xml)
+          ver=$(python3 -c "import xml.etree.ElementTree as E; print(E.parse('tizen/config.xml').getroot().get('version'))")
           printf '{"version": "%s", "commit": "%s"}\n' "$ver" "${GITHUB_SHA::7}" > out/BunkerPlex-samsung.json
           {
             echo "**BunkerPlex per TV Samsung** ($ver, ${GITHUB_SHA::7})"
