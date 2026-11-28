@@ -148,8 +148,11 @@ class MainActivity : AppCompatActivity() {
         }
         web.webViewClient = object : WebViewClient() {
             // Locandine e sfondi dalla copia salvata sulla TV (vedi Posters)
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                if (request.method == "GET") Posters.serve(request.url) else null
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                // Il server di casa chiesto dalla pagina https (vedi LanProxy)
+                LanProxy.target(request.url, cloudHost)?.let { return LanProxy.serve(request, it) }
+                return if (request.method == "GET") Posters.serve(request.url) else null
+            }
 
             override fun onPageFinished(view: WebView, url: String) {
                 if (onTvInstall && !url.startsWith("file:///android_asset/tvinstall.html")) {
@@ -512,7 +515,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Funzioni che la pagina puo' chiamare: window.BunkerPlexTV.xxx() */
+    private val cloudHost by lazy { Uri.parse(Remote.cloud(this)).host ?: "" }
+
     inner class Bridge {
+        /** Richieste non GET della pagina al server di casa (vedi LanProxy). */
+        @JavascriptInterface
+        fun lanFetch(method: String, url: String, headers: String, body: String?): String =
+            LanProxy.fetch(method, url, headers, body, cloudHost)
+
 
         /** Apre un indirizzo nel browser del dispositivo (Google non accetta l'accesso
          *  dentro le finestre delle app). */
@@ -527,7 +537,9 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun play(json: String) {
+        fun play(page: String) {
+            // Il player parla col server di casa direttamente (in http), non tramite la pagina
+            val json = LanProxy.unwrap(page, Remote.cloud(this@MainActivity))
             // Con l'account la pagina dice lei il server (server_base); altrimenti quello aperto
             val chosen = try { org.json.JSONObject(json).optString("server_base") } catch (_: Exception) { "" }
             val base = chosen.ifEmpty { null } ?: active ?: server ?: return
@@ -616,7 +628,8 @@ class MainActivity : AppCompatActivity() {
 
         /** BunkerPlex con l'account: il server a cui la pagina si e' collegata. */
         @JavascriptInterface
-        fun rememberServer(url: String) {
+        fun rememberServer(page: String) {
+            val url = LanProxy.unwrap(page, Remote.cloud(this@MainActivity))
             if (url.startsWith("http://") || url.startsWith("https://")) lastServer = url
         }
 
