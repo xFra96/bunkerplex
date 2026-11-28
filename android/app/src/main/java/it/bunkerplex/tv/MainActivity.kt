@@ -194,6 +194,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         web.webChromeClient = object : WebChromeClient() {
+            // Avvisi ed errori della pagina nel registro di Android (adb logcat -s BunkerPlex):
+            // senza, sulla TV non si vede perche' qualcosa non va
+            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR ||
+                    m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.WARNING) {
+                    android.util.Log.w("BunkerPlex", m.message().take(500) + " (" + m.sourceId().substringAfterLast('/').take(60) + ":" + m.lineNumber() + ")")
+                }
+                return true
+            }
+
             override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>,
                                            params: FileChooserParams): Boolean {
                 fileCallback?.onReceiveValue(emptyArray())   // una scelta rimasta a meta'

@@ -22,6 +22,13 @@ import kotlin.concurrent.thread
  * la copia si riconosce dal nome dell'immagine, la chiave serve solo a scaricarla.
  */
 object Posters {
+    /** Fotogramma del video (/api/thumb/<id>): non si salva, cambia se cambia il file. */
+    private val THUMB = Regex("^(?:/k/[\\w.]{1,80})?/api/thumb/\\d{1,12}$")
+
+    /** Le risposte fatte qui valgono anche per fetch() della pagina (che e' di un altro sito). */
+    private val HEADERS = mapOf("Cache-Control" to "public, max-age=31536000, immutable",
+        "Access-Control-Allow-Origin" to "*")
+
     private val NAME = Regex("^(?:/k/[\\w.]{1,80})?/api/image/((?:w\\d+|original)_[\\w.\\-]{1,120}\\.(jpg|jpeg|png|webp))$", RegexOption.IGNORE_CASE)
     private const val MAX_BYTES = 300L * 1024 * 1024
     private val trimming = AtomicBoolean(false)
@@ -36,7 +43,9 @@ object Posters {
     /** La risposta dalla copia salvata, o null per lasciar fare al WebView. */
     fun serve(url: Uri): WebResourceResponse? {
         val d = dir ?: return null
-        val m = NAME.matchEntire(url.path ?: return null) ?: return null
+        val path = url.path ?: return null
+        if (url.query == null && THUMB.matches(path)) return direct(url.toString())
+        val m = NAME.matchEntire(path) ?: return null
         val size = url.getQueryParameter("size")?.toIntOrNull() ?: 0
         if (url.query != null && url.query != "size=$size") return null
         val file = File(d, if (size > 0) "s${size}_${m.groupValues[1]}" else m.groupValues[1])
@@ -52,15 +61,37 @@ object Posters {
             else -> "image/jpeg"
         }
         return try {
-            WebResourceResponse(mime, null, 200, "OK",
-                mapOf("Cache-Control" to "public, max-age=31536000, immutable"), FileInputStream(file))
+            WebResourceResponse(mime, null, 200, "OK", HEADERS, FileInputStream(file))
         } catch (e: IOException) {
             null
         }
     }
 
-    private fun fetch(url: String, target: File): Boolean {
-        val tmp = File(target.parentFile, target.name + "." + Thread.currentThread().id + ".part")
+    /** Immagine chiesta dall'app e passata alla pagina cosi' com'e', senza salvarla. */
+    private fun direct(url: String): WebResourceResponse? {
+        val c = open(url) ?: return null
+        val type = c.contentType?.substringBefore(';')?.trim() ?: ""
+        if (!type.startsWith("image/")) {
+            c.disconnect()
+            return null
+        }
+        return try {
+            WebResourceResponse(type, null, 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), c.inputStream)
+        } catch (e: IOException) {
+            c.disconnect()
+            null
+        }
+    }
+
+    private val LAN_HTTPS = Regex("^https://((?:10|127|192\\.168|172\\.(?:1[6-9]|2\\d|3[01]))(?:\\.\\d{1,3}){2,3}:\\d{2,5}/.*)$")
+
+    /** Collegamento al server, o null se non risponde 200. Il WebView puo' portare a https
+     *  un'immagine http dentro la pagina https (WebView recenti): il server di casa
+     *  risponde in http, quindi per un indirizzo di casa si riprova in http. */
+    private fun open(url: String): HttpURLConnection? =
+        connect(url) ?: LAN_HTTPS.matchEntire(url)?.let { connect("http://" + it.groupValues[1]) }
+
+    private fun connect(url: String): HttpURLConnection? {
         var c: HttpURLConnection? = null
         return try {
             c = URL(url).openConnection() as HttpURLConnection
@@ -68,13 +99,23 @@ object Posters {
             c.readTimeout = 15000
             CookieManager.getInstance().getCookie(url)?.let { c.setRequestProperty("Cookie", it) }
             if (Net.session.isNotEmpty()) c.setRequestProperty("X-BP-Session", Net.session)
-            if (c.responseCode != 200) return false
+            if (c.responseCode == 200) c else { c.disconnect(); null }
+        } catch (e: Exception) {
+            c?.disconnect()
+            null
+        }
+    }
+
+    private fun fetch(url: String, target: File): Boolean {
+        val tmp = File(target.parentFile, target.name + "." + Thread.currentThread().id + ".part")
+        val c = open(url) ?: return false
+        return try {
             c.inputStream.use { input -> tmp.outputStream().use { input.copyTo(it, 64 * 1024) } }
             tmp.length() > 0 && isImage(tmp) && tmp.renameTo(target)
         } catch (e: Exception) {
             false
         } finally {
-            c?.disconnect()
+            c.disconnect()
             tmp.delete()
         }
     }
