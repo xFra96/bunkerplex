@@ -83,13 +83,8 @@ object Posters {
         }
     }
 
-    private val LAN_HTTPS = Regex("^https://((?:10|127|192\\.168|172\\.(?:1[6-9]|2\\d|3[01]))(?:\\.\\d{1,3}){2,3}:\\d{2,5}/.*)$")
-
-    /** Collegamento al server, o null se non risponde 200. Il WebView puo' portare a https
-     *  un'immagine http dentro la pagina https (WebView recenti): il server di casa
-     *  risponde in http, quindi per un indirizzo di casa si riprova in http. */
-    private fun open(url: String): HttpURLConnection? =
-        connect(url) ?: LAN_HTTPS.matchEntire(url)?.let { connect("http://" + it.groupValues[1]) }
+    /** Collegamento al server, o null se non risponde 200. */
+    private fun open(url: String): HttpURLConnection? = connect(url)
 
     private fun connect(url: String): HttpURLConnection? {
         var c: HttpURLConnection? = null

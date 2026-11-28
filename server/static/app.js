@@ -16,6 +16,40 @@ var APP = !!tvApp;                   // dentro l'app Android (TV o telefono): vi
 // L'app sa dire se gira su un televisore. Una versione vecchia non lo sa: allora vale come TV.
 var PHONE_APP = APP && typeof tvApp.isTv === 'function' && !callSafe(function () { return tvApp.isTv(); });
 var TV = APP && !PHONE_APP;          // true dentro l'app su Android TV
+// Dentro l'app Android la pagina https dell'account non puo' chiedere niente in http al
+// server di casa (i WebView recenti lo bloccano come contenuto misto): chiede allora
+// <questa pagina>/__lan/<ip:porta>/..., e l'app lo gira in http al server (LanProxy.kt).
+// Le GET le prende l'app da sola; le altre passano dal ponte lanFetch.
+var LAN_VIA_APP = APP && typeof tvApp.lanFetch === 'function' && location.protocol === 'https:'
+  ? location.origin + '/__lan/' : '';
+function lanUrl(u) {
+  var m = LAN_VIA_APP && /^http:\/\/((?:10|127|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d{1,3}){2,3}:\d{2,5}(?:\/.*)?)$/.exec(u || '');
+  return m ? LAN_VIA_APP + m[1] : u;
+}
+if (LAN_VIA_APP) {
+  (function () {
+    var real = window.fetch.bind(window);
+    window.fetch = function (input, opt) {
+      var url = typeof input === 'string' ? input : '';
+      var method = ((opt && opt.method) || 'GET').toUpperCase();
+      if (url.indexOf(LAN_VIA_APP) !== 0 || method === 'GET' || method === 'HEAD') return real(input, opt);
+      var h = {};
+      var src = opt && opt.headers;
+      if (src && typeof src.forEach === 'function' && !Array.isArray(src)) src.forEach(function (v, k) { h[k] = v; });
+      else if (src) for (var k in src) if (Object.prototype.hasOwnProperty.call(src, k)) h[k] = src[k];
+      var body = opt && opt.body != null ? String(opt.body) : null;
+      return new Promise(function (ok, ko) {
+        setTimeout(function () {
+          var r;
+          try { r = JSON.parse(tvApp.lanFetch(method, url, JSON.stringify(h), body)); } catch (e) { ko(new TypeError('Failed to fetch')); return; }
+          if (!r.status) { ko(new TypeError(r.error || 'Failed to fetch')); return; }
+          var empty = r.status === 204 || r.status === 304;
+          ok(new Response(empty ? null : (r.body || ''), { status: r.status, headers: r.headers || {} }));
+        }, 0);
+      });
+    };
+  })();
+}
 // Il browser di una smart TV senza Android (Samsung con Tizen, LG con webOS, Hisense con
 // VIDAA...): niente app da installare, ma aspetto da TV e accesso dal telefono come nell'app
 var SMART_TV = !APP && (/Tizen|Web0S|webOS|NetCast|HbbTV|VIDAA|SmartTV|SMART-TV/i.test(navigator.userAgent) ||
@@ -509,6 +543,7 @@ var PRIVATE_IP = /^(10|127|192\.168|172\.(1[6-9]|2\d|3[01])|169\.254)\.\d+\.\d+/
 function reachOf(url) {
   var host = '';
   if (!url) return '';            // PWA centrale prima di aprire un server
+  if (LAN_VIA_APP && url.indexOf(LAN_VIA_APP) === 0) url = 'http://' + url.slice(LAN_VIA_APP.length);
   try { host = new URL(url, location.href).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch (e) { return ''; }
   if (!host) return '';
   if (host === 'localhost' || /\.localhost$/.test(host) || /^127\./.test(host) || host === '::1') return 'pc';
@@ -1145,8 +1180,8 @@ function cCandidates(s) {
   if (s.addresses && s.addresses.secure_lan) out.push(s.addresses.secure_lan);
   // Indirizzo di casa in http: va nell'app Android (che lo permette); un browser lo blocca subito
   var lan = s.addresses && /^https:\/\/([\d.]+):\d+$/.exec(s.addresses.lan || '');
-  if (lan) out.push('http://' + lan[1] + ':32500');
-  if (s.role === 'owner') out.push('http://localhost:32500');
+  if (lan) out.push(lanUrl('http://' + lan[1] + ':32500'));
+  if (s.role === 'owner' && !LAN_VIA_APP) out.push('http://localhost:32500');
   // Fuori casa: l'indirizzo pubblico del server (Tailscale Funnel), se acceso
   if (s.addresses && s.addresses.public) out.push(s.addresses.public);
   return out;
@@ -1302,7 +1337,7 @@ function cLocalProbe(list) {
     var a = s.addresses || {}, c = [];
     if (a.secure_lan) c.push(a.secure_lan);
     var lan = /^https:\/\/([\d.]+):\d+$/.exec(a.lan || '');
-    if (lan && APP) c.push('http://' + lan[1] + ':32500');
+    if (lan && APP) c.push(lanUrl('http://' + lan[1] + ':32500'));
     if (!c.length) return null;
     return Promise.race([anyOf(c.map(function (b) { return cProbe(b, s.sid); })),
       new Promise(function (ok, ko) { setTimeout(ko, 1500); })])
